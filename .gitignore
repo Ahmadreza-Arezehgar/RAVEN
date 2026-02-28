@@ -36,7 +36,6 @@ encryption.key
 !LICENSE
 !requirements.txt
 !requirements_clean.txt
-!_deploy_trigger.txt
 
 # ============================================
 # BUILD ARTIFACTS
@@ -120,6 +119,12 @@ Thumbs.db
 *.log
 server/server.log
 server/deploy.log
+server/deploy.sh
+server/quick-deploy.sh
+server/simple-deploy.sh
+server/_deploy_trigger.txt
+**/deploy*.sh
+**/AuthKey*.p8
 server/uploads/
 *.tar.gz
 *.zip

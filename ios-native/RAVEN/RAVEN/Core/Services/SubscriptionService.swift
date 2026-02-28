@@ -33,11 +33,11 @@ final class SubscriptionService: NSObject {
     // MARK: - Constants
     
     #if DEBUG
-    // کلید تستی (فقط برای زمان برنامه‌نویسی روی شبیه‌ساز)
-    private static let apiKey = "test_tPHRLcKovzVcUtwcIxpjfNCUxmt"
+    // Test key – set via environment or Xcode scheme
+    private static let apiKey = "YOUR_REVENUECAT_TEST_KEY"
     #else
-    // کلید اصلی (Production) – از داشبورد RevenueCat کپی کنید:
-    private static let apiKey = "appl_twdDOMRqqomBWkMQzQsrMDUGxEU"
+    // Production key – set via environment or Xcode scheme
+    private static let apiKey = "YOUR_REVENUECAT_PROD_KEY"
     #endif
     private static let entitlementID = "Raven Pro"
     
