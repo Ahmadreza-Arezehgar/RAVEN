@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+.env.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Database files (local dev only)
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Keys (use Secret Manager instead)
+# Note: *.p8 excluded - APNs key needs to be uploaded
+*.pem
+*.key
+
+# Test files
+test_*.py
+*_test.py
+
+# Documentation
+*.md
+docs/
+
+# Git
+.git/
+.gitignore
+
+# Large directories
+uploads/
+static/avatars/

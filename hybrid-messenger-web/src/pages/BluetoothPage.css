@@ -1,0 +1,195 @@
+.bluetooth-page {
+    padding: var(--spacing-lg);
+    max-width: 1200px;
+    margin: 0 auto;
+}
+
+/* ===== HEADER ===== */
+.bluetooth-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: var(--spacing-xl);
+}
+
+.bluetooth-header h1 {
+    font-size: 2rem;
+    margin-bottom: var(--spacing-xs);
+}
+
+.bluetooth-header p {
+    color: var(--color-text-secondary);
+}
+
+/* ===== NOT SUPPORTED ===== */
+.not-supported {
+    text-align: center;
+    padding: var(--spacing-3xl);
+    max-width: 600px;
+    margin: 0 auto;
+}
+
+.warning-icon {
+    font-size: 5rem;
+    margin-bottom: var(--spacing-md);
+}
+
+.not-supported h2 {
+    font-size: 1.8rem;
+    margin-bottom: var(--spacing-md);
+}
+
+.not-supported p {
+    color: var(--color-text-secondary);
+    margin-bottom: var(--spacing-sm);
+}
+
+.browser-tips {
+    margin-top: var(--spacing-xl);
+    padding: var(--spacing-lg);
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-lg);
+    text-align: left;
+}
+
+.browser-tips h3 {
+    margin-bottom: var(--spacing-sm);
+}
+
+.browser-tips ul {
+    list-style: none;
+    padding: 0;
+}
+
+.browser-tips li {
+    padding: var(--spacing-xs) 0;
+    font-size: 0.95rem;
+}
+
+/* ===== QUICK ACTIONS ===== */
+.quick-actions {
+    display: flex;
+    gap: var(--spacing-md);
+    margin-bottom: var(--spacing-xl);
+    flex-wrap: wrap;
+}
+
+.quick-actions .btn {
+    font-size: 1rem;
+}
+
+/* ===== TABS ===== */
+.bluetooth-tabs {
+    display: flex;
+    gap: var(--spacing-sm);
+    margin-bottom: var(--spacing-lg);
+    border-bottom: 1px solid var(--color-border);
+    overflow-x: auto;
+}
+
+.tab {
+    padding: var(--spacing-md) var(--spacing-lg);
+    background: transparent;
+    border: none;
+    color: var(--color-text-secondary);
+    font-weight: 600;
+    cursor: pointer;
+    transition: all var(--transition-base);
+    border-bottom: 2px solid transparent;
+    white-space: nowrap;
+}
+
+.tab:hover {
+    color: var(--color-text-primary);
+}
+
+.tab.active {
+    color: var(--color-primary);
+    border-bottom-color: var(--color-primary);
+}
+
+/* ===== TAB CONTENT ===== */
+.tab-content {
+    min-height: 400px;
+}
+
+/* ===== DISCOVER TAB ===== */
+.discover-tab {
+    display: flex;
+    justify-content: center;
+    padding: var(--spacing-xl);
+}
+
+.info-card {
+    padding: var(--spacing-xl);
+    max-width: 600px;
+}
+
+.info-card h3 {
+    font-size: 1.5rem;
+    margin-bottom: var(--spacing-md);
+}
+
+.info-card p {
+    color: var(--color-text-secondary);
+    margin-bottom: var(--spacing-sm);
+    line-height: 1.6;
+}
+
+.tips {
+    margin-top: var(--spacing-lg);
+    padding: var(--spacing-md);
+    background: rgba(99, 102, 241, 0.1);
+    border-left: 3px solid var(--color-primary);
+    border-radius: var(--radius-md);
+}
+
+.tips h4 {
+    margin-bottom: var(--spacing-sm);
+    color: var(--color-primary);
+}
+
+.tips ul {
+    list-style: none;
+    padding: 0;
+}
+
+.tips li {
+    padding: var(--spacing-xs) 0;
+    padding-left: var(--spacing-md);
+    position: relative;
+}
+
+.tips li::before {
+    content: '•';
+    position: absolute;
+    left: 0;
+    color: var(--color-primary);
+}
+
+/* ===== RESPONSIVE ===== */
+@media (max-width: 768px) {
+    .bluetooth-header {
+        flex-direction: column;
+        gap: var(--spacing-md);
+    }
+
+    .quick-actions {
+        flex-direction: column;
+    }
+
+    .quick-actions .btn {
+        width: 100%;
+    }
+
+    .bluetooth-tabs {
+        gap: 0;
+    }
+
+    .tab {
+        flex: 1;
+        padding: var(--spacing-sm);
+        font-size: 0.9rem;
+    }
+}

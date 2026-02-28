@@ -1,0 +1,72 @@
+# Exclude sensitive files from Docker image
+# CRITICAL: Prevents secrets from being baked into the image
+
+# Sensitive files
+encryption.key
+*.db
+*.sqlite
+*.sqlite3
+encrypted.db
+
+# Environment files
+.env
+.env.*
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+*.md
+README.*
+docs/
+
+# Tests
+tests/
+test_*.py
+*_test.py
+
+# Deployment scripts (don't need in image)
+deploy.sh
+quick-deploy.sh
+simple-deploy.sh
+
+# Logs
+*.log
+logs/

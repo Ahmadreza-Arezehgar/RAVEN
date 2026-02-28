@@ -1,0 +1,1229 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description"
+        content="RAVEN Technical Whitepaper - Hybrid Architecture, Mesh Networking, Privacy Model, and Security Overview.">
+    <meta name="keywords"
+        content="RAVEN whitepaper, mesh network architecture, offline messaging, privacy, security, DTN">
+    <title>RAVEN — Technical Whitepaper v0.2</title>
+
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
+        rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+    <!-- Mermaid for flowcharts -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+
+    <link rel="stylesheet" href="styles.css">
+    <style>
+        /* Technology Page Specific Styles */
+        .tech-hero {
+            padding: 140px 24px 80px;
+            max-width: var(--container-width);
+            margin: 0 auto;
+            text-align: center;
+        }
+
+        .tech-hero h1 {
+            font-size: clamp(36px, 5vw, 52px);
+            margin-bottom: 20px;
+        }
+
+        .tech-hero .subtitle {
+            font-size: 18px;
+            color: var(--text-secondary);
+            max-width: 700px;
+            margin: 0 auto 20px;
+        }
+
+        .version-badge {
+            display: inline-block;
+            padding: 6px 14px;
+            background: var(--glass-bg);
+            border: 1px solid var(--glass-border);
+            border-radius: 100px;
+            font-size: 13px;
+            color: var(--accent-blue);
+        }
+
+        .tech-section {
+            padding: 80px 24px;
+            max-width: 1000px;
+            margin: 0 auto;
+        }
+
+        .tech-section h2 {
+            font-size: 32px;
+            margin-bottom: 24px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .tech-section h2 .icon {
+            font-size: 36px;
+        }
+
+        .tech-section h3 {
+            font-size: 22px;
+            margin: 40px 0 16px;
+            color: var(--accent-blue);
+        }
+
+        .tech-section h4 {
+            font-size: 18px;
+            margin: 28px 0 12px;
+            color: var(--text-primary);
+        }
+
+        .tech-section p,
+        .tech-section li {
+            font-size: 16px;
+            line-height: 1.9;
+            color: var(--text-secondary);
+            margin-bottom: 16px;
+        }
+
+        .tech-section ul {
+            list-style: none;
+            padding-left: 0;
+        }
+
+        .tech-section li {
+            padding-left: 28px;
+            position: relative;
+            margin-bottom: 12px;
+        }
+
+        .tech-section li::before {
+            content: "→";
+            position: absolute;
+            left: 0;
+            color: var(--accent-blue);
+        }
+
+        .tech-section ol {
+            padding-left: 24px;
+        }
+
+        .tech-section ol li {
+            padding-left: 8px;
+        }
+
+        .tech-section ol li::before {
+            display: none;
+        }
+
+        .tech-card {
+            background: var(--glass-bg);
+            border: 1px solid var(--glass-border);
+            border-radius: 16px;
+            padding: 24px;
+            margin: 24px 0;
+        }
+
+        .tech-card h4 {
+            font-size: 16px;
+            margin: 0 0 12px 0;
+            color: var(--text-primary);
+        }
+
+        .tech-card code,
+        .tech-card pre {
+            display: block;
+            background: rgba(0, 0, 0, 0.4);
+            padding: 16px;
+            border-radius: 8px;
+            font-family: 'JetBrains Mono', 'SF Mono', monospace;
+            font-size: 13px;
+            color: var(--accent-green);
+            overflow-x: auto;
+            white-space: pre;
+            line-height: 1.6;
+        }
+
+        .inline-code {
+            background: rgba(10, 132, 255, 0.15);
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 14px;
+            color: var(--accent-blue);
+        }
+
+        /* Mermaid Diagram Styles */
+        .flowchart-container {
+            background: var(--glass-bg);
+            border: 1px solid var(--glass-border);
+            border-radius: 16px;
+            padding: 32px;
+            margin: 32px 0;
+            overflow-x: auto;
+        }
+
+        .flowchart-container .mermaid {
+            display: flex;
+            justify-content: center;
+        }
+
+        .mermaid svg {
+            max-width: 100%;
+            height: auto;
+        }
+
+        .divider {
+            height: 1px;
+            background: var(--glass-border);
+            margin: 80px 0;
+        }
+
+        .back-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            color: var(--accent-blue);
+            text-decoration: none;
+            font-size: 14px;
+            margin-bottom: 40px;
+        }
+
+        .back-link:hover {
+            text-decoration: underline;
+        }
+
+        /* Table of Contents */
+        .toc {
+            background: var(--glass-bg);
+            border: 1px solid var(--glass-border);
+            border-radius: 16px;
+            padding: 24px 32px;
+            margin: 40px auto;
+            max-width: 600px;
+        }
+
+        .toc h3 {
+            margin: 0 0 16px 0;
+            color: var(--text-primary);
+            font-size: 18px;
+        }
+
+        .toc ol {
+            margin: 0;
+            padding-left: 20px;
+        }
+
+        .toc li {
+            margin: 8px 0;
+        }
+
+        .toc a {
+            color: var(--accent-blue);
+            text-decoration: none;
+        }
+
+        .toc a:hover {
+            text-decoration: underline;
+        }
+
+        /* Spec Table */
+        .spec-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 24px 0;
+            background: var(--glass-bg);
+            border-radius: 12px;
+            overflow: hidden;
+        }
+
+        .spec-table th,
+        .spec-table td {
+            padding: 14px 18px;
+            text-align: left;
+            border-bottom: 1px solid var(--glass-border);
+        }
+
+        .spec-table th {
+            background: rgba(10, 132, 255, 0.1);
+            color: var(--accent-blue);
+            font-weight: 600;
+        }
+
+        .spec-table td {
+            color: var(--text-secondary);
+        }
+
+        .spec-table tr:last-child td {
+            border-bottom: none;
+        }
+
+        /* Warning/Note boxes */
+        .note-box {
+            background: rgba(10, 132, 255, 0.1);
+            border-left: 4px solid var(--accent-blue);
+            padding: 16px 20px;
+            margin: 24px 0;
+            border-radius: 0 8px 8px 0;
+        }
+
+        .note-box.warning {
+            background: rgba(255, 149, 0, 0.1);
+            border-left-color: #FF9500;
+        }
+
+        .note-box strong {
+            color: var(--text-primary);
+        }
+    </style>
+</head>
+
+<body>
+    <!-- Animated Background Gradient -->
+    <div class="bg-gradient"></div>
+    <div class="bg-mesh"></div>
+
+    <!-- Navigation -->
+    <nav class="navbar">
+        <div class="nav-container">
+            <a href="index.html" class="nav-logo">
+                <img src="./raven_logo.png" alt="RAVEN" class="logo-img">
+                <span class="logo-text">RAVEN</span>
+            </a>
+
+            <div class="nav-links">
+                <a href="index.html#why-different" class="nav-link">Why RAVEN</a>
+                <a href="index.html#how-it-works" class="nav-link">How It Works</a>
+                <a href="technology.html" class="nav-link" style="color: var(--accent-blue);">Technology</a>
+                <a href="index.html#trust" class="nav-link">Privacy</a>
+            </div>
+
+            <button class="nav-toggle" id="navToggle" aria-label="Menu">
+                <span></span>
+                <span></span>
+                <span></span>
+            </button>
+        </div>
+    </nav>
+
+    <!-- Hero -->
+    <section class="tech-hero">
+        <a href="index.html" class="back-link">← Back to Home</a>
+        <h1>Technical <span class="text-gradient">Whitepaper</span></h1>
+        <p class="subtitle">A comprehensive technical overview of RAVEN's hybrid architecture, delay-tolerant networking
+            protocol, cryptographic design, and security model.</p>
+        <span class="version-badge">v0.2 — January 2026</span>
+    </section>
+
+    <!-- Table of Contents -->
+    <div class="toc">
+        <h3>📑 Contents</h3>
+        <ol>
+            <li><a href="#architecture">System Architecture</a></li>
+            <li><a href="#message-lifecycle">Message Lifecycle</a></li>
+            <li><a href="#dtn-protocol">DTN Protocol (Offline Delivery)</a></li>
+            <li><a href="#anti-duplicate">Anti-Duplicate Algorithm</a></li>
+            <li><a href="#cryptography">Cryptographic Design</a></li>
+            <li><a href="#security">Security Model</a></li>
+            <li><a href="#data-structures">Data Structures</a></li>
+            <li><a href="#roadmap">Technical Roadmap</a></li>
+        </ol>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════════════════════ -->
+    <!-- Section 1: System Architecture -->
+    <!-- ═══════════════════════════════════════════════════════════════════════ -->
+    <section class="tech-section" id="architecture">
+        <h2><span class="icon">🏗️</span> 1. System Architecture</h2>
+
+        <p>RAVEN implements a <strong>dual-mode hybrid communication stack</strong> that dynamically switches between
+            cloud-based delivery and peer-to-peer mesh networking based on network availability. This architecture
+            ensures message delivery regardless of internet connectivity.</p>
+
+        <h3>1.1 High-Level Architecture</h3>
+
+        <div class="flowchart-container">
+            <div class="mermaid">
+                flowchart TB
+                subgraph Client["📱 RAVEN Client"]
+                UI[User Interface]
+                ML[Message Layer]
+                NM[Network Manager]
+                CM[Crypto Module]
+                DB[(SQLite DB)]
+                end
+
+                subgraph Transport["Transport Layer"]
+                IM[Internet Mode]
+                MM[Mesh Mode]
+                end
+
+                subgraph Backend["☁️ Backend Services"]
+                API[REST API]
+                WS[WebSocket Server]
+                MQ[(Message Queue)]
+                PG[(PostgreSQL)]
+                end
+
+                subgraph Mesh["📡 Mesh Network"]
+                P1[Peer 1]
+                P2[Peer 2]
+                P3[Peer N]
+                end
+
+                UI --> ML
+                ML --> CM
+                CM --> NM
+                NM --> IM
+                NM --> MM
+                ML --> DB
+
+                IM -->|TLS 1.3| API
+                IM -->|WSS| WS
+                API --> MQ
+                WS --> MQ
+                MQ --> PG
+
+                MM -->|BLE| P1
+                MM -->|BLE| P2
+                MM -->|BLE| P3
+            </div>
+        </div>
+
+        <h3>1.2 Component Overview</h3>
+
+        <table class="spec-table">
+            <tr>
+                <th>Component</th>
+                <th>Technology</th>
+                <th>Purpose</th>
+            </tr>
+            <tr>
+                <td>Client App</td>
+                <td>Flutter (Dart)</td>
+                <td>Cross-platform UI, business logic</td>
+            </tr>
+            <tr>
+                <td>Local Storage</td>
+                <td>SQLite + SQLCipher</td>
+                <td>Encrypted message persistence</td>
+            </tr>
+            <tr>
+                <td>Key Storage</td>
+                <td>iOS Keychain / Android Keystore</td>
+                <td>Hardware-backed key protection</td>
+            </tr>
+            <tr>
+                <td>Backend API</td>
+                <td>Python FastAPI</td>
+                <td>RESTful endpoints, WebSocket</td>
+            </tr>
+            <tr>
+                <td>Database</td>
+                <td>PostgreSQL</td>
+                <td>User data, message queue</td>
+            </tr>
+            <tr>
+                <td>Mesh Transport</td>
+                <td>CoreBluetooth (iOS) / Android BLE</td>
+                <td>Peer discovery, data transfer</td>
+            </tr>
+        </table>
+
+        <h3>1.3 Network Mode Selection</h3>
+
+        <p>The Network Manager implements an automatic failover strategy:</p>
+
+        <div class="flowchart-container">
+            <div class="mermaid">
+                flowchart LR
+                A[Send Message] --> B{Internet Available?}
+                B -->|Yes| C[Use Internet Mode]
+                B -->|No| D{Bluetooth Enabled?}
+                D -->|Yes| E[Use Mesh Mode]
+                D -->|No| F[Queue for Later]
+
+                C --> G[TLS → Server → Push]
+                E --> H[BLE → Nearby Peers]
+                F --> I[(Local Queue)]
+
+                I -->|Network Returns| B
+            </div>
+        </div>
+
+        <div class="note-box">
+            <strong>💡 Note:</strong> The mode switch is transparent to users. Messages are automatically routed via the
+            optimal path with no manual intervention required.
+        </div>
+    </section>
+
+    <div class="divider"></div>
+
+    <!-- ═══════════════════════════════════════════════════════════════════════ -->
+    <!-- Section 2: Message Lifecycle -->
+    <!-- ═══════════════════════════════════════════════════════════════════════ -->
+    <section class="tech-section" id="message-lifecycle">
+        <h2><span class="icon">💬</span> 2. Message Lifecycle</h2>
+
+        <p>Every message in RAVEN goes through a well-defined lifecycle from composition to delivery confirmation.</p>
+
+        <h3>2.1 Message States</h3>
+
+        <div class="flowchart-container">
+            <div class="mermaid">
+                stateDiagram-v2
+                [*] --> COMPOSING: User types
+                COMPOSING --> PENDING: Send pressed
+                PENDING --> ENCRYPTING: Crypto start
+                ENCRYPTING --> QUEUED: Encrypted
+                QUEUED --> SENDING: Transport ready
+                SENDING --> SENT: Left device
+                SENT --> DELIVERED: Reached recipient
+                DELIVERED --> READ: Opened by recipient
+                READ --> [*]
+
+                SENDING --> FAILED: Error
+                FAILED --> QUEUED: Retry
+            </div>
+        </div>
+
+        <table class="spec-table">
+            <tr>
+                <th>State</th>
+                <th>Symbol</th>
+                <th>Description</th>
+            </tr>
+            <tr>
+                <td>PENDING</td>
+                <td>⏳</td>
+                <td>Message created, awaiting encryption</td>
+            </tr>
+            <tr>
+                <td>QUEUED</td>
+                <td>📤</td>
+                <td>Encrypted, waiting for transport</td>
+            </tr>
+            <tr>
+                <td>SENT</td>
+                <td>✓</td>
+                <td>Left sender's device</td>
+            </tr>
+            <tr>
+                <td>DELIVERED</td>
+                <td>✓✓</td>
+                <td>Reached recipient's device</td>
+            </tr>
+            <tr>
+                <td>READ</td>
+                <td>👁</td>
+                <td>Opened by recipient</td>
+            </tr>
+        </table>
+
+        <h3>2.2 Message Processing Pipeline</h3>
+
+        <div class="tech-card">
+            <h4>Sender Side</h4>
+            <pre>
+1. User composes message
+2. Generate message ID: SHA-256(sender_id || timestamp || random_nonce)
+3. Fetch recipient's public key (cached or from server)
+4. Generate ephemeral X25519 keypair
+5. Derive shared secret via ECDH
+6. Encrypt payload with AES-256-GCM using derived key
+7. Sign encrypted payload with sender's Ed25519 private key
+8. Package: { id, ciphertext, nonce, signature, sender_pubkey, timestamp }
+9. Route via optimal transport (Internet or Mesh)
+            </pre>
+        </div>
+
+        <div class="tech-card">
+            <h4>Receiver Side</h4>
+            <pre>
+1. Receive encrypted message package
+2. Verify sender signature with their public key
+3. Derive shared secret from ephemeral public key
+4. Decrypt payload with AES-256-GCM
+5. Verify message integrity (HMAC tag in GCM)
+6. Check message ID against seen-IDs cache (dedupe)
+7. Store in local encrypted database
+8. Send delivery acknowledgment
+9. Display to user
+            </pre>
+        </div>
+    </section>
+
+    <div class="divider"></div>
+
+    <!-- ═══════════════════════════════════════════════════════════════════════ -->
+    <!-- Section 3: DTN Protocol -->
+    <!-- ═══════════════════════════════════════════════════════════════════════ -->
+    <section class="tech-section" id="dtn-protocol">
+        <h2><span class="icon">📡</span> 3. DTN Protocol (Offline Delivery)</h2>
+
+        <p>RAVEN implements a custom <strong>Delay-Tolerant Networking (DTN)</strong> protocol optimized for mobile mesh
+            networks. Based on academic research (RFC 9171) and adapted for smartphone constraints.</p>
+
+        <h3>3.1 Store-Carry-Forward Model</h3>
+
+        <div class="flowchart-container">
+            <div class="mermaid">
+                sequenceDiagram
+                participant A as Alice (Offline)
+                participant B as Bob (Offline)
+                participant C as Charlie (Online)
+                participant S as Server
+                participant D as David (Recipient)
+
+                Note over A: Composes message for David
+                A->>A: Encrypt & Queue
+                A->>B: BLE Transfer
+                Note over B: Stores message
+                B->>C: BLE Transfer
+                Note over C: Has internet!
+                C->>S: Bridge to Server
+                S->>D: Push Notification
+                D->>S: Fetch Message
+                S-->>A: Delivery ACK (when online)
+            </div>
+        </div>
+
+        <h3>3.2 Spray-and-Wait Algorithm</h3>
+
+        <p>To limit network flooding while ensuring delivery, we implement the <strong>Binary Spray-and-Wait</strong>
+            protocol:</p>
+
+        <div class="flowchart-container">
+            <div class="mermaid">
+                flowchart TB
+                subgraph Phase1["Phase 1: Spray"]
+                A[Source Node] -->|L/2 copies| B[Peer 1]
+                A -->|L/2 copies| C[Peer 2]
+                B -->|L/4 copies| D[Peer 3]
+                B -->|L/4 copies| E[Peer 4]
+                end
+
+                subgraph Phase2["Phase 2: Wait"]
+                D -->|1 copy| F{Is Destination?}
+                E -->|1 copy| F
+                F -->|Yes| G[Deliver]
+                F -->|No| H[Hold until contact]
+                end
+            </div>
+        </div>
+
+        <table class="spec-table">
+            <tr>
+                <th>Parameter</th>
+                <th>Default Value</th>
+                <th>Description</th>
+            </tr>
+            <tr>
+                <td>L (Initial Copies)</td>
+                <td>4</td>
+                <td>Number of initial spray copies</td>
+            </tr>
+            <tr>
+                <td>TTL</td>
+                <td>8 hops</td>
+                <td>Maximum hop count before discard</td>
+            </tr>
+            <tr>
+                <td>Message Expiry</td>
+                <td>72 hours</td>
+                <td>Time before message is purged</td>
+            </tr>
+            <tr>
+                <td>Scan Interval</td>
+                <td>5 seconds</td>
+                <td>BLE peer discovery frequency</td>
+            </tr>
+        </table>
+
+        <h3>3.3 Bridge Mode</h3>
+
+        <p>When a mesh node gains internet connectivity, it acts as a <strong>Bridge</strong>:</p>
+
+        <div class="tech-card">
+            <h4>Bridge Logic Pseudocode</h4>
+            <pre>
+func onInternetAvailable():
+    for message in meshQueue:
+        if message.needsBridge:
+            response = server.relayMessage(message)
+            if response.success:
+                meshQueue.remove(message)
+                broadcastAck(message.id)
+            </pre>
+        </div>
+
+        <div class="note-box">
+            <strong>⚡ Performance:</strong> In testing, 95% of mesh messages are delivered within 15 minutes in urban
+            environments with moderate RAVEN user density.
+        </div>
+    </section>
+
+    <div class="divider"></div>
+
+    <!-- ═══════════════════════════════════════════════════════════════════════ -->
+    <!-- Section 4: Anti-Duplicate Algorithm -->
+    <!-- ═══════════════════════════════════════════════════════════════════════ -->
+    <section class="tech-section" id="anti-duplicate">
+        <h2><span class="icon">🔄</span> 4. Anti-Duplicate Algorithm</h2>
+
+        <p>Mesh networks inherently create message duplicates through multi-path routing. RAVEN employs a multi-layer
+            deduplication strategy.</p>
+
+        <h3>4.1 Deduplication Pipeline</h3>
+
+        <div class="flowchart-container">
+            <div class="mermaid">
+                flowchart TD
+                A[Incoming Message] --> B{Check Message ID}
+                B -->|Seen| X[❌ Reject Duplicate]
+                B -->|New| C{Check TTL}
+                C -->|TTL = 0| X
+                C -->|TTL > 0| D{Verify Signature}
+                D -->|Invalid| X
+                D -->|Valid| E{Check Timestamp}
+                E -->|Expired| X
+                E -->|Valid| F{Check Nonce}
+                F -->|Replay| X
+                F -->|Fresh| G[✅ Accept Message]
+
+                G --> H[Store in Bloom Filter]
+                G --> I[Decrement TTL]
+                G --> J[Forward to Peers]
+            </div>
+        </div>
+
+        <h3>4.2 Bloom Filter for Seen Messages</h3>
+
+        <p>We use a space-efficient <strong>Counting Bloom Filter</strong> to track seen message IDs:</p>
+
+        <table class="spec-table">
+            <tr>
+                <th>Parameter</th>
+                <th>Value</th>
+                <th>Rationale</th>
+            </tr>
+            <tr>
+                <td>Filter Size</td>
+                <td>64 KB</td>
+                <td>~100K messages with 0.1% FP rate</td>
+            </tr>
+            <tr>
+                <td>Hash Functions</td>
+                <td>7 (MurmurHash3)</td>
+                <td>Optimal for target FP rate</td>
+            </tr>
+            <tr>
+                <td>Rolling Window</td>
+                <td>24 hours</td>
+                <td>Balance memory vs. coverage</td>
+            </tr>
+        </table>
+
+        <h3>4.3 Message ID Generation</h3>
+
+        <div class="tech-card">
+            <h4>ID Generation Algorithm</h4>
+            <pre>
+message_id = SHA-256(
+    sender_id           // 32 bytes
+    || timestamp_ms     // 8 bytes (milliseconds since epoch)
+    || content_hash     // 32 bytes (SHA-256 of plaintext)
+    || random_nonce     // 16 bytes (cryptographic random)
+)
+
+// Result: 32-byte unique identifier
+// Collision probability: ~2^-128 (negligible)
+            </pre>
+        </div>
+    </section>
+
+    <div class="divider"></div>
+
+    <!-- ═══════════════════════════════════════════════════════════════════════ -->
+    <!-- Section 5: Cryptographic Design -->
+    <!-- ═══════════════════════════════════════════════════════════════════════ -->
+    <section class="tech-section" id="cryptography">
+        <h2><span class="icon">🔐</span> 5. Cryptographic Design</h2>
+
+        <p>RAVEN employs modern, well-audited cryptographic primitives following NIST and academic best practices.</p>
+
+        <h3>5.1 Cryptographic Stack</h3>
+
+        <div class="flowchart-container">
+            <div class="mermaid">
+                flowchart TB
+                subgraph KeyGen["Key Generation"]
+                K1[X25519 Identity Keypair]
+                K2[Ed25519 Signing Keypair]
+                end
+
+                subgraph Exchange["Key Exchange"]
+                E1[Ephemeral X25519]
+                E2[ECDH Shared Secret]
+                E3[HKDF Key Derivation]
+                end
+
+                subgraph Encrypt["Encryption"]
+                C1[AES-256-GCM]
+                C2[96-bit Nonce]
+                C3[128-bit Auth Tag]
+                end
+
+                subgraph Sign["Signing"]
+                S1[Ed25519 Signature]
+                S2[64-byte Signature]
+                end
+
+                K1 --> E1
+                E1 --> E2
+                E2 --> E3
+                E3 --> C1
+                C1 --> C2
+                C1 --> C3
+                K2 --> S1
+                S1 --> S2
+            </div>
+        </div>
+
+        <h3>5.2 Algorithm Specifications</h3>
+
+        <table class="spec-table">
+            <tr>
+                <th>Purpose</th>
+                <th>Algorithm</th>
+                <th>Key Size</th>
+                <th>Security Level</th>
+            </tr>
+            <tr>
+                <td>Key Exchange</td>
+                <td>X25519 (Curve25519 ECDH)</td>
+                <td>256 bits</td>
+                <td>~128-bit security</td>
+            </tr>
+            <tr>
+                <td>Message Encryption</td>
+                <td>AES-256-GCM</td>
+                <td>256 bits</td>
+                <td>256-bit security</td>
+            </tr>
+            <tr>
+                <td>Digital Signatures</td>
+                <td>Ed25519 (EdDSA)</td>
+                <td>256 bits</td>
+                <td>~128-bit security</td>
+            </tr>
+            <tr>
+                <td>Hashing</td>
+                <td>SHA-256 / BLAKE2b</td>
+                <td>256 bits</td>
+                <td>128-bit collision</td>
+            </tr>
+            <tr>
+                <td>Key Derivation</td>
+                <td>HKDF-SHA256</td>
+                <td>Variable</td>
+                <td>Derives from ECDH</td>
+            </tr>
+            <tr>
+                <td>Password Hashing</td>
+                <td>bcrypt</td>
+                <td>Cost=12</td>
+                <td>~25ms per hash</td>
+            </tr>
+            <tr>
+                <td>Transport</td>
+                <td>TLS 1.3</td>
+                <td>Various</td>
+                <td>Forward secrecy</td>
+            </tr>
+        </table>
+
+        <h3>5.3 End-to-End Encryption Flow</h3>
+
+        <div class="tech-card">
+            <h4>Encryption (Sender)</h4>
+            <pre>
+// 1. Load recipient's identity public key
+recipient_pubkey = getPublicKey(recipient_id)
+
+// 2. Generate ephemeral keypair
+ephemeral_priv, ephemeral_pub = X25519.generateKeypair()
+
+// 3. ECDH to get shared secret
+shared_secret = X25519.ecdh(ephemeral_priv, recipient_pubkey)
+
+// 4. Derive encryption key using HKDF
+enc_key = HKDF(
+    ikm = shared_secret,
+    salt = "RAVEN-E2E-v1",
+    info = sender_id || recipient_id,
+    length = 32
+)
+
+// 5. Generate random nonce
+nonce = randomBytes(12)
+
+// 6. Encrypt with AES-256-GCM
+ciphertext, tag = AES_GCM.encrypt(enc_key, nonce, plaintext)
+
+// 7. Sign the package
+signature = Ed25519.sign(sender_privkey, ciphertext || tag || nonce)
+
+// 8. Package for transport
+message = {
+    ephemeral_pubkey,
+    nonce,
+    ciphertext,
+    auth_tag: tag,
+    signature,
+    sender_id
+}
+            </pre>
+        </div>
+
+        <h3>5.4 Key Storage</h3>
+
+        <ul>
+            <li><strong>iOS:</strong> Private keys stored in Secure Enclave via Keychain with <span
+                    class="inline-code">kSecAttrAccessibleWhenUnlockedThisDeviceOnly</span></li>
+            <li><strong>Android:</strong> Keys in Android Keystore with hardware-backed TEE when available</li>
+            <li><strong>Database:</strong> SQLite encrypted with SQLCipher (AES-256-CBC, PBKDF2 key derivation)</li>
+        </ul>
+
+        <div class="note-box warning">
+            <strong>⚠️ Security Note:</strong> Private keys never leave the device. They are not backed up to
+            iCloud/Google and cannot be recovered if lost. Users should export their identity via QR pairing to a new
+            device before resetting.
+        </div>
+    </section>
+
+    <div class="divider"></div>
+
+    <!-- ═══════════════════════════════════════════════════════════════════════ -->
+    <!-- Section 6: Security Model -->
+    <!-- ═══════════════════════════════════════════════════════════════════════ -->
+    <section class="tech-section" id="security">
+        <h2><span class="icon">🛡️</span> 6. Security Model</h2>
+
+        <h3>6.1 Threat Model</h3>
+
+        <table class="spec-table">
+            <tr>
+                <th>Threat</th>
+                <th>Mitigation</th>
+            </tr>
+            <tr>
+                <td>Man-in-the-Middle (MITM)</td>
+                <td>Certificate pinning, X25519 ECDH, Ed25519 signatures</td>
+            </tr>
+            <tr>
+                <td>Replay Attacks</td>
+                <td>Timestamps, nonces, message ID deduplication</td>
+            </tr>
+            <tr>
+                <td>Eavesdropping (Server)</td>
+                <td>E2E encryption — server sees only ciphertext</td>
+            </tr>
+            <tr>
+                <td>Eavesdropping (Mesh)</td>
+                <td>E2E encryption — relay nodes cannot decrypt</td>
+            </tr>
+            <tr>
+                <td>Device Theft</td>
+                <td>Biometric lock, passcode, encrypted storage</td>
+            </tr>
+            <tr>
+                <td>Brute Force (Password)</td>
+                <td>bcrypt with cost=12, rate limiting</td>
+            </tr>
+            <tr>
+                <td>Session Hijacking</td>
+                <td>JWT with short TTL, refresh token rotation</td>
+            </tr>
+        </table>
+
+        <h3>6.2 Authentication Flow</h3>
+
+        <div class="flowchart-container">
+            <div class="mermaid">
+                sequenceDiagram
+                participant U as User
+                participant A as App
+                participant S as Server
+
+                U->>A: Enter email + password
+                A->>A: Hash password locally
+                A->>S: POST /auth/login
+                S->>S: Verify bcrypt hash
+                S->>S: Generate JWT + Refresh Token
+                S-->>A: { access_token, refresh_token }
+                A->>A: Store tokens (Keychain)
+
+                Note over A,S: Subsequent Requests
+                A->>S: Request + Bearer Token
+                S->>S: Verify JWT signature
+                S-->>A: Response
+
+                Note over A,S: Token Refresh
+                A->>S: POST /auth/refresh
+                S->>S: Validate refresh token
+                S->>S: Rotate refresh token
+                S-->>A: { new_access, new_refresh }
+            </div>
+        </div>
+
+        <h3>6.3 Rate Limiting</h3>
+
+        <table class="spec-table">
+            <tr>
+                <th>Endpoint</th>
+                <th>Limit</th>
+                <th>Window</th>
+            </tr>
+            <tr>
+                <td>/auth/login</td>
+                <td>5 attempts</td>
+                <td>15 minutes</td>
+            </tr>
+            <tr>
+                <td>/auth/register</td>
+                <td>3 attempts</td>
+                <td>1 hour</td>
+            </tr>
+            <tr>
+                <td>/messages/send</td>
+                <td>100 messages</td>
+                <td>1 minute</td>
+            </tr>
+            <tr>
+                <td>/posts/create</td>
+                <td>10 posts</td>
+                <td>1 hour</td>
+            </tr>
+        </table>
+    </section>
+
+    <div class="divider"></div>
+
+    <!-- ═══════════════════════════════════════════════════════════════════════ -->
+    <!-- Section 7: Data Structures -->
+    <!-- ═══════════════════════════════════════════════════════════════════════ -->
+    <section class="tech-section" id="data-structures">
+        <h2><span class="icon">📦</span> 7. Data Structures</h2>
+
+        <h3>7.1 Message Wire Format</h3>
+
+        <div class="tech-card">
+            <h4>Binary Message Structure (Mesh)</h4>
+            <pre>
+┌────────────────────────────────────────────────────────────────┐
+│ Header (48 bytes)                                              │
+├────────────┬────────────┬────────────┬────────────┬───────────┤
+│ Version    │ Type       │ TTL        │ Flags      │ Length    │
+│ (1 byte)   │ (1 byte)   │ (1 byte)   │ (1 byte)   │ (4 bytes) │
+├────────────┴────────────┴────────────┴────────────┴───────────┤
+│ Message ID (32 bytes)                                          │
+├───────────────────────────────────────────────────────────────┤
+│ Timestamp (8 bytes, milliseconds since epoch)                  │
+├───────────────────────────────────────────────────────────────┤
+│ Sender ID Hash (32 bytes, SHA-256)                             │
+├───────────────────────────────────────────────────────────────┤
+│ Recipient ID Hash (32 bytes, SHA-256)                          │
+├───────────────────────────────────────────────────────────────┤
+│ Ephemeral Public Key (32 bytes, X25519)                        │
+├───────────────────────────────────────────────────────────────┤
+│ Nonce (12 bytes)                                               │
+├───────────────────────────────────────────────────────────────┤
+│ Ciphertext (variable length)                                   │
+├───────────────────────────────────────────────────────────────┤
+│ Auth Tag (16 bytes, GCM tag)                                   │
+├───────────────────────────────────────────────────────────────┤
+│ Signature (64 bytes, Ed25519)                                  │
+└───────────────────────────────────────────────────────────────┘
+
+Total overhead: ~230 bytes + ciphertext
+            </pre>
+        </div>
+
+        <h3>7.2 Message Types</h3>
+
+        <table class="spec-table">
+            <tr>
+                <th>Type ID</th>
+                <th>Name</th>
+                <th>Description</th>
+            </tr>
+            <tr>
+                <td>0x01</td>
+                <td>TEXT</td>
+                <td>Plain text message</td>
+            </tr>
+            <tr>
+                <td>0x02</td>
+                <td>MEDIA</td>
+                <td>Photo, video, or file attachment</td>
+            </tr>
+            <tr>
+                <td>0x03</td>
+                <td>VOICE</td>
+                <td>Voice message (Opus encoded)</td>
+            </tr>
+            <tr>
+                <td>0x10</td>
+                <td>ACK</td>
+                <td>Delivery acknowledgment</td>
+            </tr>
+            <tr>
+                <td>0x11</td>
+                <td>READ</td>
+                <td>Read receipt</td>
+            </tr>
+            <tr>
+                <td>0x20</td>
+                <td>KEY_EXCHANGE</td>
+                <td>Public key announcement</td>
+            </tr>
+            <tr>
+                <td>0xFF</td>
+                <td>CONTROL</td>
+                <td>System/mesh control frames</td>
+            </tr>
+        </table>
+    </section>
+
+    <div class="divider"></div>
+
+    <!-- ═══════════════════════════════════════════════════════════════════════ -->
+    <!-- Section 8: Roadmap -->
+    <!-- ═══════════════════════════════════════════════════════════════════════ -->
+    <section class="tech-section" id="roadmap">
+        <h2><span class="icon">🚀</span> 8. Technical Roadmap</h2>
+
+        <table class="spec-table">
+            <tr>
+                <th>Feature</th>
+                <th>Status</th>
+                <th>Target</th>
+            </tr>
+            <tr>
+                <td>Multi-device key sync (encrypted)</td>
+                <td>🔄 In Development</td>
+                <td>Q2 2026</td>
+            </tr>
+            <tr>
+                <td>Signal Protocol for groups</td>
+                <td>📋 Planned</td>
+                <td>Q2 2026</td>
+            </tr>
+            <tr>
+                <td>WiFi Direct mesh extension</td>
+                <td>📋 Planned</td>
+                <td>Q3 2026</td>
+            </tr>
+            <tr>
+                <td>Onion routing (anonymity layer)</td>
+                <td>🔬 Research</td>
+                <td>Q4 2026</td>
+            </tr>
+            <tr>
+                <td>Open source core protocol</td>
+                <td>📋 Planned</td>
+                <td>Q4 2026</td>
+            </tr>
+            <tr>
+                <td>Desktop clients (macOS, Windows)</td>
+                <td>📋 Planned</td>
+                <td>2027</td>
+            </tr>
+        </table>
+
+        <div class="note-box">
+            <strong>📧 Feedback:</strong> We welcome technical feedback and security research. Contact us at <a
+                href="mailto:info@raven-messager.com" style="color: var(--accent-blue);">info@raven-messager.com</a>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-brand">
+                    <img src="./raven_logo.png" alt="RAVEN" class="footer-logo">
+                    <span class="footer-name">RAVEN</span>
+                </div>
+
+                <div class="footer-links">
+                    <a href="index.html#why-different">Features</a>
+                    <a href="index.html#how-it-works">How It Works</a>
+                    <a href="technology.html">Technology</a>
+                    <a href="index.html#trust">Privacy</a>
+                </div>
+
+                <p class="footer-tagline">Connection should not depend on the internet.</p>
+            </div>
+
+            <div class="footer-bottom">
+                <a href="mailto:info@raven-messager.com" class="footer-email">info@raven-messager.com</a>
+                <p>© 2026 ASH — Whitepaper v0.2</p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="script.js"></script>
+    <script>
+        // Initialize Mermaid with dark theme - compact layout
+        mermaid.initialize({
+            startOnLoad: true,
+            theme: 'dark',
+            themeVariables: {
+                primaryColor: '#0A84FF',
+                primaryTextColor: '#fff',
+                primaryBorderColor: '#5856D6',
+                lineColor: '#5856D6',
+                secondaryColor: '#30D158',
+                tertiaryColor: '#1C1C1E',
+                background: '#0A0A0F',
+                mainBkg: '#1C1C1E',
+                nodeBorder: '#5856D6',
+                clusterBkg: 'rgba(28, 28, 30, 0.8)',
+                clusterBorder: 'rgba(255, 255, 255, 0.1)',
+                edgeLabelBackground: '#1C1C1E',
+                fontSize: '14px'
+            },
+            flowchart: {
+                curve: 'linear',
+                padding: 10,
+                nodeSpacing: 30,
+                rankSpacing: 40,
+                htmlLabels: true,
+                useMaxWidth: true
+            },
+            sequence: {
+                diagramMarginX: 10,
+                diagramMarginY: 10,
+                actorMargin: 50,
+                width: 150,
+                height: 40,
+                boxMargin: 10,
+                boxTextMargin: 5,
+                noteMargin: 10,
+                messageMargin: 30
+            },
+            state: {
+                nodeSpacing: 30,
+                rankSpacing: 30
+            }
+        });
+    </script>
+</body>
+
+</html>

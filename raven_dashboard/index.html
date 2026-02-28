@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RAVEN — Live Stats</title>
+    <meta name="description" content="Live user count dashboard for RAVEN messenger">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap"
+        rel="stylesheet">
+    <style>
+        :root {
+            --bg-primary: #0a0a0f;
+            --bg-secondary: #12121a;
+            --bg-card: rgba(20, 20, 35, 0.6);
+            --border-card: rgba(120, 80, 255, 0.15);
+            --accent-purple: #7c3aed;
+            --accent-blue: #3b82f6;
+            --accent-cyan: #06b6d4;
+            --accent-green: #10b981;
+            --text-primary: #f0f0f5;
+            --text-secondary: #9ca3af;
+            --text-muted: #6b7280;
+            --glow-purple: rgba(124, 58, 237, 0.3);
+            --glow-green: rgba(16, 185, 129, 0.4);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        /* Animated gradient background */
+        .bg-gradient {
+            position: fixed;
+            inset: 0;
+            z-index: 0;
+            background:
+                radial-gradient(ellipse at 20% 20%, rgba(124, 58, 237, 0.08) 0%, transparent 50%),
+                radial-gradient(ellipse at 80% 80%, rgba(6, 182, 212, 0.06) 0%, transparent 50%),
+                radial-gradient(ellipse at 50% 50%, rgba(59, 130, 246, 0.04) 0%, transparent 60%);
+            animation: bgShift 12s ease-in-out infinite alternate;
+        }
+
+        @keyframes bgShift {
+            0% {
+                opacity: 0.7;
+                transform: scale(1);
+            }
+
+            100% {
+                opacity: 1;
+                transform: scale(1.05);
+            }
+        }
+
+        /* Floating particles */
+        .particles {
+            position: fixed;
+            inset: 0;
+            z-index: 0;
+            overflow: hidden;
+            pointer-events: none;
+        }
+
+        .particle {
+            position: absolute;
+            width: 2px;
+            height: 2px;
+            background: var(--accent-purple);
+            border-radius: 50%;
+            opacity: 0;
+            animation: float linear infinite;
+        }
+
+        @keyframes float {
+            0% {
+                opacity: 0;
+                transform: translateY(100vh) scale(0);
+            }
+
+            10% {
+                opacity: 0.6;
+            }
+
+            90% {
+                opacity: 0.3;
+            }
+
+            100% {
+                opacity: 0;
+                transform: translateY(-10vh) scale(1);
+            }
+        }
+
+        /* Main layout */
+        .container {
+            position: relative;
+            z-index: 1;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 60px 24px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+            justify-content: center;
+            gap: 40px;
+        }
+
+        /* Logo + branding */
+        .brand {
+            text-align: center;
+        }
+
+        .brand-icon {
+            width: 80px;
+            height: 80px;
+            background: linear-gradient(135deg, var(--accent-purple), var(--accent-blue));
+            border-radius: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 20px;
+            font-size: 40px;
+            box-shadow: 0 8px 32px var(--glow-purple);
+            animation: logoGlow 3s ease-in-out infinite alternate;
+        }
+
+        @keyframes logoGlow {
+            0% {
+                box-shadow: 0 8px 32px var(--glow-purple);
+            }
+
+            100% {
+                box-shadow: 0 12px 48px rgba(124, 58, 237, 0.5);
+            }
+        }
+
+        .brand h1 {
+            font-size: 42px;
+            font-weight: 800;
+            letter-spacing: -1px;
+            background: linear-gradient(135deg, #fff 0%, #c4b5fd 50%, var(--accent-cyan) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .brand p {
+            color: var(--text-secondary);
+            font-size: 16px;
+            margin-top: 6px;
+            font-weight: 400;
+        }
+
+        /* Stats cards */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+            width: 100%;
+            max-width: 700px;
+        }
+
+        .stat-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-card);
+            border-radius: 24px;
+            padding: 40px 32px;
+            text-align: center;
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .stat-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 1px;
+            background: linear-gradient(90deg, transparent 0%, rgba(124, 58, 237, 0.5) 50%, transparent 100%);
+        }
+
+        .stat-card:hover {
+            transform: translateY(-4px);
+            border-color: rgba(124, 58, 237, 0.3);
+            box-shadow: 0 20px 60px rgba(124, 58, 237, 0.1);
+        }
+
+        .stat-card.online-card::before {
+            background: linear-gradient(90deg, transparent 0%, var(--glow-green) 50%, transparent 100%);
+        }
+
+        .stat-card.online-card:hover {
+            border-color: rgba(16, 185, 129, 0.3);
+            box-shadow: 0 20px 60px rgba(16, 185, 129, 0.1);
+        }
+
+        .stat-label {
+            font-size: 13px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            color: var(--text-muted);
+            margin-bottom: 16px;
+        }
+
+        .stat-number {
+            font-size: 72px;
+            font-weight: 900;
+            line-height: 1;
+            letter-spacing: -3px;
+            background: linear-gradient(135deg, #fff, #c4b5fd);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            transition: transform 0.3s ease;
+        }
+
+        .stat-number.updated {
+            animation: numberPop 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
+
+        @keyframes numberPop {
+            0% {
+                transform: scale(1);
+            }
+
+            50% {
+                transform: scale(1.08);
+            }
+
+            100% {
+                transform: scale(1);
+            }
+        }
+
+        .online-card .stat-number {
+            background: linear-gradient(135deg, #6ee7b7, var(--accent-green));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        /* Live pulse indicator */
+        .live-indicator {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 16px;
+            justify-content: center;
+        }
+
+        .pulse-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--accent-green);
+            position: relative;
+        }
+
+        .pulse-dot::after {
+            content: '';
+            position: absolute;
+            inset: -3px;
+            border-radius: 50%;
+            border: 2px solid var(--accent-green);
+            animation: pulse 2s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+
+            0%,
+            100% {
+                opacity: 0;
+                transform: scale(0.8);
+            }
+
+            50% {
+                opacity: 0.6;
+                transform: scale(1.4);
+            }
+        }
+
+        .live-text {
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 1.5px;
+            text-transform: uppercase;
+            color: var(--accent-green);
+        }
+
+        /* Status bar */
+        .status-bar {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 24px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-card);
+            border-radius: 16px;
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--accent-green);
+            transition: background 0.3s ease;
+        }
+
+        .status-dot.error {
+            background: #ef4444;
+        }
+
+        .status-text {
+            font-size: 13px;
+            color: var(--text-secondary);
+            font-weight: 400;
+        }
+
+        .status-time {
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-left: auto;
+            font-variant-numeric: tabular-nums;
+        }
+
+        /* Loading state */
+        .loading .stat-number {
+            animation: shimmer 1.5s ease-in-out infinite;
+        }
+
+        @keyframes shimmer {
+
+            0%,
+            100% {
+                opacity: 0.3;
+            }
+
+            50% {
+                opacity: 0.7;
+            }
+        }
+
+        /* Footer */
+        .footer {
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 12px;
+            font-weight: 400;
+            letter-spacing: 0.5px;
+        }
+
+        .footer a {
+            color: var(--accent-purple);
+            text-decoration: none;
+            font-weight: 500;
+            transition: color 0.2s;
+        }
+
+        .footer a:hover {
+            color: #a78bfa;
+        }
+
+        /* Responsive */
+        @media (max-width: 600px) {
+            .stats-grid {
+                grid-template-columns: 1fr;
+                gap: 16px;
+            }
+
+            .stat-number {
+                font-size: 56px;
+                letter-spacing: -2px;
+            }
+
+            .brand h1 {
+                font-size: 32px;
+            }
+
+            .stat-card {
+                padding: 32px 24px;
+            }
+
+            .container {
+                padding: 40px 16px;
+                gap: 32px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="bg-gradient"></div>
+    <div class="particles" id="particles"></div>
+
+    <div class="container">
+        <div class="brand">
+            <div class="brand-icon">🐦‍⬛</div>
+            <h1>RAVEN</h1>
+            <p>Live User Statistics</p>
+        </div>
+
+        <div class="stats-grid">
+            <div class="stat-card" id="totalCard">
+                <div class="stat-label">Total Users</div>
+                <div class="stat-number" id="totalUsers">—</div>
+                <div class="live-indicator">
+                    <div class="pulse-dot"></div>
+                    <span class="live-text">Live</span>
+                </div>
+            </div>
+
+            <div class="stat-card online-card" id="onlineCard">
+                <div class="stat-label">Online Now</div>
+                <div class="stat-number" id="onlineUsers">—</div>
+                <div class="live-indicator">
+                    <div class="pulse-dot"></div>
+                    <span class="live-text">Real-time</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="status-bar">
+            <div class="status-dot" id="statusDot"></div>
+            <span class="status-text" id="statusText">Connecting...</span>
+            <span class="status-time" id="statusTime">—</span>
+        </div>
+
+        <div class="footer">
+            Powered by <a href="#">RAVEN Messenger</a> — Encrypted & Private
+        </div>
+    </div>
+
+    <script>
+        // ─── Configuration ───────────────────────────────────────────
+        const API_URL = window.location.origin + '/api/stats/live';
+        const POLL_INTERVAL = 5000; // 5 seconds
+
+        // ─── State ───────────────────────────────────────────────────
+        let prevTotal = null;
+        let prevOnline = null;
+        let isLoading = true;
+
+        // ─── DOM refs ────────────────────────────────────────────────
+        const totalEl = document.getElementById('totalUsers');
+        const onlineEl = document.getElementById('onlineUsers');
+        const statusDot = document.getElementById('statusDot');
+        const statusText = document.getElementById('statusText');
+        const statusTime = document.getElementById('statusTime');
+        const totalCard = document.getElementById('totalCard');
+        const onlineCard = document.getElementById('onlineCard');
+
+        // ─── Particles ──────────────────────────────────────────────
+        function createParticles() {
+            const container = document.getElementById('particles');
+            for (let i = 0; i < 30; i++) {
+                const p = document.createElement('div');
+                p.className = 'particle';
+                p.style.left = Math.random() * 100 + '%';
+                p.style.animationDuration = (8 + Math.random() * 12) + 's';
+                p.style.animationDelay = Math.random() * 8 + 's';
+                p.style.width = p.style.height = (1 + Math.random() * 2) + 'px';
+                const colors = ['var(--accent-purple)', 'var(--accent-blue)', 'var(--accent-cyan)'];
+                p.style.background = colors[Math.floor(Math.random() * colors.length)];
+                container.appendChild(p);
+            }
+        }
+        createParticles();
+
+        // ─── Number animation ────────────────────────────────────────
+        function animateNumber(el, from, to, duration = 600) {
+            if (from === to) return;
+            const start = performance.now();
+            const diff = to - from;
+
+            function step(now) {
+                const elapsed = now - start;
+                const progress = Math.min(elapsed / duration, 1);
+                // easeOutExpo
+                const eased = progress === 1 ? 1 : 1 - Math.pow(2, -10 * progress);
+                const current = Math.round(from + diff * eased);
+                el.textContent = current.toLocaleString();
+                if (progress < 1) requestAnimationFrame(step);
+            }
+
+            requestAnimationFrame(step);
+
+            // Pop animation
+            el.classList.remove('updated');
+            void el.offsetWidth; // force reflow
+            el.classList.add('updated');
+        }
+
+        // ─── Fetch stats ─────────────────────────────────────────────
+        async function fetchStats() {
+            try {
+                const res = await fetch(API_URL);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const data = await res.json();
+
+                const total = data.total_users || 0;
+                const online = data.online_users || 0;
+
+                // Animate numbers
+                if (isLoading) {
+                    totalEl.textContent = total.toLocaleString();
+                    onlineEl.textContent = online.toLocaleString();
+                    totalCard.classList.remove('loading');
+                    onlineCard.classList.remove('loading');
+                    isLoading = false;
+                } else {
+                    animateNumber(totalEl, prevTotal ?? 0, total);
+                    animateNumber(onlineEl, prevOnline ?? 0, online);
+                }
+
+                prevTotal = total;
+                prevOnline = online;
+
+                // Update status
+                statusDot.classList.remove('error');
+                statusText.textContent = 'Connected — refreshing every 5s';
+
+                const now = new Date();
+                statusTime.textContent = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+            } catch (err) {
+                console.error('Fetch error:', err);
+                statusDot.classList.add('error');
+                statusText.textContent = 'Connection lost — retrying...';
+            }
+        }
+
+        // ─── Init ────────────────────────────────────────────────────
+        totalCard.classList.add('loading');
+        onlineCard.classList.add('loading');
+        fetchStats();
+        setInterval(fetchStats, POLL_INTERVAL);
+    </script>
+</body>
+
+</html>

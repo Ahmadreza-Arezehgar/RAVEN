@@ -1,0 +1,97 @@
+name: hybrid_messenger
+description: "A new Flutter project."
+publish_to: 'none'
+version: 0.1.0
+
+environment:
+  sdk: '>=3.4.4 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  flutter_local_notifications: ^17.0.0
+  qr_flutter: ^4.1.0
+  mobile_scanner: ^7.0.0
+  provider: ^6.1.1
+  http: ^1.1.2
+  uuid: ^4.2.2
+  encrypt: ^5.0.3
+  connectivity_plus: ^5.0.2
+  geolocator: ^10.1.0
+  geocoding: ^2.1.1
+  url_launcher: ^6.2.1
+  intl: ^0.20.2
+  
+  # Database
+  sqflite: ^2.3.0
+  path: ^1.8.3
+  path_provider: ^2.1.5
+  
+  # Settings
+  shared_preferences: ^2.2.2
+  
+  # Image
+  image_picker: ^1.2.1
+  image_cropper: ^8.0.0
+  cached_network_image: ^3.4.1
+  emoji_picker_flutter: ^4.4.0
+  record: ^6.1.2
+  
+  # Audio & Network
+  just_audio: ^0.9.40
+  dio: ^5.4.0
+  
+  # Security & Crypto
+  flutter_secure_storage: ^9.0.0
+  pointycastle: ^3.9.1
+  crypto: ^3.0.3
+  local_auth: ^2.1.8
+  
+  # OAuth Authentication
+  google_sign_in: ^6.2.1
+  sign_in_with_apple: ^6.1.0
+  
+  # Contacts & Permissions
+  contacts_service: ^0.6.3
+  permission_handler: ^11.0.0
+  
+  # Fonts & UI
+  google_fonts: ^6.1.0
+  
+  # App Info
+  package_info_plus: ^8.0.0
+  audioplayers: ^6.5.1
+  file_picker: ^10.3.8
+  flutter_slidable: ^4.0.3
+  
+  # PDF Viewer (in-app)
+  syncfusion_flutter_pdfviewer: ^32.1.25
+  share_plus: ^10.0.0
+  
+  # Phone Input with Country Picker
+  intl_phone_field: ^3.2.0
+  
+  # Persian Calendar (Jalali)
+  shamsi_date: ^1.0.3
+  
+  # In-App Browser
+  webview_flutter: ^4.4.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  integration_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+  sqflite_common_ffi: ^2.3.0
+  flutter_launcher_icons: ^0.14.4
+
+flutter:
+  generate: true  # Enable localization code generation
+  uses-material-design: true
+  
+  assets:
+    - assets/
+    - assets/raven_logo.png

@@ -1,0 +1,1248 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RAVEN Admin</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap"
+        rel="stylesheet">
+    <style>
+        :root {
+            --bg: #05060b;
+            --bg2: #0c0d14;
+            --surface: rgba(16, 17, 27, 0.85);
+            --surface2: rgba(24, 25, 40, 0.9);
+            --surface3: rgba(32, 33, 52, 0.8);
+            --glass: rgba(255, 255, 255, 0.03);
+            --glass2: rgba(255, 255, 255, 0.06);
+            --border: rgba(255, 255, 255, 0.06);
+            --border2: rgba(255, 255, 255, 0.10);
+            --text: #eaeaf0;
+            --text2: #7c7d96;
+            --text3: #45465a;
+            --accent: #7c6cf0;
+            --accent-glow: rgba(124, 108, 240, 0.25);
+            --green: #34d399;
+            --green-glow: rgba(52, 211, 153, 0.15);
+            --red: #f43f5e;
+            --red-glow: rgba(244, 63, 94, 0.15);
+            --orange: #fb923c;
+            --orange-glow: rgba(251, 146, 60, 0.15);
+            --yellow: #fbbf24;
+            --cyan: #38bdf8;
+            --cyan-glow: rgba(56, 189, 248, 0.15);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            overflow-x: hidden
+        }
+
+        ::selection {
+            background: var(--accent);
+            color: white
+        }
+
+        ::-webkit-scrollbar {
+            width: 6px
+        }
+
+        ::-webkit-scrollbar-track {
+            background: transparent
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: var(--border2);
+            border-radius: 3px
+        }
+
+        /* ========== LOGIN ========== */
+        #loginScreen {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            padding: 20px;
+            background: radial-gradient(ellipse at 50% 0%, rgba(124, 108, 240, 0.08) 0%, transparent 60%)
+        }
+
+        .login-card {
+            background: var(--surface);
+            backdrop-filter: blur(40px);
+            border: 1px solid var(--border2);
+            border-radius: 24px;
+            padding: 48px 40px;
+            max-width: 400px;
+            width: 100%;
+            box-shadow: 0 32px 80px rgba(0, 0, 0, 0.5)
+        }
+
+        .login-logo {
+            text-align: center;
+            margin-bottom: 32px
+        }
+
+        .login-logo .icon {
+            font-size: 48px;
+            margin-bottom: 12px;
+            display: block
+        }
+
+        .login-logo h1 {
+            font-size: 24px;
+            font-weight: 800;
+            letter-spacing: -0.5px
+        }
+
+        .login-logo p {
+            color: var(--text2);
+            font-size: 13px;
+            margin-top: 6px
+        }
+
+        .form-group {
+            margin-bottom: 16px
+        }
+
+        .form-group label {
+            display: block;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text2);
+            margin-bottom: 6px;
+            letter-spacing: 0.3px;
+            text-transform: uppercase
+        }
+
+        input,
+        select,
+        textarea {
+            width: 100%;
+            padding: 11px 14px;
+            background: var(--glass2);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            color: var(--text);
+            font-family: inherit;
+            font-size: 14px;
+            outline: none;
+            transition: all .2s
+        }
+
+        input:focus,
+        select:focus,
+        textarea:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px var(--accent-glow)
+        }
+
+        input::placeholder {
+            color: var(--text3)
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            padding: 11px 24px;
+            border: none;
+            border-radius: 10px;
+            font-family: inherit;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all .15s;
+            position: relative;
+            overflow: hidden
+        }
+
+        .btn:active {
+            transform: scale(0.97)
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #7c6cf0, #a78bfa);
+            color: white;
+            width: 100%;
+            box-shadow: 0 4px 20px var(--accent-glow)
+        }
+
+        .btn-primary:hover {
+            box-shadow: 0 6px 28px rgba(124, 108, 240, 0.35);
+            transform: translateY(-1px)
+        }
+
+        .btn-sm {
+            padding: 7px 14px;
+            font-size: 13px;
+            border-radius: 8px
+        }
+
+        .btn-green {
+            background: var(--green);
+            color: #0a1a12;
+            box-shadow: 0 2px 12px var(--green-glow)
+        }
+
+        .btn-red {
+            background: var(--red);
+            color: white;
+            box-shadow: 0 2px 12px var(--red-glow)
+        }
+
+        .btn-orange {
+            background: var(--orange);
+            color: #1a0f05;
+            box-shadow: 0 2px 12px var(--orange-glow)
+        }
+
+        .btn-ghost {
+            background: var(--glass2);
+            border: 1px solid var(--border);
+            color: var(--text2)
+        }
+
+        .btn-ghost:hover {
+            border-color: var(--border2);
+            color: var(--text);
+            background: var(--glass)
+        }
+
+        .error-msg {
+            color: var(--red);
+            font-size: 13px;
+            margin-top: 10px;
+            text-align: center
+        }
+
+        /* ========== LAYOUT ========== */
+        #app {
+            display: none
+        }
+
+        .layout {
+            display: flex;
+            min-height: 100vh
+        }
+
+        .sidebar {
+            width: 240px;
+            background: var(--surface);
+            border-right: 1px solid var(--border);
+            padding: 24px 0;
+            display: flex;
+            flex-direction: column;
+            position: fixed;
+            top: 0;
+            bottom: 0;
+            left: 0;
+            z-index: 50
+        }
+
+        .sidebar-brand {
+            padding: 0 24px;
+            margin-bottom: 32px;
+            display: flex;
+            align-items: center;
+            gap: 10px
+        }
+
+        .sidebar-brand .logo-icon {
+            width: 36px;
+            height: 36px;
+            background: linear-gradient(135deg, var(--accent), #a78bfa);
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            font-weight: 900;
+            color: white
+        }
+
+        .sidebar-brand span {
+            font-size: 18px;
+            font-weight: 800;
+            letter-spacing: -0.5px
+        }
+
+        .sidebar-nav {
+            flex: 1
+        }
+
+        .nav-section {
+            padding: 0 16px;
+            margin-bottom: 8px
+        }
+
+        .nav-section-label {
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text3);
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            padding: 8px 8px 4px
+        }
+
+        .nav-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 12px;
+            border-radius: 10px;
+            color: var(--text2);
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all .15s;
+            margin-bottom: 2px;
+            position: relative
+        }
+
+        .nav-item:hover {
+            background: var(--glass2);
+            color: var(--text)
+        }
+
+        .nav-item.active {
+            background: linear-gradient(135deg, rgba(124, 108, 240, 0.12), rgba(124, 108, 240, 0.06));
+            color: var(--accent);
+            font-weight: 600
+        }
+
+        .nav-item.active::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 3px;
+            height: 20px;
+            background: var(--accent);
+            border-radius: 0 3px 3px 0
+        }
+
+        .nav-item .nav-icon {
+            font-size: 18px;
+            width: 24px;
+            text-align: center
+        }
+
+        .nav-badge {
+            margin-left: auto;
+            background: var(--red);
+            color: white;
+            font-size: 11px;
+            font-weight: 700;
+            padding: 2px 8px;
+            border-radius: 10px;
+            min-width: 22px;
+            text-align: center
+        }
+
+        .sidebar-footer {
+            padding: 16px 24px;
+            border-top: 1px solid var(--border)
+        }
+
+        .sidebar-user {
+            font-size: 12px;
+            color: var(--text3);
+            margin-bottom: 8px
+        }
+
+        .sidebar-user strong {
+            color: var(--text2);
+            font-weight: 600
+        }
+
+        .logout-btn {
+            width: 100%;
+            background: var(--glass2);
+            border: 1px solid var(--border);
+            color: var(--text2);
+            padding: 8px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 13px;
+            font-weight: 500;
+            transition: all .15s
+        }
+
+        .logout-btn:hover {
+            border-color: var(--red);
+            color: var(--red)
+        }
+
+        .main {
+            flex: 1;
+            margin-left: 240px
+        }
+
+        .topbar {
+            background: var(--surface);
+            backdrop-filter: blur(20px);
+            border-bottom: 1px solid var(--border);
+            padding: 0 32px;
+            height: 60px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            position: sticky;
+            top: 0;
+            z-index: 40
+        }
+
+        .topbar h1 {
+            font-size: 18px;
+            font-weight: 700
+        }
+
+        .topbar-pills {
+            display: flex;
+            gap: 8px
+        }
+
+        .pill {
+            padding: 6px 14px;
+            background: var(--glass2);
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text2);
+            cursor: pointer;
+            transition: all .15s
+        }
+
+        .pill:hover {
+            border-color: var(--border2);
+            color: var(--text)
+        }
+
+        .pill.active {
+            background: rgba(124, 108, 240, 0.1);
+            border-color: rgba(124, 108, 240, 0.3);
+            color: var(--accent)
+        }
+
+        .content {
+            padding: 24px 32px
+        }
+
+        /* ========== STATS ========== */
+        .stats-row {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 14px;
+            margin-bottom: 24px
+        }
+
+        .stat-card {
+            background: var(--surface);
+            backdrop-filter: blur(20px);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 20px;
+            position: relative;
+            overflow: hidden;
+            transition: all .2s
+        }
+
+        .stat-card:hover {
+            border-color: var(--border2);
+            transform: translateY(-2px)
+        }
+
+        .stat-card::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 2px;
+            border-radius: 16px 16px 0 0
+        }
+
+        .stat-card.purple::after {
+            background: linear-gradient(90deg, var(--accent), transparent)
+        }
+
+        .stat-card.cyan::after {
+            background: linear-gradient(90deg, var(--cyan), transparent)
+        }
+
+        .stat-card.red::after {
+            background: linear-gradient(90deg, var(--red), transparent)
+        }
+
+        .stat-card.green::after {
+            background: linear-gradient(90deg, var(--green), transparent)
+        }
+
+        .stat-card.orange::after {
+            background: linear-gradient(90deg, var(--orange), transparent)
+        }
+
+        .stat-label {
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text3);
+            text-transform: uppercase;
+            letter-spacing: 0.5px
+        }
+
+        .stat-value {
+            font-size: 32px;
+            font-weight: 900;
+            margin-top: 4px;
+            letter-spacing: -1px
+        }
+
+        .stat-value.purple {
+            color: var(--accent)
+        }
+
+        .stat-value.cyan {
+            color: var(--cyan)
+        }
+
+        .stat-value.red {
+            color: var(--red)
+        }
+
+        .stat-value.green {
+            color: var(--green)
+        }
+
+        .stat-value.orange {
+            color: var(--orange)
+        }
+
+        /* ========== TABLE ========== */
+        .table-card {
+            background: var(--surface);
+            backdrop-filter: blur(20px);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            overflow: hidden
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse
+        }
+
+        th {
+            text-align: left;
+            padding: 12px 16px;
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text3);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            background: var(--glass2);
+            border-bottom: 1px solid var(--border)
+        }
+
+        td {
+            padding: 12px 16px;
+            font-size: 13px;
+            border-bottom: 1px solid var(--border);
+            vertical-align: middle
+        }
+
+        tr:hover td {
+            background: rgba(124, 108, 240, 0.02)
+        }
+
+        tr:last-child td {
+            border-bottom: none
+        }
+
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 3px 10px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.2px
+        }
+
+        .badge-open {
+            background: var(--cyan-glow);
+            color: var(--cyan)
+        }
+
+        .badge-triaged {
+            background: rgba(251, 191, 36, 0.12);
+            color: var(--yellow)
+        }
+
+        .badge-escalated {
+            background: var(--red-glow);
+            color: var(--red)
+        }
+
+        .badge-actioned {
+            background: var(--green-glow);
+            color: var(--green)
+        }
+
+        .badge-dismissed {
+            background: rgba(69, 70, 90, 0.3);
+            color: var(--text3)
+        }
+
+        .badge-pending {
+            background: var(--orange-glow);
+            color: var(--orange)
+        }
+
+        .badge-verified {
+            background: var(--green-glow);
+            color: var(--green)
+        }
+
+        .badge-rejected {
+            background: var(--red-glow);
+            color: var(--red)
+        }
+
+        .badge-needs_more_info {
+            background: rgba(251, 191, 36, 0.12);
+            color: var(--yellow)
+        }
+
+        .sev-bar {
+            width: 50px;
+            height: 5px;
+            background: var(--glass2);
+            border-radius: 3px;
+            display: inline-block;
+            vertical-align: middle;
+            margin-right: 5px;
+            overflow: hidden
+        }
+
+        .sev-fill {
+            height: 100%;
+            border-radius: 3px
+        }
+
+        .muted {
+            color: var(--text3);
+            font-size: 12px
+        }
+
+        .user-cell {
+            display: flex;
+            align-items: center;
+            gap: 8px
+        }
+
+        .user-avatar {
+            width: 28px;
+            height: 28px;
+            border-radius: 8px;
+            background: linear-gradient(135deg, var(--accent), #a78bfa);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            font-weight: 700;
+            color: white;
+            flex-shrink: 0
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: var(--text3)
+        }
+
+        .empty-state .e-icon {
+            font-size: 40px;
+            margin-bottom: 10px
+        }
+
+        /* ========== MODAL ========== */
+        .modal-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.65);
+            backdrop-filter: blur(12px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 999;
+            padding: 20px;
+            animation: fadeIn .15s
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0
+            }
+
+            to {
+                opacity: 1
+            }
+        }
+
+        @keyframes slideUp {
+            from {
+                opacity: 0;
+                transform: translateY(16px)
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0)
+            }
+        }
+
+        .modal {
+            background: var(--bg2);
+            border: 1px solid var(--border2);
+            border-radius: 20px;
+            max-width: 680px;
+            width: 100%;
+            max-height: 85vh;
+            overflow-y: auto;
+            box-shadow: 0 32px 80px rgba(0, 0, 0, 0.6);
+            animation: slideUp .2s
+        }
+
+        .modal-header {
+            padding: 20px 24px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            position: sticky;
+            top: 0;
+            background: var(--bg2);
+            z-index: 1;
+            border-radius: 20px 20px 0 0
+        }
+
+        .modal-header h2 {
+            font-size: 17px;
+            font-weight: 700
+        }
+
+        .modal-close {
+            width: 30px;
+            height: 30px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: var(--glass2);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text2);
+            cursor: pointer;
+            font-size: 16px;
+            transition: all .15s
+        }
+
+        .modal-close:hover {
+            border-color: var(--border2);
+            color: var(--text)
+        }
+
+        .modal-body {
+            padding: 24px
+        }
+
+        .detail-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px
+        }
+
+        .detail-item {
+            padding: 12px;
+            background: var(--glass2);
+            border-radius: 10px;
+            border: 1px solid var(--border)
+        }
+
+        .detail-item .d-label {
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text3);
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+            margin-bottom: 4px
+        }
+
+        .detail-item .d-value {
+            font-size: 14px;
+            font-weight: 500
+        }
+
+        .detail-item.full {
+            grid-column: 1/-1
+        }
+
+        .modal-actions {
+            padding: 16px 24px;
+            border-top: 1px solid var(--border);
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap
+        }
+
+        .section {
+            display: none
+        }
+
+        .section.active {
+            display: block
+        }
+
+        .spinner {
+            width: 24px;
+            height: 24px;
+            border: 3px solid var(--border);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin .6s linear infinite;
+            margin: 32px auto
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg)
+            }
+        }
+
+        @media(max-width:768px) {
+            .sidebar {
+                display: none
+            }
+
+            .main {
+                margin-left: 0
+            }
+
+            .content {
+                padding: 16px
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div id="loginScreen">
+        <div class="login-card">
+            <div class="login-logo">
+                <span class="icon">🦅</span>
+                <h1>RAVEN Admin</h1>
+                <p>Moderation & Verification Portal</p>
+            </div>
+            <div class="form-group"><label>Username</label><input type="text" id="loginUsername"
+                    placeholder="Your RAVEN username"></div>
+            <div class="form-group"><label>Password</label><input type="password" id="loginPassword"
+                    placeholder="••••••••"></div>
+            <div class="form-group"><label>Admin Secret</label><input type="password" id="loginSecret"
+                    placeholder="X-Admin-Secret key"></div>
+            <button class="btn btn-primary" onclick="login()" id="loginBtn">Sign In</button>
+            <div id="loginError" class="error-msg"></div>
+        </div>
+    </div>
+
+    <div id="app">
+        <div class="layout">
+            <div class="sidebar">
+                <div class="sidebar-brand">
+                    <div class="logo-icon">R</div>
+                    <span>RAVEN</span>
+                </div>
+                <div class="sidebar-nav">
+                    <div class="nav-section">
+                        <div class="nav-section-label">Moderation</div>
+                        <div class="nav-item active" data-tab="reports" onclick="switchTab('reports')">
+                            <span class="nav-icon">📋</span>Reports<span class="nav-badge" id="reportsBadge"
+                                style="display:none">0</span>
+                        </div>
+                        <div class="nav-item" data-tab="audit" onclick="switchTab('audit')">
+                            <span class="nav-icon">📜</span>Audit Log
+                        </div>
+                    </div>
+                    <div class="nav-section">
+                        <div class="nav-section-label">Identity</div>
+                        <div class="nav-item" data-tab="verification" onclick="switchTab('verification')">
+                            <span class="nav-icon">✓</span>Verification<span class="nav-badge" id="verificationBadge"
+                                style="display:none">0</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="sidebar-footer">
+                    <div class="sidebar-user">Signed in as<br><strong id="currentUser"></strong></div>
+                    <button class="logout-btn" onclick="logout()">Sign Out</button>
+                </div>
+            </div>
+            <div class="main">
+                <div class="topbar">
+                    <h1 id="pageTitle">Reports</h1>
+                    <div class="topbar-pills" id="filterPills"></div>
+                </div>
+                <div class="content">
+                    <div class="section active" id="section-reports">
+                        <div class="stats-row" id="reportStats"></div>
+                        <div class="table-card">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Reporter</th>
+                                        <th>Target</th>
+                                        <th>Reason</th>
+                                        <th>AI Category</th>
+                                        <th>Severity</th>
+                                        <th>Status</th>
+                                        <th>Date</th>
+                                        <th></th>
+                                    </tr>
+                                </thead>
+                                <tbody id="reportsTable"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div class="section" id="section-verification">
+                        <div class="table-card">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>User</th>
+                                        <th>Legal Name</th>
+                                        <th>Category</th>
+                                        <th>Country</th>
+                                        <th>Doc Type</th>
+                                        <th>Docs</th>
+                                        <th>Status</th>
+                                        <th>Submitted</th>
+                                        <th></th>
+                                    </tr>
+                                </thead>
+                                <tbody id="verificationTable"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div class="section" id="section-audit">
+                        <div class="table-card">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Action</th>
+                                        <th>Target</th>
+                                        <th>Actor</th>
+                                        <th>Time</th>
+                                        <th>Reversed</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="auditTable"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modals -->
+    <div class="modal-overlay" id="reportModal" style="display:none">
+        <div class="modal">
+            <div class="modal-header">
+                <h2>Report Detail</h2>
+                <div class="modal-close" onclick="closeModal('reportModal')">✕</div>
+            </div>
+            <div class="modal-body" id="reportModalBody"></div>
+            <div class="modal-actions" id="reportModalActions"></div>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="verificationModal" style="display:none">
+        <div class="modal">
+            <div class="modal-header">
+                <h2>Verification Detail</h2>
+                <div class="modal-close" onclick="closeModal('verificationModal')">✕</div>
+            </div>
+            <div class="modal-body" id="verificationModalBody"></div>
+            <div class="modal-actions" id="verificationModalActions"></div>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="decisionModal" style="display:none">
+        <div class="modal" style="max-width:460px">
+            <div class="modal-header">
+                <h2 id="decisionTitle">Make Decision</h2>
+                <div class="modal-close" onclick="closeModal('decisionModal')">✕</div>
+            </div>
+            <div class="modal-body">
+                <div class="form-group"><label>Decision</label><select id="decisionType">
+                        <option value="none">Dismiss — No Action</option>
+                        <option value="warn">Warn User</option>
+                        <option value="remove_content">Remove Content</option>
+                        <option value="mute">Mute (restrict posting)</option>
+                        <option value="restrict">Restrict Account</option>
+                        <option value="tempban">Temporary Ban</option>
+                        <option value="ban">Permanent Ban</option>
+                        <option value="shadowban">Shadowban</option>
+                    </select></div>
+                <div class="form-group"><label>Reason (Statement of Reasons)</label><textarea id="decisionReason"
+                        rows="4" placeholder="Explain the decision..."></textarea></div>
+                <div class="form-group" id="durationGroup" style="display:none"><label>Duration</label><select
+                        id="decisionDuration">
+                        <option value="1d">1 Day</option>
+                        <option value="3d">3 Days</option>
+                        <option value="7d" selected>7 Days</option>
+                        <option value="14d">14 Days</option>
+                        <option value="30d">30 Days</option>
+                        <option value="90d">90 Days</option>
+                    </select></div>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-ghost" onclick="closeModal('decisionModal')">Cancel</button>
+                <button class="btn btn-primary" style="width:auto" id="submitDecisionBtn"
+                    onclick="submitDecision()">Submit Decision</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let token = localStorage.getItem('rt'), adminSecret = localStorage.getItem('rs'), username = localStorage.getItem('ru'), currentReportId = null, currentVerificationId = null, currentReportFilter = '', currentVerificationFilter = 'pending';
+        const API = window.location.origin;
+
+        async function login() {
+            const u = document.getElementById('loginUsername').value.trim(), p = document.getElementById('loginPassword').value, s = document.getElementById('loginSecret').value.trim(), err = document.getElementById('loginError');
+            err.textContent = ''; if (!u || !p || !s) { err.textContent = 'All fields are required'; return }
+            document.getElementById('loginBtn').textContent = 'Signing in...';
+            try {
+                const r = await fetch(`${API}/api/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: u, password: p }) });
+                if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.detail || 'Login failed') }
+                const d = await r.json(); token = d.token || d.access_token; adminSecret = s; username = u;
+                localStorage.setItem('rt', token); localStorage.setItem('rs', s); localStorage.setItem('ru', u); showApp()
+            } catch (e) { err.textContent = e.message } finally { document.getElementById('loginBtn').textContent = 'Sign In' }
+        }
+
+        function logout() { localStorage.removeItem('rt'); localStorage.removeItem('rs'); localStorage.removeItem('ru'); token = null; adminSecret = null; document.getElementById('app').style.display = 'none'; document.getElementById('loginScreen').style.display = 'flex' }
+
+        function showApp() { document.getElementById('loginScreen').style.display = 'none'; document.getElementById('app').style.display = 'block'; document.getElementById('currentUser').textContent = username; loadReports(); loadReportStats(); loadVerificationCount(); renderReportPills() }
+
+        async function apiGet(p) { const r = await fetch(`${API}${p}`, { headers: { 'Authorization': `Bearer ${token}`, 'X-Admin-Secret': adminSecret } }); if (r.status === 401 || r.status === 403) { logout(); throw new Error('Auth expired') } return r.json() }
+        async function apiPost(p, b) { const r = await fetch(`${API}${p}`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}`, 'X-Admin-Secret': adminSecret }, body: JSON.stringify(b) }); if (r.status === 401 || r.status === 403) { logout(); throw new Error('Auth expired') } if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || 'Request failed') } return r.json() }
+
+        function switchTab(t) {
+            document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+            document.querySelector(`.nav-item[data-tab="${t}"]`).classList.add('active');
+            document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+            document.getElementById(`section-${t}`).classList.add('active');
+            const titles = { reports: 'Reports', verification: 'Verification Queue', audit: 'Audit Log' };
+            document.getElementById('pageTitle').textContent = titles[t] || t;
+            if (t === 'reports') { renderReportPills(); loadReports(); loadReportStats() }
+            else if (t === 'verification') { renderVerifPills(); loadVerification() }
+            else if (t === 'audit') { document.getElementById('filterPills').innerHTML = ''; loadAuditLog() }
+        }
+
+        function renderReportPills() {
+            const p = document.getElementById('filterPills');
+            const filters = [['', 'All'], ['escalated', '🚨 Escalated'], ['open', 'Open'], ['triaged', 'Triaged'], ['actioned', 'Actioned'], ['dismissed', 'Dismissed']];
+            p.innerHTML = filters.map(([v, l]) => `<div class="pill${currentReportFilter === v ? ' active' : ''}" onclick="filterReports('${v}')">${l}</div>`).join('')
+        }
+
+        function renderVerifPills() {
+            const p = document.getElementById('filterPills');
+            const filters = [['pending', 'Pending'], ['needs_more_info', 'Needs Info'], ['verified', 'Verified'], ['rejected', 'Rejected']];
+            p.innerHTML = filters.map(([v, l]) => `<div class="pill${currentVerificationFilter === v ? ' active' : ''}" onclick="filterVerification('${v}')">${l}</div>`).join('')
+        }
+
+        function filterReports(s) { currentReportFilter = s; renderReportPills(); loadReports() }
+        function filterVerification(s) { currentVerificationFilter = s; renderVerifPills(); loadVerification() }
+
+        async function loadReportStats() {
+            try {
+                const s = await apiGet('/api/reports/admin/stats'); const g = document.getElementById('reportStats');
+                const open = (s.by_status?.open || 0) + (s.by_status?.triaged || 0), esc2 = s.by_status?.escalated || 0, act = s.by_status?.actioned || 0, app = s.pending_appeals || 0;
+                g.innerHTML = `<div class="stat-card purple"><div class="stat-label">Total Reports</div><div class="stat-value purple">${s.total}</div></div>
+    <div class="stat-card cyan"><div class="stat-label">Open / Triaged</div><div class="stat-value cyan">${open}</div></div>
+    <div class="stat-card red"><div class="stat-label">Escalated</div><div class="stat-value red">${esc2}</div></div>
+    <div class="stat-card green"><div class="stat-label">Actioned</div><div class="stat-value green">${act}</div></div>
+    <div class="stat-card orange"><div class="stat-label">Pending Appeals</div><div class="stat-value orange">${app}</div></div>`;
+                const b = document.getElementById('reportsBadge'); const uc = open + esc2; if (uc > 0) { b.textContent = uc; b.style.display = 'inline' } else b.style.display = 'none'
+            } catch (e) { console.error(e) }
+        }
+
+        async function loadReports() {
+            const tb = document.getElementById('reportsTable'); tb.innerHTML = '<tr><td colspan="8"><div class="spinner"></div></td></tr>';
+            try {
+                let u = '/api/reports/admin/queue?limit=100'; if (currentReportFilter) u += `&status_filter=${currentReportFilter}`; const rr = await apiGet(u);
+                if (!rr.length) { tb.innerHTML = '<tr><td colspan="8"><div class="empty-state"><div class="e-icon">✨</div>No reports</div></td></tr>'; return }
+                tb.innerHTML = rr.map(r => `<tr>
+        <td><div class="user-cell"><div class="user-avatar">${esc(r.reporter_username?.[0] || '?').toUpperCase()}</div><strong>${esc(r.reporter_username)}</strong></div></td>
+        <td><span class="muted">${esc(r.target_type)}</span>${r.reported_username ? `<br><strong>@${esc(r.reported_username)}</strong>` : ''}</td>
+        <td>${esc(r.reason)}</td>
+        <td>${r.ai_category ? `<span class="badge badge-triaged">${esc(r.ai_category)}</span>` : '<span class="muted">—</span>'}</td>
+        <td>${sevBar(r.ai_severity)}</td>
+        <td><span class="badge badge-${r.status}">${esc(r.status)}</span></td>
+        <td class="muted">${fmtDate(r.created_at)}</td>
+        <td><button class="btn btn-sm btn-ghost" onclick="openReport('${r.id}')">Review</button></td></tr>`).join('')
+            }
+            catch (e) { tb.innerHTML = `<tr><td colspan="8" class="error-msg">${e.message}</td></tr>` }
+        }
+
+        function sevBar(v) {
+            if (v == null) return '<span class="muted">—</span>'; const c = v >= 60 ? 'var(--red)' : v >= 30 ? 'var(--orange)' : 'var(--green)';
+            return `<div class="sev-bar"><div class="sev-fill" style="width:${v}%;background:${c}"></div></div><span style="font-size:12px">${v}</span>`
+        }
+
+        async function openReport(id) {
+            currentReportId = id; const b = document.getElementById('reportModalBody'), a = document.getElementById('reportModalActions');
+            b.innerHTML = '<div class="spinner"></div>'; a.innerHTML = ''; document.getElementById('reportModal').style.display = 'flex';
+            try {
+                const r = await apiGet(`/api/reports/admin/${id}`);
+                b.innerHTML = `<div class="detail-grid">
+        <div class="detail-item"><div class="d-label">Reporter</div><div class="d-value">@${esc(r.reporter?.username)}</div></div>
+        <div class="detail-item"><div class="d-label">Reported User</div><div class="d-value">${r.reported_user ? '@' + esc(r.reported_user.username) : '—'}</div></div>
+        <div class="detail-item"><div class="d-label">Target</div><div class="d-value">${esc(r.target_type)} / ${esc(r.target_id?.substring(0, 8))}…</div></div>
+        <div class="detail-item"><div class="d-label">Status</div><div class="d-value"><span class="badge badge-${r.status}">${esc(r.status)}</span></div></div>
+        <div class="detail-item"><div class="d-label">Reason</div><div class="d-value">${esc(r.reason)}</div></div>
+        <div class="detail-item"><div class="d-label">Note</div><div class="d-value">${esc(r.note || '—')}</div></div>
+        ${r.target_info?.content ? `<div class="detail-item full"><div class="d-label">Content</div><div class="d-value" style="white-space:pre-wrap;max-height:180px;overflow-y:auto;font-size:13px;color:var(--text2)">${esc(r.target_info.content)}</div></div>` : ''}
+        <div class="detail-item"><div class="d-label">AI Category</div><div class="d-value">${r.ai_category ? `<span class="badge badge-triaged">${esc(r.ai_category)}</span>` : 'Not triaged'}</div></div>
+        <div class="detail-item"><div class="d-label">AI Severity</div><div class="d-value">${r.ai_severity != null ? sevBar(r.ai_severity) : '—'}</div></div>
+        ${r.ai_summary ? `<div class="detail-item full"><div class="d-label">AI Summary</div><div class="d-value" style="font-size:13px;color:var(--text2)">${esc(r.ai_summary)}</div></div>` : ''}
+        ${r.decision && r.decision !== 'none' ? `<div class="detail-item"><div class="d-label">Decision</div><div class="d-value"><strong>${esc(r.decision)}</strong></div></div><div class="detail-item"><div class="d-label">Decided At</div><div class="d-value">${fmtDate(r.decided_at)}</div></div><div class="detail-item full"><div class="d-label">Decision Reason</div><div class="d-value">${esc(r.decision_reason || '—')}</div></div>` : ''}
+        ${r.appeal_status && r.appeal_status !== 'none' ? `<div class="detail-item"><div class="d-label">Appeal</div><div class="d-value"><span class="badge badge-${r.appeal_status}">${esc(r.appeal_status)}</span></div></div><div class="detail-item full"><div class="d-label">Appeal Text</div><div class="d-value">${esc(r.appeal_text || '—')}</div></div>` : ''}
+    </div>`;
+                let ah = ''; if (['open', 'triaged', 'escalated'].includes(r.status)) ah += `<button class="btn btn-sm btn-primary" style="width:auto" onclick="openDecisionModal()">⚖️ Make Decision</button>`;
+                if (r.appeal_status === 'pending') { ah += `<button class="btn btn-sm btn-green" onclick="decideAppeal(true)">Accept Appeal</button>`; ah += `<button class="btn btn-sm btn-red" onclick="decideAppeal(false)">Reject Appeal</button>` }
+                ah += `<button class="btn btn-sm btn-ghost" onclick="closeModal('reportModal')">Close</button>`; a.innerHTML = ah
+            } catch (e) { b.innerHTML = `<div class="error-msg">${e.message}</div>` }
+        }
+
+        function openDecisionModal() { document.getElementById('decisionReason').value = ''; document.getElementById('decisionType').value = 'none'; document.getElementById('durationGroup').style.display = 'none'; document.getElementById('decisionModal').style.display = 'flex' }
+        document.getElementById('decisionType')?.addEventListener('change', function () { document.getElementById('durationGroup').style.display = ['restrict', 'tempban', 'mute'].includes(this.value) ? 'block' : 'none' });
+
+        async function submitDecision() {
+            const d = document.getElementById('decisionType').value, r = document.getElementById('decisionReason').value.trim();
+            if (r.length < 5) { alert('Please provide a reason (min 5 characters)'); return }
+            const p = {}; if (['restrict', 'tempban', 'mute'].includes(d)) p.duration = document.getElementById('decisionDuration').value;
+            document.getElementById('submitDecisionBtn').textContent = 'Submitting...';
+            try {
+                await apiPost(`/api/reports/admin/${currentReportId}/decision`, { decision: d, decision_reason: r, parameters: Object.keys(p).length ? p : null });
+                closeModal('decisionModal'); closeModal('reportModal'); loadReports(); loadReportStats()
+            } catch (e) { alert('Error: ' + e.message) } finally { document.getElementById('submitDecisionBtn').textContent = 'Submit Decision' }
+        }
+
+        async function decideAppeal(accepted) {
+            const reason = accepted ? '' : prompt('Reason for rejection:', ''); if (!accepted && reason === null) return;
+            try { await apiPost(`/api/reports/admin/${currentReportId}/appeal`, { accepted, reason }); closeModal('reportModal'); loadReports(); loadReportStats() } catch (e) { alert('Error: ' + e.message) }
+        }
+
+        async function loadVerificationCount() { try { const d = await apiGet('/api/admin/verification/queue?status_filter=pending&limit=1'); const b = document.getElementById('verificationBadge'); if (d.total > 0) { b.textContent = d.total; b.style.display = 'inline' } else b.style.display = 'none' } catch (e) { } }
+
+        async function loadVerification() {
+            const tb = document.getElementById('verificationTable'); tb.innerHTML = '<tr><td colspan="9"><div class="spinner"></div></td></tr>';
+            try {
+                const d = await apiGet(`/api/admin/verification/queue?status_filter=${currentVerificationFilter}&limit=50`);
+                if (!d.items?.length) { tb.innerHTML = '<tr><td colspan="9"><div class="empty-state"><div class="e-icon">✓</div>No requests</div></td></tr>'; return }
+                tb.innerHTML = d.items.map(v => `<tr>
+        <td><div class="user-cell"><div class="user-avatar">${esc(v.username?.[0] || '?').toUpperCase()}</div><strong>${esc(v.username)}</strong></div></td>
+        <td>${esc(v.legal_name)}</td><td>${esc(v.category)}</td><td>${esc(v.country)}</td><td>${esc(v.doc_type)}</td>
+        <td>${v.has_front ? '📄' : '—'} ${v.has_back ? '📄' : ''} ${v.has_selfie ? '🤳' : ''}</td>
+        <td><span class="badge badge-${v.status}">${esc(v.status)}</span></td>
+        <td class="muted">${fmtDate(v.submitted_at)}</td>
+        <td><button class="btn btn-sm btn-ghost" onclick="openVerification('${v.id}')">Review</button></td></tr>`).join('')
+            }
+            catch (e) { tb.innerHTML = `<tr><td colspan="9" class="error-msg">${e.message}</td></tr>` }
+        }
+
+        async function openVerification(id) {
+            currentVerificationId = id; const b = document.getElementById('verificationModalBody'), a = document.getElementById('verificationModalActions');
+            b.innerHTML = '<div class="spinner"></div>'; a.innerHTML = ''; document.getElementById('verificationModal').style.display = 'flex';
+            try {
+                const v = await apiGet(`/api/admin/verification/${id}`);
+                b.innerHTML = `<div class="detail-grid">
+        <div class="detail-item"><div class="d-label">Username</div><div class="d-value"><strong>@${esc(v.username)}</strong></div></div>
+        <div class="detail-item"><div class="d-label">Legal Name</div><div class="d-value">${esc(v.legal_first_name)} ${esc(v.legal_last_name)}</div></div>
+        <div class="detail-item"><div class="d-label">Category</div><div class="d-value">${esc(v.category)}</div></div>
+        <div class="detail-item"><div class="d-label">Country</div><div class="d-value">${esc(v.country)}</div></div>
+        <div class="detail-item"><div class="d-label">Doc Type</div><div class="d-value">${esc(v.doc_type)}</div></div>
+        <div class="detail-item"><div class="d-label">Status</div><div class="d-value"><span class="badge badge-${v.status}">${esc(v.status)}</span></div></div>
+        <div class="detail-item"><div class="d-label">Submitted</div><div class="d-value">${fmtDate(v.submitted_at)}</div></div>
+        ${v.reviewed_at ? `<div class="detail-item"><div class="d-label">Reviewed</div><div class="d-value">${fmtDate(v.reviewed_at)}</div></div>` : ''}
+        ${v.decision_reason ? `<div class="detail-item full"><div class="d-label">Decision Reason</div><div class="d-value">${esc(v.decision_reason)}</div></div>` : ''}
+    </div>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:16px">
+        ${v.doc_front_url ? `<div><div class="d-label" style="margin-bottom:4px;font-size:11px;color:var(--text3)">FRONT</div><img data-auth-src="${v.doc_front_url}" style="max-width:260px;border-radius:10px;border:1px solid var(--border)" alt="Loading..."></div>` : '<div><div class="d-label" style="margin-bottom:4px;font-size:11px;color:var(--text3)">FRONT</div><span class="muted">Not uploaded</span></div>'}
+        ${v.doc_back_url ? `<div><div class="d-label" style="margin-bottom:4px;font-size:11px;color:var(--text3)">BACK</div><img data-auth-src="${v.doc_back_url}" style="max-width:260px;border-radius:10px;border:1px solid var(--border)" alt="Loading..."></div>` : '<div><div class="d-label" style="margin-bottom:4px;font-size:11px;color:var(--text3)">BACK</div><span class="muted">Not uploaded</span></div>'}
+        ${v.selfie_url ? `<div><div class="d-label" style="margin-bottom:4px;font-size:11px;color:var(--text3)">SELFIE</div><img data-auth-src="${v.selfie_url}" style="max-width:180px;border-radius:10px;border:1px solid var(--border)" alt="Loading..."></div>` : '<div><div class="d-label" style="margin-bottom:4px;font-size:11px;color:var(--text3)">SELFIE</div><span class="muted">Not uploaded</span></div>'}
+    </div>`;
+                // Load images with auth headers
+                document.querySelectorAll('img[data-auth-src]').forEach(async img => {
+                    const src = img.dataset.authSrc;
+                    try {
+                        const r = await fetch(`${API}${src}`, { headers: { 'Authorization': `Bearer ${token}`, 'X-Admin-Secret': adminSecret } });
+                        if (!r.ok) { console.error(`Doc fetch failed: ${r.status} ${r.statusText} for ${src}`); throw new Error(`HTTP ${r.status}`) }
+                        const blob = await r.blob();
+                        img.src = URL.createObjectURL(blob);
+                    } catch (e) {
+                        console.error('Doc image load error:', e, 'URL:', src);
+                        img.outerHTML = `<div style="padding:12px;background:rgba(255,100,100,0.1);border-radius:8px;font-size:12px;color:var(--text2)"><span style="display:block;margin-bottom:4px">⚠️ Failed to load (${e.message})</span><a href="${API}${src}" target="_blank" style="color:var(--accent);text-decoration:underline;font-size:11px">Try direct download →</a></div>`
+                    }
+                });
+                let ah = ''; if (['pending', 'needs_more_info'].includes(v.status)) {
+                    ah += `<button class="btn btn-sm btn-green" onclick="verifAction('approve')">✓ Approve</button>`;
+                    ah += `<button class="btn btn-sm btn-red" onclick="verifAction('reject')">✕ Reject</button>`; if (v.status === 'pending') ah += `<button class="btn btn-sm btn-orange" onclick="verifAction('need-more-info')">? Need Info</button>`
+                }
+                ah += `<button class="btn btn-sm btn-ghost" onclick="closeModal('verificationModal')">Close</button>`; a.innerHTML = ah
+            } catch (e) { b.innerHTML = `<div class="error-msg">${e.message}</div>` }
+        }
+
+        async function verifAction(action) {
+            const reason = prompt(`Reason for ${action}:`, action === 'approve' ? 'Your identity has been verified.' : ''); if (reason === null) return;
+            const bt = action === 'approve' ? (prompt('Badge type (identity/business/creator):', 'identity') || 'identity') : 'identity';
+            try { await apiPost(`/api/admin/verification/${currentVerificationId}/${action}`, { reason, notes: '', badge_type: bt }); closeModal('verificationModal'); loadVerification(); loadVerificationCount() } catch (e) { alert('Error: ' + e.message) }
+        }
+
+        async function loadAuditLog() {
+            const tb = document.getElementById('auditTable'); tb.innerHTML = '<tr><td colspan="5"><div class="spinner"></div></td></tr>';
+            try {
+                const a = await apiGet('/api/reports/admin/actions?limit=100');
+                if (!a.length) { tb.innerHTML = '<tr><td colspan="5"><div class="empty-state"><div class="e-icon">📋</div>No actions yet</div></td></tr>'; return }
+                tb.innerHTML = a.map(x => `<tr>
+        <td><span class="badge badge-${x.action_type === 'reverse' ? 'pending' : 'actioned'}">${esc(x.action_type)}</span></td>
+        <td>${esc(x.target_type)} / ${esc(x.target_id?.substring(0, 8))}…</td>
+        <td class="muted">${esc(x.actor?.substring(0, 8))}…</td>
+        <td class="muted">${fmtDate(x.timestamp)}</td>
+        <td>${x.reversed_at ? '<span class="badge badge-pending">Reversed</span>' : '—'}</td></tr>`).join('')
+            }
+            catch (e) { tb.innerHTML = `<tr><td colspan="5" class="error-msg">${e.message}</td></tr>` }
+        }
+
+        function closeModal(id) { document.getElementById(id).style.display = 'none' }
+        function esc(s) { if (!s) return ''; const d = document.createElement('div'); d.textContent = String(s); return d.innerHTML }
+        function fmtDate(iso) { if (!iso) return '—'; const d = new Date(iso), now = new Date(), diff = (now - d) / 1000; if (diff < 60) return 'just now'; if (diff < 3600) return Math.floor(diff / 60) + 'm ago'; if (diff < 86400) return Math.floor(diff / 3600) + 'h ago'; if (diff < 604800) return Math.floor(diff / 86400) + 'd ago'; return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) }
+        document.querySelectorAll('.modal-overlay').forEach(o => { o.addEventListener('click', function (e) { if (e.target === this) this.style.display = 'none' }) });
+        document.addEventListener('keydown', function (e) { if (e.key === 'Escape') document.querySelectorAll('.modal-overlay').forEach(m => m.style.display = 'none') });
+        if (token && adminSecret) showApp(); else document.getElementById('loginScreen').style.display = 'flex';
+    </script>
+</body>
+
+</html>

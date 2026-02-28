@@ -1,0 +1,6 @@
+/* App component specific styles */
+.app {
+    position: relative;
+}
+
+/* Empty for now - page-specific styles will go in their own CSS files */

@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleDisplayName</key>
+	<string>RAVEN</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<true/>
+	</dict>
+	<key>UILaunchScreen</key>
+	<dict/>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<!-- MARK: - Location Permissions -->
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>RAVEN uses your location to show nearby posts and improve local recommendations.</string>
+	<!-- MARK: - Camera / Microphone / Photos -->
+	<key>NSCameraUsageDescription</key>
+	<string>RAVEN needs camera access to take photos and videos</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>RAVEN needs microphone access for voice messages</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>RAVEN needs photo library access to share images</string>
+	<!-- MARK: - Bluetooth / Mesh -->
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>RAVEN uses Bluetooth to discover nearby devices for mesh messaging</string>
+	<key>NSBluetoothPeripheralUsageDescription</key>
+	<string>RAVEN uses Bluetooth to discover nearby devices for mesh messaging</string>
+	<!-- MARK: - Contacts -->
+	<key>NSContactsUsageDescription</key>
+	<string>RAVEN can help you find friends from your contacts</string>
+	<!-- MARK: - Face ID -->
+	<key>NSFaceIDUsageDescription</key>
+	<string>RAVEN uses Face ID to unlock the app and encrypt messages</string>
+	<!-- MARK: - Background Modes -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>bluetooth-central</string>
+		<string>bluetooth-peripheral</string>
+		<string>fetch</string>
+		<string>processing</string>
+		<string>remote-notification</string>
+	</array>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>im.raven.sync</string>
+	</array>
+</dict>
+</plist>

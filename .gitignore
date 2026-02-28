@@ -1,0 +1,138 @@
+# ============================================
+# SECRETS & CREDENTIALS (NEVER commit)
+# ============================================
+.env
+.env.*
+!.env.example
+server/.env
+server/encryption.key
+encryption.key
+*.key
+*.pem
+*.p8
+*.p12
+*.keystore
+*.jks
+
+# ============================================
+# DATABASE FILES
+# ============================================
+*.db
+*.sqlite
+*.sqlite3
+
+# ============================================
+# PRIVATE BOOKS & DOCUMENTS
+# ============================================
+*.pdf
+*.txt
+!README.md
+!FAQ.md
+!DEPLOYMENT.md
+!DTN_*.md
+!MESH_TEST_SCENARIOS.md
+!SECURITY.md
+!CONTRIBUTING.md
+!LICENSE
+!requirements.txt
+!requirements_clean.txt
+!_deploy_trigger.txt
+
+# ============================================
+# BUILD ARTIFACTS
+# ============================================
+build/
+.build/
+.build_tmp/
+.buildlog/
+DerivedData/
+*.xcarchive
+*.ipa
+*.app
+*.dSYM.zip
+*.dSYM
+
+# ============================================
+# PYTHON
+# ============================================
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+*.egg-info/
+
+# ============================================
+# FLUTTER / DART
+# ============================================
+.dart_tool/
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+**/doc/api/
+**/ios/Flutter/.last_build_id
+/coverage/
+
+# ============================================
+# XCODE / iOS
+# ============================================
+*.xcuserdata
+xcuserdata/
+*.xcscmblueprint
+*.xccheckout
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+.swiftpm/
+
+# ============================================
+# ANDROID
+# ============================================
+/android/app/debug
+/android/app/profile
+/android/app/release
+*.apk
+local.properties
+
+# ============================================
+# IDE
+# ============================================
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+*.swp
+*.swo
+*~
+
+# ============================================
+# OS FILES
+# ============================================
+.DS_Store
+Thumbs.db
+
+# ============================================
+# LOGS & TEMP
+# ============================================
+*.log
+server/server.log
+server/deploy.log
+server/uploads/
+*.tar.gz
+*.zip
+
+# ============================================
+# MISC
+# ============================================
+.atom/
+.history
+.svn/
+migrate_working_dir/
+app.*.symbols
+app.*.map.json
+.claude/
+*.csv
+*.xlsx

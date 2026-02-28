@@ -1,0 +1,127 @@
+.device-list {
+    padding: var(--spacing-md);
+}
+
+.device-list h3 {
+    font-size: 1.3rem;
+    margin-bottom: var(--spacing-lg);
+}
+
+.device-list.empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 300px;
+}
+
+.empty-state {
+    text-align: center;
+    color: var(--color-text-secondary);
+}
+
+.empty-state p {
+    margin-bottom: var(--spacing-xs);
+}
+
+.hint {
+    font-size: 0.9rem;
+    font-style: italic;
+}
+
+.devices-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: var(--spacing-lg);
+}
+
+.device-card {
+    padding: var(--spacing-lg);
+    transition: all var(--transition-base);
+}
+
+.device-card:hover {
+    transform: translateY(-4px);
+    border-color: rgba(99, 102, 241, 0.5);
+}
+
+.device-header {
+    display: flex;
+    gap: var(--spacing-md);
+    margin-bottom: var(--spacing-lg);
+}
+
+.device-icon {
+    width: 48px;
+    height: 48px;
+    background: var(--gradient-primary);
+    border-radius: var(--radius-md);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.5rem;
+    flex-shrink: 0;
+}
+
+.device-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.device-name {
+    font-weight: 600;
+    font-size: 1.1rem;
+    margin-bottom: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.device-id {
+    font-size: 0.8rem;
+    color: var(--color-text-tertiary);
+    font-family: monospace;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.device-stats {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--spacing-md);
+    margin-bottom: var(--spacing-lg);
+    padding: var(--spacing-md);
+    background: rgba(255, 255, 255, 0.02);
+    border-radius: var(--radius-md);
+}
+
+.stat {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.stat-label {
+    font-size: 0.75rem;
+    color: var(--color-text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.stat-value {
+    font-size: 0.9rem;
+    font-weight: 600;
+}
+
+.stat-value.connected {
+    color: var(--color-secondary);
+}
+
+.device-actions {
+    display: flex;
+    gap: var(--spacing-sm);
+}
+
+.device-actions .btn {
+    flex: 1;
+}
