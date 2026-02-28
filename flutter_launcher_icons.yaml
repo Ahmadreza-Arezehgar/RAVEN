@@ -1,5 +1,0 @@
-flutter_launcher_icons:
-  android: false
-  ios: true
-  image_path: "assets/raven_logo.png"
-  remove_alpha_ios: true

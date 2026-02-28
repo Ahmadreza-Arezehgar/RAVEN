@@ -136,3 +136,34 @@ app.*.map.json
 .claude/
 *.csv
 *.xlsx
+
+# ============================================
+# FLUTTER / DART (not open-sourced)
+# ============================================
+lib/
+android/
+linux/
+macos/
+windows/
+web/
+test/
+test_driver/
+integration_test/
+assets/
+hybrid-messenger-web/
+hybrid_messenger_website/
+raven_website/
+raven_website_new/
+raiven_landing/
+raven_dashboard/
+RAVEN-iOS/
+docs/
+pubspec.yaml
+pubspec.lock
+analysis_options.yaml
+l10n.yaml
+flutter_launcher_icons.yaml
+.metadata
+hybrid_messenger.iml
+.flutter-plugins
+.flutter-plugins-dependencies
