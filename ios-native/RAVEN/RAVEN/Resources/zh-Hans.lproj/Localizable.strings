@@ -1,0 +1,462 @@
+/* Chinese Simplified Localizations */
+
+// General
+"app_name" = "RAVEN";
+"done" = "完成";
+"cancel" = "取消";
+"save" = "保存";
+"delete" = "删除";
+"edit" = "编辑";
+"search" = "搜索";
+"settings" = "设置";
+"back" = "返回";
+"ok" = "确定";
+"confirm" = "确认";
+"error" = "错误";
+"loading" = "加载中...";
+"retry" = "重试";
+
+// Tabs
+"home" = "首页";
+"messages" = "消息";
+"discover" = "发现";
+"account" = "账户";
+
+// Feed
+"local" = "附近";
+"friends" = "好友";
+"refresh" = "刷新";
+"new_post" = "新帖子";
+"post" = "发布";
+"public" = "公开";
+"friends_only" = "仅好友";
+
+// Messages
+"new_message" = "新消息";
+"new_group" = "新群组";
+"mark_all_read" = "全部标为已读";
+"type_message" = "输入消息...";
+"send" = "发送";
+
+// Settings
+"notifications" = "通知";
+"privacy" = "隐私";
+"security" = "安全";
+"storage" = "存储";
+"language" = "语言";
+"design" = "设计";
+"about" = "关于RAVEN";
+"faq" = "常见问题";
+"privacy_policy" = "隐私政策";
+"sign_out" = "退出登录";
+"close_account" = "注销账户";
+"contact_support" = "联系客服";
+
+// Settings Sections
+"section.social" = "社交";
+"section.general" = "通用";
+"section.about" = "关于";
+"section.account" = "账户";
+"section.appearance" = "外观";
+
+// QR Code & Friends
+"find_friends" = "查找好友";
+
+// Language
+"language.info" = "更改语言将立即更新整个应用界面。";
+"language.rtl_notice" = "该语言使用从右到左的布局";
+"select_language" = "选择语言";
+
+// QR Code
+"my_qr_code" = "我的二维码";
+"scan_qr_code" = "扫描二维码";
+"search_users" = "搜索用户";
+"send_friend_request" = "发送好友请求";
+
+// Account
+"edit_profile" = "编辑资料";
+"friend_requests" = "好友请求";
+"joined" = "加入时间";
+"add_bio" = "添加简介";
+
+// Alerts
+"sign_out_confirm" = "确定要退出登录吗？";
+"close_account_confirm" = "此操作将永久删除您的账户和所有数据。此操作无法撤消。";
+"add_account" = "添加账户";
+
+// App Lock
+"app_lock" = "应用锁";
+"app_locked" = "RAVEN已锁定";
+"unlock_reason" = "请验证身份以继续使用RAVEN";
+"unlock_with" = "使用%@解锁";
+"unlock_with_biometric" = "需要验证身份才能打开应用";
+"use_passcode" = "使用密码";
+"auth_failed" = "验证失败，请重试。";
+"lock_timeout" = "锁定时间";
+"immediately" = "立即";
+"after_1_minute" = "1分钟";
+"after_5_minutes" = "5分钟";
+"after_15_minutes" = "15分钟";
+"hide_in_switcher" = "在应用切换器中隐藏内容";
+"hide_in_switcher_desc" = "应用在后台时模糊内容";
+"enable_app_lock_reason" = "验证身份以启用应用锁";
+
+// Security Settings
+"change_password" = "更改密码";
+"two_factor_auth" = "两步验证";
+"active_sessions" = "活跃会话";
+
+// About View
+"version" = "版本";
+"about.description" = "一款具有Mesh网络功能的安全私密通讯工具。";
+"rate_app" = "为RAVEN评分";
+"copyright" = "© 2026 RAVEN. 保留所有权利。";
+"links" = "链接";
+"terms_of_service" = "服务条款";
+"acknowledgements" = "致谢";
+
+// Privacy Policy
+"privacy_policy.title" = "隐私政策";
+"privacy_policy.last_updated" = "最后更新：2026年2月";
+
+// PP Sections
+"pp.section.general" = "通用";
+"pp.section.account" = "账户与身份";
+"pp.section.contacts" = "通讯录";
+"pp.section.location" = "位置";
+"pp.section.messaging" = "消息与内容";
+"pp.section.posts" = "帖子与动态";
+"pp.section.mesh" = "Mesh网络";
+"pp.section.voice" = "语音房间";
+"pp.section.status" = "在线状态与活动";
+"pp.section.notifications" = "通知";
+"pp.section.media" = "媒体（照片、视频、语音）";
+"pp.section.security" = "安全";
+"pp.section.thirdparty" = "第三方";
+"pp.section.rights" = "用户权利";
+"pp.section.legal" = "法律与合规";
+
+// PP General
+"pp.general.q1.q" = "Raven收集哪些个人数据？";
+"pp.general.q1.a" = "用户名、邮箱、头像、帖子、消息以及使用本地功能时的位置信息。";
+"pp.general.q2.q" = "Raven为什么收集个人数据？";
+"pp.general.q2.a" = "为了使应用正常运行。我们需要您的邮箱进行验证，并存储您的消息以便您接收。";
+"pp.general.q3.q" = "创建账户需要哪些数据？";
+"pp.general.q3.a" = "用于验证的邮箱地址以及用户名。";
+"pp.general.q4.q" = "可以不提供某些个人信息使用Raven吗？";
+"pp.general.q4.a" = "注册需要邮箱。其他所有信息（简介、照片等）都是可选的。";
+
+// PP Account
+"pp.account.q1.q" = "存储了哪些账户信息？";
+"pp.account.q1.a" = "用户名、邮箱、个人资料信息和身份验证令牌。";
+"pp.account.q2.q" = "邮箱是必填还是可选的？";
+"pp.account.q2.a" = "邮箱是必填的。您也可以使用Apple ID或Google账户登录。";
+"pp.account.q3.q" = "我的邮箱地址是否已验证并安全存储？";
+"pp.account.q3.a" = "是的，注册时已验证。使用标准安全措施存储在数据库中。";
+"pp.account.q4.q" = "我可以更改或删除账户信息吗？";
+"pp.account.q4.a" = "可以。在设置中编辑资料。删除账户将永久清除所有数据。";
+"pp.account.q5.q" = "验证时我的证件和自拍会怎样？";
+"pp.account.q5.a" = "申请认证徽章时，您的政府签发证件和自拍照将安全传输，仅用于身份确认。审核完成后，这些文件将立即从我们的服务器永久删除。我们不会存储您的证件或生物识别数据。";
+
+// PP Contacts
+"pp.contacts.q1.q" = "Raven为什么请求通讯录权限？";
+"pp.contacts.q1.a" = "为了向您显示哪些联系人已在使用Raven。";
+"pp.contacts.q2.q" = "我的通讯录会上传到Raven服务器吗？";
+"pp.contacts.q2.a" = "电话号码会发送用于匹配注册用户。我们不会永久存储您的完整通讯录。";
+"pp.contacts.q3.q" = "Raven如何将联系人与现有用户匹配？";
+"pp.contacts.q3.a" = "我们将电话号码与用户数据库进行比对。";
+"pp.contacts.q4.q" = "如果联系人没有使用Raven怎么办？";
+"pp.contacts.q4.a" = "什么都不会发生。您可以选择邀请他们。";
+"pp.contacts.q5.q" = "不授权通讯录可以使用Raven吗？";
+"pp.contacts.q5.a" = "可以。您可以跳过此步骤，手动添加好友。";
+
+// PP Location
+"pp.location.q1.q" = "Raven会收集我的位置吗？";
+"pp.location.q1.a" = "使用附近动态或在聊天中共享位置时，我们在前台访问位置信息。如果您启用了后台Mesh中继，iOS会使用区域位置变化在后台唤醒应用的蓝牙，但您的精确地理坐标在后台期间不会被追踪、存储或发送到我们的服务器。";
+"pp.location.q2.q" = "位置数据在何时使用？";
+"pp.location.q2.a" = "附近动态显示您身边的帖子。位置共享将您的坐标发送给聊天对象。";
+"pp.location.q3.q" = "当前位置和实时位置有什么区别？";
+"pp.location.q3.a" = "当前位置：一次性的。实时位置：在选定的时间段内持续更新。";
+"pp.location.q4.q" = "实时位置共享持续多长时间？";
+"pp.location.q4.a" = "15分钟、1小时或8小时——由您选择。";
+"pp.location.q5.q" = "可以关闭位置共享吗？";
+"pp.location.q5.a" = "可以。在iOS设置中拒绝权限，或者不使用位置功能。";
+"pp.location.q6.q" = "位置数据会被永久存储吗？";
+"pp.location.q6.a" = "带位置的帖子保留大致坐标。实时位置在结束后不会存储。";
+
+// PP Messaging
+"pp.messaging.q1.q" = "消息是否端到端加密？";
+"pp.messaging.q1.a" = "私信已加密。群组消息和帖子存储在服务器上。";
+"pp.messaging.q2.q" = "谁可以阅读我的消息？";
+"pp.messaging.q2.a" = "您、接收者，以及法律要求时的Raven。加密的私信只有您和接收者可以阅读。";
+"pp.messaging.q3.q" = "消息是否存储在Raven服务器上？";
+"pp.messaging.q3.a" = "是的，加密消息在发送前存储，然后保留在您的消息历史中。";
+"pp.messaging.q4.q" = "通过Mesh网络发送的消息会怎样？";
+"pp.messaging.q4.a" = "通过附近设备中继，上线后与服务器同步。";
+"pp.messaging.q5.q" = "删除的消息会被永久移除吗？";
+"pp.messaging.q5.a" = "「为所有人删除」从服务器删除。「为自己删除」仅从您的设备删除。";
+"pp.messaging.q6.q" = "Raven能阅读我的私信吗？";
+"pp.messaging.q6.a" = "加密的私信：不能。服务器上存储的其他内容：技术上可能，但我们不会这样做。";
+
+// PP Posts
+"pp.posts.q1.q" = "谁可以看到我的帖子？";
+"pp.posts.q1.a" = "取决于设置：公开（所有人）、好友（您的好友）、附近（附近的用户）。";
+"pp.posts.q2.q" = "可见性（公开、好友、附近）如何处理？";
+"pp.posts.q2.a" = "服务器根据您的选择和查看者的位置/好友状态进行过滤。";
+"pp.posts.q3.q" = "动态过期后还会保存吗？";
+"pp.posts.q3.a" = "24小时后从服务器删除。";
+"pp.posts.q4.q" = "帖子或动态可以多次查看吗？";
+"pp.posts.q4.a" = "阅后即焚的动态：不能。普通内容：取决于一次性查看设置。";
+"pp.posts.q5.q" = "浏览和互动是否被追踪？";
+"pp.posts.q5.a" = "是的。动态浏览显示谁看过。帖子的点赞/评论会被记录。";
+
+// PP Mesh
+"pp.mesh.q1.q" = "Mesh网络会分享哪些数据？";
+"pp.mesh.q1.a" = "加密的消息内容和接收者信息。";
+"pp.mesh.q2.q" = "为什么Mesh仅限文本？";
+"pp.mesh.q2.a" = "蓝牙带宽有限。只有小型文本消息可以高效传输。";
+"pp.mesh.q3.q" = "Mesh数据是否加密？";
+"pp.mesh.q3.a" = "是的，与普通消息相同的加密方式。";
+"pp.mesh.q4.q" = "Raven如何防止Mesh中的重复内容？";
+"pp.mesh.q4.a" = "每条消息都有唯一ID。重复消息会被忽略。";
+"pp.mesh.q5.q" = "恢复网络连接后Mesh数据会怎样？";
+"pp.mesh.q5.a" = "排队的消息会与服务器同步并正常发送。";
+
+// PP Voice
+"pp.voice.q1.q" = "语音房间的音频是否被录制？";
+"pp.voice.q1.a" = "不会。音频仅实时传输，不会被录制。";
+"pp.voice.q2.q" = "语音房间是否被保存或归档？";
+"pp.voice.q2.a" = "不会。房间结束后不保存任何内容。";
+"pp.voice.q3.q" = "我说话时谁能听到？";
+"pp.voice.q3.a" = "当前在房间内的所有人。";
+"pp.voice.q4.q" = "可以匿名加入语音房间吗？";
+"pp.voice.q4.a" = "可以。如果房间主持人允许，您可以匿名加入。系统会为您分配一个随机动物身份（例如'Happy Fox'），您的真实用户名和个人资料将对所有参与者隐藏。";
+
+// PP Status
+"pp.status.q1.q" = "Raven如何判断我是否在线？";
+"pp.status.q1.a" = "根据应用活动。应用打开并活跃时显示绿色圆点。";
+"pp.status.q2.q" = "「最后在线」是什么意思？";
+"pp.status.q2.a" = "您最后一次打开应用的时间。";
+"pp.status.q3.q" = "我可以隐藏在线状态吗？";
+"pp.status.q3.a" = "可以，在隐私设置中。但这样您也无法看到他人的状态。";
+"pp.status.q4.q" = "活动追踪是可选的吗？";
+"pp.status.q4.a" = "在线状态：可选。基本崩溃报告：自动收集。";
+
+// PP Notifications
+"pp.notifications.q1.q" = "发送通知使用什么数据？";
+"pp.notifications.q1.a" = "您的设备令牌和通知内容（发送者名称、消息预览）。";
+"pp.notifications.q2.q" = "Raven会读取通知内容吗？";
+"pp.notifications.q2.a" = "服务器生成通知，因此知道谁发送了什么。";
+"pp.notifications.q3.q" = "可以关闭通知吗？";
+"pp.notifications.q3.a" = "可以，在应用设置或iOS设置中。";
+
+// PP Media
+"pp.media.q1.q" = "上传的照片和视频是否加密？";
+"pp.media.q1.a" = "上传时加密。存储在云服务器上。";
+"pp.media.q2.q" = "媒体存储多长时间？";
+"pp.media.q2.a" = "只要帖子或消息存在。";
+"pp.media.q3.q" = "媒体可以永久删除吗？";
+"pp.media.q3.a" = "删除帖子/消息会从服务器删除媒体。";
+"pp.media.q4.q" = "截屏是否会被检测或限制？";
+"pp.media.q4.a" = "iOS可以阻止阅后即焚内容的截屏。如果检测到截屏，我们会通知动态创建者。";
+
+// PP Security
+"pp.security.q1.q" = "Raven如何保护用户数据？";
+"pp.security.q1.a" = "所有连接使用HTTPS、加密存储、安全身份验证。";
+"pp.security.q2.q" = "数据在静态和传输中是否加密？";
+"pp.security.q2.a" = "传输中：是（TLS）。静态：取决于存储类型。";
+"pp.security.q3.q" = "Raven如何防止未经授权的访问？";
+"pp.security.q3.a" = "密码/生物识别登录、可选应用锁、会话管理。";
+"pp.security.q4.q" = "发生数据泄露怎么办？";
+"pp.security.q4.a" = "我们会调查、修复问题，并按法律要求通知受影响的用户。";
+
+// PP Third Parties
+"pp.thirdparty.q1.q" = "Raven是否与第三方共享数据？";
+"pp.thirdparty.q1.a" = "Apple（推送通知）、Google（登录、AI功能）、RevenueCat（订阅管理）以及我们的云托管提供商。";
+"pp.thirdparty.q2.q" = "是否收集分析或崩溃报告？";
+"pp.thirdparty.q2.a" = "是的，匿名崩溃报告用于修复错误。";
+"pp.thirdparty.q3.q" = "是否使用广告或追踪器？";
+"pp.thirdparty.q3.a" = "没有广告。没有第三方追踪器。";
+"pp.thirdparty.q4.q" = "Raven是否出售用户数据？";
+"pp.thirdparty.q4.a" = "不会。";
+"pp.thirdparty.q5.q" = "我的消息或帖子会被发送给AI提供商吗？";
+"pp.thirdparty.q5.a" = "仅当您明确使用AI功能时（如'询问Gemini'或'语音转录'）。特定的帖子或音频文件会安全发送到Google进行处理。您的私人消息绝不会发送给AI或用于训练公共模型。";
+
+// PP User Rights
+"pp.rights.q1.q" = "我可以请求我的数据副本吗？";
+"pp.rights.q1.a" = "可以，发邮件至privacy@raven-messager.com。";
+"pp.rights.q2.q" = "我可以删除账户和所有数据吗？";
+"pp.rights.q2.a" = "可以，在设置 > 账户 > 注销账户。";
+"pp.rights.q3.q" = "删除需要多长时间？";
+"pp.rights.q3.a" = "从应用中立即删除。服务器备份在30天内清除。";
+"pp.rights.q4.q" = "账户删除后我的数据会怎样？";
+"pp.rights.q4.a" = "您的数据会被删除。您发送给他人的消息仍保留在对方的历史记录中。";
+
+// PP Legal
+"pp.legal.q1.q" = "Raven是否符合GDPR？";
+"pp.legal.q1.a" = "我们遵循GDPR原则：数据最小化、用户同意、删除权。";
+"pp.legal.q2.q" = "Raven是否符合当地隐私法？";
+"pp.legal.q2.a" = "我们努力遵守运营地区的适用法律。";
+"pp.legal.q3.q" = "隐私政策变更如何通知？";
+"pp.legal.q3.a" = "应用内通知和应用内更新的政策。";
+"pp.legal.q4.q" = "如何就隐私问题联系Raven？";
+"pp.legal.q4.a" = "发邮件至privacy@raven-messager.com";
+
+// Terms of Service
+"terms_of_service.title" = "服务条款";
+"terms_of_service.last_updated" = "最后更新：2026年2月";
+
+// TOS Sections
+"tos.s1.title" = "1. 接受条款";
+"tos.s1.content" = "• 使用Raven即表示您同意本服务条款。\n• 如不同意，请勿使用本应用。\n• 继续使用即表示接受更新。";
+"tos.s2.title" = "2. 资格";
+"tos.s2.content" = "• 您必须年满13岁（或根据地区为16岁）。\n• 您确认提供的信息准确无误。\n• 除非明确允许，每人一个账户。";
+"tos.s3.title" = "3. 账户责任";
+"tos.s3.content" = "• 您对账户活动负责。\n• 您必须妥善保管登录凭据。\n• Raven对因用户疏忽导致的未经授权访问不承担责任。";
+"tos.s4.title" = "4. 用户内容";
+"tos.s4.content" = "• 您拥有自己创建的内容（消息、帖子、动态）的所有权。\n• 发布内容即授予Raven在应用内展示和分发的有限许可。\n• 您对分享的内容负责。";
+"tos.s5.title" = "5. 禁止的内容和行为";
+"tos.s5.content" = "用户不得：\n• 发布非法、暴力或辱骂性内容\n• 骚扰、威胁或冒充他人\n• 分享垃圾信息、恶意软件或诈骗\n• 侵犯知识产权\n\nRaven可能会删除违规内容或暂停违规账户。";
+"tos.s6.title" = "6. 消息与通信";
+"tos.s6.content" = "• 消息可能通过互联网或Mesh网络发送。\n• Mesh网络仅支持文本消息。\n• Raven不保证实时送达。";
+"tos.s7.title" = "7. Mesh网络免责声明";
+"tos.s7.content" = "• Mesh按原样提供，依赖于附近设备。\n• Raven对Mesh传输中的消息延迟、丢失或重复不承担责任。\n• Mesh不适用于紧急通信。";
+"tos.s8.title" = "8. 帖子、动态与可见性";
+"tos.s8.content" = "• 内容可见性取决于选择的模式（公开、好友、附近）。\n• 动态可能有查看次数或时间限制。";
+"tos.s9.title" = "9. 语音房间";
+"tos.s9.content" = "• 除非另有说明，语音房间仅为实时。\n• Raven默认不录制房间。\n• 主持人可以管理、静音或移除用户。";
+"tos.s10.title" = "10. 在线状态与存在";
+"tos.s10.content" = "• 在线状态是近似的。\n• 用户可以通过设置控制可见性。";
+"tos.s11.title" = "11. 媒体上传";
+"tos.s11.content" = "• 上传的媒体必须符合内容规则。\n• Raven可能会为提高性能而压缩或处理媒体。";
+"tos.s12.title" = "12. 通知";
+"tos.s12.content" = "• 通知作为便利功能提供。\n• Raven对错过的通知不承担责任。\n• 用户控制通知偏好设置。";
+"tos.s13.title" = "13. 账户暂停与终止";
+"tos.s13.content" = "Raven可以：\n• 因违规暂停或终止账户\n• 在不另行通知的情况下删除内容\n\n用户可以：\n• 随时删除自己的账户";
+"tos.s14.title" = "14. 知识产权";
+"tos.s14.content" = "• Raven、其徽标、UI和代码归Raven所有。\n• 用户内容仍归用户所有。";
+"tos.s15.title" = "15. 责任限制";
+"tos.s15.content" = "• Raven按「原样」提供。\n• 使用风险自负。";
+"tos.s16.title" = "16. 赔偿";
+"tos.s16.content" = "您同意就以下原因引起的索赔向Raven赔偿：\n• 您的内容\n• 您对应用的滥用\n• 您对法律或本条款的违反";
+"tos.s17.title" = "17. 条款变更";
+"tos.s17.content" = "• Raven可以随时更新条款。\n• 继续使用即表示接受变更。";
+"tos.s18.title" = "18. 适用法律";
+"tos.s18.content" = "• 本条款受适用的地方和国际法律管辖。";
+"tos.s19.title" = "19. 联系方式";
+"tos.s19.content" = "如有法律或支持方面的咨询：\n• 邮箱：privacy@raven-messager.com\n• 应用内支持区域";
+
+// FAQ
+"faq.title" = "常见问题";
+"faq.q1" = "Raven是什么类型的应用？";
+"faq.a1" = "Raven是一款安全的社交通讯应用，结合了即时通讯和社交网络功能。包括帖子、动态、语音房间和用于离线通信的Mesh网络。";
+"faq.q2" = "公开、好友和附近帖子有什么区别？";
+"faq.a2" = "公开帖子对所有人可见。好友帖子仅对您的好友可见。附近帖子根据位置显示给您所在地理区域的用户。";
+"faq.q3" = "没有互联网时应用如何工作？";
+"faq.a3" = "Raven通过蓝牙Mesh网络发送和接收消息，即使没有互联网也能通过附近的Raven用户中继。";
+"faq.q4" = "什么是Mesh网络？何时使用？";
+"faq.a4" = "Mesh网络使用蓝牙创建点对点网络。当您没有互联网连接时会自动使用。";
+"faq.q5" = "为什么只能通过Mesh发送文本消息？";
+"faq.a5" = "蓝牙带宽有限，只有小型文本消息才能高效传输。";
+"faq.q6" = "离线时消息和帖子会保存吗？";
+"faq.a6" = "是的，所有消息和帖子都保存在本地设备上。重新连接后会自动与服务器同步。";
+"faq.q7" = "设备重新连接后Mesh数据会怎样？";
+"faq.a7" = "重新连接时，待处理的Mesh消息会与服务器同步并正常发送。";
+"faq.q8" = "Raven的动态如何工作？";
+"faq.a8" = "动态是24小时后消失的照片或视频。您可以与所有人或仅好友分享。";
+"faq.q9" = "为什么有些动态只能看一次？";
+"faq.a9" = "创建者可以启用「阅后即焚」模式以保护隐私。";
+"faq.q10" = "动态所有者能看到谁看过吗？";
+"faq.a10" = "是的，可以看到所有查看者的列表，包括查看时间和反应。";
+"faq.q11" = "为什么某些动态禁止截屏？";
+"faq.a11" = "创建者可以禁止截屏以防止内容被未经许可保存。";
+"faq.q12" = "什么是语音房间？";
+"faq.a12" = "语音房间是实时音频聊天空间，多个用户可以实时交谈。";
+"faq.q13" = "谁可以创建语音房间？";
+"faq.a13" = "任何经过验证的Raven用户都可以。创建者成为拥有完全控制权的主持人。";
+"faq.q14" = "公开和好友语音房间有什么区别？";
+"faq.a14" = "公开房间出现在附近动态中，任何人都可以加入。好友房间仅供邀请，仅对好友可见。";
+"faq.q15" = "用户如何加入语音房间？";
+"faq.a15" = "点击动态中的房间卡片或邀请链接。您将作为听众加入，可以使用举手功能请求发言。";
+"faq.q16" = "举手功能是做什么的？";
+"faq.a16" = "举手会通知主持人您想发言。主持人可以将您从听众提升为发言者。";
+"faq.q17" = "房间主持人可以静音或移除用户吗？";
+"faq.a17" = "是的，主持人可以静音发言者、撤销发言权或将参与者踢出房间。";
+"faq.q18" = "为什么语音房间禁用了摄像头？";
+"faq.a18" = "语音房间设计为仅音频，以减少带宽使用并专注于对话。";
+"faq.q19" = "在线/最后在线状态如何工作？";
+"faq.a19" = "活跃时显示绿色圆点。最后在线显示您上次使用Raven的时间。";
+"faq.q20" = "我可以隐藏在线状态吗？";
+"faq.a20" = "可以，前往设置 > 隐私。注意：隐藏自己的状态后也无法看到他人的状态。";
+"faq.q21" = "位置共享如何工作？";
+"faq.a21" = "您可以在任何聊天中分享当前或实时位置。接收者在地图上看到您的位置。";
+"faq.q22" = "当前位置和实时位置有什么区别？";
+"faq.a22" = "当前位置是一次性快照。实时位置在设定的时间段内持续更新您的位置。";
+"faq.q23" = "实时位置持续多长时间？";
+"faq.a23" = "可以选择15分钟、1小时或8小时。可以随时停止共享。";
+"faq.q24" = "位置共享需要系统权限吗？";
+"faq.a24" = "是的，需要在提示时授予位置权限。Raven仅在您明确选择共享时访问位置。";
+"faq.q25" = "如何删除消息？";
+"faq.a25" = "长按消息并点击删除。您可以为自己删除，或如果是自己的消息则可为所有人删除。";
+"faq.q26" = "消息删除仅针对我还是也针对其他用户？";
+"faq.a26" = "删除自己的消息时，可以选择「为所有人删除」以从所有设备中移除。";
+"faq.q27" = "重新安装应用后为什么有些消息显示为未读？";
+"faq.a27" = "已读回执存储在本地。重新安装后，应用重新下载消息但可能没有之前的已读状态。";
+"faq.q28" = "为什么新消息有时不出现在聊天列表中？";
+"faq.a28" = "下拉刷新聊天列表。如果使用Mesh，消息通过其他设备中继可能需要一些时间。";
+"faq.q29" = "如何创建群组？";
+"faq.a29" = "在消息中点击新群组，选择成员，添加群组名称和可选照片，然后点击创建。";
+"faq.q30" = "为什么群组名称或头像有时显示不正确？";
+"faq.a30" = "可能是同步延迟导致的。下拉刷新或等待一会儿以加载最新的群组信息。";
+"faq.q31" = "为什么新创建的群组出现在我的手机上但不在其他人的手机上？";
+"faq.a31" = "群组创建通过推送通知同步。成员在打开应用或收到消息时会看到。";
+"faq.q32" = "Raven如何检测我的哪些联系人在使用应用？";
+"faq.a32" = "经您许可，Raven安全地将电话号码与注册用户进行匹配。";
+"faq.q33" = "为什么应用要求访问通讯录？";
+"faq.a33" = "帮助您找到已经在Raven上的朋友。通讯录访问是可选的。";
+"faq.q34" = "如果联系人没有安装Raven怎么办？";
+"faq.a34" = "您可以使用邀请功能发送包含应用下载链接的分享链接来邀请他们。";
+"faq.q35" = "邀请功能如何工作？";
+"faq.a35" = "点击联系人上的邀请以通过邮件或其他应用分享下载链接。";
+"faq.q36" = "为什么iPhone上有时不显示通知？";
+"faq.a36" = "检查设置 > 通知确保Raven有权限。同时确保「请勿打扰」已关闭。";
+"faq.q37" = "Raven发送哪些类型的通知？";
+"faq.a37" = "消息、好友请求、帖子点赞/评论、动态查看和语音房间邀请。每种都可以单独自定义。";
+"faq.q38" = "我可以自定义通知设置吗？";
+"faq.a38" = "可以，前往设置 > 通知来启用/禁用特定通知类型和声音。";
+"faq.q39" = "Raven如何保护用户隐私？";
+"faq.a39" = "所有消息端到端加密。我们不出售数据，最小化收集，让您控制分享的内容。";
+"faq.q40" = "我的数据是否加密？";
+"faq.a40" = "是的，所有消息使用端到端加密。只有您和接收者可以阅读。即使Raven也无法访问消息内容。";
+"faq.q41" = "如何举报用户或内容？";
+"faq.a41" = "点击任何帖子、个人资料或消息上的三个点（...）并选择举报。选择违规类型并提交。";
+"faq.q42" = "如何拉黑其他用户？";
+"faq.a42" = "前往其个人资料，点击三个点并选择拉黑。被拉黑的用户无法给您发消息或查看您的帖子。";
+"faq.q43" = "一个帖子可以包含多少张照片？";
+"faq.a43" = "目前每个帖子支持一张照片。多照片帖子可能在未来更新中支持。";
+"faq.q44" = "为什么多张照片显示为一个帖子而不是多个帖子？";
+"faq.a44" = "为了保持动态整洁有序，相关照片会被分组到一个轮播帖子中。";
+"faq.q45" = "「通过Mesh发送」标签是什么意思？";
+"faq.a45" = "这表示消息是通过蓝牙Mesh网络发送的，因为您当时没有互联网连接。";
+"faq.q46" = "帖子或动态可以限制为仅好友可见吗？";
+"faq.a46" = "可以，创建帖子或动态时选择「好友」作为受众以限制可见性。";
+"faq.q47" = "为什么看过的帖子或动态不能再次查看？";
+"faq.a47" = "部分内容设计为「一次性」。查看后不会再出现在您的动态中，以显示新鲜内容。";
+"faq.q48" = "帖子或动态可以保存以后再看吗？";
+"faq.a48" = "阅后即焚的动态无法保存。普通帖子可以点击保存图标进行收藏。";
+"faq.q49" = "重新打开应用时为什么短暂显示登录屏幕？";
+"faq.a49" = "这是一个短暂的身份验证检查。如果持续出现，请尝试完全关闭并重新打开应用。";
+"faq.q50" = "在哪里可以更改语言、隐私和通知设置？";
+"faq.a50" = "前往账户 > 设置。您可以在通用部分找到语言、隐私、通知和其他选项。";
+"faq.q51" = "什么是RAVEN+？";
+"faq.a51" = "RAVEN+是我们的高级订阅，解锁2GB文件上传、10分钟语音消息、无限AI功能、幽灵模式和VIP Mesh路由优先。";
+"faq.q52" = "什么是幽灵模式？";
+"faq.a52" = "RAVEN+专属功能，让您可以在不向发送者发送已读回执（蓝色双勾）的情况下阅读消息。";
+"faq.q53" = "AI功能有限制吗？";
+"faq.a53" = "免费用户每天可以转录3条语音消息，向Gemini提问5个问题。RAVEN+订阅者可无限使用。";
+"faq.q54" = "如何管理我的订阅？";
+"faq.a54" = "订阅由Apple安全管理。您可以随时通过iPhone设置 > Apple ID > 订阅取消。";
+
+// Acknowledgements
+"acknowledgements.title" = "致谢";
+"acknowledgements.description" = "RAVEN使用以下开源库：";

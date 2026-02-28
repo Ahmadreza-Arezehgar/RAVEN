@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>UILaunchScreen</key>
+	<dict/>
+	<key>CFBundleShortVersionString</key>
+	<string>1.1</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleIconName</key>
+	<string>AppIcon</string>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>Google Sign In</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.googleusercontent.apps.516053629173-teh5np0h3i3ar6b25sd78d6o8ft1qhg9</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>app.raven.ios</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>raven</string>
+			</array>
+		</dict>
+	</array>
+	<key>GIDClientID</key>
+	<string>516053629173-teh5np0h3i3ar6b25sd78d6o8ft1qhg9.apps.googleusercontent.com</string>
+	<key>NSCameraUsageDescription</key>
+	<string>RAVEN needs camera access to take photos and videos</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>RAVEN needs microphone access for voice messages and audio rooms</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>RAVEN needs photo library access to share images</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>RAVEN needs permission to save photos and videos to your library.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>RAVEN uses your location to find nearby users and improve message delivery.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>RAVEN uses background location for two features: (1) Live Location Sharing, which lets you share your real-time location with friends in a conversation, and (2) mesh networking, which relays messages to nearby users offline. You can disable either feature at any time.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>RAVEN uses Bluetooth to send and receive messages with nearby users, even when offline or when the app is in the background. Your device can also help relay messages between other users.</string>
+	<key>NSBluetoothPeripheralUsageDescription</key>
+	<string>RAVEN needs Bluetooth to advertise your device to nearby users for offline messaging.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>RAVEN uses Face ID to protect your privacy and secure access to the app.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>RAVEN uses your contacts to help you find friends who are already on the app.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>bluetooth-central</string>
+		<string>bluetooth-peripheral</string>
+		<string>remote-notification</string>
+		<string>location</string>
+		<string>fetch</string>
+		<string>processing</string>
+	</array>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>com.raven.mesh.refresh</string>
+		<string>com.raven.mesh.processing</string>
+		<string>im.raven.sync</string>
+	</array>
+	<key>NSUserActivityTypes</key>
+	<array>
+		<string>INSendMessageIntent</string>
+		<string>INStartCallIntent</string>
+	</array>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+
+	<key>UISupportsCameraControl</key>
+	<false/>
+</dict>
+</plist>

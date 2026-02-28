@@ -1,0 +1,490 @@
+/* English Localizations */
+
+// General
+"app_name" = "RAVEN";
+"done" = "Done";
+"cancel" = "Cancel";
+"save" = "Save";
+"delete" = "Delete";
+"edit" = "Edit";
+"search" = "Search";
+"settings" = "Settings";
+"back" = "Back";
+"ok" = "OK";
+"confirm" = "Confirm";
+"error" = "Error";
+"loading" = "Loading...";
+"retry" = "Retry";
+
+// Tabs
+"home" = "Home";
+"messages" = "Messages";
+"discover" = "Discover";
+"account" = "Account";
+
+// Feed
+"local" = "Local";
+"friends" = "Friends";
+"refresh" = "Refresh";
+"new_post" = "New Post";
+"post" = "Post";
+"public" = "Public";
+"friends_only" = "Friends Only";
+
+// Messages
+"new_message" = "New Message";
+"new_group" = "New Group";
+"mark_all_read" = "Mark All as Read";
+"type_message" = "Type a message...";
+"send" = "Send";
+
+// Settings
+"notifications" = "Notifications";
+"privacy" = "Privacy";
+"security" = "Security";
+"storage" = "Storage";
+"language" = "Language";
+"design" = "Design";
+"about" = "About RAVEN";
+"faq" = "FAQ";
+"privacy_policy" = "Privacy Policy";
+"sign_out" = "Sign Out";
+"close_account" = "Close Account";
+"contact_support" = "Contact Support";
+
+// Settings Sections
+"section.social" = "Social";
+"section.general" = "General";
+"section.about" = "About";
+"section.account" = "Account";
+"section.appearance" = "Appearance";
+
+// QR Code & Friends
+"find_friends" = "Find Friends";
+
+// Language
+"language.info" = "Changing the language will update the entire app interface immediately.";
+"language.rtl_notice" = "This language uses right-to-left layout";
+"select_language" = "Select Language";
+
+// QR Code
+"my_qr_code" = "My QR Code";
+"scan_qr_code" = "Scan QR Code";
+"search_users" = "Search Users";
+"send_friend_request" = "Send Friend Request";
+
+// Account
+"edit_profile" = "Edit Profile";
+"friend_requests" = "Friend Requests";
+"joined" = "Joined";
+"add_bio" = "Add a bio";
+
+// Alerts
+"sign_out_confirm" = "Are you sure you want to sign out?";
+"close_account_confirm" = "This will permanently delete your account and all data. This action cannot be undone.";
+
+// Add Account
+"add_account" = "Add Account";
+
+// App Lock
+"app_lock" = "App Lock";
+"app_locked" = "RAVEN is Locked";
+"unlock_reason" = "Unlock to continue using RAVEN";
+"unlock_with" = "Unlock with %@";
+"unlock_with_biometric" = "Require authentication to open app";
+"use_passcode" = "Use Passcode";
+"auth_failed" = "Authentication failed. Please try again.";
+"lock_timeout" = "Lock After";
+"immediately" = "Immediately";
+"after_1_minute" = "1 min";
+"after_5_minutes" = "5 min";
+"after_15_minutes" = "15 min";
+"hide_in_switcher" = "Hide Content in App Switcher";
+"hide_in_switcher_desc" = "Blur content when app is in background";
+"enable_app_lock_reason" = "Authenticate to enable app lock";
+
+// Security Settings
+"change_password" = "Change Password";
+"two_factor_auth" = "Two-Factor Authentication";
+"active_sessions" = "Active Sessions";
+
+// About View
+"version" = "Version";
+"about.description" = "A secure, private messenger with mesh networking capabilities.";
+"rate_app" = "Rate RAVEN";
+"copyright" = "© 2026 RAVEN. All rights reserved.";
+"links" = "Links";
+"terms_of_service" = "Terms of Service";
+"acknowledgements" = "Acknowledgements";
+
+// Privacy Policy
+"privacy_policy.title" = "Privacy Policy";
+"privacy_policy.last_updated" = "Last Updated: February 2026";
+"pp.last_updated" = "February 18, 2026";
+
+// PP Section Titles
+"pp.section.0" = "General & Transparency";
+"pp.section.1" = "Account & Registration";
+"pp.section.2" = "Messages & Chats";
+"pp.section.3" = "Groups";
+"pp.section.4" = "Contacts";
+"pp.section.5" = "Posts & Feed";
+"pp.section.6" = "Mesh & Offline";
+"pp.section.7" = "Third Parties & AI";
+"pp.section.8" = "Security & Data Retention";
+
+// PP — A: General & Transparency (1–10)
+"pp.q1" = "What app and organization does this policy apply to?";
+"pp.a1" = "This policy applies to RAVEN, developed and operated by the RAVEN team. It covers all versions of the app on all platforms.";
+"pp.q2" = "When was this policy last updated?";
+"pp.a2" = "This policy was last updated on February 10, 2025. We review and update it regularly.";
+"pp.q3" = "How will I be notified of policy changes?";
+"pp.a3" = "We notify you via in-app notification and email (if provided) at least 7 days before changes take effect. Major changes require your acknowledgement.";
+"pp.q4" = "What age is required to use RAVEN?";
+"pp.a4" = "You must be at least 13 years old (or the minimum age in your jurisdiction). We do not knowingly collect data from children under 13.";
+"pp.q5" = "Is my data used only to provide the service?";
+"pp.a5" = "Yes. We use your data solely to deliver, maintain, and improve RAVEN. We do not use it for advertising, profiling, or any unrelated purpose.";
+"pp.q6" = "What data is essential for the service to work?";
+"pp.a6" = "Username, authentication credentials (email), and device identifiers are required. Without these, core features like messaging cannot function.";
+"pp.q7" = "What data is optional?";
+"pp.a7" = "Profile photo, display name, bio, birthday, and contact list sync are all optional. You can use RAVEN fully without providing them.";
+"pp.q8" = "Do you sell user data?";
+"pp.a8" = "No. We do not sell, rent, or trade your personal data to anyone under any circumstances.";
+"pp.q9" = "Do you work with advertisers or data brokers?";
+"pp.a9" = "No. RAVEN has no advertising partners, no data brokers, and no third-party tracking SDKs.";
+"pp.q10" = "How can I submit a privacy question or complaint?";
+"pp.a10" = "Email privacy@raven-messager.com or use the in-app 'Report a Privacy Issue' option at the bottom of this page. We respond within 72 hours.";
+
+// PP — B: Account & Registration (11–21)
+"pp.q11" = "What information is collected when I sign up?";
+"pp.a11" = "We collect your username, email address, and an optional profile photo. If using social sign-in, we receive your name and email from the provider.";
+"pp.q12" = "Do you verify email?";
+"pp.a12" = "Yes. We send a verification code (OTP) to confirm ownership. The code expires after 10 minutes and is not stored.";
+"pp.q13" = "Can I use RAVEN without an email?";
+"pp.a13" = "Users can sign up and log in using a verified email address, Apple ID, or Google Account. Phone number-based registration or authentication is not supported. If users choose email-based registration, email verification is mandatory before account activation.";
+"pp.q14" = "How are passwords stored?";
+"pp.a14" = "Passwords are hashed using bcrypt with a unique salt per user. We never store plaintext passwords. If you use OAuth (Google/Apple), no password is stored.";
+"pp.q15" = "What data do you get from Google/Apple sign-in?";
+"pp.a15" = "Only your name and email address. We do not receive your contacts, photos, or any other data from the OAuth provider.";
+"pp.q16" = "Is a profile photo required?";
+"pp.a16" = "No. A profile photo is completely optional. If not set, your initial letter is shown instead.";
+"pp.q17" = "Why do you collect birthday and where is it used?";
+"pp.a17" = "Birthday is optional and used only for age verification. It is never shown to other users unless you choose to display it.";
+"pp.q18" = "Can I hide my birthday?";
+"pp.a18" = "Yes. By default, birthday is private. You can change visibility in Settings → Privacy.";
+"pp.q19" = "Do you create a device fingerprint?";
+"pp.a19" = "We generate a random device ID for push notifications and session management. We do not fingerprint your hardware, browser, or installed apps.";
+"pp.q20" = "What happens to my data when I delete my account?";
+"pp.a20" = "All personal data is permanently deleted within 30 days. Messages you sent in group chats may remain visible to other members but are disassociated from your identity.";
+"pp.q21" = "What happens to my ID and selfie during Verification?";
+"pp.a21" = "When applying for a verified badge, your government-issued ID and a selfie are transmitted securely for identity confirmation only. These documents are permanently deleted from our servers immediately after the review process is completed. We do not store your ID or biometric data.";
+
+// PP — C: Messages & Chats (22–31)
+"pp.q22" = "Are messages end-to-end encrypted?";
+"pp.a22" = "Direct messages use transport encryption (TLS). We are actively implementing E2E encryption. Group messages are server-side encrypted at rest.";
+"pp.q23" = "Who can see my messages?";
+"pp.a23" = "Only you and the recipient(s). RAVEN staff cannot read message content. Automated systems do not scan message text.";
+"pp.q24" = "How long are messages stored on the server?";
+"pp.a24" = "Messages are stored until you delete them. If you delete a message, it is removed from our servers within 24 hours.";
+"pp.q25" = "Are messages stored on my device?";
+"pp.a25" = "Yes. Messages are cached locally in an encrypted SQLite database for offline access. This data stays on your device only.";
+"pp.q26" = "Are messages scanned for spam or safety?";
+"pp.a26" = "No. We do not scan, read, or analyze message content. Spam detection relies on metadata patterns (rate, volume), not content.";
+"pp.q27" = "Are deleted messages truly deleted?";
+"pp.a27" = "Yes. When you delete a message, it is removed from your device immediately and from our servers within 24 hours. We do not keep shadow copies.";
+"pp.q28" = "How are media files (photos, voice, files) stored?";
+"pp.a28" = "Media is uploaded to our secure cloud storage (encrypted at rest). Files are linked to your account and deleted when you delete the message.";
+"pp.q29" = "Do you keep metadata logs?";
+"pp.a29" = "We retain minimal metadata (sender, recipient, timestamp) for delivery confirmation. IP addresses are not permanently logged. Metadata is purged after 90 days.";
+"pp.q30" = "Can I export my chat data?";
+"pp.a30" = "Yes. Go to Settings → Account → Download My Data to export all your messages and media as a ZIP file.";
+"pp.q31" = "What happens when I block someone?";
+"pp.a31" = "They cannot send you messages, see your online status, or view your profile. Existing messages remain in your history but can be deleted.";
+
+// PP — D: Groups (32–39)
+"pp.q32" = "Where is group data stored?";
+"pp.a32" = "Group names, member lists, and role assignments are stored on our servers. Group messages follow the same storage policy as direct messages.";
+"pp.q33" = "What access do group admins have?";
+"pp.a33" = "Admins can: rename the group, change the photo, add/remove members, promote/demote roles, and reset invite links. Admins cannot read private messages.";
+"pp.q34" = "Can members download group message history?";
+"pp.a34" = "Members can export their own messages via Settings → Download My Data. They cannot bulk-download other members' messages.";
+"pp.q35" = "What happens when I leave a group?";
+"pp.a35" = "You stop receiving messages. Your past messages remain visible to group members but you can delete them before leaving.";
+"pp.q36" = "How are invite links created and do they expire?";
+"pp.a36" = "Invite links are generated with a unique random token. They do not expire by default but can be reset by admins, which invalidates the old link.";
+"pp.q37" = "Can invite links be revoked?";
+"pp.a37" = "Yes. Admins can reset the invite link at any time, which immediately invalidates the previous link.";
+"pp.q38" = "What's the difference between public and private groups?";
+"pp.a38" = "Public groups appear in search and allow join via link. Private groups are hidden from search and can restrict link joining.";
+"pp.q39" = "What data is sent when I report a group?";
+"pp.a39" = "Your user ID, the group ID, a reason category, and optional description. Message content is not automatically included in reports.";
+
+// PP — E: Contacts (40–47)
+"pp.q40" = "Do you upload my contacts?";
+"pp.a40" = "Only if you explicitly enable Contact Sync in Settings. By default, contacts are never uploaded.";
+"pp.q41" = "If uploaded, what exactly is sent?";
+"pp.a41" = "Contact identifiers are hashed (SHA-256) before upload. We never receive or store raw contact data from your contact list.";
+"pp.q42" = "What hashing algorithm and salt do you use?";
+"pp.a42" = "SHA-256 with a server-side rotating salt. The salt changes periodically and old hashes are discarded.";
+"pp.q43" = "How long are uploaded contacts retained?";
+"pp.a43" = "Hashed contacts are retained only while Contact Sync is enabled. They are deleted within 24 hours of disabling sync.";
+"pp.q44" = "Can I turn off contact sync?";
+"pp.a44" = "Yes. Go to Settings → Privacy → Contact Sync → Off. This is off by default.";
+"pp.q45" = "If I turn it off, is previous data deleted?";
+"pp.a45" = "Yes. Previously uploaded hashes are deleted from our servers within 24 hours.";
+"pp.q46" = "Do you send messages or invitations to my contacts?";
+"pp.a46" = "Never. We do not send SMS, emails, or notifications to your contacts without your explicit action.";
+"pp.q47" = "Are contacts used for friend suggestions?";
+"pp.a47" = "Only if Contact Sync is enabled. Suggestions are based on matched hashes, not raw numbers. You can disable this separately.";
+
+// PP — F: Posts & Feed (48–53)
+"pp.q48" = "Are my posts public by default?";
+"pp.a48" = "Posts are visible to your followers by default. You can change this per-post or set a global default in Settings → Privacy.";
+"pp.q49" = "Are deleted posts truly removed?";
+"pp.a49" = "Yes. Deleted posts and their media are removed from our servers within 24 hours. Cached copies on other devices expire naturally.";
+"pp.q50" = "Is view count real or estimated?";
+"pp.a50" = "View counts are real and based on unique authenticated views. We do not inflate or estimate view numbers.";
+"pp.q51" = "Are post texts and hashtags indexed?";
+"pp.a51" = "Yes, for search and discovery purposes. This index is used only within RAVEN and is not shared externally.";
+"pp.q52" = "Are posts or comments moderated?";
+"pp.a52" = "User-reported content is reviewed by our moderation team. We do not use automated content scanning or AI moderation on posts.";
+"pp.q53" = "Does Download My Data include posts?";
+"pp.a53" = "Yes. Your data export includes all your posts, comments, and associated media files.";
+
+// PP — G: Mesh & Offline (54–59 + mesh.privacy)
+"pp.q54" = "What data is exchanged between devices in Mesh mode?";
+"pp.a54" = "Encrypted message payloads, sender/recipient IDs, timestamps, and TTL counters. No personal profile data is shared.";
+"pp.q55" = "Is content encrypted during Mesh transfer?";
+"pp.a55" = "Yes. All mesh payloads are encrypted before transmission. Relay devices cannot read the content.";
+"pp.q56" = "What is Bridge mode and what does it do?";
+"pp.a56" = "A Bridge device relays messages between offline users and the server when it regains connectivity. It acts as a courier, not a reader.";
+"pp.q57" = "Can a relay device see my message content?";
+"pp.a57" = "No. Messages are encrypted end-to-end for mesh transfer. Relay devices only see opaque encrypted payloads.";
+"pp.q58" = "How long do mesh messages live?";
+"pp.a58" = "Messages have a TTL (Time to Live) of 24 hours and a maximum of 5 hops. After either limit, the message is discarded.";
+"pp.q59" = "How do you prevent duplicate or replay attacks?";
+"pp.a59" = "Each message has a unique nonce. Devices maintain a seen-nonce cache to reject duplicates. Expired TTL messages are also rejected.";
+"pp.mesh.privacy.q" = "Can other users identify me when my device relays their messages?";
+"pp.mesh.privacy.a" = "No. When your device relays messages for others, your identity is never attached to the payload. Relay devices are anonymous couriers — they cannot read the message, and neither the sender nor the recipient knows which device relayed it.";
+
+// PP — H: Third Parties & AI (61–63)
+"pp.q61" = "What third-party services does RAVEN use?";
+"pp.a61" = "Apple (push notifications), Google (sign-in, AI features), RevenueCat (subscription management), and our cloud hosting provider.";
+"pp.q62" = "Are my messages or posts sent to AI providers?";
+"pp.a62" = "Only when you explicitly use AI features (like 'Ask Gemini' or 'Voice Transcription'). The specific post or audio file is sent securely to Google for processing. Your private DMs are NEVER sent to AI or used to train public models.";
+"pp.q63" = "Does RAVEN sell data to advertisers?";
+"pp.a63" = "No. RAVEN has no advertising partners, no data brokers, and no third-party tracking SDKs.";
+
+// PP — I: Security & Data Retention (64–65)
+"pp.q64" = "How is data encrypted at rest on your servers?";
+"pp.a64" = "All data is encrypted at rest using AES-256. Database volumes use full-disk encryption. Backups are encrypted with separate keys.";
+"pp.q65" = "How long are logs, IPs, and device metadata retained?";
+"pp.a65" = "Server access logs are retained for 30 days for security monitoring. IP addresses are not stored beyond the active session. Device metadata is retained while your account is active and deleted within 30 days of account deletion.";
+
+// Terms of Service
+"terms_of_service.title" = "Terms of Service";
+"terms_of_service.last_updated" = "Last Updated: February 2026";
+
+// TOS Sections
+"tos.s1.title" = "1. Acceptance of Terms";
+"tos.s1.content" = "• By using Raven, you agree to these Terms of Service.\n• If you do not agree, you must not use the app.\n• Continued use means acceptance of updates.";
+"tos.s2.title" = "2. Eligibility";
+"tos.s2.content" = "• You must be at least 13 (or 16 depending on region) years old.\n• You confirm that the information you provide is accurate.\n• One account per person unless explicitly allowed.";
+"tos.s3.title" = "3. Account Responsibility";
+"tos.s3.content" = "• You are responsible for your account activity.\n• You must keep your login credentials secure.\n• Raven is not responsible for unauthorized access caused by user negligence.";
+"tos.s4.title" = "4. User Content";
+"tos.s4.content" = "• You own the content you create (messages, posts, stories).\n• By posting content, you grant Raven a limited license to display and distribute it within the app.\n• You are responsible for what you share.";
+"tos.s5.title" = "5. Prohibited Content & Behavior";
+"tos.s5.content" = "Users must NOT:\n• Post illegal, violent, or abusive content\n• Harass, threaten, or impersonate others\n• Share spam, malware, or scams\n• Violate intellectual property rights\n• Attempt to reverse-engineer the app\n• Abuse Mesh networking or system resources\n\nRaven may remove content or suspend accounts that violate these rules.";
+"tos.s6.title" = "6. Messaging & Communication";
+"tos.s6.content" = "• Messages may be delivered via internet or Mesh networking.\n• Mesh networking supports text-only messages.\n• Raven does not guarantee real-time delivery.\n• Deleted messages may be permanently removed.";
+"tos.s7.title" = "7. Mesh Networking Disclaimer";
+"tos.s7.content" = "• Mesh is provided as-is and depends on nearby devices.\n• Raven is not responsible for message delays, loss, or duplication during Mesh transmission.\n• Mesh is not intended for emergency communication.";
+"tos.s8.title" = "8. Posts, Stories & Visibility";
+"tos.s8.content" = "• Content visibility depends on selected mode (Public, Friends, Local).\n• Stories may be view-limited or time-limited.\n• Raven does not guarantee visibility reach or engagement.";
+"tos.s9.title" = "9. Voice Rooms";
+"tos.s9.content" = "• Voice Rooms are live-only unless stated otherwise.\n• Raven does not record rooms by default.\n• Hosts may moderate, mute, or remove users.";
+"tos.s10.title" = "10. Online Status & Presence";
+"tos.s10.content" = "• Online status is approximate.\n• Raven does not guarantee accuracy of \"online\" or \"last seen\" indicators.\n• Users may control visibility via settings.";
+"tos.s11.title" = "11. Media Uploads";
+"tos.s11.content" = "• Uploaded media must comply with content rules.\n• Raven may compress or process media for performance.\n• Raven is not responsible for data loss due to device or network failure.";
+"tos.s12.title" = "12. Notifications";
+"tos.s12.content" = "• Notifications are provided as a convenience.\n• Raven is not responsible for missed notifications.\n• Users control notification preferences.";
+"tos.s13.title" = "13. Account Suspension & Termination";
+"tos.s13.content" = "Raven may:\n• Suspend or terminate accounts for violations\n• Remove content without prior notice\n• Restrict features if abuse is detected\n\nUsers may:\n• Delete their account at any time\n• Lose access to stored content upon deletion";
+"tos.s14.title" = "14. Intellectual Property";
+"tos.s14.content" = "• Raven, its logo, UI, and code are Raven's property.\n• You may not copy, modify, or redistribute the app.\n• User content remains owned by the user.";
+"tos.s15.title" = "15. Limitation of Liability";
+"tos.s15.content" = "• Raven is provided \"as is\".\n• Raven is not liable for:\n  - Data loss\n  - Missed messages\n  - User-generated content\n  - Network or Mesh failures\n• Use is at your own risk.";
+"tos.s16.title" = "16. Indemnification";
+"tos.s16.content" = "You agree to indemnify Raven from claims caused by:\n• Your content\n• Your misuse of the app\n• Your violation of laws or these terms";
+"tos.s17.title" = "17. Changes to Terms";
+"tos.s17.content" = "• Raven may update Terms at any time.\n• Continued use means acceptance of changes.\n• Major changes may be communicated in-app.";
+"tos.s18.title" = "18. Governing Law";
+"tos.s18.content" = "• These terms are governed by applicable local and international laws.\n• Disputes will be resolved under Raven's jurisdiction.";
+"tos.s19.title" = "19. Contact";
+"tos.s19.content" = "For legal or support inquiries:\n• Email: privacy@raven-messager.com\n• In-app support section";
+
+// FAQ
+"faq.title" = "FAQ";
+"faq.last_updated" = "February 18, 2026";
+
+// FAQ Section Titles
+"faq.section.0" = "Getting Started & Account";
+"faq.section.1" = "Messaging";
+"faq.section.2" = "Mesh & Offline";
+"faq.section.3" = "Groups";
+"faq.section.4" = "Posts & Feed";
+"faq.section.5" = "RAVEN+ & Subscriptions";
+"faq.section.6" = "Security & Privacy";
+
+// FAQ — A: Getting Started & Account (1–10)
+"faq.q1" = "What is RAVEN and how is it different?";
+"faq.a1" = "RAVEN is a private, secure messenger with offline mesh networking. Unlike other apps, RAVEN can send messages via Bluetooth when there's no internet — device to device.";
+"faq.q2" = "What do I need to create an account?";
+"faq.a2" = "A username and an email address. You can also sign in with Apple or Google. Profile photo and bio are optional.";
+"faq.q3" = "What happens if I don't provide an email?";
+"faq.a3" = "An email address is required for account creation and recovery. You can also use Apple ID or Google Account to sign in.";
+"faq.q4" = "How do I delete my account?";
+"faq.a4" = "Go to Settings → Account → Delete Account. Your data is permanently removed within 30 days. This action cannot be undone.";
+"faq.q5" = "How do I change my username?";
+"faq.a5" = "Go to Settings → Profile → Edit. Usernames can be changed once every 30 days. They must be unique and 3–20 characters.";
+"faq.q6" = "How do I recover my account?";
+"faq.a6" = "Tap 'Forgot Password' on the login screen. We'll send a reset link to your email address.";
+"faq.q7" = "Can I have multiple accounts on one phone?";
+"faq.a7" = "Not currently. Each device supports one active account. Multi-account support is planned for a future release.";
+"faq.q8" = "Does my account work on multiple devices?";
+"faq.a8" = "Currently, RAVEN is single-device. Logging in on a new device will sign you out of the previous one. Multi-device sync is in development.";
+"faq.q9" = "How do I transfer my data to a new phone?";
+"faq.a9" = "Log in with the same credentials on your new device. Messages sync from the server. Local-only data (wallpapers, drafts) does not transfer.";
+"faq.q10" = "If I reinstall the app, what do I lose?";
+"faq.a10" = "Your account and server-synced messages are restored on login. Local settings (wallpapers, mute preferences, drafts) are reset.";
+
+// FAQ — B: Messaging (11–20)
+"faq.q11" = "Are messages end-to-end encrypted?";
+"faq.a11" = "Messages use transport encryption (TLS) to and from the server. Full end-to-end encryption is in active development and will be rolled out soon.";
+"faq.q12" = "Are messages stored on the server or only on my device?";
+"faq.a12" = "Messages are stored on both. The server stores them for delivery sync, and your device caches them locally in an encrypted database for offline access.";
+"faq.q13" = "What are the limits for voice, files, and location?";
+"faq.a13" = "Voice messages: up to 5 minutes. Files: up to 25 MB. Location: shared as a one-time pin (not live tracking). Image compression is automatic.";
+"faq.q14" = "How do read receipts (seen/delivered) work?";
+"faq.a14" = "Single check = sent. Double check = delivered to device. Blue checks = read by recipient. You can disable read receipts in Settings → Privacy.";
+"faq.q15" = "How does online status work?";
+"faq.a15" = "Online status shows when you have the app open. You can hide your status in Settings → Privacy → Show Online Status.";
+"faq.q16" = "Why do I sometimes get logged out when internet is unstable?";
+"faq.a16" = "This was a known bug where network errors were incorrectly treated as auth failures. It has been fixed — the app now retries silently without logging out.";
+"faq.q17" = "Why do some messages send but don't update in the chat?";
+"faq.a17" = "This can happen during brief network drops. Pull down to refresh the chat, or the message status will auto-update within a few seconds.";
+"faq.q18" = "When do messages show as Delivered vs Seen?";
+"faq.a18" = "Delivered = the recipient's device received it. Seen = the recipient opened the chat and the message was on screen. Both require an active connection.";
+"faq.q19" = "How do I mute a chat?";
+"faq.a19" = "Swipe left on the conversation in the Messages list and tap the bell icon. You can choose: 1 hour, 8 hours, 24 hours, 1 week, or permanently.";
+"faq.q20" = "How do I block or report someone?";
+"faq.a20" = "Open their profile → tap the three-dot menu → Block or Report. Blocking prevents all contact. Reports are reviewed by our moderation team.";
+
+// FAQ — C: Mesh & Offline (new mesh expectation + 21–35)
+"faq.mesh_simple.q" = "How does the Mesh network work in simple terms?";
+"faq.mesh_simple.a" = "Imagine passing a paper note in class. Your message hops from one nearby phone to another via Bluetooth until it reaches your friend — no internet needed. Each phone in between just passes it along without reading it.";
+"faq.mesh_limits.q" = "What are the limitations of the Mesh network?";
+"faq.mesh_limits.a" = "Mesh is not instant — messages may take minutes to arrive depending on how many hops are needed. It's text-only (no photos or files), works within Bluetooth range (~30–100m between devices), requires the app to be active, does not support group chats yet, and is NOT designed for emergency communication.";
+"faq.q21" = "What is Direct Mesh and when does it activate?";
+"faq.a21" = "Direct Mesh uses Bluetooth to send messages to nearby RAVEN users when both devices have no internet. It activates automatically when the server is unreachable.";
+"faq.q22" = "What is Bridge mode?";
+"faq.a22" = "When a device has both Bluetooth and internet, it acts as a Bridge — relaying messages from offline users to the server. This happens automatically and transparently.";
+"faq.q23" = "How does store-and-forward work?";
+"faq.a23" = "If the recipient is out of Bluetooth range, nearby devices can carry the message and forward it when they come in range. Messages hop between devices until delivered.";
+"faq.q24" = "How long does a message stay in the mesh?";
+"faq.a24" = "Messages have a TTL (Time to Live) of 24 hours and a maximum of 5 hops. After either limit, the message is discarded to prevent infinite circulation.";
+"faq.q25" = "How do you prevent duplicate messages?";
+"faq.a25" = "Every message has a unique nonce. Each device maintains a seen-nonce cache and rejects any message it has already processed. The server also deduplicates.";
+"faq.q26" = "If a message arrives via both server and mesh, what happens?";
+"faq.a26" = "The first copy is accepted. The duplicate is silently discarded using the nonce-based deduplication system. You only see one message.";
+"faq.q27" = "If a message arrives via mesh, does the server know?";
+"faq.a27" = "When the Bridge device uploads it, the server stores it. If you already received it via mesh, the server copy is deduplicated on your device.";
+"faq.q28" = "Are mesh messages encrypted?";
+"faq.a28" = "Yes. All mesh payloads are encrypted before transmission. Relay devices only see opaque encrypted data and cannot read the content.";
+"faq.q29" = "What are the iOS background limitations for mesh?";
+"faq.a29" = "iOS restricts background Bluetooth activity. RAVEN works best when the app is in the foreground. Background mesh is limited to brief windows when iOS allows it.";
+"faq.q30" = "Why does relay between three phones sometimes fail?";
+"faq.a30" = "Multi-hop relay depends on all intermediate devices being in range and having RAVEN open. iOS background restrictions can interrupt the relay chain.";
+"faq.q31" = "Why is Bridge unstable sometimes?";
+"faq.a31" = "Bridge reliability depends on Bluetooth signal quality and iOS background execution limits. We continuously improve this with adaptive retry logic.";
+"faq.q32" = "What if a phone has internet but Bluetooth is off?";
+"faq.a32" = "That phone uses normal server messaging. It won't participate in mesh networking. Other nearby devices with Bluetooth can still mesh with each other.";
+"faq.q33" = "Does mesh work for group chats?";
+"faq.a33" = "Not yet. Mesh currently supports 1:1 messages only. Group mesh support requires additional routing logic and is planned for a future update.";
+"faq.q34" = "How does mesh work for posts?";
+"faq.a34" = "Text-only posts can be broadcast via mesh. When a device with internet receives a mesh post, it uploads it to the server as a Bridge.";
+"faq.q35" = "Why are only text posts allowed in mesh?";
+"faq.a35" = "Images and files are too large for Bluetooth's limited bandwidth. Mesh posts are restricted to text to ensure reliable, fast delivery across hops.";
+
+// FAQ — D: Groups (36–45)
+"faq.q36" = "How do I create a group and what's the member limit?";
+"faq.a36" = "Tap the group icon in Messages. Add members and set a name. Current limit is 100 members per group.";
+"faq.q37" = "What can group admins do?";
+"faq.a37" = "Admins can: rename the group, change the photo, add/remove members, promote/demote other admins, generate/reset invite links, and set group visibility.";
+"faq.q38" = "How do invite links work?";
+"faq.a38" = "Admins can generate a shareable link from Group Settings → Invite. Anyone with the link can join. Admins can reset the link at any time to invalidate old ones.";
+"faq.q39" = "What does Public vs Private mean?";
+"faq.a39" = "Public groups appear in search results and allow joining via link. Private groups are hidden from search and admins can restrict link-based joining.";
+"faq.q40" = "How do I leave a group?";
+"faq.a40" = "Open Group Settings → scroll to the bottom → Leave Group. Your past messages remain but you stop receiving new ones.";
+"faq.q41" = "How do I kick or promote a member?";
+"faq.a41" = "Admins can swipe left on a member in Group Settings to see actions: Set Nickname, Promote to Admin, Demote, or Remove from Group.";
+"faq.q42" = "How do I change the group wallpaper?";
+"faq.a42" = "Group Settings → Customize → Chat Wallpaper. Choose a preset or pick from your gallery. Wallpaper is saved locally per-user, not synced across members.";
+"faq.q43" = "Why does my selected wallpaper not apply?";
+"faq.a43" = "Make sure you tap 'Done' after selecting. If the issue persists, try restarting the app. Gallery images are compressed and saved locally.";
+"faq.q44" = "Why does the UI glitch after selecting a wallpaper?";
+"faq.a44" = "This is a known issue with large gallery images. We compress images to max 1080px, but very large files may cause a brief layout recalculation.";
+"faq.q45" = "How does group mute work?";
+"faq.a45" = "Tap the bell icon in Group Settings. Choose a mute duration or 'Always'. You can also enable 'Mentions Only' to get notified only when you're mentioned.";
+
+// FAQ — E: Posts & Feed (46–55)
+"faq.q46" = "Where are posts stored?";
+"faq.a46" = "Posts are stored on our servers and cached locally on your device. Mesh posts are stored temporarily on relay devices until uploaded.";
+"faq.q47" = "Why don't old post images load after reinstalling?";
+"faq.a47" = "This is a known issue with legacy media URL formats. We've fixed the image pipeline to handle both old and new URL formats correctly.";
+"faq.q48" = "What does 'Sent via Mesh' mean on a post?";
+"faq.a48" = "It means the post was originally created and broadcast via Bluetooth mesh networking, then uploaded to the server by a Bridge device.";
+"faq.q49" = "How do I delete or report a post?";
+"faq.a49" = "Tap the three-dot menu on any post. You can delete your own posts or report others'. Reports include the post content and your reason.";
+"faq.q50" = "Why does a deleted post still appear in the app?";
+"faq.a50" = "There may be a caching delay. Pull down to refresh the feed. If it persists, force-quit and reopen the app to clear the local cache.";
+"faq.q51" = "How are reports reviewed?";
+"faq.a51" = "Our moderation team reviews all reports manually. We don't use automated content scanning. Action is taken within 24–48 hours.";
+"faq.q52" = "Are voice comments supported?";
+"faq.a52" = "Voice comments are currently in development. The feature will allow recording and playing back voice replies on posts.";
+"faq.q53" = "What content is prohibited?";
+"faq.a53" = "Illegal content, harassment, spam, impersonation, and explicit material involving minors. Full details are in our Terms of Service.";
+"faq.q54" = "How does post deletion sync across devices?";
+"faq.a54" = "When you delete a post, the server marks it as deleted and pushes the update to all connected clients. Cached copies expire within minutes.";
+"faq.q55" = "How does image caching work?";
+"faq.a55" = "Images are cached locally after first load. The cache is cleared on reinstall or when storage is low. You can manually clear it in Settings.";
+
+// FAQ — F: RAVEN+ & Subscriptions (56–59)
+"faq.q56" = "What is RAVEN+?";
+"faq.a56" = "RAVEN+ is our premium subscription that unlocks 2GB file uploads, 10-minute voice messages, unlimited AI features, Ghost Mode, and VIP Mesh routing priority.";
+"faq.q57" = "What is Ghost Mode?";
+"faq.a57" = "An exclusive RAVEN+ feature that lets you read messages without sending a read receipt (blue double-check) to the sender.";
+"faq.q58" = "Are there limits on AI features?";
+"faq.a58" = "Free users can transcribe 3 voice messages and ask Gemini 5 questions per day. RAVEN+ subscribers have unlimited access.";
+"faq.q59" = "How do I manage my subscription?";
+"faq.a59" = "Subscriptions are managed securely by Apple. You can cancel anytime via your iPhone Settings → Apple ID → Subscriptions.";
+
+// FAQ — G: Security & Privacy (60–64)
+"faq.q60" = "What data do you collect?";
+"faq.a60" = "Username, authentication info (email), messages, posts, and optional profile data. We do not collect location continuously, contacts without permission, or any analytics/tracking data.";
+"faq.q61" = "Do you share data with third parties?";
+"faq.a61" = "No. We do not share, sell, or trade your data with anyone. We have no advertising partners, no analytics SDKs, and no data broker relationships.";
+"faq.q62" = "What do your server logs contain?";
+"faq.a62" = "Minimal operational logs: request type, timestamp, and response status. IP addresses are not permanently stored. No message content is ever logged.";
+"faq.q63" = "How long is data retained?";
+"faq.a63" = "Account data: while account is active + 30 days after deletion. Messages: until you delete them. Server logs: 30 days. Mesh relay data: 24 hours maximum.";
+"faq.q64" = "How do I request my data be deleted?";
+"faq.a64" = "Go to Settings → Account → Delete Account to remove everything. For a data export before deletion, use Settings → Account → Download My Data.";
+
+// Acknowledgements
+"acknowledgements.title" = "Acknowledgements";
+"acknowledgements.description" = "RAVEN uses the following open-source libraries:";
+

@@ -1,0 +1,149 @@
+{
+  "identifier" : "8A5D3B2C-4E7F-4A9B-B3C1-D5E6F7A8B9C0",
+  "nonRenewingSubscriptions" : [
+
+  ],
+  "products" : [
+    {
+      "displayPrice" : "49.99",
+      "familyShareable" : false,
+      "internalID" : "lifetime_001",
+      "localizations" : [
+        {
+          "description" : "Unlock all RAVEN+ features forever with a one-time purchase.",
+          "displayName" : "RAVEN+ Lifetime",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "com.raven.messenger.lifetime",
+      "referenceName" : "RAVEN+ Lifetime",
+      "type" : "NonConsumable"
+    }
+  ],
+  "settings" : {
+    "_applicationInternalID" : "6741407025",
+    "_developerTeamID" : "YOUR_TEAM_ID",
+    "_failTransactionsEnabled" : false,
+    "_lastSynchronizedDate" : 750000000,
+    "_locale" : "en_US",
+    "_storefront" : "USA",
+    "_storeKitErrors" : [
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "Load Products"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "Purchase"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "Verification"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "App Store Sync"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "Subscription Status"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "App Transaction"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "Manage Subscriptions Sheet"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "Offer Code Redeem Sheet"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "Manage Subscriptions Sheet (Nested)"
+      }
+    ]
+  },
+  "subscriptionGroups" : [
+    {
+      "id" : "raven_plus_group",
+      "localizations" : [
+
+      ],
+      "name" : "RAVEN+",
+      "subscriptions" : [
+        {
+          "adHocOffers" : [
+
+          ],
+          "codeOffers" : [
+
+          ],
+          "displayPrice" : "4.99",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "monthly_001",
+          "introductoryOffer" : null,
+          "localizations" : [
+            {
+              "description" : "Full access to all RAVEN+ premium features.",
+              "displayName" : "RAVEN+ Monthly",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "raven_plus_monthly",
+          "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "RAVEN+ Monthly",
+          "subscriptionGroupID" : "raven_plus_group",
+          "type" : "RecurringSubscription",
+          "winbackOffers" : [
+
+          ]
+        },
+        {
+          "adHocOffers" : [
+
+          ],
+          "codeOffers" : [
+
+          ],
+          "displayPrice" : "29.99",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "annual_001",
+          "introductoryOffer" : null,
+          "localizations" : [
+            {
+              "description" : "Full access to all RAVEN+ premium features, billed yearly.",
+              "displayName" : "RAVEN+ Annual",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "raven_plus_annual",
+          "recurringSubscriptionPeriod" : "P1Y",
+          "referenceName" : "RAVEN+ Annual",
+          "subscriptionGroupID" : "raven_plus_group",
+          "type" : "RecurringSubscription",
+          "winbackOffers" : [
+
+          ]
+        }
+      ]
+    }
+  ],
+  "version" : {
+    "major" : 4,
+    "minor" : 0
+  }
+}

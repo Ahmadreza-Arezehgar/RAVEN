@@ -1,0 +1,462 @@
+/* Spanish Localizations */
+
+// General
+"app_name" = "RAVEN";
+"done" = "Hecho";
+"cancel" = "Cancelar";
+"save" = "Guardar";
+"delete" = "Eliminar";
+"edit" = "Editar";
+"search" = "Buscar";
+"settings" = "Ajustes";
+"back" = "Atrás";
+"ok" = "OK";
+"confirm" = "Confirmar";
+"error" = "Error";
+"loading" = "Cargando...";
+"retry" = "Reintentar";
+
+// Tabs
+"home" = "Inicio";
+"messages" = "Mensajes";
+"discover" = "Descubrir";
+"account" = "Cuenta";
+
+// Feed
+"local" = "Local";
+"friends" = "Amigos";
+"refresh" = "Actualizar";
+"new_post" = "Nueva Publicación";
+"post" = "Publicar";
+"public" = "Público";
+"friends_only" = "Solo Amigos";
+
+// Messages
+"new_message" = "Nuevo Mensaje";
+"new_group" = "Nuevo Grupo";
+"mark_all_read" = "Marcar Todo como Leído";
+"type_message" = "Escribe un mensaje...";
+"send" = "Enviar";
+
+// Settings
+"notifications" = "Notificaciones";
+"privacy" = "Privacidad";
+"security" = "Seguridad";
+"storage" = "Almacenamiento";
+"language" = "Idioma";
+"design" = "Diseño";
+"about" = "Acerca de RAVEN";
+"faq" = "Preguntas Frecuentes";
+"privacy_policy" = "Política de Privacidad";
+"sign_out" = "Cerrar Sesión";
+"close_account" = "Cerrar Cuenta";
+"contact_support" = "Contactar Soporte";
+
+// Settings Sections
+"section.social" = "Social";
+"section.general" = "General";
+"section.about" = "Acerca de";
+"section.account" = "Cuenta";
+"section.appearance" = "Apariencia";
+
+// QR Code & Friends
+"find_friends" = "Buscar Amigos";
+
+// Language
+"language.info" = "Cambiar el idioma actualizará toda la interfaz de la aplicación inmediatamente.";
+"language.rtl_notice" = "Este idioma usa diseño de derecha a izquierda";
+"select_language" = "Seleccionar Idioma";
+
+// QR Code
+"my_qr_code" = "Mi Código QR";
+"scan_qr_code" = "Escanear Código QR";
+"search_users" = "Buscar Usuarios";
+"send_friend_request" = "Enviar Solicitud de Amistad";
+
+// Account
+"edit_profile" = "Editar Perfil";
+"friend_requests" = "Solicitudes de Amistad";
+"joined" = "Se unió";
+"add_bio" = "Agregar biografía";
+
+// Alerts
+"sign_out_confirm" = "¿Estás seguro de que deseas cerrar sesión?";
+"close_account_confirm" = "Esto eliminará permanentemente tu cuenta y todos los datos. Esta acción no se puede deshacer.";
+"add_account" = "Agregar Cuenta";
+
+// App Lock
+"app_lock" = "Bloqueo de App";
+"app_locked" = "RAVEN está Bloqueado";
+"unlock_reason" = "Autentícate para continuar usando RAVEN";
+"unlock_with" = "Desbloquear con %@";
+"unlock_with_biometric" = "Requiere autenticación para abrir la app";
+"use_passcode" = "Usar Código";
+"auth_failed" = "Autenticación fallida. Por favor intenta de nuevo.";
+"lock_timeout" = "Bloquear Después de";
+"immediately" = "Inmediatamente";
+"after_1_minute" = "1 min";
+"after_5_minutes" = "5 min";
+"after_15_minutes" = "15 min";
+"hide_in_switcher" = "Ocultar Contenido en el Selector de Apps";
+"hide_in_switcher_desc" = "Difuminar contenido cuando la app está en segundo plano";
+"enable_app_lock_reason" = "Autentícate para habilitar el bloqueo de app";
+
+// Security Settings
+"change_password" = "Cambiar Contraseña";
+"two_factor_auth" = "Autenticación de Dos Factores";
+"active_sessions" = "Sesiones Activas";
+
+// About View
+"version" = "Versión";
+"about.description" = "Un mensajero seguro y privado con capacidades de red mesh.";
+"rate_app" = "Calificar RAVEN";
+"copyright" = "© 2026 RAVEN. Todos los derechos reservados.";
+"links" = "Enlaces";
+"terms_of_service" = "Términos de Servicio";
+"acknowledgements" = "Agradecimientos";
+
+// Privacy Policy
+"privacy_policy.title" = "Política de Privacidad";
+"privacy_policy.last_updated" = "Última Actualización: Febrero 2026";
+
+// PP Sections
+"pp.section.general" = "General";
+"pp.section.account" = "Cuenta e Identidad";
+"pp.section.contacts" = "Contactos";
+"pp.section.location" = "Ubicación";
+"pp.section.messaging" = "Mensajería y Contenido";
+"pp.section.posts" = "Publicaciones y Stories";
+"pp.section.mesh" = "Red Mesh";
+"pp.section.voice" = "Salas de Voz";
+"pp.section.status" = "Estado en Línea y Actividad";
+"pp.section.notifications" = "Notificaciones";
+"pp.section.media" = "Medios (Fotos, Videos, Voz)";
+"pp.section.security" = "Seguridad";
+"pp.section.thirdparty" = "Terceros";
+"pp.section.rights" = "Derechos del Usuario";
+"pp.section.legal" = "Legal y Cumplimiento";
+
+// PP General
+"pp.general.q1.q" = "¿Qué datos personales recopila Raven?";
+"pp.general.q1.a" = "Nombre de usuario, correo electrónico, foto de perfil, publicaciones, mensajes y ubicación cuando usas funciones locales.";
+"pp.general.q2.q" = "¿Por qué Raven recopila datos personales?";
+"pp.general.q2.a" = "Para que la app funcione. Necesitamos tu correo para verificarte y almacenamos tus mensajes para que puedas recibirlos.";
+"pp.general.q3.q" = "¿Qué datos se requieren para crear una cuenta?";
+"pp.general.q3.a" = "Número de teléfono o correo electrónico para verificación y un nombre de usuario.";
+"pp.general.q4.q" = "¿Se puede usar Raven sin proporcionar cierta información personal?";
+"pp.general.q4.a" = "Necesitas teléfono o correo para registrarte. Todo lo demás (bio, foto, etc.) es opcional.";
+
+// PP Account
+"pp.account.q1.q" = "¿Qué información de cuenta se almacena?";
+"pp.account.q1.a" = "Tu nombre de usuario, número de teléfono o correo, información de perfil y tokens de autenticación.";
+"pp.account.q2.q" = "¿Mi número de teléfono es obligatorio u opcional?";
+"pp.account.q2.a" = "Necesitas teléfono O correo. Uno de ellos es obligatorio.";
+"pp.account.q3.q" = "¿Mi dirección de correo se verifica y almacena de forma segura?";
+"pp.account.q3.a" = "Sí, verificada al registrarse. Almacenada en nuestra base de datos con prácticas de seguridad estándar.";
+"pp.account.q4.q" = "¿Puedo cambiar o eliminar la información de mi cuenta?";
+"pp.account.q4.a" = "Sí. Edita el perfil en Ajustes. Eliminar la cuenta borra todo permanentemente.";
+"pp.account.q5.q" = "¿Qué pasa con mi identificación y selfie durante la Verificación?";
+"pp.account.q5.a" = "Al solicitar una insignia verificada, su identificación oficial y un selfie se transmiten de forma segura solo para confirmación de identidad. Estos documentos se eliminan permanentemente de nuestros servidores inmediatamente después de completar el proceso de revisión. No almacenamos su identificación ni datos biométricos.";
+
+// PP Contacts
+"pp.contacts.q1.q" = "¿Por qué Raven solicita acceso a mis contactos?";
+"pp.contacts.q1.a" = "Para mostrarte cuáles de tus contactos ya usan Raven.";
+"pp.contacts.q2.q" = "¿Se suben mis contactos a los servidores de Raven?";
+"pp.contacts.q2.a" = "Los números de teléfono se envían para verificar contra usuarios registrados. No almacenamos permanentemente tu lista de contactos completa.";
+"pp.contacts.q3.q" = "¿Cómo compara Raven los contactos con usuarios existentes?";
+"pp.contacts.q3.a" = "Comparamos números de teléfono con nuestra base de datos de usuarios.";
+"pp.contacts.q4.q" = "¿Qué pasa si un contacto no usa Raven?";
+"pp.contacts.q4.a" = "Nada. Puedes invitarlos si quieres.";
+"pp.contacts.q5.q" = "¿Puedo usar Raven sin dar acceso a contactos?";
+"pp.contacts.q5.a" = "Sí. Puedes omitir esto y agregar amigos manualmente.";
+
+// PP Location
+"pp.location.q1.q" = "¿Raven recopila mi ubicación?";
+"pp.location.q1.a" = "Al usar el feed local o compartir ubicación en el chat, accedemos en primer plano. Si activas Background Mesh Relay, iOS usa cambios de ubicación regional para activar el Bluetooth de la app en segundo plano, pero tus coordenadas geográficas precisas nunca se rastrean, almacenan ni envían a nuestros servidores en segundo plano.";
+"pp.location.q2.q" = "¿Cuándo se usan los datos de ubicación?";
+"pp.location.q2.a" = "El feed local muestra publicaciones cerca de ti. Compartir ubicación envía tus coordenadas a los destinatarios del chat.";
+"pp.location.q3.q" = "¿Cuál es la diferencia entre Ubicación Actual y Ubicación en Vivo?";
+"pp.location.q3.a" = "Actual: una sola vez. En vivo: se actualiza continuamente durante la duración elegida.";
+"pp.location.q4.q" = "¿Cuánto tiempo se comparte la Ubicación en Vivo?";
+"pp.location.q4.a" = "15 minutos, 1 hora u 8 horas - tú eliges.";
+"pp.location.q5.q" = "¿Puedo desactivar el compartir ubicación?";
+"pp.location.q5.a" = "Sí. Deniega el permiso en Ajustes de iOS o simplemente no uses funciones de ubicación.";
+"pp.location.q6.q" = "¿Se almacenan los datos de ubicación permanentemente?";
+"pp.location.q6.a" = "Las publicaciones con ubicación mantienen coordenadas aproximadas. La ubicación en vivo no se almacena después de que termina.";
+
+// PP Messaging
+"pp.messaging.q1.q" = "¿Los mensajes están cifrados de extremo a extremo?";
+"pp.messaging.q1.a" = "Los mensajes directos están cifrados. Los mensajes de grupo y publicaciones se almacenan en servidores.";
+"pp.messaging.q2.q" = "¿Quién puede leer mis mensajes?";
+"pp.messaging.q2.a" = "Tú, el destinatario y potencialmente Raven si es legalmente requerido. Los DMs cifrados solo tú y el destinatario pueden leerlos.";
+"pp.messaging.q3.q" = "¿Se almacenan los mensajes en los servidores de Raven?";
+"pp.messaging.q3.a" = "Sí, los mensajes cifrados se almacenan hasta ser entregados, luego se mantienen en tu historial de mensajes.";
+"pp.messaging.q4.q" = "¿Qué pasa con los mensajes enviados por red Mesh?";
+"pp.messaging.q4.a" = "Se retransmiten a través de dispositivos cercanos, luego se sincronizan con servidores al conectarse.";
+"pp.messaging.q5.q" = "¿Los mensajes eliminados se borran permanentemente?";
+"pp.messaging.q5.a" = "\"Eliminar para todos\" los elimina de servidores. \"Eliminar para mí\" solo los elimina de tu dispositivo.";
+"pp.messaging.q6.q" = "¿Raven puede leer mis mensajes privados?";
+"pp.messaging.q6.a" = "DMs cifrados: no. Otro contenido almacenado en servidores: técnicamente posible pero no lo hacemos.";
+
+// PP Posts
+"pp.posts.q1.q" = "¿Quién puede ver mis publicaciones?";
+"pp.posts.q1.a" = "Depende de la configuración: Público (todos), Amigos (tus amigos), Local (usuarios cercanos).";
+"pp.posts.q2.q" = "¿Cómo se maneja la visibilidad (Público, Amigos, Local)?";
+"pp.posts.q2.a" = "El servidor filtra quién ve qué basándose en tu selección y la ubicación/estado de amistad de los demás.";
+"pp.posts.q3.q" = "¿Se almacenan las Stories después de expirar?";
+"pp.posts.q3.a" = "Se eliminan de los servidores después de 24 horas.";
+"pp.posts.q4.q" = "¿Se pueden ver publicaciones o Stories más de una vez?";
+"pp.posts.q4.a" = "Stories de ver una vez: no. Contenido regular: depende de la configuración de uso único.";
+"pp.posts.q5.q" = "¿Se rastrean las vistas e interacciones?";
+"pp.posts.q5.a" = "Sí. Las vistas de Stories muestran quién las vio. Los likes/comentarios de publicaciones se registran.";
+
+// PP Mesh
+"pp.mesh.q1.q" = "¿Qué datos se comparten por red Mesh?";
+"pp.mesh.q1.a" = "Contenido de mensajes cifrados e información del destinatario.";
+"pp.mesh.q2.q" = "¿Por qué el Mesh está limitado solo a texto?";
+"pp.mesh.q2.a" = "Bluetooth tiene ancho de banda limitado. Solo mensajes de texto pequeños pueden transmitirse eficientemente.";
+"pp.mesh.q3.q" = "¿Los datos de Mesh están cifrados?";
+"pp.mesh.q3.a" = "Sí, mismo cifrado que los mensajes regulares.";
+"pp.mesh.q4.q" = "¿Cómo previene Raven contenido duplicado en Mesh?";
+"pp.mesh.q4.a" = "Cada mensaje tiene un ID único. Los duplicados se ignoran.";
+"pp.mesh.q5.q" = "¿Qué pasa con los datos de Mesh cuando se restaura la conexión a internet?";
+"pp.mesh.q5.a" = "Los mensajes en cola se sincronizan con servidores y se entregan normalmente.";
+
+// PP Voice
+"pp.voice.q1.q" = "¿Se graba el audio en Salas de Voz?";
+"pp.voice.q1.a" = "No. El audio solo se transmite en vivo, no se graba.";
+"pp.voice.q2.q" = "¿Se almacenan o archivan las Salas de Voz?";
+"pp.voice.q2.a" = "No. Cuando la sala termina, nada se guarda.";
+"pp.voice.q3.q" = "¿Quién puede escucharme cuando hablo?";
+"pp.voice.q3.a" = "Todos los que estén actualmente en la sala.";
+"pp.voice.q4.q" = "¿Puedo unirme a Salas de Voz de forma anónima?";
+"pp.voice.q4.a" = "Sí. Si el anfitrión de la sala lo permite, puedes unirte anónimamente. Se te asignará una identidad animal aleatoria (p. ej., 'Happy Fox') y tu nombre de usuario real y perfil permanecerán ocultos para todos los participantes.";
+
+// PP Status
+"pp.status.q1.q" = "¿Cómo determina Raven si estoy en línea?";
+"pp.status.q1.a" = "Basado en la actividad de la app. Punto verde cuando la app está abierta y activa.";
+"pp.status.q2.q" = "¿Qué significa \"Última vez visto\"?";
+"pp.status.q2.a" = "La última vez que abriste la app.";
+"pp.status.q3.q" = "¿Puedo ocultar mi estado en línea?";
+"pp.status.q3.a" = "Sí, en ajustes de Privacidad. Pero entonces no podrás ver el estado de otros tampoco.";
+"pp.status.q4.q" = "¿El seguimiento de actividad es opcional?";
+"pp.status.q4.a" = "Estado en línea: opcional. Reportes básicos de errores: se recopilan automáticamente.";
+
+// PP Notifications
+"pp.notifications.q1.q" = "¿Qué datos se usan para enviar notificaciones?";
+"pp.notifications.q1.a" = "Tu token de dispositivo y contenido de notificación (nombre del remitente, vista previa del mensaje).";
+"pp.notifications.q2.q" = "¿Raven lee el contenido de las notificaciones?";
+"pp.notifications.q2.a" = "El servidor genera las notificaciones, así que sabe quién envió qué.";
+"pp.notifications.q3.q" = "¿Puedo desactivar las notificaciones?";
+"pp.notifications.q3.a" = "Sí, en Ajustes de la app o en Ajustes de iOS.";
+
+// PP Media
+"pp.media.q1.q" = "¿Las fotos y videos subidos están cifrados?";
+"pp.media.q1.a" = "Cifrados durante la subida. Almacenados en servidores en la nube.";
+"pp.media.q2.q" = "¿Cuánto tiempo se almacenan los medios?";
+"pp.media.q2.a" = "Mientras la publicación o mensaje exista.";
+"pp.media.q3.q" = "¿Se pueden eliminar los medios permanentemente?";
+"pp.media.q3.a" = "Eliminar la publicación/mensaje elimina los medios de los servidores.";
+"pp.media.q4.q" = "¿Se detectan o restringen las capturas de pantalla?";
+"pp.media.q4.a" = "iOS puede bloquear capturas para contenido de ver una vez. Notificamos al creador de la story si se detecta una captura.";
+
+// PP Security
+"pp.security.q1.q" = "¿Cómo protege Raven los datos de los usuarios?";
+"pp.security.q1.a" = "HTTPS para todas las conexiones, almacenamiento cifrado, autenticación segura.";
+"pp.security.q2.q" = "¿Los datos están cifrados en reposo y en tránsito?";
+"pp.security.q2.a" = "En tránsito: sí (TLS). En reposo: depende del tipo de almacenamiento.";
+"pp.security.q3.q" = "¿Cómo previene Raven el acceso no autorizado?";
+"pp.security.q3.a" = "Inicio de sesión con contraseña/biometría, bloqueo de app opcional, gestión de sesiones.";
+"pp.security.q4.q" = "¿Qué pasa en caso de una brecha de datos?";
+"pp.security.q4.a" = "Investigaríamos, solucionaríamos el problema y notificaríamos a los usuarios afectados según lo requiera la ley.";
+
+// PP Third Parties
+"pp.thirdparty.q1.q" = "¿Raven comparte datos con terceros?";
+"pp.thirdparty.q1.a" = "Apple (notificaciones push), Google (inicio de sesión, funciones IA), RevenueCat (gestión de suscripciones) y nuestro proveedor de hosting en la nube.";
+"pp.thirdparty.q2.q" = "¿Se recopilan análisis o reportes de errores?";
+"pp.thirdparty.q2.a" = "Sí, reportes de errores anónimos para corregir fallos.";
+"pp.thirdparty.q3.q" = "¿Se usan anuncios o rastreadores?";
+"pp.thirdparty.q3.a" = "Sin anuncios. Sin rastreadores de terceros.";
+"pp.thirdparty.q4.q" = "¿Raven vende datos de usuarios?";
+"pp.thirdparty.q4.a" = "No.";
+"pp.thirdparty.q5.q" = "¿Se envían mis mensajes o publicaciones a proveedores de IA?";
+"pp.thirdparty.q5.a" = "Solo cuando usas explícitamente funciones de IA (como 'Preguntar a Gemini' o 'Transcripción de voz'). La publicación específica o el archivo de audio se envía de forma segura a Google para su procesamiento. Tus mensajes directos privados NUNCA se envían a IA ni se usan para entrenar modelos públicos.";
+
+// PP User Rights
+"pp.rights.q1.q" = "¿Puedo solicitar una copia de mis datos?";
+"pp.rights.q1.a" = "Sí, envía un correo a privacy@raven-messager.com.";
+"pp.rights.q2.q" = "¿Puedo eliminar mi cuenta y todos los datos?";
+"pp.rights.q2.a" = "Sí, en Ajustes > Cuenta > Cerrar Cuenta.";
+"pp.rights.q3.q" = "¿Cuánto tiempo tarda la eliminación?";
+"pp.rights.q3.a" = "Inmediato desde la app. Las copias de seguridad del servidor se purgan en 30 días.";
+"pp.rights.q4.q" = "¿Qué pasa con mis datos después de eliminar la cuenta?";
+"pp.rights.q4.a" = "Tus datos se eliminan. Los mensajes que enviaste a otros permanecen en su historial.";
+
+// PP Legal
+"pp.legal.q1.q" = "¿Raven cumple con el RGPD?";
+"pp.legal.q1.a" = "Seguimos los principios del RGPD: minimización de datos, consentimiento del usuario, derecho a eliminación.";
+"pp.legal.q2.q" = "¿Raven cumple con las leyes de privacidad locales?";
+"pp.legal.q2.a" = "Intentamos cumplir con las leyes aplicables en las regiones donde operamos.";
+"pp.legal.q3.q" = "¿Cómo se comunican los cambios en la política de privacidad?";
+"pp.legal.q3.a" = "Notificación dentro de la app y política actualizada en la aplicación.";
+"pp.legal.q4.q" = "¿Cómo puedo contactar a Raven sobre preocupaciones de privacidad?";
+"pp.legal.q4.a" = "Correo a privacy@raven-messager.com";
+
+// Terms of Service
+"terms_of_service.title" = "Términos de Servicio";
+"terms_of_service.last_updated" = "Última Actualización: Febrero 2026";
+
+// TOS Sections
+"tos.s1.title" = "1. Aceptación de los Términos";
+"tos.s1.content" = "• Al usar Raven, aceptas estos Términos de Servicio.\n• Si no estás de acuerdo, no debes usar la app.\n• El uso continuado significa aceptación de actualizaciones.";
+"tos.s2.title" = "2. Elegibilidad";
+"tos.s2.content" = "• Debes tener al menos 13 (o 16 según la región) años.\n• Confirmas que la información que proporcionas es precisa.\n• Una cuenta por persona a menos que se permita explícitamente.";
+"tos.s3.title" = "3. Responsabilidad de la Cuenta";
+"tos.s3.content" = "• Eres responsable de la actividad de tu cuenta.\n• Debes mantener seguras tus credenciales de inicio de sesión.\n• Raven no es responsable del acceso no autorizado causado por negligencia del usuario.";
+"tos.s4.title" = "4. Contenido del Usuario";
+"tos.s4.content" = "• Eres dueño del contenido que creas (mensajes, publicaciones, stories).\n• Al publicar contenido, otorgas a Raven una licencia limitada para mostrarlo y distribuirlo dentro de la app.\n• Eres responsable de lo que compartes.";
+"tos.s5.title" = "5. Contenido y Comportamiento Prohibido";
+"tos.s5.content" = "Los usuarios NO deben:\n• Publicar contenido ilegal, violento o abusivo\n• Acosar, amenazar o suplantar a otros\n• Compartir spam, malware o estafas\n• Violar derechos de propiedad intelectual\n• Intentar ingeniería inversa de la app\n• Abusar de la red mesh o recursos del sistema\n\nRaven puede eliminar contenido o suspender cuentas que violen estas reglas.";
+"tos.s6.title" = "6. Mensajería y Comunicación";
+"tos.s6.content" = "• Los mensajes pueden entregarse via internet o red mesh.\n• La red mesh solo soporta mensajes de texto.\n• Raven no garantiza entrega en tiempo real.\n• Los mensajes eliminados pueden ser permanentemente borrados.";
+"tos.s7.title" = "7. Aviso Legal de Red Mesh";
+"tos.s7.content" = "• Mesh se proporciona tal como está y depende de dispositivos cercanos.\n• Raven no es responsable de retrasos, pérdida o duplicación de mensajes durante la transmisión mesh.\n• Mesh no está destinado para comunicación de emergencia.";
+"tos.s8.title" = "8. Publicaciones, Stories y Visibilidad";
+"tos.s8.content" = "• La visibilidad del contenido depende del modo seleccionado (Público, Amigos, Local).\n• Las stories pueden tener límite de vistas o tiempo.\n• Raven no garantiza alcance de visibilidad ni engagement.";
+"tos.s9.title" = "9. Salas de Voz";
+"tos.s9.content" = "• Las Salas de Voz son solo en vivo a menos que se indique lo contrario.\n• Raven no graba salas por defecto.\n• Los anfitriones pueden moderar, silenciar o eliminar usuarios.";
+"tos.s10.title" = "10. Estado en Línea y Presencia";
+"tos.s10.content" = "• El estado en línea es aproximado.\n• Raven no garantiza la precisión de los indicadores \"en línea\" o \"última vez visto\".\n• Los usuarios pueden controlar la visibilidad a través de ajustes.";
+"tos.s11.title" = "11. Subida de Medios";
+"tos.s11.content" = "• Los medios subidos deben cumplir con las reglas de contenido.\n• Raven puede comprimir o procesar medios para rendimiento.\n• Raven no es responsable de pérdida de datos por fallos de dispositivo o red.";
+"tos.s12.title" = "12. Notificaciones";
+"tos.s12.content" = "• Las notificaciones se proporcionan como conveniencia.\n• Raven no es responsable de notificaciones perdidas.\n• Los usuarios controlan las preferencias de notificación.";
+"tos.s13.title" = "13. Suspensión y Terminación de Cuenta";
+"tos.s13.content" = "Raven puede:\n• Suspender o terminar cuentas por violaciones\n• Eliminar contenido sin aviso previo\n• Restringir funciones si se detecta abuso\n\nLos usuarios pueden:\n• Eliminar su cuenta en cualquier momento\n• Perder acceso al contenido almacenado al eliminarla";
+"tos.s14.title" = "14. Propiedad Intelectual";
+"tos.s14.content" = "• Raven, su logo, UI y código son propiedad de Raven.\n• No puedes copiar, modificar ni redistribuir la app.\n• El contenido del usuario sigue siendo propiedad del usuario.";
+"tos.s15.title" = "15. Limitación de Responsabilidad";
+"tos.s15.content" = "• Raven se proporciona \"tal como está\".\n• Raven no es responsable de:\n  - Pérdida de datos\n  - Mensajes perdidos\n  - Contenido generado por usuarios\n  - Fallos de red o mesh\n• El uso es bajo tu propio riesgo.";
+"tos.s16.title" = "16. Indemnización";
+"tos.s16.content" = "Aceptas indemnizar a Raven de reclamaciones causadas por:\n• Tu contenido\n• Tu mal uso de la app\n• Tu violación de leyes o estos términos";
+"tos.s17.title" = "17. Cambios en los Términos";
+"tos.s17.content" = "• Raven puede actualizar los Términos en cualquier momento.\n• El uso continuado significa aceptación de cambios.\n• Cambios importantes pueden comunicarse dentro de la app.";
+"tos.s18.title" = "18. Ley Aplicable";
+"tos.s18.content" = "• Estos términos se rigen por las leyes locales e internacionales aplicables.\n• Las disputas se resolverán bajo la jurisdicción de Raven.";
+"tos.s19.title" = "19. Contacto";
+"tos.s19.content" = "Para consultas legales o de soporte:\n• Correo: privacy@raven-messager.com\n• Sección de soporte en la app";
+
+// FAQ
+"faq.title" = "Preguntas Frecuentes";
+"faq.q1" = "¿Qué es Raven y qué tipo de app es?";
+"faq.a1" = "Raven es una app de mensajería social segura que combina funciones de mensajero y red social. Incluye publicaciones, stories, salas de voz y red mesh para comunicación sin conexión.";
+"faq.q2" = "¿Cuál es la diferencia entre publicaciones Públicas, de Amigos y Locales?";
+"faq.a2" = "Las publicaciones públicas son visibles para todos. Las de amigos solo son visibles para tus amigos. Las locales aparecen a usuarios en tu área geográfica basándose en la ubicación.";
+"faq.q3" = "¿Cómo funciona la app sin conexión a internet?";
+"faq.a3" = "Raven usa red mesh vía Bluetooth para enviar y recibir mensajes a través de usuarios cercanos de Raven, incluso sin internet. Los mensajes saltan entre dispositivos hasta llegar al destino.";
+"faq.q4" = "¿Qué es la red mesh y cuándo se usa?";
+"faq.a4" = "La red mesh crea una red peer-to-peer usando Bluetooth. Se usa automáticamente cuando no tienes conexión a internet, permitiendo que los mensajes se retransmitan a través de otros usuarios cercanos de Raven.";
+"faq.q5" = "¿Por qué solo se pueden enviar mensajes de texto por mesh?";
+"faq.a5" = "Bluetooth tiene ancho de banda limitado, así que solo mensajes de texto pequeños pueden transmitirse eficientemente. Las fotos y videos requieren demasiados datos para retransmisión mesh.";
+"faq.q6" = "¿Se guardan los mensajes y publicaciones cuando estoy sin conexión?";
+"faq.a6" = "Sí, todos tus mensajes y publicaciones se guardan localmente en tu dispositivo. Una vez que te reconectas a internet, se sincronizan automáticamente con el servidor.";
+"faq.q7" = "¿Qué pasa con los datos de mesh cuando el dispositivo se reconecta a internet?";
+"faq.a7" = "Al reconectarte, los mensajes mesh pendientes se sincronizan con el servidor y se entregan normalmente. La cola mesh se vacía una vez confirmada la entrega.";
+"faq.q8" = "¿Cómo funcionan las Stories en Raven?";
+"faq.a8" = "Las stories son fotos o videos que desaparecen después de 24 horas. Puedes compartirlas con todos (Local) o solo tus amigos. Los espectadores pueden reaccionar y responder.";
+"faq.q9" = "¿Por qué algunas Stories solo se pueden ver una vez?";
+"faq.a9" = "Los creadores de stories pueden habilitar el modo \"Ver una vez\" para privacidad. Una vez cerrada la story, no se puede ver de nuevo para proteger contenido sensible.";
+"faq.q10" = "¿El dueño de la story puede ver quién la vio?";
+"faq.a10" = "Sí, los dueños de stories pueden ver una lista de todos los que vieron su story, incluyendo la hora de visualización y reacciones.";
+"faq.q11" = "¿Por qué están desactivadas las capturas de pantalla para algunas Stories?";
+"faq.a11" = "Los creadores pueden desactivar capturas para evitar que su contenido sea guardado sin permiso. Es una función de privacidad para stories sensibles.";
+"faq.q12" = "¿Qué son las Salas de Voz?";
+"faq.a12" = "Las Salas de Voz son espacios de chat de audio en vivo donde múltiples usuarios pueden hablar en tiempo real. Son como conversaciones de podcast en vivo a las que cualquiera puede unirse.";
+"faq.q13" = "¿Quién puede crear una Sala de Voz?";
+"faq.a13" = "Cualquier usuario verificado de Raven puede crear una Sala de Voz. El creador se convierte en anfitrión con control total sobre la sala.";
+"faq.q14" = "¿Cuál es la diferencia entre Salas de Voz públicas y de amigos?";
+"faq.a14" = "Las salas públicas aparecen en el feed local y cualquiera puede unirse. Las salas de amigos son solo por invitación y solo visibles para tus amigos.";
+"faq.q15" = "¿Cómo pueden los usuarios unirse a una Sala de Voz?";
+"faq.a15" = "Toca cualquier tarjeta de sala en el feed o un enlace de invitación. Te unirás como oyente y puedes solicitar hablar usando la función Levantar la Mano.";
+"faq.q16" = "¿Qué hace la función Levantar la Mano?";
+"faq.a16" = "Levantar la Mano notifica al anfitrión que quieres hablar. El anfitrión puede entonces promoverte de oyente a orador.";
+"faq.q17" = "¿El anfitrión de la sala puede silenciar o eliminar usuarios?";
+"faq.a17" = "Sí, los anfitriones pueden silenciar a oradores individuales, quitarles el derecho de hablar o expulsarlos de la sala.";
+"faq.q18" = "¿Por qué la cámara está desactivada en las Salas de Voz?";
+"faq.a18" = "Las Salas de Voz son solo audio por diseño para reducir el uso de ancho de banda y mantener el enfoque en la conversación en lugar del video.";
+"faq.q19" = "¿Cómo funciona el estado En línea / Última vez visto?";
+"faq.a19" = "Tu estado en línea muestra un punto verde cuando estás activo. Última vez visto muestra la última vez que usaste Raven cuando estás desconectado.";
+"faq.q20" = "¿Puedo ocultar mi estado en línea?";
+"faq.a20" = "Sí, ve a Ajustes > Privacidad para desactivar el estado en línea. Nota: si ocultas el tuyo, no verás el estado de otros tampoco.";
+"faq.q21" = "¿Cómo funciona compartir ubicación?";
+"faq.a21" = "Puedes compartir tu ubicación actual o en vivo en cualquier chat. Los destinatarios ven tu posición en un mapa.";
+"faq.q22" = "¿Cuál es la diferencia entre Ubicación Actual y Ubicación en Vivo?";
+"faq.a22" = "Ubicación Actual es una instantánea única. Ubicación en Vivo actualiza tu posición continuamente durante una duración establecida.";
+"faq.q23" = "¿Cuánto dura la Ubicación en Vivo?";
+"faq.a23" = "Puedes elegir 15 minutos, 1 hora u 8 horas. Puedes dejar de compartir en cualquier momento antes de que termine la duración.";
+"faq.q24" = "¿Compartir ubicación requiere permisos del sistema?";
+"faq.a24" = "Sí, debes otorgar permiso de ubicación cuando se te solicite. Raven solo accede a la ubicación cuando eliges compartirla explícitamente.";
+"faq.q25" = "¿Cómo puedo eliminar mensajes?";
+"faq.a25" = "Mantén presionado un mensaje y toca Eliminar. Puedes eliminar solo para ti o eliminar para todos si es tu mensaje.";
+"faq.q26" = "¿La eliminación de mensajes es solo para mí o también para el otro usuario?";
+"faq.a26" = "Al eliminar tus propios mensajes, puedes elegir \"Eliminar para todos\" para eliminarlo de todos los dispositivos.";
+"faq.q27" = "¿Por qué algunos mensajes aparecen como no vistos después de reinstalar la app?";
+"faq.a27" = "Los recibos de lectura se almacenan localmente. Después de reinstalar, la app vuelve a descargar los mensajes pero puede no tener el estado de lectura previo.";
+"faq.q28" = "¿Por qué un nuevo mensaje a veces no aparece en la lista de chats?";
+"faq.a28" = "Desliza hacia abajo para actualizar la lista de chats. Si usas mesh, los mensajes pueden tardar en retransmitirse a través de otros dispositivos.";
+"faq.q29" = "¿Cómo creo un grupo?";
+"faq.a29" = "En Mensajes, toca Nuevo Grupo, selecciona miembros, agrega un nombre de grupo y foto opcional, luego toca Crear.";
+"faq.q30" = "¿Por qué el nombre o avatar del grupo a veces aparece incorrectamente?";
+"faq.a30" = "Esto puede pasar por retrasos de sincronización. Desliza para actualizar o espera un momento para que cargue la información más reciente del grupo.";
+"faq.q31" = "¿Por qué un grupo recién creado aparece en mi teléfono pero no en el de otros?";
+"faq.a31" = "La creación del grupo se sincroniza vía notificación push. Los miembros lo verán cuando abran la app o reciban un mensaje.";
+"faq.q32" = "¿Cómo detecta Raven cuáles de mis contactos usan la app?";
+"faq.a32" = "Con tu permiso, Raven verifica números de teléfono contra usuarios registrados. Esto se hace de forma segura sin exponer detalles de contactos.";
+"faq.q33" = "¿Por qué la app solicita acceso a mis Contactos?";
+"faq.a33" = "Para ayudarte a encontrar amigos que ya están en Raven. El acceso a contactos es opcional y puedes denegarlo si prefieres.";
+"faq.q34" = "¿Qué pasa si un contacto no tiene Raven instalado?";
+"faq.a34" = "Puedes invitarlos usando la función Invitar que envía un enlace para compartir con un enlace de descarga de la app.";
+"faq.q35" = "¿Cómo funciona la función de Invitar?";
+"faq.a35" = "Toca Invitar en un contacto para compartir un enlace de descarga por correo o cualquier otra app. Serán agregados como amigo cuando se unan.";
+"faq.q36" = "¿Por qué las notificaciones a veces no aparecen en iPhone?";
+"faq.a36" = "Verifica Ajustes > Notificaciones para asegurar que Raven tiene permiso. También verifica que No Molestar esté desactivado y que las notificaciones no estén silenciadas.";
+"faq.q37" = "¿Qué tipos de notificaciones envía Raven?";
+"faq.a37" = "Mensajes, solicitudes de amistad, likes/comentarios de publicaciones, vistas de stories e invitaciones a salas de voz. Cada una puede personalizarse por separado.";
+"faq.q38" = "¿Puedo personalizar mis ajustes de notificaciones?";
+"faq.a38" = "Sí, ve a Ajustes > Notificaciones para activar/desactivar tipos específicos de notificaciones y sonidos.";
+"faq.q39" = "¿Cómo protege Raven la privacidad del usuario?";
+"faq.a39" = "Todos los mensajes están cifrados de extremo a extremo. No vendemos datos, minimizamos la recopilación y te damos control sobre lo que compartes.";
+"faq.q40" = "¿Mis datos están cifrados?";
+"faq.a40" = "Sí, todos los mensajes usan cifrado de extremo a extremo. Solo tú y el destinatario pueden leerlos. Ni siquiera Raven puede acceder al contenido de los mensajes.";
+"faq.q41" = "¿Cómo puedo reportar un usuario o contenido?";
+"faq.a41" = "Toca los tres puntos (...) en cualquier publicación, perfil o mensaje y selecciona Reportar. Elige el tipo de violación y envía.";
+"faq.q42" = "¿Cómo puedo bloquear a otro usuario?";
+"faq.a42" = "Ve a su perfil, toca los tres puntos y selecciona Bloquear. Los usuarios bloqueados no pueden enviarte mensajes ni ver tus publicaciones.";
+"faq.q43" = "¿Cuántas fotos se pueden incluir en una publicación?";
+"faq.a43" = "Actualmente, cada publicación soporta una foto. Las publicaciones con múltiples fotos podrían ser soportadas en futuras actualizaciones.";
+"faq.q44" = "¿Por qué se muestran múltiples fotos como una publicación en vez de publicaciones separadas?";
+"faq.a44" = "Para mantener tu feed limpio y organizado, las fotos relacionadas se agrupan en una sola publicación tipo carrusel.";
+"faq.q45" = "¿Qué significa la etiqueta \"Enviado vía Mesh\"?";
+"faq.a45" = "Esto indica que el mensaje fue enviado via red mesh Bluetooth porque no tenías conexión a internet en ese momento.";
+"faq.q46" = "¿Se pueden limitar publicaciones o stories solo a Amigos?";
+"faq.a46" = "Sí, al crear una publicación o story, selecciona \"Amigos\" como la audiencia para limitar la visibilidad a solo tus amigos.";
+"faq.q47" = "¿Por qué no puedo ver una publicación o Story de nuevo después de haberla visto?";
+"faq.a47" = "Algunos contenidos son de \"uso único\" por diseño. Una vez vistos, no aparecerán en tu feed de nuevo para mostrar contenido fresco.";
+"faq.q48" = "¿Se pueden guardar publicaciones o Stories para verlas después?";
+"faq.a48" = "Las stories con \"Ver una vez\" no se pueden guardar. Las publicaciones regulares se pueden marcar como favoritas tocando el ícono de guardar.";
+"faq.q49" = "¿Por qué aparece brevemente la pantalla de inicio de sesión al reabrir la app?";
+"faq.a49" = "Es una verificación breve de autenticación. Si persiste, intenta cerrar la app por completo y reabrirla, o reinstala si es necesario.";
+"faq.q50" = "¿Dónde puedo cambiar el idioma, privacidad y ajustes de notificaciones?";
+"faq.a50" = "Ve a Cuenta > Ajustes. Encontrarás Idioma, Privacidad, Notificaciones y otras opciones en la sección General.";
+"faq.q51" = "¿Qué es RAVEN+?";
+"faq.a51" = "RAVEN+ es nuestra suscripción premium que desbloquea subidas de archivos de 2GB, mensajes de voz de 10 minutos, funciones de IA ilimitadas, Ghost Mode y prioridad VIP de enrutamiento Mesh.";
+"faq.q52" = "¿Qué es el Ghost Mode?";
+"faq.a52" = "Una función exclusiva de RAVEN+ que te permite leer mensajes sin enviar un acuse de recibo (doble check azul) al remitente.";
+"faq.q53" = "¿Hay límites en las funciones de IA?";
+"faq.a53" = "Los usuarios gratuitos pueden transcribir 3 mensajes de voz y hacer 5 preguntas a Gemini por día. Los suscriptores de RAVEN+ tienen acceso ilimitado.";
+"faq.q54" = "¿Cómo gestiono mi suscripción?";
+"faq.a54" = "Las suscripciones se gestionan de forma segura por Apple. Puedes cancelar en cualquier momento en Ajustes de iPhone > Apple ID > Suscripciones.";
+
+// Acknowledgements
+"acknowledgements.title" = "Agradecimientos";
+"acknowledgements.description" = "RAVEN utiliza las siguientes bibliotecas de código abierto:";

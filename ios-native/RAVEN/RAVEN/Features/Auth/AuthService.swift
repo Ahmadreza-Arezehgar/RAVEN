@@ -1,0 +1,671 @@
+import Foundation
+
+// MARK: - App Boot State (Prevents login flash)
+enum AppBootState {
+    case checking       // Still loading auth from Keychain
+    case authenticated  // Valid session found
+    case unauthenticated // No session / expired
+}
+
+// MARK: - Auth Service
+@Observable
+class AuthService {
+    static let shared = AuthService()
+    
+    var bootState: AppBootState = .checking  // ✅ Start in checking state
+    var currentUser: User?
+    var requiresUsernameSetup = false  // True when OAuth user needs to set username
+    
+    // Persisted: user has seen/skipped phone collection
+    var hasSeenPhoneCollection: Bool {
+        get { UserDefaults.standard.bool(forKey: "hasSeenPhoneCollection") }
+        set { UserDefaults.standard.set(newValue, forKey: "hasSeenPhoneCollection") }
+    }
+    
+    var isAuthenticated: Bool { currentUser != nil }
+    
+    /// OAuth user who completed username but hasn't added phone
+    var needsPhoneNumber: Bool {
+        guard let user = currentUser else { return false }
+        let isOAuth = user.authMethod == .google || user.authMethod == .apple
+        return isOAuth && (user.phone == nil || user.phone?.isEmpty == true)
+    }
+    var isEmailVerified: Bool { currentUser?.emailVerified ?? false }
+    var needsEmailVerification: Bool { isAuthenticated && !isEmailVerified }
+    
+    private init() {}
+    
+    // MARK: - Register
+    
+    struct RegisterRequest: Encodable {
+        let username: String
+        let password: String
+        let firstName: String
+        let lastName: String
+        let birthYear: Int
+        let email: String
+        let phone: String?
+    }
+    
+    func register(
+        username: String,
+        password: String,
+        firstName: String,
+        lastName: String,
+        birthYear: Int,
+        email: String,
+        phone: String? = nil
+    ) async throws {
+        let request = RegisterRequest(
+            username: username,
+            password: password,
+            firstName: firstName,
+            lastName: lastName,
+            birthYear: birthYear,
+            email: email,
+            phone: phone
+        )
+        
+        let response: TokenResponse = try await NetworkService.shared.post(
+            path: "/api/auth/register",
+            body: request
+        )
+        
+        // Save restricted token with refresh token
+        let scope: TokenScope = response.tokenScope == "full" ? .full : .restricted
+        try await KeychainService.shared.saveToken(
+            response.token,
+            scope: scope,
+            userId: response.userId,
+            refreshToken: response.refreshToken
+        )
+        
+        // Fetch user profile
+        try await fetchCurrentUser()
+        
+        // Associate user with RevenueCat for subscription management
+        if let userId = currentUser?.id {
+            await SubscriptionService.shared.login(appUserID: userId)
+        }
+        
+        // Register push token now that we're authenticated
+        await PushNotificationService.shared.retryTokenRegistration()
+    }
+    
+    // MARK: - Login
+    
+    struct LoginRequest: Encodable {
+        let username: String
+        let password: String
+    }
+    
+    func login(username: String, password: String) async throws {
+        let request = LoginRequest(username: username, password: password)
+        
+        let response: TokenResponse = try await NetworkService.shared.post(
+            path: "/api/auth/login",
+            body: request
+        )
+        
+        // Login only allowed for verified users
+        try await KeychainService.shared.saveToken(
+            response.token,
+            scope: .full,
+            userId: response.userId,
+            refreshToken: response.refreshToken
+        )
+        
+        try await fetchCurrentUser()
+        
+        // Register push token now that we're authenticated
+        await PushNotificationService.shared.retryTokenRegistration()
+        
+        // Associate user with RevenueCat for subscription management
+        if let userId = currentUser?.id {
+            await SubscriptionService.shared.login(appUserID: userId)
+        }
+    }
+    
+    // MARK: - Send OTP
+    
+    struct SendCodeRequest: Encodable {
+        let identifier: String
+        let channel: String
+        let purpose: String
+    }
+    
+    struct SendCodeResponse: Decodable {
+        let success: Bool
+        let message: String?
+        let expiresInSeconds: Int?
+    }
+    
+    func sendVerificationCode(email: String, purpose: String = "verify_email") async throws -> Int {
+        let request = SendCodeRequest(
+            identifier: email,
+            channel: "email",
+            purpose: purpose
+        )
+        
+        let response: SendCodeResponse = try await NetworkService.shared.post(
+            path: "/api/auth/send-code",
+            body: request
+        )
+        
+        return response.expiresInSeconds ?? 600
+    }
+    
+    /// Check if email is available for registration AND send verification code in one step.
+    /// Returns `(available, errorMessage)`.
+    /// When available == true, the verification code has already been sent.
+    func checkEmailAndSendCode(email: String) async throws -> (available: Bool, message: String?) {
+        let request = SendCodeRequest(
+            identifier: email,
+            channel: "email",
+            purpose: "registration"
+        )
+        
+        do {
+            let _: SendCodeResponse = try await NetworkService.shared.post(
+                path: "/api/auth/send-code",
+                body: request
+            )
+            // Success — email is available and code was sent
+            return (true, nil)
+        } catch let error as APIError {
+            switch error {
+            case .badRequest(let msg):
+                if msg.lowercased().contains("already registered") {
+                    return (false, "This email is already registered. Try signing in instead.")
+                }
+                return (false, msg)
+            case .rateLimited:
+                return (false, "Too many attempts. Please wait a moment.")
+            default:
+                throw error
+            }
+        }
+    }
+    
+    // MARK: - Verify OTP
+    
+    struct VerifyCodeRequest: Encodable {
+        let identifier: String
+        let code: String
+        let purpose: String
+    }
+    
+    func verifyCode(email: String, code: String, purpose: String = "verify_email") async throws {
+        let request = VerifyCodeRequest(
+            identifier: email,
+            code: code,
+            purpose: purpose
+        )
+        
+        let response: VerifyCodeResponse = try await NetworkService.shared.post(
+            path: "/api/auth/verify-code",
+            body: request
+        )
+        
+        // Upgrade to full token if provided
+        if let fullToken = response.fullAccessToken {
+            try await KeychainService.shared.upgradeToFullToken(fullToken)
+        }
+        
+        // Refresh user to get updated email_verified
+        try await fetchCurrentUser()
+    }
+    
+    // MARK: - Reset Password
+    
+    struct ResetPasswordRequest: Encodable {
+        let identifier: String
+        let code: String
+        let newPassword: String
+        
+        enum CodingKeys: String, CodingKey {
+            case identifier
+            case code
+            case newPassword = "new_password"
+        }
+    }
+    
+    struct ResetPasswordResponse: Decodable {
+        let success: Bool
+        let message: String?
+    }
+    
+    func resetPassword(email: String, code: String, newPassword: String) async throws {
+        let request = ResetPasswordRequest(
+            identifier: email,
+            code: code,
+            newPassword: newPassword
+        )
+        
+        let _: ResetPasswordResponse = try await NetworkService.shared.post(
+            path: "/api/auth/reset-password",
+            body: request
+        )
+    }
+    
+    // MARK: - Google OAuth
+    
+    struct GoogleOAuthRequest: Encodable {
+        let idToken: String
+    }
+    
+    func googleSignIn(idToken: String) async throws -> Bool {
+        let request = GoogleOAuthRequest(idToken: idToken)
+        
+        let response: TokenResponse = try await NetworkService.shared.post(
+            path: "/api/auth/oauth/google",
+            body: request
+        )
+        
+        // OAuth users always get full scope - Google already verified email
+        try await KeychainService.shared.saveToken(
+            response.token,
+            scope: .full,
+            userId: response.userId,
+            refreshToken: response.refreshToken
+        )
+        
+        // Check if user needs to set username - either explicit flag or null username
+        let needsUsername = response.requiresUsername == true || response.username == nil
+        
+        if needsUsername {
+            requiresUsernameSetup = true
+        } else {
+            try await fetchCurrentUser()
+            // Associate user with RevenueCat for subscription management
+            if let userId = currentUser?.id {
+                await SubscriptionService.shared.login(appUserID: userId)
+            }
+            // Register push token now that we're authenticated
+            await PushNotificationService.shared.retryTokenRegistration()
+        }
+        
+        return needsUsername
+    }
+    
+    // MARK: - Apple OAuth
+    
+    struct AppleOAuthRequest: Encodable {
+        let identityToken: String
+        let authorizationCode: String
+        let fullName: String?
+        let email: String?
+    }
+    
+    func appleSignIn(
+        identityToken: String,
+        authorizationCode: String,
+        fullName: String? = nil,
+        email: String? = nil
+    ) async throws -> Bool {
+        let request = AppleOAuthRequest(
+            identityToken: identityToken,
+            authorizationCode: authorizationCode,
+            fullName: fullName,
+            email: email
+        )
+        
+        let response: TokenResponse = try await NetworkService.shared.post(
+            path: "/api/auth/oauth/apple",
+            body: request
+        )
+        
+        // OAuth users always get full scope - Apple already verified email
+        try await KeychainService.shared.saveToken(
+            response.token,
+            scope: .full,
+            userId: response.userId,
+            refreshToken: response.refreshToken
+        )
+        
+        // Check if user needs to set username - either explicit flag or null username
+        let needsUsername = response.requiresUsername == true || response.username == nil
+        
+        if needsUsername {
+            requiresUsernameSetup = true
+        } else {
+            try await fetchCurrentUser()
+            // Associate user with RevenueCat for subscription management
+            if let userId = currentUser?.id {
+                await SubscriptionService.shared.login(appUserID: userId)
+            }
+            // Register push token now that we're authenticated
+            await PushNotificationService.shared.retryTokenRegistration()
+        }
+        
+        return needsUsername
+    }
+    
+    // MARK: - Set Username (OAuth flow)
+    
+    struct SetUsernameRequest: Encodable {
+        let username: String
+        let tempToken: String
+    }
+    
+    func setUsername(_ username: String) async throws {
+        guard let (token, _) = await KeychainService.shared.getToken() else {
+            throw APIError.unauthorized
+        }
+        
+        let request = SetUsernameRequest(username: username, tempToken: token)
+        
+        let _: EmptyResponse = try await NetworkService.shared.post(
+            path: "/api/auth/set-username",
+            body: request
+        )
+        
+        requiresUsernameSetup = false
+        try await fetchCurrentUser()
+    }
+    
+    struct EmptyResponse: Decodable {}
+    
+    // MARK: - Check Username Availability
+    
+    struct UsernameCheckResponse: Decodable {
+        let available: Bool
+        let suggestion: String?
+    }
+    
+    func checkUsernameAvailability(_ username: String) async throws -> Bool {
+        let response: UsernameCheckResponse = try await NetworkService.shared.get(
+            path: "/api/auth/check-username",
+            queryItems: [URLQueryItem(name: "username", value: username)]
+        )
+        return response.available
+    }
+    
+    // MARK: - Fetch User
+    
+    func fetchCurrentUser() async throws {
+        do {
+            currentUser = try await NetworkService.shared.get(path: "/api/users/me")
+            cacheUserProfile(currentUser)  // Persist for offline boot
+            
+            // Forward server-granted premium status (e.g. admin accounts)
+            if let user = currentUser {
+                await SubscriptionService.shared.setServerPremiumStatus(user.isPremium)
+            }
+            
+            // Hydrate notification + privacy settings from server (fire-and-forget)
+            Task { await hydrateSettingsFromServer() }
+        } catch APIError.restricted {
+            // Restricted token can still fetch basic user info
+            throw APIError.restricted
+        } catch APIError.usernameRequired {
+            // User needs to set username first
+            requiresUsernameSetup = true
+            throw APIError.usernameRequired
+        }
+    }
+    
+    // MARK: - Settings Hydration
+    
+    /// Pull notification + privacy settings from server and write to @AppStorage.
+    /// Ensures preferences survive reinstall / device change.
+    private func hydrateSettingsFromServer() async {
+        struct SettingsResponse: Decodable {
+            let notification: NotifPrefs
+            let privacy: PrivacyPrefs
+        }
+        struct NotifPrefs: Decodable {
+            let pushEnabled: Bool
+            let messagesEnabled: Bool
+            let friendRequestsEnabled: Bool
+            let likesCommentsEnabled: Bool
+            let soundsEnabled: Bool
+            let messagePreview: Bool
+            // Bug 9 fix: Removed explicit snake_case raw values (e.g. = "push_enabled").
+            // NetworkService decoder uses .convertFromSnakeCase → push_enabled becomes pushEnabled.
+            // The old explicit keys caused double conversion: decoder already converted, then
+            // CodingKey mapped BACK to snake_case, so nothing matched.
+            enum CodingKeys: String, CodingKey {
+                case pushEnabled, messagesEnabled, friendRequestsEnabled
+                case likesCommentsEnabled, soundsEnabled, messagePreview
+            }
+            init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                pushEnabled = (try? c.decode(Bool.self, forKey: .pushEnabled)) ?? true
+                messagesEnabled = (try? c.decode(Bool.self, forKey: .messagesEnabled)) ?? true
+                friendRequestsEnabled = (try? c.decode(Bool.self, forKey: .friendRequestsEnabled)) ?? true
+                likesCommentsEnabled = (try? c.decode(Bool.self, forKey: .likesCommentsEnabled)) ?? true
+                soundsEnabled = (try? c.decode(Bool.self, forKey: .soundsEnabled)) ?? true
+                messagePreview = (try? c.decode(Bool.self, forKey: .messagePreview)) ?? true
+            }
+        }
+        struct PrivacyPrefs: Decodable {
+            let showOnlineStatus: Bool
+            let readReceipts: Bool
+            let whoCanMessage: String
+            let whoCanSeeProfile: String
+            // Bug 9 fix: Same fix — removed explicit snake_case raw values
+            enum CodingKeys: String, CodingKey {
+                case showOnlineStatus, readReceipts, whoCanMessage, whoCanSeeProfile
+            }
+            init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                showOnlineStatus = (try? c.decode(Bool.self, forKey: .showOnlineStatus)) ?? true
+                readReceipts = (try? c.decode(Bool.self, forKey: .readReceipts)) ?? true
+                whoCanMessage = (try? c.decode(String.self, forKey: .whoCanMessage)) ?? "everyone"
+                whoCanSeeProfile = (try? c.decode(String.self, forKey: .whoCanSeeProfile)) ?? "public"
+            }
+        }
+        
+        do {
+            let settings: SettingsResponse = try await NetworkService.shared.get(
+                path: "/api/users/me/settings"
+            )
+            let d = UserDefaults.standard
+            // Notification preferences
+            d.set(settings.notification.pushEnabled, forKey: "pushNotifications")
+            d.set(settings.notification.messagesEnabled, forKey: "messageNotifications")
+            d.set(settings.notification.friendRequestsEnabled, forKey: "friendRequestNotifications")
+            d.set(settings.notification.likesCommentsEnabled, forKey: "likesCommentsNotifications")
+            d.set(settings.notification.soundsEnabled, forKey: "soundsEnabled")
+            d.set(settings.notification.messagePreview, forKey: "messagePreview")
+            // Privacy preferences
+            d.set(settings.privacy.showOnlineStatus, forKey: "showOnlineStatus")
+            d.set(settings.privacy.readReceipts, forKey: "readReceipts")
+            d.set(settings.privacy.whoCanMessage, forKey: "whoCanMessage")
+            d.set(settings.privacy.whoCanSeeProfile, forKey: "whoCanSeeProfile")
+            
+            #if DEBUG
+            print("✅ [Auth] Settings hydrated from server")
+            #endif
+        } catch {
+            // Non-fatal — local @AppStorage values remain as fallback
+            #if DEBUG
+            print("⚠️ [Auth] Failed to hydrate settings: \(error)")
+            #endif
+        }
+    }
+    
+    // MARK: - Offline Profile Cache
+    
+    private static let cachedUserKey = "cachedUserProfile"
+    
+    private func cacheUserProfile(_ user: User?) {
+        guard let user else { return }
+        if let data = try? JSONEncoder().encode(user) {
+            UserDefaults.standard.set(data, forKey: Self.cachedUserKey)
+        }
+    }
+    
+    func loadCachedUserProfile() -> User? {
+        guard let data = UserDefaults.standard.data(forKey: Self.cachedUserKey) else { return nil }
+        return try? JSONDecoder().decode(User.self, from: data)
+    }
+    
+    // MARK: - Logout
+    
+    func logout() async throws {
+        AuthLogger.log(.logoutDecision, detail: "explicit logout")
+        
+        // 1. Clear keychain (token)
+        // Use try? — keychain failure must not block remaining cleanup
+        try? await KeychainService.shared.deleteAll()
+        
+        // 2. Clear SQLite database (messages, conversations, notifications, posts)
+        try? await DatabaseService.shared.clearAllData()
+        
+        // 2b. Dismiss audio playback (stop any playing audio)
+        await MainActor.run { AudioPlaybackStore.shared.dismiss() }
+        
+        // 3. Stop mesh/presence services (must happen before clearing stores)
+        await MainActor.run {
+            BLEMeshEngine.shared.stop()
+            BackgroundMeshManager.shared.stopBackgroundLocationAnchor()
+            PresenceService.shared.stopHeartbeat()
+        }
+        
+        // 4. Clear in-memory stores
+        await MainActor.run {
+            ConversationStore.shared.conversations = []
+            FeedStore.shared.mergedLocalPosts = []
+            FeedStore.shared.friendsPosts = []
+            FeedStore.shared.recommendedPosts = []
+            NotificationStore.shared.notifications = []
+            ContactsService.shared.contacts = []
+            ContactsService.shared.matches = []
+            BlockService.shared.clearBlockList()
+            ModerationService.shared.clearActions()
+        }
+        
+        // 4. Clear image caches
+        URLCache.shared.removeAllCachedResponses()
+        
+        // 5. Clear session-related user defaults (preserve design/language/onboarding prefs)
+        let sessionKeys = [
+            "cachedUserProfile",
+            "pushNotifications", "messageNotifications", "friendRequestNotifications",
+            "likesCommentsNotifications", "soundsEnabled", "messagePreview",
+            "showOnlineStatus", "readReceipts", "whoCanMessage", "whoCanSeeProfile",
+            "hasSeenPhoneCollection", "twoFactorEnabled",
+            "appLockEnabled", "appLockTimeout", "hideInAppSwitcher",
+            "discovery_suggestions_cache", "discovery_suggestions_timestamp",
+            "raven_friends_cache", "raven_contact_matches_cache"
+        ]
+        for key in sessionKeys {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
+        
+        // 7. Clear RevenueCat identity
+        await SubscriptionService.shared.logout()
+        
+        // 8. Reset auth state
+        currentUser = nil
+        requiresUsernameSetup = false
+        
+        #if DEBUG
+        print("[AuthService] Logged out - all data cleared")
+        #endif
+    }
+    
+    // MARK: - Graceful Re-Auth (Network Resilience)
+    
+    /// Called when API requests fail with 401 after exhausted refresh.
+    /// Instead of immediately logging out, tries one more re-validation.
+    /// Only logs out on confirmed auth failure — NOT on network errors.
+    func handleForceReAuth() async {
+        AuthLogger.log(.logoutDecision, detail: "handleForceReAuth called — validating session")
+        
+        // 1. Do we even have credentials?
+        guard await KeychainService.shared.getRefreshToken() != nil else {
+            AuthLogger.log(.logoutDecision, detail: "no refresh token — must logout")
+            try? await logout()
+            bootState = .unauthenticated
+            return
+        }
+        
+        // 2. Try to fetch user (will auto-refresh via NetworkService if needed)
+        do {
+            try await fetchCurrentUser()
+            // Session is still valid — false alarm
+            AuthLogger.log(.networkErrorIgnored, detail: "session re-validated successfully — NOT logging out")
+        } catch let error as APIError where error.isAuthError {
+            // Confirmed auth failure from server → must logout
+            AuthLogger.log(.logoutDecision, detail: "confirmed auth error: \(error) — logging out")
+            try? await logout()
+            bootState = .unauthenticated
+        } catch {
+            // Network/timeout/DNS error — keep user logged in with cached profile
+            if let cached = loadCachedUserProfile() {
+                currentUser = cached
+                
+                // Restore premium status for offline use
+                Task { @MainActor in
+                    SubscriptionService.shared.setServerPremiumStatus(cached.isPremium)
+                }
+                
+                AuthLogger.log(.networkErrorIgnored, detail: "network error during re-auth, using cached profile for \(cached.username ?? "user")")
+            } else {
+                AuthLogger.log(.networkErrorIgnored, detail: "network error + no cached profile — staying authenticated with stale state")
+            }
+            // Do NOT change bootState or logout — user stays logged in
+        }
+    }
+    
+    // MARK: - Check Session (Bootstrap)
+    
+    func checkExistingSession() async {
+        guard await KeychainService.shared.getToken() != nil else {
+            bootState = .unauthenticated
+            return
+        }
+        
+        // 🚀 FAST PATH: لاگین آنی از روی کَش (بدون انتظار برای اینترنت)
+        if let cached = loadCachedUserProfile() {
+            currentUser = cached
+            bootState = .authenticated // خروج فوری از صفحه اسپلش
+            
+            Task { @MainActor in
+                SubscriptionService.shared.setServerPremiumStatus(cached.isPremium)
+            }
+            
+            // گرفتن اطلاعات آپدیت‌شده در پس‌زمینه، بدون اینکه کاربر متوجه شود
+            Task.detached(priority: .utility) {
+                try? await Task.sleep(nanoseconds: 500_000_000) // اجازه بدهید UI کامل لود شود
+                do {
+                    try await self.fetchCurrentUser()
+                } catch APIError.usernameRequired {
+                    await MainActor.run { self.requiresUsernameSetup = true }
+                } catch let error as APIError where error.isAuthError {
+                    try? await self.logout()
+                    await MainActor.run { self.bootState = .unauthenticated }
+                } catch {
+                    // در صورت قطعی اینترنت، اپلیکیشن با همان کش به کار خود ادامه می‌دهد
+                }
+            }
+            return
+        }
+        
+        // اگر کَش خالی بود (مثل نصب اولیه اپلیکیشن)
+        do {
+            try await fetchCurrentUser()
+            bootState = .authenticated
+        } catch APIError.usernameRequired {
+            requiresUsernameSetup = true
+            bootState = .authenticated
+        } catch let error as APIError where error.isAuthError {
+            #if DEBUG
+            print("🔒 [Auth] Auth error — logging out: \(error)")
+            #endif
+            try? await logout()
+            bootState = .unauthenticated
+        } catch {
+            // Network/timeout error — no cache available
+            bootState = .unauthenticated
+            #if DEBUG
+            print("⚠️ [Auth] No cache + network error — showing login")
+            #endif
+        }
+    }
+}
+
+// Note: TokenResponse and VerifyCodeResponse are defined in Models/User.swift
