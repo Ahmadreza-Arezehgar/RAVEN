@@ -6,7 +6,7 @@ We take security seriously at RAVEN. If you discover a security vulnerability, p
 
 ### How to Report
 
-- **Email**: security@hybridmessenger.com
+- **Email**: info@raven-messenger.com
 - **Subject**: `[SECURITY] Brief description`
 - **Do NOT** open a public GitHub issue for security vulnerabilities
 

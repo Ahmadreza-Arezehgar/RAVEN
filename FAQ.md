@@ -423,21 +423,21 @@ Access via your web browser for cross-platform communication.
 ### How do I report a bug?
 
 Contact us at:
-- **Email**: support@hybridmessenger.com
+- **Email**: info@raven-messenger.com
 - **Subject**: Bug Report
 - Include: Device model, iOS version, steps to reproduce, screenshots
 
 ### How do I request a feature?
 
 We welcome feature requests!
-- **Email**: feedback@hybridmessenger.com
+- **Email**: info@raven-messenger.com
 - **Subject**: Feature Request
 - Describe your idea and use case
 
 ### How do I report a security issue?
 
 For security concerns:
-- **Email**: security@hybridmessenger.com
+- **Email**: info@raven-messenger.com
 - **Response**: We aim to respond within 24-48 hours
 - **Disclosure**: We follow responsible disclosure practices
 
@@ -572,7 +572,7 @@ Absolutely not. RAVEN does not sell, rent, or share your personal data with thir
 
 ---
 
-**سؤال دارید؟** با ما در ارتباط باشید: support@hybridmessenger.com
+**سؤال دارید؟** با ما در ارتباط باشید: info@raven-messenger.com
 
 ---
 
