@@ -1,6 +1,8 @@
-# 🐦‍⬛ RAVEN — Secure Mesh Messenger
+# 🐦‍⬛ RAVEN — The Unstoppable Mesh Messenger
 
-**RAVEN** is a privacy-first messaging platform that combines cloud-based messaging with **offline mesh networking** via Bluetooth. Messages are **end-to-end encrypted** using military-grade cryptography, and can be delivered even without internet using multi-hop relay.
+**RAVEN** is the unstoppable mesh messenger. Send encrypted messages without internet using peer-to-peer mesh networking. RAVEN is a privacy-first messaging platform that combines cloud-based messaging with **offline mesh networking** via Bluetooth. Messages are **end-to-end encrypted** using military-grade cryptography, and can be delivered even without internet using multi-hop relay.
+
+🌐 **Website:** [hybridmessenger.com](https://hybridmessenger.com)
 
 > **Why open source?** We believe transparency is the foundation of trust. By publishing our security-critical code, we invite the community to verify that RAVEN handles your data responsibly.
 
