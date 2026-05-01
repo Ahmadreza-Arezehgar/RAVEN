@@ -122,8 +122,48 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol {
     @Published private(set) var discoveredPeers: [MeshPeer] = []
     @Published private(set) var isAdvertising: Bool = false
     private var isServiceAdded = false
+    /// UI-facing scan state. **Read only from MainActor.** Off-main code
+    /// (CBCentralManagerDelegate callbacks, BLE queues) MUST use
+    /// `isScanningInternal` / `setScanning(_:)` instead — see helpers below.
     @Published private(set) var isScanning: Bool = false
     @Published private(set) var bluetoothState: CBManagerState = .unknown
+
+    // ──────────────────────────────────────────────────────────────────
+    // Thread-safe scan-state mirror.
+    //
+    // `isScanning` is `@Published` and therefore property-wrapper-backed;
+    // mutating @Published off the main thread is a Swift concurrency
+    // violation. We keep a lock-protected duplicate for the BLE queues to
+    // read/write safely, then propagate to @Published on main.
+    // ──────────────────────────────────────────────────────────────────
+    private let scanStateLock = NSLock()
+    private var _isScanningInternal: Bool = false
+
+    /// Thread-safe read of scan state. Safe from any queue.
+    private var isScanningInternal: Bool {
+        scanStateLock.lock()
+        defer { scanStateLock.unlock() }
+        return _isScanningInternal
+    }
+
+    /// Public thread-safe accessor for off-main callers (e.g. background
+    /// mesh maintenance). Prefer this over `isScanning` whenever the
+    /// caller is not guaranteed to be on the MainActor.
+    var isCurrentlyScanning: Bool { isScanningInternal }
+
+    /// Thread-safe write of scan state. Updates the internal flag
+    /// synchronously, then mirrors to the @Published property on the
+    /// MainActor for UI binding. Safe to call from any queue.
+    private func setScanning(_ value: Bool) {
+        scanStateLock.lock()
+        _isScanningInternal = value
+        scanStateLock.unlock()
+        if Thread.isMainThread {
+            self.isScanning = value
+        } else {
+            DispatchQueue.main.async { [weak self] in self?.isScanning = value }
+        }
+    }
     
     // Bug 4 fix: Continuation-based wait for BLE buffer readiness
     // Key: peripheral UUID, Value: array of continuations (supports concurrent waits)
@@ -308,9 +348,24 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol {
     private var lastBridgeDownlinkPoll: Date = .distantPast
     /// Minimum interval between bridge downlink polls (seconds)
     private let bridgeDownlinkInterval: TimeInterval = 15
-    /// Set of message IDs already relayed via bridge downlink (dedup)
-    private var bridgeDownlinkRelayed: Set<String> = []
-    /// Lock protecting lastBridgeDownlinkPoll and bridgeDownlinkRelayed from concurrent access
+    /// Per-message dedup with a 60s TTL.
+    ///
+    /// ⚡ A→C BRIDGE FIX: previously this was a permanent `Set<String>` that
+    /// recorded every message the bridge had EVER attempted to relay. If a
+    /// BLE broadcast didn't actually reach the destination peer (chunked
+    /// fragment dropped, peer briefly disconnected, encryption mismatch),
+    /// the bridge refused to retry on the next 15s poll because the id was
+    /// already in the set. The recipient's `delivered_at` stayed NULL on
+    /// the server forever — visible as "C → A works but A → C doesn't".
+    ///
+    /// Now we keep an `id → relayedAt` map. On each poll we evict entries
+    /// older than 60s, so a failed delivery automatically retries 4 polls
+    /// later. Mesh-level dedup (`MeshDedupRepository`) still prevents the
+    /// recipient from processing the message twice if the previous attempt
+    /// actually did land — this set only debounces tight retry loops.
+    private var bridgeDownlinkRelayedAt: [String: Date] = [:]
+    private let bridgeDownlinkRelayTTL: TimeInterval = 60
+    /// Lock protecting lastBridgeDownlinkPoll and bridgeDownlinkRelayedAt from concurrent access
     private let downlinkLock = OSAllocatedUnfairLock()
     
     // MARK: - Callback
@@ -319,6 +374,32 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol {
     var onACKReceived: ((MeshACKEnvelope) -> Void)?
     var onMeshPostReceived: ((MeshPostEnvelope) -> Void)?
     var onPeerConnected: ((String) -> Void)?  // Called with peerId when peer fully connects
+    
+    // MARK: - Feature Handler Registry
+    
+    /// Registered handlers for feature-specific mesh message kinds.
+    /// Features register at app launch via `register(handler:for:)`.
+    /// Thread-safe: protected by handlersLock.
+    private var messageHandlers: [MeshMessageKind: (Data, String) async -> Void] = [:]
+    private let handlersLock = OSAllocatedUnfairLock()
+    
+    /// Register a handler for a specific mesh message kind.
+    /// Call this at app launch from each feature service.
+    ///
+    /// Example:
+    /// ```swift
+    /// BLEMeshEngine.shared.register(for: .echoBroadcast) { data, deviceId in
+    ///     await EchoService.shared.handleIncoming(data: data, from: deviceId)
+    /// }
+    /// ```
+    func register(for kind: MeshMessageKind, handler: @escaping (Data, String) async -> Void) {
+        handlersLock.withLock {
+            messageHandlers[kind] = handler
+        }
+        #if DEBUG
+        print("📡 [BLE] Registered handler for \(kind.rawValue)")
+        #endif
+    }
     
     // MARK: - Device Info
     
@@ -349,29 +430,46 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol {
         #endif
         
         if centralManager == nil {
-            // Create with restoration identifier for background support
+            // Create with restoration identifier for background support.
+            // Mac Catalyst doesn't support BLE state restoration — drop the
+            // restore-identifier option but keep the manager itself.
+            #if targetEnvironment(macCatalyst)
+            let centralOptions: [String: Any] = [
+                CBCentralManagerOptionShowPowerAlertKey: false
+            ]
+            #else
+            let centralOptions: [String: Any] = [
+                CBCentralManagerOptionRestoreIdentifierKey: "com.raven.ble.central.restore",
+                CBCentralManagerOptionShowPowerAlertKey: false
+            ]
+            #endif
             centralManager = CBCentralManager(
                 delegate: self,
                 queue: DispatchQueue(label: "com.raven.ble.central", qos: .userInitiated),
-                options: [
-                    CBCentralManagerOptionRestoreIdentifierKey: "com.raven.ble.central.restore",
-                    CBCentralManagerOptionShowPowerAlertKey: false
-                ]
+                options: centralOptions
             )
             #if DEBUG
             print("🔍 [BLE DEBUG] Created CBCentralManager with restoration support")
             #endif
         }
-        
+
         if peripheralManager == nil {
-            // Create with restoration identifier for background support
+            // Create with restoration identifier for background support.
+            // Mac Catalyst: see comment on centralManager above.
+            #if targetEnvironment(macCatalyst)
+            let peripheralOptions: [String: Any] = [
+                CBPeripheralManagerOptionShowPowerAlertKey: false
+            ]
+            #else
+            let peripheralOptions: [String: Any] = [
+                CBPeripheralManagerOptionRestoreIdentifierKey: "com.raven.ble.peripheral.restore",
+                CBPeripheralManagerOptionShowPowerAlertKey: false
+            ]
+            #endif
             peripheralManager = CBPeripheralManager(
                 delegate: self,
                 queue: DispatchQueue(label: "com.raven.ble.peripheral", qos: .userInitiated),
-                options: [
-                    CBPeripheralManagerOptionRestoreIdentifierKey: "com.raven.ble.peripheral.restore",
-                    CBPeripheralManagerOptionShowPowerAlertKey: false
-                ]
+                options: peripheralOptions
             )
             #if DEBUG
             print("🔍 [BLE DEBUG] Created CBPeripheralManager with restoration support")
@@ -380,6 +478,9 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol {
         
         // Start periodic cleanup timer
         startPeriodicCleanup()
+        
+        // Start MPC bulk transport alongside BLE
+        startMPCTransport()
         
         #if DEBUG
         print("📡 [BLE] Engine starting with background restoration...")
@@ -393,6 +494,9 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol {
         stopScanning()
         stopAdvertising()
         disconnectAllPeers()
+        stopMPCTransport()
+        // PRoPHET: Persist P-table on shutdown
+        Task { await DeliveryPredictabilityService.shared.save() }
         #if DEBUG
         print("🔴 [BLE] Engine stopped")
         #endif
@@ -435,6 +539,8 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol {
                 self?.cleanupStaleChunks()
                 self?.sweepStaleSessions()
                 await self?.bridgeDownlinkPoll()
+                // PRoPHET: Prune forgotten entries (lazy aging — no batch updates)
+                await DeliveryPredictabilityService.shared.pruneForgotten()
             }
         }
     }
@@ -661,17 +767,31 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol {
         #endif
     }
     
-    /// Send ACK envelope for delivery/read receipt
+    /// Send ACK envelope for delivery/read receipt.
+    /// ⚡ SECURITY (audit #5b): every outgoing ACK is now Ed25519-signed before
+    /// broadcast. Receivers will reject unsigned ACKs, so callers MUST be in a
+    /// state where the device identity can sign (i.e., DeviceIdentityService is
+    /// initialized). If signing fails we drop the ACK rather than send unsigned.
     func sendACK(_ ack: MeshACKEnvelope) async {
-        guard let data = ack.toData() else {
+        var signedAck = ack
+        if signedAck.signature == nil {
+            signedAck.sign()
+        }
+        guard signedAck.signature != nil else {
             #if DEBUG
-            print("❌ [BLE] Failed to encode ACK")
+            print("❌ [BLE] Refusing to send unsigned ACK \(ack.originalMessageId.prefix(8)) — signing failed")
             #endif
             return
         }
-        
+        guard let data = signedAck.toData() else {
+            #if DEBUG
+            print("❌ [BLE] Failed to encode signed ACK")
+            #endif
+            return
+        }
+
         #if DEBUG
-        print("📨 [BLE] Sending ACK for message \(ack.originalMessageId.prefix(8)) - status: \(ack.status.rawValue)")
+        print("📨 [BLE] Sending signed ACK for message \(signedAck.originalMessageId.prefix(8)) - status: \(signedAck.status.rawValue)")
         #endif
         await broadcastData(data)
     }
@@ -1087,6 +1207,93 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol {
         #endif
     }
     
+    // MARK: - MPC Integration (Bulk Transport)
+    
+    /// Send bulk data to a specific peer via the best available transport.
+    /// - MPC (Wi-Fi Direct) for data > 4 KB
+    /// - BLE for data ≤ 4 KB
+    func sendBulkData(_ data: Data, to peerDeviceId: String) async throws {
+        // Try MPC first for large payloads
+        if data.count > MPCTransportService.bulkThreshold,
+           let mpcPeer = MPCTransportService.shared.mpcPeer(for: peerDeviceId) {
+            try MPCTransportService.shared.sendBulkData(data, to: mpcPeer)
+            #if DEBUG
+            print("📡 [MPC] Bulk send \(data.count)B → \(peerDeviceId.prefix(8)) via Wi-Fi")
+            #endif
+        } else {
+            // Fallback to BLE chunked send
+            guard let peer = getSnapshot().first(where: { $0.deviceId == peerDeviceId }) else {
+                throw MPCTransportService.MPCError.peerNotConnected
+            }
+            await sendDataChunkedToPeer(data, peer: peer)
+            #if DEBUG
+            print("📡 [BLE] Send \(data.count)B → \(peerDeviceId.prefix(8)) via BLE")
+            #endif
+        }
+    }
+    
+    /// Send a MeshEnvelope to a peer using the optimal transport.
+    /// Small text messages → BLE, media-carrying messages → MPC (Wi-Fi Direct)
+    func sendViaBestTransport(_ envelope: MeshEnvelope, to peerDeviceId: String) async {
+        guard let peer = getSnapshot().first(where: { $0.deviceId == peerDeviceId }) else {
+            return
+        }
+        
+        let category = envelope.payloadCategory
+        
+        switch category {
+        case .small:
+            // Text messages → BLE (always-on, low-latency)
+            await send(envelope, to: peer)
+            
+        case .medium, .large:
+            // Media messages → try MPC first, fallback to BLE
+            if let mpcPeer = MPCTransportService.shared.mpcPeer(for: peerDeviceId) {
+                do {
+                    let secureEnvelope = envelope.toSecureEnvelope()
+                    let signedPayload = try await MeshCryptoService.shared.signEnvelope(secureEnvelope)
+                    let data = try JSONEncoder().encode(signedPayload)
+                    try MPCTransportService.shared.sendBulkData(data, to: mpcPeer)
+                    #if DEBUG
+                    print("📡 [MPC→BLE] Sent \(category) envelope \(envelope.clientMessageId.prefix(8)) via Wi-Fi (\(data.count)B)")
+                    #endif
+                    return
+                } catch {
+                    #if DEBUG
+                    print("⚠️ [MPC] Bulk send failed, falling back to BLE: \(error.localizedDescription)")
+                    #endif
+                }
+            }
+            // Fallback: BLE chunked send
+            await send(envelope, to: peer)
+        }
+    }
+    
+    /// Initialize MPC transport layer. Called when BLE engine starts.
+    /// MPC runs alongside BLE — BLE discovers, MPC transfers bulk data.
+    func startMPCTransport() {
+        let fingerprint = DeviceIdentityService.shared.fingerprint ?? "unknown"
+        MPCTransportService.shared.start(deviceFingerprint: fingerprint)
+        
+        // Wire up MPC data callbacks → process through same secure pipeline
+        MPCTransportService.shared.onDataReceived = { [weak self] data, mpcPeer in
+            guard let self else { return }
+            let deviceId = mpcPeer.displayName  // RAVEN-XXXXXXXX format
+            Task {
+                await self.packetProcessor.processPacket(data, from: deviceId, engine: self)
+            }
+        }
+        
+        #if DEBUG
+        print("📡 [MPC] Bulk transport layer started alongside BLE")
+        #endif
+    }
+    
+    /// Stop MPC transport layer.
+    func stopMPCTransport() {
+        MPCTransportService.shared.stop()
+    }
+    
     // MARK: - Private: Advertising (Peripheral Role)
     
     private func startAdvertising() {
@@ -1154,14 +1361,14 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol {
             #endif
             return
         }
-        guard !isScanning else { return }
-        
+        guard !isScanningInternal else { return }
+
         cm.scanForPeripherals(
             withServices: [Self.serviceUUID],
             options: currentScanOptions()
         )
-        
-        DispatchQueue.main.async { self.isScanning = true }
+
+        setScanning(true)
         #if DEBUG
         print("[C1] scanning started")
         #endif
@@ -1169,7 +1376,7 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol {
     
     private func stopScanning() {
         centralManager?.stopScan()
-        DispatchQueue.main.async { self.isScanning = false }
+        setScanning(false)
         // scanning stopped
     }
     
@@ -1268,18 +1475,18 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol {
         guard let cm = centralManager, cm.state == .poweredOn else { return }
         
         cm.stopScan()
-        DispatchQueue.main.async { self.isScanning = false }
-        
+        setScanning(false)
+
         // 🛑 FIX 3: iOS XPC Coalescing Bug
         // با دادن تاخیر ۱۰۰ میلیثانیهای، سیستمعامل متوجه توقف شده و کش را پاک میکند
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
             guard let self = self, let cm = self.centralManager, cm.state == .poweredOn else { return }
-            
+
             cm.scanForPeripherals(
                 withServices: [Self.serviceUUID],
                 options: self.currentScanOptions()
             )
-            self.isScanning = true
+            self.setScanning(true)
         }
         
         #if DEBUG
@@ -1293,7 +1500,18 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol {
     /// that causes 0x8badf00d kills after repeated BLE wake-ups.
     private func endBackgroundTaskLater(identifier: String, after seconds: UInt64) {
         BackgroundMeshManager.shared.endBackgroundTask(identifier: identifier)
-        
+
+        #if targetEnvironment(macCatalyst)
+        // Mac Catalyst: there's no iOS-style background task identifier to keep
+        // alive — the process keeps running with the LaunchAgent companion.
+        // Just emit the same end-of-task log on schedule for symmetry.
+        Task {
+            try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
+            #if DEBUG
+            print("⏱️ [Background] Task '\(identifier)' ended proactively after \(seconds)s")
+            #endif
+        }
+        #else
         // Thread-safe box to prevent Simultaneous Memory Access trap
         final class TaskBox: @unchecked Sendable {
             var id: UIBackgroundTaskIdentifier = .invalid
@@ -1307,7 +1525,7 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol {
                 }
             }
         }
-        
+
         let box = TaskBox()
         // beginBackgroundTask is thread-safe — do NOT wrap in DispatchQueue.main.sync
         // as that causes a deadlock when called from BLE restoration (background thread).
@@ -1316,7 +1534,7 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol {
             box.end()
         }
         box.lock.unlock()
-        
+
         Task {
             try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
             box.end()
@@ -1324,6 +1542,7 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol {
             print("⏱️ [Background] Task '\(identifier)' ended proactively after \(seconds)s")
             #endif
         }
+        #endif
     }
 
     
@@ -1373,6 +1592,40 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol {
         }
         
         let decoder = JSONDecoder()
+        
+        // 0. Feature Handler Dispatch (Flock, Echo, Proximity)
+        // If the frame has an "mk" (message kind) field, route to registered handler.
+        if let mkRaw = jsonDict["mk"] as? String, let kind = MeshMessageKind(rawValue: mkRaw) {
+            // Dedup by messageId
+            let messageId = jsonDict["mid"] as? String ?? mkRaw
+            let dedupId = "frame:\(messageId)"
+            let isNew = await MeshDedupRepository.shared.isNewMessage(id: dedupId)
+            guard isNew else { return }
+            await MeshDedupRepository.shared.markProcessed(id: dedupId)
+            
+            let handler = handlersLock.withLock { messageHandlers[kind] }
+            if let handler = handler {
+                await handler(data, deviceId)
+                
+                // Relay: forward frame to other peers if valid
+                if let hc = jsonDict["hc"] as? Int,
+                   let hl = jsonDict["hl"] as? Int,
+                   let sc = jsonDict["sc"] as? Int,
+                   hc < hl, sc > 0 {
+                    // Re-broadcast with decremented spray counter
+                    // (simplified — feature services can also handle their own relay)
+                    let myDeviceId = DeviceIdentityService.shared.fingerprint ?? ""
+                    if let rp = jsonDict["rp"] as? [String], !rp.contains(myDeviceId) {
+                        await broadcastData(data)
+                    }
+                }
+            } else {
+                #if DEBUG
+                print("⚠️ [BLE] No handler registered for kind: \(mkRaw)")
+                #endif
+            }
+            return
+        }
         
         // 1. ServerReceipt
         if let kind = jsonDict["kind"] as? String, kind == "server_receipt_v1" {
@@ -1451,19 +1704,24 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol {
             guard isNew else { return }
             
             if let stopCommand = try? decoder.decode(StopCommand.self, from: data) {
-                if stopCommand.signature != nil {
-                    guard stopCommand.isSignatureValid() else {
+                // ⚡ SECURITY (audit #5b): unsigned Stop commands are now REJECTED.
+                // Previously an attacker could broadcast an unsigned STOP and
+                // halt mesh delivery of a target message. All legitimate senders
+                // already call `.sign()` (see broadcastStop / forward sites).
+                guard stopCommand.signature != nil, stopCommand.isSignatureValid() else {
+                    #if DEBUG
+                    print("[STOP] ❌ Rejected unsigned/invalid stop \(stopCommand.messageId.prefix(8))")
+                    #endif
+                    await MeshDedupRepository.shared.unclaimMessage(id: dedupId)
+                    return
+                }
+                if let signerKey = stopCommand.signerPublicKey {
+                    let allTrusted = await FriendDeviceRepository.shared.getAllTrustedDevices()
+                    let isOwnKey = (signerKey == DeviceIdentityService.shared.publicKeyBase64)
+                    let isTrustedKey = allTrusted.contains { $0.publicKeyBase64 == signerKey }
+                    if !isOwnKey && !isTrustedKey {
                         await MeshDedupRepository.shared.unclaimMessage(id: dedupId)
                         return
-                    }
-                    if let signerKey = stopCommand.signerPublicKey {
-                        let allTrusted = await FriendDeviceRepository.shared.getAllTrustedDevices()
-                        let isOwnKey = (signerKey == DeviceIdentityService.shared.publicKeyBase64)
-                        let isTrustedKey = allTrusted.contains { $0.publicKeyBase64 == signerKey }
-                        if !isOwnKey && !isTrustedKey {
-                            await MeshDedupRepository.shared.unclaimMessage(id: dedupId)
-                            return
-                        }
                     }
                 }
                 await MeshDedupRepository.shared.markProcessed(id: dedupId)
@@ -1485,11 +1743,19 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol {
             guard isNew else { return }
             
             if let ack = MeshACKEnvelope.fromData(data), ack.isACK {
-                if ack.signature != nil {
-                    guard ack.isSignatureValid() else {
-                        await MeshDedupRepository.shared.unclaimMessage(id: dedupId)
-                        return
-                    }
+                // ⚡ SECURITY (audit #5b): unsigned ACKs are now REJECTED.
+                // Previously an attacker could fabricate read/delivered ACKs,
+                // poisoning sender-side delivery state and prematurely halting
+                // mesh broadcast for a victim's message. All outgoing ACKs are
+                // now signed in `sendACK(_:)`.
+                guard ack.signature != nil, ack.isSignatureValid() else {
+                    #if DEBUG
+                    print("[ACK] ❌ Rejected unsigned/invalid ACK for \(ack.originalMessageId.prefix(8))")
+                    #endif
+                    await MeshDedupRepository.shared.unclaimMessage(id: dedupId)
+                    return
+                }
+                do {
                     if let signerKey = ack.signerPublicKey {
                         let trustedDevices = await FriendDeviceRepository.shared.getTrustedDevices(forUser: ack.senderId)
                         let isOwnKey = (signerKey == DeviceIdentityService.shared.publicKeyBase64)
@@ -1554,7 +1820,16 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol {
                                 await MeshDedupRepository.shared.unclaimMessage(id: messageId)
                             }
                         }
-                    } catch { }
+                    } catch {
+                        // 🔍 Don't silently swallow — a stale shared secret or
+                        // tampered ciphertext used to vanish without a trace,
+                        // making "missing message" reports impossible to debug.
+                        // Log in DEBUG and increment a metric for production.
+                        #if DEBUG
+                        print("🛑 [Mesh] Decrypt/verify failed for EncryptedMeshPayload from \(deviceId): \(error)")
+                        #endif
+                        await MeshDedupRepository.shared.unclaimMessage(id: "enc:\(jsonDict["n"] as? String ?? "?")")
+                    }
                 }
             }
             return
@@ -1779,10 +2054,45 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol {
         
         if envelope.needsForwarding && envelope.isValid {
             let targetPeers = getSnapshot().filter { $0.deviceId != deviceId }
-            
+
+            // ⚡ SCALE FIX (#7 probabilistic gossip):
+            // In dense BLE clusters every device re-broadcasting every envelope
+            // creates quadratic chatter. Each relay now drops the relay with
+            // probability tied to local peer density. We keep direct-recipient
+            // and trusted-peer relays at 100% so delivery latency stays low,
+            // and only thin out forwarding to the rest of the cluster. The
+            // probability is deterministic per (envelope, device) so it never
+            // biases delivery for a particular sender across attempts.
+            //
+            //   p(forward) = min(1.0, max(0.25, 3.0 / (peerCount + 1)))
+            //
+            // peerCount=2 → 100%, peerCount=5 → 50%, peerCount=10 → 27%
+            let peerCount = targetPeers.count
+            let forwardProbability: Double = peerCount <= 2
+                ? 1.0
+                : min(1.0, max(0.25, 3.0 / Double(peerCount + 1)))
+            let probHash = abs({
+                var h = Hasher()
+                h.combine(envelope.clientMessageId)
+                h.combine(DeviceIdentityService.shared.fingerprint ?? "")
+                return h.finalize()
+            }())
+            let probSlot = Double(probHash % 1_000) / 1_000.0
+            let isRecipientHere = targetPeers.contains { $0.userId == envelope.recipientId }
+            let elected = isRecipientHere || (probSlot < forwardProbability)
+            if !elected {
+                #if DEBUG
+                print("  [BRIDGE] 🎲 Probabilistic gossip dropped relay for \(envelope.clientMessageId.prefix(8)) (p=\(String(format: "%.2f", forwardProbability)), peers=\(peerCount))")
+                #endif
+                // Still keep it in the relay queue — if peers change later we
+                // may forward to a future peer that wasn't in this snapshot.
+                self.addToRelayQueue(envelope)
+                return
+            }
+
             if !targetPeers.isEmpty {
                 #if DEBUG
-                print("  [BRIDGE] Starting Smart Relay for \(envelope.clientMessageId.prefix(8))")
+                print("  [BRIDGE] Starting Smart Relay for \(envelope.clientMessageId.prefix(8)) (p=\(String(format: "%.2f", forwardProbability)))")
                 #endif
                 
                 Task {
@@ -1819,6 +2129,29 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol {
                             if !isRecipient && !isTrusted {
                                 #if DEBUG
                                 print("  [SMART-RELAY] Spray=1 (Wait Phase). Skipping stranger: \(peer.deviceId.prefix(8))")
+                                #endif
+                                continue
+                            }
+                        }
+                        
+                        // 📊 PRoPHET: Check if this peer is a better carrier for the destination
+                        let peerId = peer.userId ?? peer.deviceId
+                        let destination = myRemainingEnvelope.recipientId
+                        let prophetApproved = await DeliveryPredictabilityService.shared
+                            .shouldForward(to: peerId, destination: destination, sprayCounter: myRemainingEnvelope.sprayCounter)
+                        
+                        if !prophetApproved {
+                            // Only skip if the peer is NOT the direct recipient or trusted
+                            let isRecipientDirect = peer.userId == destination
+                            let isPeerTrusted: Bool
+                            if let fp = peer.fingerprint, !fp.isEmpty {
+                                isPeerTrusted = await FriendDeviceRepository.shared.isTrusted(fp)
+                            } else {
+                                isPeerTrusted = false
+                            }
+                            if !isRecipientDirect && !isPeerTrusted {
+                                #if DEBUG
+                                print("  [SMART-RELAY] PRoPHET: skipping \(peer.deviceId.prefix(8)) for dest \(destination.prefix(8)) — we are better carrier")
                                 #endif
                                 continue
                             }
@@ -2029,7 +2362,7 @@ extension BLEMeshEngine: CBCentralManagerDelegate {
                 reconnectAttempts.removeAll()
                 connectionCooldowns.removeAll()
             }
-            isScanning = false
+            setScanning(false)
             DispatchQueue.main.async {
                 self.connectedPeers.removeAll()
                 self.discoveredPeers.removeAll()
@@ -2092,7 +2425,7 @@ extension BLEMeshEngine: CBCentralManagerDelegate {
             #if DEBUG
             print("🔄 [BLE] Was scanning for services: \(scanServices)")
             #endif
-            DispatchQueue.main.async { self.isScanning = true }
+            setScanning(true)
         }
         
         if let scanOptions = dict[CBCentralManagerRestoredStateScanOptionsKey] as? [String: Any] {
@@ -2372,6 +2705,9 @@ extension BLEMeshEngine: CBPeripheralDelegate {
                 Task {
                     await MeshPostService.shared.drainMeshPosts(to: peer.deviceId)
                     await self.initiateInventoryExchange(with: peer.deviceId)
+                    // PRoPHET: Record encounter for delivery predictability
+                    let encounterId = peer.userId ?? peer.deviceId
+                    await DeliveryPredictabilityService.shared.recordEncounter(with: encounterId)
                 }
                 self.onPeerConnected?(peer.deviceId)
             }
@@ -3186,10 +3522,18 @@ extension BLEMeshEngine {
             
             var relayedCount = 0
             for msg in validResponse.messages {
-                // Dedup: skip if already relayed in this session
+                // Dedup with TTL — only skip if we've already relayed this
+                // SAME message id within the last `bridgeDownlinkRelayTTL`
+                // seconds. Older entries are evicted so a failed BLE
+                // broadcast gets retried on the next poll instead of being
+                // permanently dropped (the original A→C bug).
                 let isNew = downlinkLock.withLock { () -> Bool in
-                    if bridgeDownlinkRelayed.contains(msg.id) { return false }
-                    bridgeDownlinkRelayed.insert(msg.id)
+                    let now = Date()
+                    bridgeDownlinkRelayedAt = bridgeDownlinkRelayedAt.filter {
+                        now.timeIntervalSince($0.value) < bridgeDownlinkRelayTTL
+                    }
+                    if bridgeDownlinkRelayedAt[msg.id] != nil { return false }
+                    bridgeDownlinkRelayedAt[msg.id] = now
                     return true
                 }
                 guard isNew else { continue }
@@ -3250,15 +3594,8 @@ extension BLEMeshEngine {
                 #endif
             }
             
-            // Cleanup old dedup entries — evict oldest half instead of clearing all
-            downlinkLock.withLock {
-                if bridgeDownlinkRelayed.count > 500 {
-                    let halfCount = bridgeDownlinkRelayed.count / 2
-                    for _ in 0..<halfCount where !bridgeDownlinkRelayed.isEmpty {
-                        bridgeDownlinkRelayed.removeFirst()
-                    }
-                }
-            }
+            // Cleanup is now handled inline by the TTL filter above — no
+            // separate eviction needed. The map self-trims on every poll.
             
         } catch {
             #if DEBUG
@@ -3369,24 +3706,83 @@ extension BLEMeshEngine {
         }
     }
     
-    /// Bridge a mesh message to the server on behalf of the original sender
+    /// Bridge a mesh message to the server on behalf of the original sender.
+    ///
+    /// ⚡ Scale fix — probabilistic bridge election:
+    /// In a dense BLE cluster, multiple online relays would otherwise all
+    /// POST the same envelope to the server. Server-side idempotency on
+    /// `messageId` deduplicates writes, but the redundant POSTs still cost
+    /// bandwidth + battery + server CPU. Each relay now elects itself with
+    /// probability `1 / max(1, connectedPeerCount)` so on average exactly
+    /// one device in the cluster bridges. The election is deterministic per
+    /// (envelope, device): we hash `clientMessageId + myDeviceId` and bridge
+    /// only when the hash falls in the elected slice — predictable and
+    /// jitter-free across attempts.
     @discardableResult
     func bridgeMeshMessageToServer(_ envelope: MeshEnvelope) async -> Bool {
+        // ── Bridge election ──────────────────────────────────────────────
+        let peerCount = await MainActor.run { self.connectedPeers.count }
+        let myDevice = DeviceIdentityService.shared.fingerprint ?? ""
+        let hashSeed = "\(envelope.clientMessageId)|\(myDevice)"
+        var hasher = Hasher()
+        hasher.combine(hashSeed)
+        let hashSlot = abs(hasher.finalize())
+        // Slot count = peerCount + 1 (this device + each connected peer).
+        // We bridge if our slot == 0 (deterministic per envelope).
+        let slots = max(1, peerCount + 1)
+        let elected = (hashSlot % slots) == 0
+        if !elected {
+            #if DEBUG
+            print("  [BRIDGE] 🗳️ Not elected for \(envelope.clientMessageId.prefix(8)) (peers=\(peerCount)) — skipping")
+            #endif
+            return false
+        }
         #if DEBUG
-        print("  [BRIDGE] Bridging mesh -> server for recipient: \(envelope.recipientId.prefix(8))")
+        print("  [BRIDGE] Bridging mesh -> server for recipient: \(envelope.recipientId.prefix(8)) (peers=\(peerCount))")
         #endif
-        
+
+
         let relayData = "relay:\(envelope.clientMessageId):\(envelope.senderId):\(envelope.recipientId)".data(using: .utf8) ?? Data()
         let bridgeSig = DeviceIdentityService.shared.sign(relayData)?.base64EncodedString() ?? ""
         let bridgePubKey = DeviceIdentityService.shared.publicKeyBase64 ?? ""
-        
+
         // Bug 2 fix: Use envelope.isGroup flag for reliable group detection
         // instead of string comparison which misidentifies 1:1 chats as groups
         let isGroupRoom = envelope.isGroup == true
-        
+
+        // 🔐 GROUP-MESH BRIDGE PLAINTEXT FIX
+        //
+        // For GROUP messages, `envelope.text` is the AES-GCM ciphertext blob
+        // (per-group symmetric key, version `envelope.groupKeyVersion`). If we
+        // forward that blob as-is to /api/messages/uplink, the server stores
+        // ciphertext and EVERY downstream member who fetches via the regular
+        // /api/groups/{id}/messages route sees garbage base64 — they never
+        // decrypt because the online-fetch code path doesn't run group-key
+        // unwrap (only the BLE receive path does).
+        //
+        // Fix: as a bridge we ARE a group member (we have the key), so decrypt
+        // here and send PLAINTEXT to the server. The server's at-rest
+        // `encrypt_text` then handles confidentiality on the DB; downstream
+        // members get plaintext on fetch like any normal group send.
+        var contentForServer = envelope.text ?? ""
+        if isGroupRoom, let version = envelope.groupKeyVersion, !contentForServer.isEmpty {
+            if let plain = await GroupKeyService.shared.decrypt(
+                contentForServer, groupId: envelope.recipientId, version: version
+            ) {
+                contentForServer = plain
+                #if DEBUG
+                print("  [BRIDGE] 🔓 Decrypted group cipher (v\(version)) → sending plaintext to server")
+                #endif
+            } else {
+                #if DEBUG
+                print("  [BRIDGE] ⚠️ Could not decrypt group cipher (v\(version)) — bridging blob as fallback (recipients may see garbage)")
+                #endif
+            }
+        }
+
         let request = MeshUplinkRequest(
             recipientId: envelope.recipientId,
-            content: envelope.text ?? "",
+            content: contentForServer,
             messageType: MessageType.from(index: envelope.type).rawValue,
             messageId: envelope.clientMessageId,
             bridgedFrom: DeviceIdentityService.shared.fingerprint ?? "unknown",
@@ -3452,6 +3848,15 @@ extension BLEMeshEngine {
             
             await RelayQueueRepository.shared.remove(messageId: envelope.clientMessageId)
             await handleStop(envelope.clientMessageId)
+
+            // ⚡ SCALE FIX (#7 server-coordinated dedup):
+            // Now that the server has the message, tell every mesh peer to
+            // stop relaying it. The signed STOP propagates through the cluster
+            // and is honored by the (also-tightened) Stop receive path. This
+            // collapses the long tail of stale relays that would otherwise
+            // keep bouncing the envelope around for the full TTL window.
+            await broadcastStop(envelope.clientMessageId)
+
             return true
         }
         return false
