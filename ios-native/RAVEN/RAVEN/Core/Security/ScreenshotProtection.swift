@@ -45,6 +45,12 @@ final class ScreenshotObserver: ObservableObject {
     }
     
     private func setupObservers() {
+        #if targetEnvironment(macCatalyst)
+        // Mac Catalyst: UIApplication.userDidTakeScreenshotNotification,
+        // UIScreen.capturedDidChangeNotification and UIScreen.main.isCaptured
+        // are unavailable. Screenshot detection silently degrades to no-op.
+        return
+        #else
         // Screenshot notification (iOS 11+)
         let screenshotObserver = NotificationCenter.default.addObserver(
             forName: UIApplication.userDidTakeScreenshotNotification,
@@ -59,7 +65,7 @@ final class ScreenshotObserver: ObservableObject {
             }
         }
         notificationObservers.append(screenshotObserver)
-        
+
         // Screen recording detection
         let recordingObserver = NotificationCenter.default.addObserver(
             forName: UIScreen.capturedDidChangeNotification,
@@ -77,9 +83,10 @@ final class ScreenshotObserver: ObservableObject {
             }
         }
         notificationObservers.append(recordingObserver)
-        
+
         // Initial check
         isBeingCaptured = UIScreen.main.isCaptured
+        #endif
     }
     
     private func handleScreenshot() {
