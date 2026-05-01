@@ -1,3 +1,4 @@
+#if !targetEnvironment(macCatalyst)
 import ActivityKit
 import Foundation
 
@@ -8,7 +9,8 @@ struct AudioRoomAttributes: ActivityAttributes {
         var speakersCount: Int
         var isMuted: Bool
     }
-    
+
     var roomId: String
     var roomTitle: String
 }
+#endif
