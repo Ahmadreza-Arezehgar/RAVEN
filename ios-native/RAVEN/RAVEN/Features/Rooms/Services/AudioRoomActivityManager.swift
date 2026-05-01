@@ -1,3 +1,28 @@
+#if targetEnvironment(macCatalyst)
+import Foundation
+
+/// Stub for Mac Catalyst — Live Activities (ActivityKit) are not available
+/// on Mac. We expose the same `AudioRoomAttributes.ContentState` shape so
+/// existing call sites compile unchanged; all manager methods are no-ops.
+enum AudioRoomAttributes {
+    struct ContentState: Codable, Hashable {
+        var listenersCount: Int
+        var speakersCount: Int
+        var isMuted: Bool
+    }
+}
+
+@MainActor
+class AudioRoomActivityManager {
+    static let shared = AudioRoomActivityManager()
+
+    private init() {}
+
+    func startActivity(roomId: String, roomTitle: String, state: AudioRoomAttributes.ContentState) {}
+    func updateActivity(state: AudioRoomAttributes.ContentState) {}
+    func endActivity() {}
+}
+#else
 import ActivityKit
 import Foundation
 
@@ -6,24 +31,24 @@ import Foundation
 @MainActor
 class AudioRoomActivityManager {
     static let shared = AudioRoomActivityManager()
-    
+
     private var currentActivity: Activity<AudioRoomAttributes>?
     private var lastUpdate: Date = .distantPast
     private let throttleInterval: TimeInterval = 5
-    
+
     private init() {}
-    
+
     // MARK: - Start
-    
+
     func startActivity(roomId: String, roomTitle: String, state: AudioRoomAttributes.ContentState) {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
-        
+
         // End any existing activity first
         endActivity()
-        
+
         let attributes = AudioRoomAttributes(roomId: roomId, roomTitle: roomTitle)
         let content = ActivityContent(state: state, staleDate: nil)
-        
+
         do {
             currentActivity = try Activity.request(
                 attributes: attributes,
@@ -36,27 +61,27 @@ class AudioRoomActivityManager {
             #endif
         }
     }
-    
+
     // MARK: - Update (throttled)
-    
+
     func updateActivity(state: AudioRoomAttributes.ContentState) {
         guard let activity = currentActivity else { return }
-        
+
         let now = Date()
         guard now.timeIntervalSince(lastUpdate) >= throttleInterval else { return }
         lastUpdate = now
-        
+
         let content = ActivityContent(state: state, staleDate: nil)
         Task {
             await activity.update(content)
         }
     }
-    
+
     // MARK: - End
-    
+
     func endActivity() {
         guard let activity = currentActivity else { return }
-        
+
         let finalContent = ActivityContent(
             state: activity.content.state,
             staleDate: nil
@@ -67,3 +92,4 @@ class AudioRoomActivityManager {
         currentActivity = nil
     }
 }
+#endif
