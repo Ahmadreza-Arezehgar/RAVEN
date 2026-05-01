@@ -12,7 +12,9 @@
 import Foundation
 import CoreLocation
 import CoreBluetooth
+#if !targetEnvironment(macCatalyst)
 import BackgroundTasks
+#endif
 import UIKit
 import Combine
 
@@ -205,10 +207,15 @@ final class BackgroundMeshManager: NSObject, ObservableObject {
     }
     
     // MARK: - Beacon Region Monitoring
-    
+
+    #if targetEnvironment(macCatalyst)
+    // CLBeaconRegion / iBeacon monitoring is not supported on Mac Catalyst.
+    private func startBeaconRegionMonitoring() {}
+    private func stopBeaconRegionMonitoring() {}
+    #else
     private func startBeaconRegionMonitoring() {
         guard let locationManager = locationManager else { return }
-        
+
         // Create beacon region with our mesh service UUID
         let beaconConstraint = CLBeaconIdentityConstraint(uuid: Self.meshServiceUUID)
         let beaconRegion = CLBeaconRegion(
@@ -218,16 +225,16 @@ final class BackgroundMeshManager: NSObject, ObservableObject {
         beaconRegion.notifyOnEntry = true
         beaconRegion.notifyOnExit = true
         beaconRegion.notifyEntryStateOnDisplay = true
-        
+
         locationManager.startMonitoring(for: beaconRegion)
         #if DEBUG
         print("📍 [BackgroundMesh] Started beacon region monitoring")
         #endif
     }
-    
+
     private func stopBeaconRegionMonitoring() {
         guard let locationManager = locationManager else { return }
-        
+
         for region in locationManager.monitoredRegions {
             if region.identifier == Self.beaconRegionIdentifier {
                 locationManager.stopMonitoring(for: region)
@@ -237,9 +244,18 @@ final class BackgroundMeshManager: NSObject, ObservableObject {
             }
         }
     }
+    #endif
     
     // MARK: - Background Tasks (iOS 13+)
-    
+
+    #if targetEnvironment(macCatalyst)
+    // Mac Catalyst: BGTaskScheduler/BGAppRefreshTask/BGProcessingTask are not
+    // available. The LaunchAgent companion handles continuity on Mac, so all
+    // BG-task entry points become no-ops here.
+    private func registerBackgroundTasks() {}
+    func scheduleBackgroundRefresh() {}
+    func scheduleBackgroundProcessing() {}
+    #else
     private func registerBackgroundTasks() {
         // Register refresh task
         BGTaskScheduler.shared.register(
@@ -252,7 +268,7 @@ final class BackgroundMeshManager: NSObject, ObservableObject {
             }
             self?.handleBackgroundRefresh(task: refreshTask)
         }
-        
+
         // Register processing task
         BGTaskScheduler.shared.register(
             forTaskWithIdentifier: Self.processingTaskIdentifier,
@@ -264,17 +280,17 @@ final class BackgroundMeshManager: NSObject, ObservableObject {
             }
             self?.handleBackgroundProcessing(task: processingTask)
         }
-        
+
         #if DEBUG
         print("✅ [BackgroundMesh] Background tasks registered")
         #endif
     }
-    
+
     /// Schedule background refresh - call when app enters background
     func scheduleBackgroundRefresh() {
         let request = BGAppRefreshTaskRequest(identifier: Self.refreshTaskIdentifier)
         request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60) // 15 minutes
-        
+
         do {
             try BGTaskScheduler.shared.submit(request)
             #if DEBUG
@@ -286,14 +302,14 @@ final class BackgroundMeshManager: NSObject, ObservableObject {
             #endif
         }
     }
-    
+
     /// Schedule background processing - for longer tasks
     func scheduleBackgroundProcessing() {
         let request = BGProcessingTaskRequest(identifier: Self.processingTaskIdentifier)
         request.earliestBeginDate = Date(timeIntervalSinceNow: 60 * 60) // 1 hour
         request.requiresNetworkConnectivity = false
         request.requiresExternalPower = false
-        
+
         do {
             try BGTaskScheduler.shared.submit(request)
             #if DEBUG
@@ -305,7 +321,7 @@ final class BackgroundMeshManager: NSObject, ObservableObject {
             #endif
         }
     }
-    
+
     private func handleBackgroundRefresh(task: BGAppRefreshTask) {
         #if DEBUG
         print("⏰ [BackgroundMesh] ═══════════════════════════════════════")
@@ -367,7 +383,8 @@ final class BackgroundMeshManager: NSObject, ObservableObject {
             #endif
         }
     }
-    
+    #endif
+
     // MARK: - Background Task Management
     
     /// Begin a background task with identifier
@@ -547,8 +564,11 @@ final class BackgroundMeshManager: NSObject, ObservableObject {
         let startTime = Date()
         
         // 1. Ensure BLE engine is running
+        // Use thread-safe accessor — this runs off MainActor and reading
+        // the @Published `isScanning` directly would be a strict-concurrency
+        // violation (see BLEMeshEngine.isCurrentlyScanning docs).
         let ble = BLEMeshEngine.shared
-        if !ble.isScanning || !ble.isAdvertising {
+        if !ble.isCurrentlyScanning || !ble.isAdvertising {
             #if DEBUG
             print("🔄 [BackgroundMesh] Starting BLE engine...")
             #endif
@@ -567,7 +587,7 @@ final class BackgroundMeshManager: NSObject, ObservableObject {
         // 2. Report current state
         #if DEBUG
         print("🔄 [BackgroundMesh] Connected peers: \(ble.connectedPeers.count)")
-        print("🔄 [BackgroundMesh] Is scanning: \(ble.isScanning)")
+        print("🔄 [BackgroundMesh] Is scanning: \(ble.isCurrentlyScanning)")
         print("🔄 [BackgroundMesh] Is advertising: \(ble.isAdvertising)")
         #endif
         
