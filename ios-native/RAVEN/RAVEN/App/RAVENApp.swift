@@ -1,7 +1,9 @@
 import SwiftUI
 import UserNotifications
 import GoogleSignIn
+#if !targetEnvironment(macCatalyst)
 import BackgroundTasks
+#endif
 
 @main
 struct RAVENApp: App {
@@ -28,11 +30,24 @@ struct RAVENApp: App {
                     #if DEBUG
                     print("🔔 [App] Push authorization: \(granted ? "GRANTED" : "DENIED")")
                     #endif
-                    
+
                     // Retry sending stored token to server (in case previous attempt failed)
                     if granted {
                         await PushNotificationService.shared.retryTokenRegistration()
                     }
+
+                    // 🆕 Multi-device: register / refresh this device in the
+                    // server's linked-devices registry. Best-effort — swallows
+                    // network failures; the user just won't see this device
+                    // listed in Settings until next launch.
+                    if AuthService.shared.isAuthenticated {
+                        _ = await LinkedDevicesService.shared.heartbeat()
+                    }
+
+                    // 🩻 MetricKit diagnostics — subscribes to Apple's daily
+                    // batch of crash/hang/CPU/disk reports and forwards them
+                    // to /api/diagnostics. No external SDK; on-device cost.
+                    DiagnosticsService.shared.start()
                 }
                 .onOpenURL { url in
                     // Handle raven://room/{slug} deep links
@@ -116,7 +131,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         // Configure URLCache for offline image viewing (500 MB disk space)
-        let memoryCapacity = 50 * 1024 * 1024 // 50 MB
+        let memoryCapacity = 100 * 1024 * 1024 // 100 MB — prevents image eviction during active use
         let diskCapacity = 500 * 1024 * 1024 // 500 MB
         URLCache.shared = URLCache(memoryCapacity: memoryCapacity, diskCapacity: diskCapacity, diskPath: "raven_media_cache")
 
@@ -167,9 +182,9 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         // sees that the app failed to handle the BLE event, kills it, re-wakes
         // it, and repeats — hundreds of times per second — freezing the device.
         //
-        // Database init stays async in a Task below. DatabaseService already
-        // guards with `guard db != nil` so BLE message handlers gracefully
-        // drop messages until the DB is ready (they'll sync later).
+        // Database init stays async in a Task below. DatabaseService uses
+        // ensureInitialized() which lazy-inits on first access, so BLE message
+        // handlers will trigger DB init on their first write — no messages are lost.
         #if !targetEnvironment(simulator)
         BLEMeshEngine.shared.start()
         
@@ -218,6 +233,26 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
                 #if DEBUG
                 print("📡 [App] Database & mesh sync ready ✅")
                 #endif
+                
+                // 🚀 Pre-warm FeedStore cache — triggers eager SQLite read
+                // so cached posts are in memory BEFORE FeedView appears.
+                // This access creates the singleton which fires warmCacheOnStartup().
+                await MainActor.run { _ = FeedStore.shared }
+                #if DEBUG
+                print("🚀 [App] FeedStore cache pre-warmed ✅")
+                #endif
+                
+                // 🌐 Register mesh-native feature handlers (Echo, Club, Vault)
+                await MainActor.run {
+                    EchoService.shared.registerMeshHandlers()
+                    ClubService.shared.registerMeshHandlers()
+                    VaultService.shared.registerMeshHandlers()
+                }
+                // Restore active Club session if any
+                await ClubService.shared.restoreActiveSession()
+                #if DEBUG
+                print("🌐 [App] Mesh feature handlers registered ✅")
+                #endif
             } catch {
                 #if DEBUG
                 print("🚨 [App] Critical Initialization Error: \(error)")
@@ -234,23 +269,12 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
             }
         }
         
-        // ✅ Warmup: Light health check to warm up network connection (fire and forget)
-        // Token warmup removed - getToken() now caches automatically on first read
-        Task.detached(priority: .background) {
-            try? await Task.sleep(nanoseconds: 500_000_000)  // Delay 500ms to not compete with launch
-            do {
-                guard let url = AppConfig.apiURL(path: "/health") else { return }
-                let (_, response) = try await URLSession.shared.data(from: url)
-                if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
-                    #if DEBUG
-                    print("🌐 [App] Network warmup complete")
-                    #endif
-                }
-            } catch {
-                #if DEBUG
-                print("⚠️ [App] Network warmup failed (not critical): \(error.localizedDescription)")
-                #endif
-            }
+        // ⚡ Warmup: Pre-establish TLS + TCP on the SHARED NetworkService session,
+        // so the first real API call (auth check / feed fetch) skips the ~150-300ms
+        // handshake. Fires immediately at launch — runs in parallel with the rest
+        // of init since networking is I/O-bound. Best-effort.
+        Task.detached(priority: .utility) {
+            await NetworkService.shared.warmConnection()
         }
         
         return true
@@ -303,6 +327,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         }
     }
     
+    #if !targetEnvironment(macCatalyst)
     func application(
         _ application: UIApplication,
         didReceiveRemoteNotification userInfo: [AnyHashable: Any],
@@ -316,6 +341,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
             completionHandler(.newData)
         }
     }
+    #endif
     
     // MARK: - UNUserNotificationCenterDelegate
     
@@ -337,38 +363,177 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
             )
         }
         
-        // Show system banner + sound in foreground, UNLESS user is currently
-        // viewing the exact chat this notification is about.
-        // This ensures notifications still appear when the app is open but
-        // the user is on a different screen (e.g. feed, settings, another chat).
-        let incomingChatId = userInfo["room_id"] as? String ?? userInfo["chat_id"] as? String ?? userInfo["group_id"] as? String
-        
-        if let chatId = incomingChatId, DeepLinkRouter.shared.isInChat(roomId: chatId) {
-            // User IS in this chat — suppress system notification, in-app toast handles it
-            #if DEBUG
-            print("🔔 [AppDelegate] Suppressing banner (user is in chat \(chatId.prefix(8)))")
-            #endif
-            completionHandler([])
-        } else {
-            // User is NOT in this chat — show system banner + sound
-            #if DEBUG
-            print("🔔 [AppDelegate] Showing system banner + sound")
-            #endif
-            completionHandler([.banner, .sound, .badge])
-        }
+        // ⚡ DUPLICATE FIX: Always suppress the system banner while the app
+        // is in foreground. Our in-app `LiquidToastView` (driven by
+        // NotificationPipeline) is the canonical foreground UX — showing
+        // BOTH the iOS banner AND the in-app toast for the same message
+        // produced two notifications for one event. Standard messenger
+        // behaviour (WhatsApp, Telegram, Signal) is foreground-app =
+        // in-app banner only. The system banner only fires when the app
+        // is backgrounded / locked, where there's no in-app surface.
+        // The badge is still updated here so the bell count stays correct.
+        #if DEBUG
+        print("🔔 [AppDelegate] Foreground push → suppressing system banner (in-app toast handles it)")
+        #endif
+        completionHandler([.badge])
     }
     
-    // Notification tap handler
+    // Notification tap handler (including lock screen action responses)
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         let userInfo = response.notification.request.content.userInfo
+        let actionId = response.actionIdentifier
         
-        Task {
-            await PushNotificationService.shared.handlePushTap(userInfo)
-            completionHandler()
+        #if DEBUG
+        print("🔔 [AppDelegate] didReceive action: \(actionId)")
+        #endif
+        
+        switch actionId {
+        // ── Lock Screen Quick Reply ──
+        case "REPLY":
+            guard let textResponse = response as? UNTextInputNotificationResponse else {
+                completionHandler()
+                return
+            }
+            let replyText = textResponse.userText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !replyText.isEmpty else {
+                completionHandler()
+                return
+            }
+            
+            // Determine destination: room_id for messages, post_id for comment replies
+            let roomId = userInfo["room_id"] as? String ?? userInfo["chat_id"] as? String ?? userInfo["group_id"] as? String
+            let senderId = userInfo["sender_id"] as? String
+            let notifType = userInfo["type"] as? String
+            
+            Task {
+                do {
+                    if notifType == "comment" || notifType == "post_comment" {
+                        // Comment reply — post a comment on the post
+                        if let postId = userInfo["post_id"] as? String {
+                            struct CommentBody: Encodable { let content: String }
+                            struct CommentResp: Decodable { let id: String }
+                            let _: CommentResp = try await NetworkService.shared.post(
+                                path: "/api/posts/\(postId)/comment",
+                                body: CommentBody(content: replyText)
+                            )
+                            #if DEBUG
+                            print("✅ [LockScreen] Comment reply sent to post \(postId.prefix(8))")
+                            #endif
+                        }
+                    } else if let roomId = roomId {
+                        // Message reply — send via MessageService
+                        // For groups, send to roomId (group ID); for 1:1, send to senderId
+                        let isGroup = notifType == "group_message"
+                        let destinationId = isGroup ? roomId : (senderId ?? roomId)
+                        try await MessageService.shared.sendText(
+                            to: destinationId,
+                            text: replyText,
+                            isGroup: isGroup
+                        )
+                        #if DEBUG
+                        print("✅ [LockScreen] Quick reply sent to \(destinationId.prefix(8))")
+                        #endif
+                    }
+                } catch {
+                    #if DEBUG
+                    print("❌ [LockScreen] Quick reply failed: \(error)")
+                    #endif
+                }
+                completionHandler()
+            }
+            return
+            
+        // ── Accept Friend Request ──
+        case "ACCEPT":
+            let requestId = userInfo["requester_id"] as? String ?? userInfo["sender_id"] as? String ?? userInfo["request_id"] as? String
+            guard let requestId = requestId else {
+                completionHandler()
+                return
+            }
+            Task {
+                do {
+                    struct EmptyBody: Encodable {}
+                    let _: Empty = try await NetworkService.shared.post(
+                        path: "/api/users/friend-request/\(requestId)/accept",
+                        body: EmptyBody()
+                    )
+                    #if DEBUG
+                    print("✅ [LockScreen] Friend request accepted: \(requestId.prefix(8))")
+                    #endif
+                } catch {
+                    #if DEBUG
+                    print("❌ [LockScreen] Accept friend request failed: \(error)")
+                    #endif
+                }
+                completionHandler()
+            }
+            return
+            
+        // ── Decline Friend Request ──
+        case "DECLINE":
+            let requestId = userInfo["requester_id"] as? String ?? userInfo["sender_id"] as? String ?? userInfo["request_id"] as? String
+            guard let requestId = requestId else {
+                completionHandler()
+                return
+            }
+            Task {
+                do {
+                    struct EmptyBody: Encodable {}
+                    let _: Empty = try await NetworkService.shared.post(
+                        path: "/api/users/friend-request/\(requestId)/decline",
+                        body: EmptyBody()
+                    )
+                    #if DEBUG
+                    print("✅ [LockScreen] Friend request declined: \(requestId.prefix(8))")
+                    #endif
+                } catch {
+                    #if DEBUG
+                    print("❌ [LockScreen] Decline friend request failed: \(error)")
+                    #endif
+                }
+                completionHandler()
+            }
+            return
+            
+        // ── Mark as Read ──
+        case "MARK_READ":
+            Task {
+                if let roomId = userInfo["room_id"] as? String ?? userInfo["chat_id"] as? String {
+                    await PendingReadService.shared.enqueue(type: "message", targetId: roomId, isAll: false)
+                }
+                completionHandler()
+            }
+            return
+            
+        // ── View Post / Join Audio Room ──
+        case "VIEW":
+            Task {
+                if let postId = userInfo["post_id"] as? String {
+                    await DeepLinkRouter.shared.route(to: .post(postId: postId))
+                }
+                completionHandler()
+            }
+            return
+            
+        case "JOIN":
+            Task {
+                if let roomId = userInfo["room_id"] as? String {
+                    await DeepLinkRouter.shared.route(to: .audioRoom(slug: roomId))
+                }
+                completionHandler()
+            }
+            return
+            
+        default:
+            // Default tap (UNNotificationDefaultActionIdentifier) — navigate as before
+            Task {
+                await PushNotificationService.shared.handlePushTap(userInfo)
+                completionHandler()
+            }
         }
     }
     
@@ -409,13 +574,25 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
             
             // BRIDGE: If we're online, forward to SERVER for the recipient
             // This is the key "offline sender → online bridge → server → online recipient" path
-            if NetworkMonitor.shared.isOnline {
+            // ⚡ BUG 2 FIX: Only bridge to server when we have an EXPLICIT
+            // non-group signal (`envelope.isGroup == false`). When the flag is
+            // missing/nil — older client that didn't set it — the recipientId
+            // could actually be an unsynced group. Bridging it as a 1:1 would
+            // cause the server to reject (no such 1:1 thread) AND we'd never
+            // limbo-store it for the later group sync. Skip the bridge in that
+            // case; mesh relay continues to handle propagation.
+            let canSafelyBridgeAs1to1 = (envelope.isGroup == false)
+            if NetworkMonitor.shared.isOnline && canSafelyBridgeAs1to1 {
                 #if DEBUG
-                print("🌉 [BRIDGE] We're online! Forwarding mesh message to server for recipient...")
+                print("🌉 [BRIDGE] We're online! Forwarding mesh 1:1 message to server for recipient...")
                 #endif
                 await BLEMeshEngine.shared.bridgeMeshMessageToServer(envelope)
+            } else if NetworkMonitor.shared.isOnline {
+                #if DEBUG
+                print("🚫 [BRIDGE] Skip server bridge — envelope.isGroup is \(envelope.isGroup.map(String.init) ?? "nil"); mesh relay only")
+                #endif
             }
-            
+
             // NOTE: Mesh relay is handled by BLEMeshEngine.processVerifiedEnvelope
             // Do NOT re-forward here — that causes double forwarding / amplification
             return
@@ -448,6 +625,35 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
             message.roomId = envelope.recipientId  // Group: roomId = group ID
         } else if message.roomId == myId {
             message.roomId = envelope.senderId     // 1:1: roomId = peer ID
+        }
+
+        // 🔐 Per-group AES-GCM decryption — when the sender stamped a
+        // groupKeyVersion, the text field is ciphertext. We pull the right
+        // version of the group key from GroupKeyService and decrypt before
+        // any further processing (DB write, conversation update, UI).
+        if let version = envelope.groupKeyVersion,
+           isGroupMessage,
+           let cipher = envelope.text,
+           !cipher.isEmpty {
+            // 🔐 Forward-secrecy guard: if a peer is broadcasting under a
+            // version newer than what we have cached locally, the server
+            // must have rotated. Refresh our `latest` pointer so the very
+            // next OUTGOING encrypt uses the new key (preventing us from
+            // continuing to encrypt with a stale key that a kicked member
+            // might still hold).
+            await GroupKeyService.shared.ensureNotStale(
+                groupId: envelope.recipientId, serverVersion: version
+            )
+            let plaintext = await GroupKeyService.shared.decrypt(
+                cipher, groupId: envelope.recipientId, version: version
+            )
+            if let plaintext = plaintext {
+                message.text = plaintext
+            } else {
+                #if DEBUG
+                print("⚠️ [MESH] Could not decrypt group payload (\(envelope.recipientId.prefix(8)) v\(version)) — leaving ciphertext")
+                #endif
+            }
         }
         
         #if DEBUG
@@ -487,7 +693,11 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         // Update conversation directly (don't use handleIncomingMessage as it has duplicate check)
         let currentUserId = await KeychainService.shared.getUserId() ?? ""
         do {
-            try await conversationRepo.applyMessage(message, currentUserId: currentUserId)
+            // ⚡ BUG FIX 1: Pass isGroup hint so mesh-delivered group messages route to
+            // groupId even if the local groups row hasn't synced yet. Without this,
+            // a duplicate would appear once the group syncs and old messages
+            // re-applied.
+            try await conversationRepo.applyMessage(message, currentUserId: currentUserId, isGroup: isGroupMessage)
             #if DEBUG
             print("📥 [MESH] ✅ Conversation updated for roomId=\(message.roomId?.prefix(8) ?? "nil")")
             #endif
@@ -508,8 +718,12 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         #endif
         
         // Notify MessageStore to reload if chat is open
-        // roomId = senderId (peer's ID) for correct conversation
-        let roomId = isGroupMessage ? (message.roomId ?? message.senderId) : message.senderId
+        // For groups: roomId = groupId (envelope.recipientId is authoritative).
+        // For 1:1: roomId = senderId (peer's ID).
+        // ⚡ BUG FIX 4: Don't fall back to senderId for groups — that would
+        // route the toast/notification tap to the sender's 1:1 chat instead
+        // of the group. envelope.recipientId is the groupId for group messages.
+        let roomId = isGroupMessage ? envelope.recipientId : message.senderId
         await MainActor.run {
             NotificationCenter.default.post(
                 name: MessageStore.meshMessageReceivedNotification,
