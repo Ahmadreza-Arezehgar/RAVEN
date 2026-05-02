@@ -1,0 +1,61 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!--
+      RAVEN for Windows — .NET 8 + WinUI 3.
+
+      Targets:
+        - net8.0-windows10.0.19041.0  (Win10 1909+, full WinRT BLE incl. peripheral)
+      Architecture: x64 (BLE WinRT APIs are not stable on x86; ARM64 also fine if the user has Surface Pro X etc.)
+    -->
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <RootNamespace>RAVEN.Windows</RootNamespace>
+    <AssemblyName>RAVEN</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Platforms>x64;ARM64</Platforms>
+    <RuntimeIdentifiers>win10-x64;win10-arm64</RuntimeIdentifiers>
+    <UseWinUI>true</UseWinUI>
+    <UseWindowsForms>true</UseWindowsForms>  <!-- needed for NotifyIcon (system tray) -->
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AssemblyVersion>1.5.0.0</AssemblyVersion>
+    <FileVersion>1.5.0.0</FileVersion>
+    <Version>1.5.0</Version>
+    <Authors>Ahmadreza Arezehgar</Authors>
+    <Product>RAVEN</Product>
+    <Description>End-to-end encrypted mesh messenger for Windows.</Description>
+    <Copyright>© 2026 Ash Robotic Industry</Copyright>
+    <!-- WINDOWS = enable the WinRT-based BleEngine impl. Test project doesn't define this, so it gets the stub. -->
+    <DefineConstants>$(DefineConstants);WINDOWS</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.5.240802000" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.22621.756" />
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.2.2" />
+
+    <!-- Crypto: BouncyCastle for X25519 + Ed25519 + HKDF.
+         .NET's built-in HKDF works, but X25519/Ed25519 don't expose raw 32-byte keys
+         the same way Apple Curve25519 does. BouncyCastle gives us byte-level control
+         to match the wire spec exactly. -->
+    <PackageReference Include="BouncyCastle.Cryptography" Version="2.4.0" />
+
+    <!-- Encrypted local DB. Mirrors iOS SQLCipher. -->
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlcipher" Version="2.1.10" />
+
+    <!-- Serialization. -->
+    <PackageReference Include="System.Text.Json" Version="8.0.5" />
+
+    <!-- WebSocket client for real-time delivery (online mode). -->
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="8.0.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Manifest Include="app.manifest" />
+  </ItemGroup>
+
+</Project>

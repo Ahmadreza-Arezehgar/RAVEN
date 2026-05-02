@@ -1,0 +1,250 @@
+<?xml version="1.0" encoding="utf-8"?>
+<UserControl
+    x:Class="RAVEN.Windows.Ui.MessagesView"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:local="using:RAVEN.Windows.Ui">
+
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="320"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+
+        <!-- Conversation list -->
+        <Border Grid.Column="0" Margin="0,0,12,0"
+                Background="{StaticResource RavenBgCard}"
+                BorderBrush="{StaticResource RavenBorder}" BorderThickness="1"
+                CornerRadius="20">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+
+                <Grid Grid.Row="0" Padding="18,16,16,8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="Messages"
+                               FontSize="22" FontWeight="Bold"
+                               Foreground="{StaticResource RavenText}"/>
+                    <Button Grid.Column="1" Width="36" Height="36" Padding="0" Margin="0,0,6,0"
+                            ToolTipService.ToolTip="New group"
+                            Background="{StaticResource RavenBgCardHover}"
+                            BorderBrush="{StaticResource RavenBorder}" BorderThickness="1"
+                            CornerRadius="18">
+                        <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE716;" FontSize="14"
+                                  Foreground="{StaticResource RavenText}"/>
+                    </Button>
+                    <Button Grid.Column="2" Width="36" Height="36" Padding="0"
+                            ToolTipService.ToolTip="New chat"
+                            Background="{StaticResource RavenBgCardHover}"
+                            BorderBrush="{StaticResource RavenBorder}" BorderThickness="1"
+                            CornerRadius="18">
+                        <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE710;" FontSize="14"
+                                  Foreground="{StaticResource RavenText}"/>
+                    </Button>
+                </Grid>
+
+                <Border Grid.Row="1" Margin="14,4,14,12" Padding="12,8"
+                        Background="{StaticResource RavenBgCardHover}"
+                        BorderBrush="{StaticResource RavenBorder}" BorderThickness="1"
+                        CornerRadius="999">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE721;" FontSize="13"
+                                  Foreground="{StaticResource RavenText3}"/>
+                        <TextBox PlaceholderText="Search" BorderThickness="0"
+                                 Background="Transparent" Foreground="{StaticResource RavenText}"
+                                 FontSize="13" MinWidth="220"/>
+                    </StackPanel>
+                </Border>
+
+                <ListView Grid.Row="2" x:Name="ConversationList"
+                          SelectionMode="Single" Padding="6,0,6,12"
+                          SelectionChanged="OnConversationSelected">
+                    <ListView.ItemContainerStyle>
+                        <Style TargetType="ListViewItem">
+                            <Setter Property="Padding" Value="0"/>
+                            <Setter Property="Margin" Value="0,2"/>
+                            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                        </Style>
+                    </ListView.ItemContainerStyle>
+                    <ListView.ItemTemplate>
+                        <DataTemplate x:DataType="local:ConversationVm">
+                            <Border Padding="12,10" CornerRadius="14" Background="Transparent">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="40"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+
+                                    <!-- Avatar (gradient initials) — group icon overlay if group -->
+                                    <Grid Grid.Column="0" Width="40" Height="40">
+                                        <Border CornerRadius="20"
+                                                Background="{StaticResource RavenBrandGradientSubtle}"
+                                                BorderBrush="{StaticResource RavenBorder}" BorderThickness="1">
+                                            <TextBlock Text="{x:Bind Initials}"
+                                                       FontSize="14" FontWeight="Bold"
+                                                       Foreground="{StaticResource RavenText}"
+                                                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                        </Border>
+                                        <!-- Group badge -->
+                                        <Border Width="14" Height="14" CornerRadius="7"
+                                                Background="{StaticResource RavenBgCardHover}"
+                                                BorderBrush="{StaticResource RavenBorder}" BorderThickness="1"
+                                                HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                                                Visibility="{x:Bind GroupBadgeVisibility}">
+                                            <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE716;"
+                                                      FontSize="8" Foreground="{StaticResource RavenText}"/>
+                                        </Border>
+                                    </Grid>
+
+                                    <StackPanel Grid.Column="1" Margin="12,0" VerticalAlignment="Center" Spacing="2">
+                                        <TextBlock Text="{x:Bind Name}"
+                                                   FontSize="14" FontWeight="SemiBold"
+                                                   Foreground="{StaticResource RavenText}"
+                                                   TextTrimming="CharacterEllipsis" MaxLines="1"/>
+                                        <TextBlock Text="{x:Bind Preview}"
+                                                   FontSize="12"
+                                                   Foreground="{StaticResource RavenText3}"
+                                                   TextTrimming="CharacterEllipsis" MaxLines="1"/>
+                                    </StackPanel>
+
+                                    <StackPanel Grid.Column="2" VerticalAlignment="Center" Spacing="4"
+                                                HorizontalAlignment="Right">
+                                        <TextBlock Text="{x:Bind TimeText}"
+                                                   FontSize="10"
+                                                   Foreground="{StaticResource RavenText3}"
+                                                   HorizontalAlignment="Right"/>
+                                        <Ellipse Width="8" Height="8"
+                                                 Fill="{StaticResource RavenPurpleBrush}"
+                                                 Visibility="{x:Bind UnreadVisibility}"
+                                                 HorizontalAlignment="Right"/>
+                                    </StackPanel>
+                                </Grid>
+                            </Border>
+                        </DataTemplate>
+                    </ListView.ItemTemplate>
+                </ListView>
+            </Grid>
+        </Border>
+
+        <!-- Chat detail -->
+        <Border Grid.Column="1"
+                Background="{StaticResource RavenBgCard}"
+                BorderBrush="{StaticResource RavenBorder}" BorderThickness="1"
+                CornerRadius="20">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <Grid Grid.Row="0" Padding="20,16">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="40"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <Border Grid.Column="0" Width="40" Height="40" CornerRadius="20"
+                            Background="{StaticResource RavenBrandGradientSubtle}"
+                            BorderBrush="{StaticResource RavenBorder}" BorderThickness="1">
+                        <TextBlock x:Name="HeaderInitials" Text="—"
+                                   FontSize="14" FontWeight="Bold"
+                                   Foreground="{StaticResource RavenText}"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <StackPanel Grid.Column="1" Margin="12,0" VerticalAlignment="Center" Spacing="2">
+                        <TextBlock x:Name="HeaderTitle" Text="Select a conversation"
+                                   FontSize="16" FontWeight="SemiBold"
+                                   Foreground="{StaticResource RavenText}"/>
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <Ellipse Width="6" Height="6" Fill="{StaticResource RavenGreenBrush}" VerticalAlignment="Center"/>
+                            <TextBlock x:Name="HeaderSubtitle" Text="End-to-end encrypted · mesh ready"
+                                       FontSize="11" Foreground="{StaticResource RavenText3}"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Grid>
+
+                <Border Grid.Row="0" Height="1" VerticalAlignment="Bottom"
+                        Background="{StaticResource RavenBorder}"/>
+
+                <ScrollViewer Grid.Row="1" Padding="20,16" VerticalScrollBarVisibility="Auto">
+                    <ItemsRepeater x:Name="MessageList">
+                        <ItemsRepeater.Layout>
+                            <StackLayout Spacing="8"/>
+                        </ItemsRepeater.Layout>
+                        <ItemsRepeater.ItemTemplate>
+                            <DataTemplate x:DataType="local:MessageVm">
+                                <Grid HorizontalAlignment="{x:Bind AlignmentBinding}" MaxWidth="540">
+                                    <Border Padding="14,10" CornerRadius="18"
+                                            Background="{x:Bind BubbleBackground}"
+                                            BorderBrush="{x:Bind BubbleBorder}" BorderThickness="1">
+                                        <StackPanel Spacing="4">
+                                            <!-- Sender name (groups only) -->
+                                            <TextBlock Text="{x:Bind SenderLabel}"
+                                                       FontSize="11" FontWeight="SemiBold"
+                                                       Foreground="{x:Bind SenderForeground}"
+                                                       Visibility="{x:Bind SenderVisibility}"/>
+                                            <TextBlock Text="{x:Bind Body}"
+                                                       TextWrapping="Wrap"
+                                                       FontSize="14"
+                                                       Foreground="{x:Bind BubbleForeground}"/>
+                                            <StackPanel Orientation="Horizontal" Spacing="6"
+                                                        HorizontalAlignment="Right">
+                                                <TextBlock Text="{x:Bind TimeText}" FontSize="10"
+                                                           Foreground="{x:Bind MetaForeground}"/>
+                                                <FontIcon FontFamily="Segoe Fluent Icons"
+                                                          Glyph="{x:Bind StatusIcon}" FontSize="10"
+                                                          Foreground="{x:Bind MetaForeground}"
+                                                          Visibility="{x:Bind StatusVisibility}"/>
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </Border>
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsRepeater.ItemTemplate>
+                    </ItemsRepeater>
+                </ScrollViewer>
+
+                <Border Grid.Row="2" Margin="16,8,16,16" Padding="6"
+                        Background="{StaticResource RavenBgCardHover}"
+                        BorderBrush="{StaticResource RavenBorder}" BorderThickness="1"
+                        CornerRadius="999">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Button Grid.Column="0" Width="36" Height="36" Padding="0"
+                                Background="Transparent" BorderThickness="0" CornerRadius="18">
+                            <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE723;" FontSize="14"
+                                      Foreground="{StaticResource RavenText2}"/>
+                        </Button>
+                        <TextBox Grid.Column="1" x:Name="ComposeBox"
+                                 PlaceholderText="Message — encrypted, sent online or via mesh"
+                                 BorderThickness="0" Background="Transparent"
+                                 Foreground="{StaticResource RavenText}"
+                                 FontSize="14" Padding="6,8" VerticalAlignment="Center"
+                                 KeyDown="OnComposeKeyDown"/>
+                        <Button Grid.Column="2" x:Name="SendButton" Click="OnSendClicked"
+                                Width="40" Height="40" Padding="0" CornerRadius="20"
+                                Background="{StaticResource RavenBrandGradient}" BorderThickness="0">
+                            <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE724;" FontSize="14"
+                                      Foreground="White"/>
+                        </Button>
+                    </Grid>
+                </Border>
+            </Grid>
+        </Border>
+    </Grid>
+</UserControl>

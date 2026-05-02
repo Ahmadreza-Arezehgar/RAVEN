@@ -1,0 +1,21 @@
+# .NET / VS build output
+bin/
+obj/
+*.user
+*.suo
+.vs/
+*.cache
+
+# Tests artifacts
+TestResults/
+*.coverage
+*.coveragexml
+
+# NuGet
+packages/
+*.nupkg
+*.snupkg
+
+# Misc
+.DS_Store
+Thumbs.db

@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<UserControl
+    x:Class="RAVEN.Windows.Ui.SidebarRow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006">
+
+    <!--
+      Capsule sidebar row matching iOS RavenMacShell.SidebarRow:
+        - Icon + label
+        - Subtle hover background
+        - Selected state: tinted glass capsule + stroke + bold label
+        - Hover state: dimmer glass capsule
+    -->
+    <Border x:Name="RowBorder" Padding="12,8" CornerRadius="999"
+            Background="Transparent"
+            BorderBrush="Transparent" BorderThickness="0.75"
+            PointerEntered="OnPointerEntered" PointerExited="OnPointerExited"
+            Tapped="OnTapped">
+        <StackPanel Orientation="Horizontal" Spacing="10">
+            <!-- Icon (Segoe Fluent Icons glyph) -->
+            <FontIcon x:Name="IconGlyph" FontFamily="Segoe Fluent Icons"
+                      FontSize="14" Glyph="{x:Bind Icon, Mode=OneWay}"
+                      Foreground="{x:Bind IconBrush, Mode=OneWay}"
+                      Width="22" Height="22"
+                      VerticalAlignment="Center"
+                      HorizontalAlignment="Center"/>
+
+            <!-- Label -->
+            <TextBlock x:Name="LabelText" Text="{x:Bind Label, Mode=OneWay}"
+                       FontSize="13"
+                       FontWeight="{x:Bind LabelWeight, Mode=OneWay}"
+                       Foreground="{x:Bind LabelBrush, Mode=OneWay}"
+                       VerticalAlignment="Center"/>
+        </StackPanel>
+    </Border>
+</UserControl>

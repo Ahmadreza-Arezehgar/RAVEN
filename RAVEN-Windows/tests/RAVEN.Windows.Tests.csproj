@@ -1,0 +1,53 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+    <PackageReference Include="BouncyCastle.Cryptography" Version="2.4.0" />
+  </ItemGroup>
+
+  <!--
+    Tests reference the protocol/crypto/envelope code from the main project
+    by linking the source files directly. We do NOT reference the main csproj
+    (which targets net8.0-windows10.x and would force tests to be Windows-only).
+    The BleEngine.cs file has both Windows + non-Windows code paths under
+    `#if WINDOWS`; the test project doesn't define WINDOWS so it picks up
+    the stub.
+  -->
+  <PropertyGroup>
+    <!-- Defines below intentionally do NOT include WINDOWS -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\src\Mesh\MeshConstants.cs" Link="Mesh\MeshConstants.cs" />
+    <Compile Include="..\src\Mesh\MeshEnvelope.cs" Link="Mesh\MeshEnvelope.cs" />
+    <Compile Include="..\src\Mesh\ChunkFramer.cs" Link="Mesh\ChunkFramer.cs" />
+    <Compile Include="..\src\Mesh\BleEngine.cs" Link="Mesh\BleEngine.cs" />
+    <Compile Include="..\src\Mesh\MessageRouter.cs" Link="Mesh\MessageRouter.cs" />
+    <Compile Include="..\src\Mesh\GroupChat.cs" Link="Mesh\GroupChat.cs" />
+    <Compile Include="..\src\Crypto\MeshCrypto.cs" Link="Crypto\MeshCrypto.cs" />
+    <Compile Include="..\src\Storage\DedupRepository.cs" Link="Storage\DedupRepository.cs" />
+    <Compile Include="..\src\Storage\TrustStore.cs" Link="Storage\TrustStore.cs" />
+    <Compile Include="..\src\Storage\KeyStore.cs" Link="Storage\KeyStore.cs" />
+    <Compile Include="..\src\Storage\EncryptedDb.cs" Link="Storage\EncryptedDb.cs" />
+    <Compile Include="..\src\Network\TokenStore.cs" Link="Network\TokenStore.cs" />
+    <Compile Include="..\src\Network\ApiClient.cs" Link="Network\ApiClient.cs" />
+    <Compile Include="..\src\Network\RealtimeWebSocket.cs" Link="Network\RealtimeWebSocket.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="8.0.1" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.2" />
+  </ItemGroup>
+
+</Project>
