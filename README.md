@@ -11,7 +11,26 @@
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![iOS](https://img.shields.io/badge/iOS-17%2B-black.svg)](https://apps.apple.com)
 [![macOS](https://img.shields.io/badge/macOS-14%2B-black.svg)](https://github.com/Raven-offline-messenger/RAVEN/releases)
-[![Version](https://img.shields.io/badge/version-1.5-purple.svg)](https://github.com/Raven-offline-messenger/RAVEN/releases)
+[![Version](https://img.shields.io/badge/version-1.7-purple.svg)](https://github.com/Raven-offline-messenger/RAVEN/releases)
+[![Security docs](https://img.shields.io/badge/security-raven--security-9b5bef.svg)](https://github.com/Raven-offline-messenger/raven-security)
+
+---
+
+## ✨ What's new in v1.7 — ATSAM protocol
+
+Raven v1.7 introduces **ATSAM**, Raven's own layered security protocol for online and offline messaging. ATSAM is not a single encryption algorithm; it is a stack of five protections, each with a precise job:
+
+1. **Post-quantum hybrid pairing** — classical X25519 plus ML-KEM-768 (NIST FIPS 203). An attacker must defeat both halves to recover the root.
+2. **Private peer discovery** — paired devices recognise each other in radio range without broadcasting names, phone numbers, or stable public keys. Beacons look like uniform random bytes to strangers.
+3. **Live device confirmation** — a fresh challenge prevents recorded old beacons from being replayed to falsely show presence.
+4. **Encrypted mesh routing** — per-message rotating recipient tags so mesh relays cannot link successive envelopes to the same recipient.
+5. **Optional Vault Mode** — one-time-pad content protection for selected high-sensitivity text messages, with information-theoretic secrecy under strict pad conditions.
+
+The public security documentation, threat model, per-layer claims, and trust roadmap live in a dedicated companion repository:
+
+➡️ **[`Raven-offline-messenger/raven-security`](https://github.com/Raven-offline-messenger/raven-security)**
+
+That repository is the right starting point for security researchers, investors, and informed users who want to understand what Raven claims and what Raven explicitly does not claim. The full ATSAM overview is also available as a PDF on the website: <https://raven-messager.com/atsam>.
 
 ---
 
