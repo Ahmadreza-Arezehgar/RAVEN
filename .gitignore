@@ -138,7 +138,9 @@ server/uploads/
 migrate_working_dir/
 app.*.symbols
 app.*.map.json
-.claude/
+.ai-assistants/
+.cursor/
+.aider/
 *.csv
 *.xlsx
 
