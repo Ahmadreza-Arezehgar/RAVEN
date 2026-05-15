@@ -14,25 +14,14 @@ import RevenueCat
 /// Manages premium status, offerings, purchases, and restore.
 @MainActor @Observable
 final class SubscriptionService: NSObject {
-    // The class is @MainActor, but PremiumLimits.isPremium (and other
-    // mesh/storage code) needs to read `.shared.isPremium` from any actor.
-    // The shared instance itself is initialised once and never replaced, so
-    // it's safe to mark nonisolated. Only mutating writes funnel back
-    // through MainActor methods.
-    nonisolated static let shared = SubscriptionService()
+    static let shared = SubscriptionService()
     
     // MARK: - Public State
     
-    /// Whether the current user has an active RAVEN+ entitlement. Backed by
-    /// a thread-safe Sendable box so any actor can read it (PremiumLimits
-    /// queries it from BLE/storage code paths) while writes still only
-    /// happen on MainActor inside `updatePremiumStatus`. Splitting the
-    /// storage out of `@Observable` sidesteps the macro's warning about
-    /// `nonisolated(unsafe)` having no effect on the synthesized backing var.
-    @ObservationIgnored
-    private let premiumState = PremiumStateBox()
-
-    nonisolated var isPremium: Bool { premiumState.value }
+    /// Whether the current user has an active RAVEN+ entitlement.
+    /// nonisolated(unsafe) allows PremiumLimits to read from any actor context.
+    /// Writes only happen on MainActor via updatePremiumStatus.
+    nonisolated(unsafe) private(set) var isPremium: Bool = false
     
     /// Available offerings fetched from RevenueCat.
     private(set) var currentOffering: Offering?
@@ -42,33 +31,19 @@ final class SubscriptionService: NSObject {
     private(set) var isPurchasing: Bool = false
     
     // MARK: - Constants
-    //
-    // ⚠️ Replace `apiKey` with your real RevenueCat **public** SDK key
-    //    from <https://app.revenuecat.com/projects/.../api-keys>.
-    //    It is safe to ship in the binary (read-only, scoped to your
-    //    project), but it MUST exist or `Purchases.shared.offerings()`
-    //    returns "Invalid API Key" and the paywall stays empty.
-    //
-    // Both Test Store keys (`test_*`) and Apple App Store keys
-    // (`appl_*`) are accepted by RevenueCat:
-    //   • `appl_*` — production + sandbox (best — sandbox products
-    //     work on the simulator with a sandbox Apple ID).
-    //   • `test_*` — Test Store; products are manually defined in the
-    //     RevenueCat dashboard, no real StoreKit involvement.
-    //
-    // Both keys previously hard-coded here returned "Invalid API Key"
-    // (placeholders / rotated). Until a real key is wired in, the
-    // service falls back to a DEBUG-only synthetic offering so the
-    // paywall UI is still testable (see `demoFallbackOffering`).
-    private static let apiKey = "appl_twdDOMRqqomBWkMQzQsrMDUGxEU"
+    
+    #if DEBUG
+    // Test key – set via environment or Xcode scheme
+    private static let apiKey = "YOUR_REVENUECAT_TEST_KEY"
+    #else
+    // Production key – set via environment or Xcode scheme
+    private static let apiKey = "YOUR_REVENUECAT_PROD_KEY"
+    #endif
     private static let entitlementID = "Raven Pro"
     
     // MARK: - Init
-
-    // Nonisolated so `nonisolated static let shared = SubscriptionService()`
-    // can construct it without hopping to MainActor. The body only calls
-    // `super.init()`, which is fine off-main.
-    private nonisolated override init() {
+    
+    private override init() {
         super.init()
     }
     
@@ -112,11 +87,6 @@ final class SubscriptionService: NSObject {
     /// Clear RevenueCat identity on sign-out.
     func logout() async {
         serverGrantedPremium = false
-        // ⚡ BUG FIX (audit): hard-clear the persisted premium cache on logout
-        // so a downgraded / signed-out user can't retain ghost-mode or other
-        // premium-gated mesh privileges via stale UserDefaults state.
-        premiumState.value = false
-        PremiumLimits.isPremiumCached = false
         do {
             let customerInfo = try await Purchases.shared.logOut()
             updatePremiumStatus(from: customerInfo)
@@ -132,39 +102,20 @@ final class SubscriptionService: NSObject {
     
     // MARK: - Offerings
     
-    /// Latest non-fatal error from a fetch attempt — surfaced in the
-    /// paywall's empty-state message so the user knows whether to
-    /// retry, check their connection, or contact support.
-    private(set) var lastOfferingsError: String?
-
     /// Fetch the latest offerings from RevenueCat.
     func fetchOfferings() async {
         isLoading = true
         defer { isLoading = false }
-
+        
         do {
             let offerings = try await Purchases.shared.offerings()
             currentOffering = offerings.current
-            lastOfferingsError = nil
             #if DEBUG
-            // Log enough detail to debug an empty-paywall report
-            // (was previously just the identifier, which silently
-            // hid the "no offerings configured at all" case).
-            let allIDs = offerings.all.keys.sorted().joined(separator: ", ")
-            let pkgCount = offerings.current?.availablePackages.count ?? 0
-            NSLog("💎 [SubscriptionService] Fetched offerings — current=\(offerings.current?.identifier ?? "none") packages=\(pkgCount) all=[\(allIDs)]")
-            if offerings.current == nil {
-                lastOfferingsError = "RevenueCat returned no current offering. Check the dashboard: an Offering must be marked as ‘Current’ and contain at least one Package."
-                NSLog("⚠️ [SubscriptionService] No `current` offering set in the RevenueCat dashboard — paywall will show empty state.")
-            } else if pkgCount == 0 {
-                lastOfferingsError = "The current offering has no packages. Add at least one Package in the RevenueCat dashboard."
-                NSLog("⚠️ [SubscriptionService] Current offering '\(offerings.current!.identifier)' has 0 packages.")
-            }
+            print("💎 [SubscriptionService] Fetched offerings: \(offerings.current?.identifier ?? "none")")
             #endif
         } catch {
-            lastOfferingsError = error.localizedDescription
             #if DEBUG
-            NSLog("❌ [SubscriptionService] Fetch offerings failed: \(error.localizedDescription)")
+            print("❌ [SubscriptionService] Fetch offerings failed: \(error.localizedDescription)")
             #endif
         }
     }
@@ -182,18 +133,12 @@ final class SubscriptionService: NSObject {
             
             if !result.userCancelled {
                 updatePremiumStatus(from: result.customerInfo)
-
-                // ⚡ AUDIT FIX: Only mirror to currentUser AFTER RevenueCat
-                // confirms the entitlement is active. Previously we wrote
-                // `isPremium = true` unconditionally on a non-cancelled
-                // purchase, which could leave a stale crown badge if the
-                // entitlement check failed validation server-side.
-                if self.isPremium {
-                    AuthService.shared.currentUser?.isPremium = true
-                }
-
+                
+                // Optimistic UI update — crown badge appears immediately
+                AuthService.shared.currentUser?.isPremium = true
+                
                 #if DEBUG
-                print("💎 [SubscriptionService] Purchase complete (entitled=\(isPremium))")
+                print("💎 [SubscriptionService] Purchase successful! isPremium=\(isPremium)")
                 #endif
                 return true
             } else {
@@ -248,15 +193,14 @@ final class SubscriptionService: NSObject {
     func setServerPremiumStatus(_ isPremiumFromServer: Bool) {
         if serverGrantedPremium != isPremiumFromServer {
             serverGrantedPremium = isPremiumFromServer
-
+            
             // Immediately update premium status for UI responsiveness (offline cold start)
             let wasPremium = isPremium
-            let next = isPremiumFromServer || wasPremium
-            premiumState.value = next
-            PremiumLimits.isPremiumCached = next
-            if wasPremium != next {
+            isPremium = isPremiumFromServer || isPremium
+            PremiumLimits.isPremiumCached = isPremium
+            if wasPremium != isPremium {
                 #if DEBUG
-                print("💎 [SubscriptionService] Immediate server-granted premium: \(wasPremium) → \(next)")
+                print("💎 [SubscriptionService] Immediate server-granted premium: \(wasPremium) → \(isPremium)")
                 #endif
                 NotificationCenter.default.post(name: .premiumStatusDidChange, object: nil)
             }
@@ -271,38 +215,15 @@ final class SubscriptionService: NSObject {
     private func updatePremiumStatus(from customerInfo: CustomerInfo) {
         let wasPremium = isPremium
         // Premium if EITHER RevenueCat entitlement is active OR server grants permanent premium
-        let next = customerInfo.entitlements[Self.entitlementID]?.isActive == true || serverGrantedPremium
-        premiumState.value = next
-
+        isPremium = customerInfo.entitlements[Self.entitlementID]?.isActive == true || serverGrantedPremium
+        
         // Sync thread-safe cache (readable from any actor)
-        PremiumLimits.isPremiumCached = next
-        if wasPremium != next {
+        PremiumLimits.isPremiumCached = isPremium
+        if wasPremium != isPremium {
             #if DEBUG
-            print("💎 [SubscriptionService] Premium status changed: \(wasPremium) → \(next)")
+            print("💎 [SubscriptionService] Premium status changed: \(wasPremium) → \(isPremium)")
             #endif
             NotificationCenter.default.post(name: .premiumStatusDidChange, object: nil)
-        }
-    }
-}
-
-/// Thread-safe storage for `SubscriptionService.isPremium`. Lives outside
-/// `@Observable` so reads can be `nonisolated` without tripping the macro
-/// warning, and writes are serialised by `os_unfair_lock` (cheap and
-/// available pre-iOS 18, unlike `Mutex`).
-private final class PremiumStateBox: @unchecked Sendable {
-    private var lock = os_unfair_lock()
-    private var stored: Bool = false
-
-    var value: Bool {
-        get {
-            os_unfair_lock_lock(&lock)
-            defer { os_unfair_lock_unlock(&lock) }
-            return stored
-        }
-        set {
-            os_unfair_lock_lock(&lock)
-            stored = newValue
-            os_unfair_lock_unlock(&lock)
         }
     }
 }

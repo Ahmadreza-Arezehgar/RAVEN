@@ -6,12 +6,11 @@
 //  Handles peer discovery, connection, and message relay
 //
 
-@preconcurrency import CoreBluetooth
+import CoreBluetooth
 import Foundation
 import Combine
 import UIKit
 import os
-import CryptoKit
 
 // MARK: - Mesh Peer
 
@@ -39,16 +38,12 @@ struct MeshPeer: Identifiable, Equatable {
 /// Command to stop message propagation in mesh
 /// SECURITY: Now includes Ed25519 signature to prevent forged stop commands
 struct StopCommand: Codable {
-    /// Constant tag baked into the wire format. Declared as `var` only so
-    /// Codable's synthesized init(from:) can populate it on decode (a `let`
-    /// with a default value is silently skipped, which would let a peer
-    /// forge a STOP that the decoder then rebrands).
-    var type: String = "STOP"
+    let type: String = "STOP"
     let messageId: String
     let timestamp: TimeInterval
     var signature: String?       // Ed25519 signature (base64)
     var signerPublicKey: String? // Signer's public key (base64)
-
+    
     init(messageId: String, timestamp: TimeInterval) {
         self.messageId = messageId
         self.timestamp = timestamp
@@ -113,16 +108,7 @@ actor MeshPacketProcessor {
 
 /// Core BLE engine for mesh networking
 /// Implements dual-role (Central + Peripheral) for symmetric P2P mesh
-///
-/// Marked `@unchecked Sendable` because all cross-thread state is guarded by
-/// explicit `NSLock`s (`readyContinuationsLock`, `centralReadyLock`,
-/// `relayQueueLock`, `processedLock`, `sessionsLock`, …). The `@Published`
-/// outputs are only mutated on `MainActor` (every assignment is wrapped in
-/// `Task { @MainActor in … }` or its equivalent), so SwiftUI bindings stay
-/// safe. Without this annotation, the global-queue safety-timeout closures
-/// at the bottom of `waitForPeripheralReady` / `waitForCentralReady` can't
-/// capture `self`.
-final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @unchecked Sendable {
+final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol {
     static let shared = BLEMeshEngine()
     
     private enum RuntimeProfile: String {
@@ -285,22 +271,6 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
     var peripheralManager: CBPeripheralManager?  // internal for chunking extension
     var messageCharacteristic: CBMutableCharacteristic?  // internal for chunking extension
     private var deviceInfoCharacteristic: CBMutableCharacteristic?
-
-    /// v2 message TX/RX — published alongside the v1 service. v2 envelopes
-    /// flow over THIS characteristic (binary RUMProtocolV2 wire format)
-    /// while v1 keeps using `messageCharacteristic` (JSON). Two channels
-    /// means receivers don't have to byte-peek to disambiguate.
-    private var v2MessageCharacteristic: CBMutableCharacteristic?
-
-    /// v2 capabilities — read-only, value is a 4-byte big-endian uint32
-    /// `RUMProtocolV2.Capabilities` bitfield. Lets peers learn which
-    /// transports we support before deciding which protocol to speak.
-    private var v2CapabilitiesCharacteristic: CBMutableCharacteristic?
-
-    /// Per-peer capability bitfields, populated when we read their
-    /// `RUMProtocolV2.capabilitiesCharacteristicUUID` after connection.
-    /// Empty entry → peer didn't expose the v2 service → v1-only.
-    private var peerCapabilities: [UUID: RUMProtocolV2.Capabilities] = [:]
     
     // MARK: - State (protected by sessionsLock)
     
@@ -458,53 +428,7 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
         #if DEBUG
         print("🔍 [BLE DEBUG] start() called!")
         #endif
-
-        // Subscribe the relay service to v2 envelope arrivals so multi-
-        // hop forwarding works the moment we have any peers. Idempotent.
-        Task { @MainActor in RUMRelayService.shared.start() }
-
-        // Activate the WatchConnectivity bridge so a paired Apple Watch
-        // can compose DMs through us. No-op when the user hasn't paired
-        // a Watch or the Watch app isn't installed yet.
-        Task { @MainActor in
-            WatchBridgeService.shared.start()
-            // Project chat/feed/room state into the Watch snapshot
-            // pipeline. Idempotent; safe to invoke on every mesh start.
-            WatchSnapshotProjector.shared.start()
-        }
-
-        // Activate Wi-Fi Aware (iOS 26+). On older systems this is a
-        // no-op; the scaffold is in place so the moment we ship an
-        // iOS 26-only build slice with the publisher/subscriber
-        // bodies filled in, every v2 envelope path picks it up
-        // automatically. Receivers dedup cross-transport via msg_id.
-        //
-        // SAME RACE FIX as `startMPCTransport()`: must `await initialize()`
-        // before reading `fingerprint`, otherwise the WAT publisher
-        // advertises as `"unknown"` and every cross-device auth handshake
-        // silently drops payloads. (See the long comment block at line
-        // 1430 for the original investigation.)
-        Task { @MainActor in
-            try? await DeviceIdentityService.shared.initialize()
-            let fp = DeviceIdentityService.shared.fingerprint ?? "unknown"
-            WiFiAwareTransport.shared.start(deviceFingerprint: fp)
-            WiFiAwareTransport.shared.onDataReceived = { [weak self] data, peer in
-                guard let self else { return }
-                let deviceId = peer.displayName
-                Task { @MainActor in
-                    if data.first == RUMProtocolV2.version {
-                        self.handleV2EnvelopePayload(data, from: deviceId)
-                    } else {
-                        // Old v1 JSON arriving over Wi-Fi Aware also
-                        // routes to the existing chat ingest pipeline
-                        // (decrypt + signature verify + dedup all live
-                        // there).
-                        Task { await self.packetProcessor.processPacket(data, from: deviceId, engine: self) }
-                    }
-                }
-            }
-        }
-
+        
         if centralManager == nil {
             // Create with restoration identifier for background support.
             // Mac Catalyst doesn't support BLE state restoration — drop the
@@ -565,7 +489,6 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
     }
     
     func stop() {
-        Task { @MainActor in RUMRelayService.shared.stop() }
         cleanupTimer?.invalidate()
         cleanupTimer = nil
         stopScanning()
@@ -1031,8 +954,7 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
             return before - discoveredPeripheralIDs.count
         }
         if purgedDiscoveredCount > 0 {
-            Task { @MainActor [weak self] in
-                guard let self else { return }
+            DispatchQueue.main.async {
                 self.discoveredPeers = self.connectedPeers
                 #if DEBUG
                 print("🧹 [BLE] Purged \(purgedDiscoveredCount) stale discovered peripherals from memory")
@@ -1126,16 +1048,14 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
                 }
             }
             
-            // Update relay queue: replace entries with updated token counts,
-            // remove exhausted. Snapshot the mutable accumulators into `let`s
-            // so the @Sendable withLock closure captures only Sendable values.
-            let finalExhausted = exhaustedIds
-            let finalUpdated = updatedEnvelopes
+            // Update relay queue: replace entries with updated token counts, remove exhausted
             self.relayQueueLock.withLock {
+                // Remove exhausted entries
                 self.relayQueue.removeAll { env in
-                    finalExhausted.contains(env.clientMessageId)
+                    exhaustedIds.contains(env.clientMessageId)
                 }
-                for updated in finalUpdated {
+                // Update spray counters for remaining entries
+                for updated in updatedEnvelopes {
                     if let idx = self.relayQueue.firstIndex(where: { $0.clientMessageId == updated.clientMessageId }) {
                         self.relayQueue[idx].sprayCounter = updated.sprayCounter
                     }
@@ -1216,104 +1136,17 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
             // agreement key is available (exchanged during QR pairing), otherwise
             // fall back to signed-only. Ed25519 signing keys are NOT suitable for
             // X25519 key agreement — different curve encodings.
-            //
-            // v2 protocol upgrade: when the peer's capabilities advertise
-            // V2_PROTOCOL, wrap the AES-GCM ciphertext in a v2 binary
-            // envelope and write it to the v2 message characteristic.
-            // The receiver decodes v2 and routes the inner payload back
-            // through the existing v1 ingest, so chat semantics are
-            // unchanged. Saves ~85% on BLE bandwidth for "hello"-sized
-            // texts (60 B v2 header vs ~400 B v1 JSON envelope).
+            var encrypted = false
             if let peerUserId = peer.userId {
                 let trustedDevices = await FriendDeviceRepository.shared.getTrustedDevices(forUser: peerUserId)
                 if let agreementKey = trustedDevices.compactMap({ $0.agreementPublicKey }).first,
                    let sharedKey = DeviceIdentityService.shared.deriveSharedSecret(with: agreementKey) {
                     // Encrypt with ECDH-derived shared key
                     let encryptedPayload = try await MeshCryptoService.shared.encryptEnvelope(secureEnvelope, sharedKey: sharedKey)
-                    let v1Data = try JSONEncoder().encode(encryptedPayload)
-
-                    let caps = peerCapabilities[peer.id] ?? []
-                    if caps.contains(.v2Protocol) {
-                        // Per-peer protocol selection (C.1.d):
-                        //
-                        //   1. Established Noise session → v2 envelope
-                        //      with `flags.noiseTransport`, payload =
-                        //      Noise(transport)(v1 ciphertext). Forward
-                        //      secrecy on top of v1's AES-GCM.
-                        //   2. No Noise session → v2 envelope with
-                        //      `type=noiseHandshake1`, payload = M1
-                        //      bundling the v1 ciphertext for 1-RTT
-                        //      delivery.
-                        //   3. Either Noise path fails → fall back to
-                        //      the legacy v2 frame (`flags.encrypted`).
-                        let peerPID = RUMProtocolV2.peerID(fromPublicKey: agreementKey)
-                        // For C.1.f native path: precompute the bare
-                        // signed-payload JSON. The transport encoder
-                        // below uses it iff `preferNoiseNativeTransport`
-                        // is on. Falls back to nil on encode failure
-                        // (the encoder then quietly takes the hybrid
-                        // path as if the flag were off).
-                        let nativeSignedJSON: Data? = try? JSONEncoder().encode(signedPayload)
-                        let v2Bytes: Data? = await MainActor.run { () -> Data? in
-                            if NoiseSessionStore.shared.hasSession(for: peerPID) {
-                                return self.encodeV2NoiseTransportFrameForPeer(
-                                    encryptedV1Payload: v1Data,
-                                    nativeSignedPayload: nativeSignedJSON,
-                                    clientMessageID: envelope.clientMessageId,
-                                    peerPID: peerPID,
-                                    hopCount: envelope.hopCount
-                                )
-                            } else {
-                                return self.encodeV2NoiseHandshake1FrameForPeer(
-                                    encryptedV1Payload: v1Data,
-                                    clientMessageID: envelope.clientMessageId,
-                                    peerAgreementKey: agreementKey,
-                                    hopCount: envelope.hopCount
-                                )
-                            }
-                        } ?? encodeV2FrameForPeer(
-                            encryptedV1Payload: v1Data,
-                            clientMessageID: envelope.clientMessageId,
-                            peerAgreementKey: agreementKey,
-                            hopCount: envelope.hopCount
-                        )
-
-                        if let v2Bytes {
-                            // Prefer MPC if the peer has an authenticated
-                            // MPC session (~250 Mbps vs. BLE's ~50 kbps).
-                            // On any MPC failure we fall through to BLE —
-                            // the receiver dedups cross-transport via
-                            // msg_id.
-                            if let mpcPeer = MPCTransportService.shared.mpcPeer(for: peer.deviceId) {
-                                do {
-                                    try MPCTransportService.shared.sendBulkData(v2Bytes, to: mpcPeer)
-                                    #if DEBUG
-                                    print("[S1] 🚀 v2 via MPC (\(v2Bytes.count)B, inner \(v1Data.count)B) → \(peer.deviceId.prefix(8))")
-                                    #endif
-                                    return
-                                } catch {
-                                    #if DEBUG
-                                    print("[S1] mpc send failed (\(error)) — falling back to BLE")
-                                    #endif
-                                }
-                            }
-
-                            #if DEBUG
-                            print("[S1] 🔐 v2 frame (\(v2Bytes.count)B, inner \(v1Data.count)B) → \(peer.deviceId.prefix(8))")
-                            #endif
-                            await sendDataChunkedToPeer(
-                                v2Bytes,
-                                peer: peer,
-                                serviceUUID: RUMProtocolV2.serviceUUID,
-                                characteristicUUID: RUMProtocolV2.messageCharacteristicUUID
-                            )
-                            return  // v2 path complete — skip the v1 sendData below
-                        }
-                    }
-
-                    data = v1Data
+                    data = try JSONEncoder().encode(encryptedPayload)
+                    encrypted = true
                     #if DEBUG
-                    print("[S1] 🔒 encrypted+signed v1 (\(data.count)B) → \(peer.deviceId.prefix(8))")
+                    print("[S1] 🔒 encrypted+signed (\(data.count)B) → \(peer.deviceId.prefix(8))")
                     #endif
                 } else {
                     data = try JSONEncoder().encode(signedPayload)
@@ -1327,14 +1160,14 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
                 print("[S1] signed-only (\(data.count)B) → unknown peer")
                 #endif
             }
-
+            
         } catch {
             #if DEBUG
             print("❌ [BLE] Failed to encode secure envelope for peer \(peer.deviceId.prefix(8)): \(error)")
             #endif
             return
         }
-
+            
         await sendData(data, to: peer)
     }
     
@@ -1357,7 +1190,7 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
     /// Gossip a ServerReceipt to nearby peers, proving a message is already on the server.
     /// This prevents redundant server uploads from other bridge nodes.
     func gossipReceipt(_ receipt: ServerReceipt) async {
-        guard receipt.toData() != nil else {
+        guard let data = receipt.toData() else {
             #if DEBUG
             print("❌ [BLE] Failed to encode ServerReceipt")
             #endif
@@ -1438,76 +1271,19 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
     
     /// Initialize MPC transport layer. Called when BLE engine starts.
     /// MPC runs alongside BLE — BLE discovers, MPC transfers bulk data.
-    ///
-    /// CRITICAL: must AWAIT `DeviceIdentityService.initialize()` before
-    /// reading `fingerprint`. Even though `RAVENApp.swift` kicks off
-    /// `initialize()` at launch, that runs in a separate `Task {}` —
-    /// `BLEMeshEngine.shared.start()` (called from auth bootstrap) can
-    /// fire BEFORE that Task finishes, the fingerprint is still nil,
-    /// and we fall through to the `"unknown"` placeholder. The MCPeerID
-    /// becomes `RAVEN-unknown` and every cross-device auth challenge
-    /// fails the prefix check, silently dropping all bridge traffic.
-    /// (Verified live in `log show` from a fresh Catalyst install on
-    /// 2026-05-10: `Start advertising peer [RAVEN-unknown,…]`.)
-    /// The fix: serialize identity init → MPC start in one Task.
     func startMPCTransport() {
-        Task { @MainActor in
-            try? await DeviceIdentityService.shared.initialize()
-            // Prefer the real fingerprint after init completed. If it
-            // is still unavailable (e.g. ad-hoc-signed Catalyst build on
-            // macOS Tahoe stripping `keychain-access-groups`, blocking
-            // SecItemAdd silently → fingerprint stays nil), fall through
-            // to the literal "unknown" placeholder. This loses MPC peer
-            // authentication (auth challenge prefix-check fails when
-            // both peers use "unknown") but it keeps the discovery layer
-            // alive for the surface where the keychain DOES work — Mac
-            // App Store + iOS device + Developer-ID-signed Catalyst.
-            // The previous `RAVEN-unknown` regression on Catalyst came
-            // from `initialize()` racing the read; the await above is
-            // the actual race fix. Keep the placeholder behaviour so
-            // unsigned local dev builds still get something on the
-            // wire — not silently nothing.
-            let fingerprint = DeviceIdentityService.shared.fingerprint ?? "unknown"
-            #if DEBUG
-            if fingerprint == "unknown" {
-                print("⚠️ [BLE] MPC starting with placeholder fingerprint — keychain access likely stripped by ad-hoc signing. Auth handshake will fail with peers; discovery only.")
-            }
-            #endif
-            await self.bringUpMPC(with: fingerprint)
-        }
-    }
-
-    /// Inner half of `startMPCTransport()` — runs once we have a real
-    /// fingerprint in hand. Split out so the await chain stays readable.
-    @MainActor
-    private func bringUpMPC(with fingerprint: String) async {
+        let fingerprint = DeviceIdentityService.shared.fingerprint ?? "unknown"
         MPCTransportService.shared.start(deviceFingerprint: fingerprint)
-
-        // Wire up MPC data callbacks → discriminate v1 (JSON, byte 0
-        // is `{` = 0x7B) from v2 (binary, byte 0 = 0x02) and route
-        // each to its own ingest path. Two parallel pipelines, same
-        // dedup downstream (MeshDedupRepository on inner clientMessageId).
+        
+        // Wire up MPC data callbacks → process through same secure pipeline
         MPCTransportService.shared.onDataReceived = { [weak self] data, mpcPeer in
             guard let self else { return }
             let deviceId = mpcPeer.displayName  // RAVEN-XXXXXXXX format
-            if data.first == RUMProtocolV2.version {
-                // v2 binary envelope arriving over MPC. No chunk framer —
-                // MPC delivers complete messages — so we hand the bytes
-                // straight to `handleV2EnvelopePayload`, which decodes,
-                // posts the diagnostic notification (RUMRelayService
-                // listens), folds the inner ciphertext into the v1
-                // ingest if `flags.encrypted`, and emits STOP gossip
-                // when the envelope is addressed to us.
-                Task { @MainActor in
-                    self.handleV2EnvelopePayload(data, from: deviceId)
-                }
-            } else {
-                Task {
-                    await self.packetProcessor.processPacket(data, from: deviceId, engine: self)
-                }
+            Task {
+                await self.packetProcessor.processPacket(data, from: deviceId, engine: self)
             }
         }
-
+        
         #if DEBUG
         print("📡 [MPC] Bulk transport layer started alongside BLE")
         #endif
@@ -1530,68 +1306,35 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
         
         if !isServiceAdded {
             peripheralManager?.removeAllServices() // Prevent stale GATT cache
-
-            // ── v1 service (JSON envelopes, existing wire format) ────
+            
             let service = CBMutableService(type: Self.serviceUUID, primary: true)
-
+            
             let msgChar = CBMutableCharacteristic(
                 type: Self.messageCharacteristicUUID,
                 properties: [.notify, .write, .writeWithoutResponse],
                 value: nil,
                 permissions: [.readable, .writeable]
             )
-
+            
             let deviceChar = CBMutableCharacteristic(
                 type: Self.deviceInfoCharacteristicUUID,
                 properties: [.read],
                 value: deviceId.data(using: .utf8),
                 permissions: [.readable]
             )
-
+            
             self.messageCharacteristic = msgChar
             self.deviceInfoCharacteristic = deviceChar
             service.characteristics = [msgChar, deviceChar]
-
+            
             peripheralManager?.add(service)
-
-            // ── v2 service (binary RUMProtocolV2 envelopes) ──────────
-            // Coexists with v1; v2-aware peers prefer it. v1-only peers
-            // ignore this service. Capabilities bitfield is baked in at
-            // characteristic creation — we don't track auth-state
-            // changes here in Phase B; that's a Phase C refinement.
-            let v2Caps: RUMProtocolV2.Capabilities = [.v2Protocol, .bleTransport, .canBeBridge]
-            var v2CapsRawBE = v2Caps.rawValue.bigEndian
-            let v2CapsValue = withUnsafeBytes(of: &v2CapsRawBE) { Data($0) }
-
-            let v2MsgChar = CBMutableCharacteristic(
-                type: RUMProtocolV2.messageCharacteristicUUID,
-                properties: [.notify, .write, .writeWithoutResponse],
-                value: nil,
-                permissions: [.readable, .writeable]
-            )
-            let v2CapsChar = CBMutableCharacteristic(
-                type: RUMProtocolV2.capabilitiesCharacteristicUUID,
-                properties: [.read],
-                value: v2CapsValue,
-                permissions: [.readable]
-            )
-
-            self.v2MessageCharacteristic = v2MsgChar
-            self.v2CapabilitiesCharacteristic = v2CapsChar
-            let v2Service = CBMutableService(type: RUMProtocolV2.serviceUUID, primary: true)
-            v2Service.characteristics = [v2MsgChar, v2CapsChar]
-
-            peripheralManager?.add(v2Service)
             isServiceAdded = true
         }
-
+        
         guard !isAdvertising else { return }
-
-        // Advertise BOTH service UUIDs so v1 and v2 peers both find us.
-        // A peer that supports v2 reads the capabilities characteristic
-        // and switches; v1-only peers see the v1 UUID and use that.
+        
         peripheralManager?.startAdvertising([
-            CBAdvertisementDataServiceUUIDsKey: [Self.serviceUUID, RUMProtocolV2.serviceUUID],
+            CBAdvertisementDataServiceUUIDsKey: [Self.serviceUUID],
             CBAdvertisementDataLocalNameKey: "RAVEN-\(deviceId.prefix(8))"
         ])
         
@@ -1919,13 +1662,13 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
                 
                 if let postEnvelope = try? decoder.decode(MeshPostEnvelope.self, from: data) {
                     guard !postEnvelope.postId.isEmpty, !postEnvelope.authorId.isEmpty else {
-                        _ = processedLock.withLock { processedMessages.removeValue(forKey: postId) }
+                        processedLock.withLock { processedMessages.removeValue(forKey: postId) }
                         return
                     }
                     
                     if postEnvelope.signature != nil {
                         guard postEnvelope.isSignatureValid() else {
-                            _ = processedLock.withLock { processedMessages.removeValue(forKey: postId) }
+                            processedLock.withLock { processedMessages.removeValue(forKey: postId) }
                             return
                         }
                         if let signerKey = postEnvelope.signerPublicKey {
@@ -1933,14 +1676,14 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
                             let myUserId = await KeychainService.shared.getUserId() ?? ""
                             if authorId == myUserId {
                                 if signerKey != DeviceIdentityService.shared.publicKeyBase64 {
-                                    _ = processedLock.withLock { processedMessages.removeValue(forKey: postId) }
+                                    processedLock.withLock { processedMessages.removeValue(forKey: postId) }
                                     return
                                 }
                             } else {
                                 let trustedDevices = await FriendDeviceRepository.shared.getTrustedDevices(forUser: authorId)
                                 let isTrustedKey = trustedDevices.contains { $0.publicKeyBase64 == signerKey }
                                 if !isTrustedKey {
-                                    _ = processedLock.withLock { processedMessages.removeValue(forKey: postId) }
+                                    processedLock.withLock { processedMessages.removeValue(forKey: postId) }
                                     return
                                 }
                             }
@@ -1949,40 +1692,9 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
                     await MainActor.run { self.onMeshPostReceived?(postEnvelope) }
                 }
                 return
-            } else if k == "raven.gateway.beacon.v1" {
-                // Beacon from a neighbour advertising itself as a gateway.
-                // The MVP doesn't pick gateways yet (single-hop two-phone
-                // prototype) — we just log so the test pass shows beacons
-                // are being received over the wire. Selection lands when
-                // we have ≥2 candidate gateways in the field.
-                if let beacon = try? decoder.decode(GatewayBeacon.self, from: data) {
-                    #if DEBUG
-                    NSLog("🌐 [Gateway] beacon recv from=\(beacon.gatewayDeviceId.prefix(8)) score=\(String(format: "%.2f", beacon.score))")
-                    #endif
-                }
-                return
-            } else if k == "raven.gateway.relay.v1" {
-                // An offline neighbour is asking us to push their outbound
-                // envelope through our internet connection.
-                if let req = try? decoder.decode(GatewayRelayRequest.self, from: data) {
-                    Task { @MainActor in
-                        await MeshGatewayService.shared.handleOutboundFromNeighbour(req)
-                    }
-                }
-                return
-            } else if k == "raven.gateway.inbound.v1" {
-                // Server-bound envelope being re-broadcast by another
-                // gateway — relevant only if we're the recipient. Today
-                // we just log; the recipient-side pickup is wired in v1.7.
-                if let env = try? decoder.decode(GatewayInboundEnvelope.self, from: data) {
-                    #if DEBUG
-                    NSLog("🌐 [Gateway] inbound recv hint=\(env.recipientHint.prefix(8)) bytes=\(env.payload.count)")
-                    #endif
-                }
-                return
             }
         }
-
+        
         // 3. Stop Command
         if let type = jsonDict["type"] as? String, type == "STOP" {
             let messageId = jsonDict["messageId"] as? String ?? ""
@@ -2729,21 +2441,11 @@ extension BLEMeshEngine: CBCentralManagerDelegate {
     
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String : Any], rssi RSSI: NSNumber) {
         let name = advertisementData[CBAdvertisementDataLocalNameKey] as? String ?? peripheral.name ?? "Unknown"
-
-        // Extract device ID. The iOS/Mac builds publish it as the BLE
-        // LocalName "RAVEN-XXXXXXXX". Windows can't override the system
-        // Bluetooth name in LocalName, so it puts the 8-char fingerprint
-        // (UTF-8) in the ServiceData slot keyed by `serviceUUID`. Read
-        // both — first hit wins. (See HANDOFF.md M3 in RAVEN-Windows for
-        // the cross-platform discovery contract.)
+        
+        // Extract device ID from name (format: RAVEN-XXXXXXXX)
         let peerDeviceId: String
         if name.hasPrefix("RAVEN-") {
             peerDeviceId = String(name.dropFirst(6))
-        } else if let serviceData = advertisementData[CBAdvertisementDataServiceDataKey] as? [CBUUID: Data],
-                  let raw = serviceData[Self.serviceUUID],
-                  let s = String(data: raw, encoding: .utf8),
-                  !s.isEmpty {
-            peerDeviceId = s
         } else {
             peerDeviceId = peripheral.identifier.uuidString
         }
@@ -2831,37 +2533,16 @@ extension BLEMeshEngine: CBCentralManagerDelegate {
     
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         let isIntentional = (error == nil)
-
+        
         sessionsLock.withLock {
             peripheralSessions.removeValue(forKey: peripheral.identifier)
             connectionAttemptStarted.removeValue(forKey: peripheral.identifier)
             connectedPeerIDs.remove(peripheral.identifier)
             reconnectAttempts.removeValue(forKey: peripheral.identifier)
-
-            // 🔴 Bug fix (2026-05-09): the previous implementation
-            // unconditionally wiped the cooldown for this peripheral
-            // here, which caused a tight reconnect loop:
-            //   discover → no services → set 5-min cooldown →
-            //   cancelPeripheralConnection → didDisconnect fires →
-            //   we wipe the cooldown we just set → next scan re-finds
-            //   the same peer → reconnect → repeat forever.
-            //
-            // The radio thrashing burned battery AND saturated the
-            // event loop just enough to make video downloads stutter
-            // (the user-reported "video unstable" symptom).
-            //
-            // Keep the cooldown if it's still in the future; only
-            // drop expired ones to bound the dictionary size.
-            if let cd = connectionCooldowns[peripheral.identifier], cd <= Date() {
-                connectionCooldowns.removeValue(forKey: peripheral.identifier)
-            }
-
-            // فراموشی کامل دیوایس برای کشف مجدد —
-            // also gated on the cooldown so a peer we just decided to
-            // ignore doesn't get re-discovered → re-connected.
-            if connectionCooldowns[peripheral.identifier] == nil {
-                discoveredPeripheralIDs.remove(peripheral.identifier)
-            }
+            connectionCooldowns.removeValue(forKey: peripheral.identifier)
+            
+            // فراموشی کامل دیوایس برای کشف مجدد
+            discoveredPeripheralIDs.remove(peripheral.identifier)
         }
         
         DispatchQueue.main.async {
@@ -2930,23 +2611,12 @@ extension BLEMeshEngine: CBPeripheralDelegate {
         #endif
         
         var foundRavenService = false
-        for service in services {
-            if service.uuid == Self.serviceUUID {
-                foundRavenService = true
-                peripheral.discoverCharacteristics(
-                    [Self.messageCharacteristicUUID, Self.deviceInfoCharacteristicUUID],
-                    for: service
-                )
-            } else if service.uuid == RUMProtocolV2.serviceUUID {
-                // v2-capable peer; discover characteristics so we can
-                // subscribe to v2 notifies + read their caps bitfield.
-                foundRavenService = true
-                peripheral.discoverCharacteristics(
-                    [RUMProtocolV2.messageCharacteristicUUID,
-                     RUMProtocolV2.capabilitiesCharacteristicUUID],
-                    for: service
-                )
-            }
+        for service in services where service.uuid == Self.serviceUUID {
+            foundRavenService = true
+            peripheral.discoverCharacteristics(
+                [Self.messageCharacteristicUUID, Self.deviceInfoCharacteristicUUID],
+                for: service
+            )
         }
         if !foundRavenService {
             #if DEBUG
@@ -2987,12 +2657,6 @@ extension BLEMeshEngine: CBPeripheralDelegate {
             } else if char.uuid == Self.deviceInfoCharacteristicUUID {
                 peripheral.readValue(for: char)
                 // reading deviceInfo
-            } else if char.uuid == RUMProtocolV2.messageCharacteristicUUID {
-                // Subscribe to v2 message notifies. The Phase C sender
-                // will gate v2 encoding on cached peer capabilities.
-                peripheral.setNotifyValue(true, for: char)
-            } else if char.uuid == RUMProtocolV2.capabilitiesCharacteristicUUID {
-                peripheral.readValue(for: char)
             }
         }
         
@@ -3025,7 +2689,7 @@ extension BLEMeshEngine: CBPeripheralDelegate {
             }
             // Promote to connectedPeers
             if !self.connectedPeers.contains(where: { $0.id == peripheral.identifier }) {
-                _ = self.sessionsLock.withLock {
+                self.sessionsLock.withLock {
                     self.connectedPeerIDs.insert(peripheral.identifier)
                 }
                 self.connectedPeers.append(peer)
@@ -3052,348 +2716,21 @@ extension BLEMeshEngine: CBPeripheralDelegate {
     
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
         guard error == nil, let data = characteristic.value else { return }
-
+        
         if characteristic.uuid == Self.messageCharacteristicUUID {
             let deviceId = getSnapshot().first { $0.id == peripheral.identifier }?.deviceId ?? "unknown"
-
+            
             // Bug #10: Process with chunk handling
             guard let completeData = processIncomingPacket(data, from: deviceId) else {
                 return  // Waiting for more chunks
             }
-
+            
             // Bug 1 fix: Use actor for serialized processing (replaces broken GCD+Task pattern)
             Task { [weak self] in
                 guard let self else { return }
                 await self.packetProcessor.processPacket(completeData, from: deviceId, engine: self)
             }
-        } else if characteristic.uuid == RUMProtocolV2.messageCharacteristicUUID {
-            // v2 binary envelope arriving via notify. Reuse the v1 chunk
-            // framer (same 6-byte chunked frame layer); the assembled
-            // bytes are routed to the v2 decode path instead of the
-            // JSON parser.
-            let deviceId = getSnapshot().first { $0.id == peripheral.identifier }?.deviceId ?? "unknown"
-            guard let completeData = processIncomingPacket(data, from: deviceId) else {
-                return  // waiting for more chunks
-            }
-            handleV2EnvelopePayload(completeData, from: deviceId)
-        } else if characteristic.uuid == RUMProtocolV2.capabilitiesCharacteristicUUID {
-            // Cache the peer's capability bitfield. The Phase C sender
-            // gates v2 encoding on `caps.contains(.v2Protocol)`.
-            peerCapabilities[peripheral.identifier] = parseV2Capabilities(data)
-            #if DEBUG
-            let raw = data.map { String(format: "%02x", $0) }.joined()
-            print("[mesh-v2] caps from \(peripheral.identifier.uuidString.prefix(8)): 0x\(raw)")
-            #endif
         }
-    }
-
-    /// Parse a 4-byte big-endian uint32 from the v2 capabilities
-    /// characteristic. Returns an empty set if `data` is shorter.
-    private func parseV2Capabilities(_ data: Data) -> RUMProtocolV2.Capabilities {
-        guard data.count >= 4 else { return [] }
-        let base = data.startIndex
-        let raw =
-            (UInt32(data[base    ]) << 24) |
-            (UInt32(data[base + 1]) << 16) |
-            (UInt32(data[base + 2]) <<  8) |
-             UInt32(data[base + 3])
-        return RUMProtocolV2.Capabilities(rawValue: raw)
-    }
-
-    /// Decode an assembled v2 envelope and route its inner payload back
-    /// through the existing v1 ingest pipeline.
-    ///
-    /// Today the v2 frame is a thin transport wrapper: when
-    /// `flags.encrypted` is set, `payload` is the same AES-GCM blob v1
-    /// has always emitted. Routing it to `packetProcessor.processPacket`
-    /// (the v1 chat ingest path) means a v2 receiver lights up chat
-    /// without a new ingest hook. Phase C.1 swaps the inner crypto for
-    /// Noise IK and changes this path to decrypt via Noise instead.
-    private func handleV2EnvelopePayload(_ data: Data, from deviceId: String) {
-        let envelope: RUMProtocolV2.Envelope
-        do {
-            envelope = try RUMProtocolV2.decode(data)
-        } catch {
-            #if DEBUG
-            print("[mesh-v2] decode failed from \(deviceId): \(error)")
-            #endif
-            return
-        }
-        #if DEBUG
-        print("[mesh-v2] received \(envelope.type) from \(deviceId) — \(envelope.payload.count) B payload, ttl=\(envelope.ttl)")
-        #endif
-        // Diagnostic notification — useful for protocol-level debugging.
-        NotificationCenter.default.post(
-            name: .ravenMeshV2EnvelopeReceived,
-            object: nil,
-            userInfo: ["envelope": envelope, "peerDeviceId": deviceId]
-        )
-
-        // ── Noise IK routing (C.1.c) ────────────────────────────────
-        //
-        // Three new shapes ride v2 envelopes alongside the legacy
-        // AES-GCM `flags.encrypted` path:
-        //
-        //   • `type == noiseHandshake1` → initiator's M1; process, emit
-        //     our M2, and ingest the embedded payload (1-RTT IK lets us
-        //     deliver chat text inside the handshake itself).
-        //   • `type == noiseHandshake2` → responder's M2; finalize the
-        //     cached initiator-side session.
-        //   • `flags.noiseTransport`    → transport-mode AEAD; decrypt
-        //     via the cached session and fold plaintext back into the
-        //     existing v1 chat ingest pipeline.
-        //
-        // We only act on envelopes addressed to *us* — relays continue
-        // to forward Noise frames opaquely (the relay can't decrypt; it
-        // just transports bytes).
-        let myPID: Data? = DeviceIdentityService.shared.agreementPublicKeyData
-            .map { RUMProtocolV2.peerID(fromPublicKey: $0) }
-
-        if envelope.destPID == myPID {
-            switch envelope.type {
-            case .noiseHandshake1:
-                Task { @MainActor in self.handleInboundNoiseHandshake1(envelope, from: deviceId) }
-            case .noiseHandshake2:
-                Task { @MainActor in self.handleInboundNoiseHandshake2(envelope, from: deviceId) }
-            default:
-                if envelope.flags.contains(.noiseTransport) {
-                    Task { @MainActor in self.handleInboundNoiseTransport(envelope, from: deviceId) }
-                }
-            }
-        }
-
-        // Hand the inner ciphertext to the existing v1 ingest pipeline.
-        // Dedup happens in the packet processor on the inner clientMessageId,
-        // so we don't double-fire vs. a parallel v1 receipt of the same
-        // message. Skip when Noise already handled it.
-        if envelope.flags.contains(.encrypted), !envelope.flags.contains(.noiseTransport) {
-            let inner = envelope.payload
-            Task { [weak self] in
-                guard let self else { return }
-                await self.packetProcessor.processPacket(inner, from: deviceId, engine: self)
-            }
-        }
-
-        // STOP gossip — when this envelope is addressed to us, broadcast
-        // a STOP back into the mesh so carriers can drop their remaining
-        // spray copies. Skipped for incoming STOPs (those flow through
-        // `RUMRelayService`, which marks them stopped + relays) and for
-        // Noise handshake messages (single-recipient by definition).
-        if envelope.type != .stop,
-           envelope.type != .noiseHandshake1,
-           envelope.type != .noiseHandshake2,
-           let myPID,
-           envelope.destPID == myPID {
-            Task { @MainActor in self.broadcastV2Stop(forMsgID: envelope.msgID) }
-        }
-    }
-
-    // MARK: - Noise IK ingest (C.1.c)
-
-    @MainActor
-    private func handleInboundNoiseHandshake1(_ envelope: RUMProtocolV2.Envelope, from deviceId: String) {
-        let result: (payload: Data, message2: Data, peerID: Data)
-        do {
-            result = try NoiseSessionStore.shared.processInboundHandshake1(message1: envelope.payload)
-        } catch {
-            #if DEBUG
-            print("[mesh-v2-noise] M1 process failed from \(deviceId): \(error)")
-            #endif
-            return
-        }
-
-        guard let myAgreement = DeviceIdentityService.shared.agreementPublicKeyData else { return }
-        let myPID = RUMProtocolV2.peerID(fromPublicKey: myAgreement)
-
-        var msgID = Data(count: 16)
-        msgID.withUnsafeMutableBytes { ptr in
-            guard let base = ptr.baseAddress else { return }
-            _ = SecRandomCopyBytes(kSecRandomDefault, 16, base)
-        }
-
-        let m2Envelope = RUMProtocolV2.Envelope(
-            type: .noiseHandshake2,
-            ttl: RUMProtocolV2.defaultTTL,
-            flags: [],
-            timestamp: UInt32(Date().timeIntervalSince1970),
-            msgID: msgID,
-            senderPID: myPID,
-            destPID: envelope.senderPID,
-            hopCount: 0,
-            sprayRemaining: RUMProtocolV2.defaultSprayCopies,
-            payload: result.message2,
-            signature: nil
-        )
-
-        if let encoded = try? RUMProtocolV2.encode(m2Envelope) {
-            let padded = RUMProtocolV2.pad(encoded)
-            Task { await self.relayV2EnvelopeBytesToAllPeers(padded, except: "") }
-        }
-
-        // Embedded payload (typically the actual chat text) → existing
-        // v1 ingest path. Noise-native routing replaces this in C.1.d.
-        if !result.payload.isEmpty {
-            let inner = result.payload
-            Task { [weak self] in
-                guard let self else { return }
-                await self.packetProcessor.processPacket(inner, from: deviceId, engine: self)
-            }
-        }
-
-        #if DEBUG
-        print("[mesh-v2-noise] processed M1 from \(deviceId); session established")
-        #endif
-    }
-
-    @MainActor
-    private func handleInboundNoiseHandshake2(_ envelope: RUMProtocolV2.Envelope, from deviceId: String) {
-        let peerID = envelope.senderPID
-        do {
-            _ = try NoiseSessionStore.shared.finishHandshakeAsInitiator(
-                message2: envelope.payload,
-                peerID: peerID
-            )
-            #if DEBUG
-            print("[mesh-v2-noise] processed M2 from \(deviceId); transport keys ready")
-            #endif
-        } catch {
-            #if DEBUG
-            print("[mesh-v2-noise] M2 process failed from \(deviceId): \(error)")
-            #endif
-        }
-    }
-
-    @MainActor
-    private func handleInboundNoiseTransport(_ envelope: RUMProtocolV2.Envelope, from deviceId: String) {
-        let peerID = envelope.senderPID
-        guard let plaintext = NoiseSessionStore.shared.decrypt(
-            envelope.payload,
-            ad: envelope.msgID,
-            fromPeer: peerID
-        ) else {
-            #if DEBUG
-            print("[mesh-v2-noise] transport decrypt failed from \(deviceId) — no session or AEAD failure")
-            #endif
-            return
-        }
-        // Two shapes ride a Noise transport-mode payload:
-        //
-        //   • `flags.encrypted` set → C.1.d migration shape. Plaintext is
-        //     a v1 `EncryptedMeshPayload` JSON; we still need the AES-GCM
-        //     unwrap, so we hand the bytes to `packetProcessor.processPacket`
-        //     which understands the legacy wire format.
-        //
-        //   • `flags.encrypted` clear → C.1.e Noise-native shape. The
-        //     inner AES-GCM layer is gone; plaintext is a JSON
-        //     `SignedMeshPayload` (Ed25519-signed bare SecureMeshEnvelope).
-        //     Verify the signature, convert to `MeshEnvelope`, and
-        //     route to the same `processVerifiedEnvelope` consumer the
-        //     v1 paths funnel into.
-        if envelope.flags.contains(.encrypted) {
-            let inner = plaintext
-            Task { [weak self] in
-                guard let self else { return }
-                await self.packetProcessor.processPacket(inner, from: deviceId, engine: self)
-            }
-        } else {
-            handleNoiseNativeSignedPayload(plaintext, from: deviceId)
-        }
-    }
-
-    /// C.1.e ingest for iOS: decode a `SignedMeshPayload` JSON that
-    /// just came out of the Noise transport-mode decrypt, verify
-    /// the relay-chain Ed25519 signature, dedup, and route to
-    /// `processVerifiedEnvelope` — the same downstream consumer the
-    /// v1 receive paths funnel into.
-    @MainActor
-    private func handleNoiseNativeSignedPayload(_ data: Data, from deviceId: String) {
-        let signedPayload: SignedMeshPayload
-        do {
-            signedPayload = try JSONDecoder().decode(SignedMeshPayload.self, from: data)
-        } catch {
-            #if DEBUG
-            print("[mesh-v2-noise-native] SignedMeshPayload decode failed from \(deviceId): \(error)")
-            #endif
-            return
-        }
-        let messageId = signedPayload.envelope.clientMessageId
-        Task { [weak self] in
-            guard let self else { return }
-
-            let isNew = await MeshDedupRepository.shared.isNewMessage(id: messageId)
-            if !isNew {
-                #if DEBUG
-                print("[mesh-v2-noise-native] duplicate \(messageId.prefix(8)) — skipping")
-                #endif
-                return
-            }
-
-            let isValid = await MeshCryptoService.shared.verifySignature(signedPayload)
-            guard isValid else {
-                await MeshDedupRepository.shared.unclaimMessage(id: messageId)
-                #if DEBUG
-                print("[mesh-v2-noise-native] signature verify failed from \(deviceId)")
-                #endif
-                return
-            }
-
-            var envelope = signedPayload.envelope.toMeshEnvelope()
-            envelope.originalSignature = signedPayload.originalSignature ?? signedPayload.signature
-            envelope.originalSignerPublicKey = signedPayload.originalSignerPublicKey ?? signedPayload.signerPublicKey
-            await MeshDedupRepository.shared.markProcessed(id: messageId)
-            await self.processVerifiedEnvelope(envelope, from: deviceId, isAlreadyDeduped: true)
-        }
-    }
-
-    /// Build + broadcast a STOP gossip envelope pointing at
-    /// `originalMsgID`. Called when we're the recipient and have just
-    /// ingested the original; STOP propagates so carriers stop
-    /// spraying remaining copies.
-    @MainActor
-    private func broadcastV2Stop(forMsgID originalMsgID: Data) {
-        guard let myAgreement = DeviceIdentityService.shared.agreementPublicKeyData else { return }
-        let myPID = RUMProtocolV2.peerID(fromPublicKey: myAgreement)
-
-        // STOP carries its own fresh msg_id so its bloom-dedup is
-        // independent of the original's. Payload = 16 bytes of the
-        // original `msg_id` — that's what carriers look up to suppress
-        // future spray.
-        var stopMsgID = Data(count: 16)
-        stopMsgID.withUnsafeMutableBytes { ptr in
-            guard let base = ptr.baseAddress else { return }
-            _ = SecRandomCopyBytes(kSecRandomDefault, 16, base)
-        }
-
-        let stop = RUMProtocolV2.Envelope(
-            type: .stop,
-            ttl: RUMProtocolV2.defaultTTL,
-            flags: [],
-            timestamp: UInt32(Date().timeIntervalSince1970),
-            msgID: stopMsgID,
-            senderPID: myPID,
-            destPID: RUMProtocolV2.broadcastPeerID,
-            hopCount: 0,
-            // STOP wants higher reach than user text (defaults to 4) —
-            // it's small, header-only, and the goal is to suppress
-            // spray everywhere. Bloom-dedup + TTL bound prevent loops.
-            sprayRemaining: 32,
-            payload: originalMsgID,
-            signature: nil
-        )
-
-        guard let encoded = try? RUMProtocolV2.encode(stop) else { return }
-        let padded = RUMProtocolV2.pad(encoded)
-
-        // Mark stopped locally before broadcast so a concurrent arrival
-        // of the original via a different path doesn't get re-sprayed.
-        RUMRelayService.shared.markStopped(msgID: originalMsgID)
-
-        #if DEBUG
-        let originalHex = originalMsgID.map { String(format: "%02x", $0) }.joined()
-        print("[mesh-v2] emitting STOP for \(originalHex.prefix(8))")
-        #endif
-
-        Task { await self.relayV2EnvelopeBytesToAllPeers(padded, except: "") }
     }
     
     // MARK: - Bug 4 fix: BLE Buffer Readiness Delegate
@@ -3601,13 +2938,13 @@ extension BLEMeshEngine: CBPeripheralManagerDelegate {
     }
     
     func peripheralManager(_ peripheral: CBPeripheralManager, didReceiveWrite requests: [CBATTRequest]) {
-        // ── v1 path (existing) ──────────────────────────────────────
+        // Filter requests for our message characteristic
         let messageRequests = requests.filter { $0.characteristic.uuid == Self.messageCharacteristicUUID }
-
+        
         if !messageRequests.isEmpty, let firstRequest = messageRequests.first {
             let deviceId = getSnapshot().first { $0.peripheral.identifier == firstRequest.central.identifier }?.deviceId
                 ?? firstRequest.central.identifier.uuidString
-
+            
             // Fix: Assemble Long Write fragments into a single Data
             var assembledWriteData = Data()
             for request in messageRequests.sorted(by: { $0.offset < $1.offset }) {
@@ -3615,7 +2952,7 @@ extension BLEMeshEngine: CBPeripheralManagerDelegate {
                     assembledWriteData.append(data)
                 }
             }
-
+            
             if !assembledWriteData.isEmpty {
                 if let completeData = processIncomingPacket(assembledWriteData, from: deviceId) {
                     // Bug 1 fix: Use actor for serialized processing
@@ -3626,26 +2963,7 @@ extension BLEMeshEngine: CBPeripheralManagerDelegate {
                 }
             }
         }
-
-        // ── v2 path (parallel to v1) ────────────────────────────────
-        // v2 envelopes arrive on a SEPARATE characteristic, so we just
-        // filter on UUID and route the assembled bytes to the v2 decode
-        // helper. No interaction with the v1 packet processor.
-        let v2Requests = requests.filter { $0.characteristic.uuid == RUMProtocolV2.messageCharacteristicUUID }
-        if !v2Requests.isEmpty, let firstV2 = v2Requests.first {
-            let deviceId = getSnapshot().first { $0.peripheral.identifier == firstV2.central.identifier }?.deviceId
-                ?? firstV2.central.identifier.uuidString
-
-            var assembled = Data()
-            for r in v2Requests.sorted(by: { $0.offset < $1.offset }) {
-                if let d = r.value { assembled.append(d) }
-            }
-            if !assembled.isEmpty,
-               let complete = processIncomingPacket(assembled, from: deviceId) {
-                handleV2EnvelopePayload(complete, from: deviceId)
-            }
-        }
-
+        
         // Respond to first request (prevents CoreBluetooth crash)
         if let firstRequest = requests.first {
             peripheral.respond(to: firstRequest, withResult: .success)
@@ -3699,13 +3017,6 @@ extension BLEMeshEngine {
                 var success = peripheralManager?.updateValue(packet, for: char, onSubscribedCentrals: [central]) ?? false
                 var retries = 0
                 while !success && retries < 15 {
-                    // 🟡 BUG FIX (2026-05-10): observe Task cancellation
-                    // so a peer-disconnect / mesh-stop / app-background
-                    // can short-circuit this 15-iteration loop instead
-                    // of running it to completion (battery drain +
-                    // tying up `messageCharacteristic` while the next
-                    // pending message waits).
-                    if Task.isCancelled { return }
                     await waitForCentralReady()
                     success = peripheralManager?.updateValue(packet, for: char, onSubscribedCentrals: [central]) ?? false
                     retries += 1
@@ -3738,11 +3049,6 @@ extension BLEMeshEngine {
                 var success = peripheralManager?.updateValue(packet, for: char, onSubscribedCentrals: [central]) ?? false
                 var retries = 0
                 while !success && retries < 15 {
-                    // 🟡 BUG FIX (2026-05-10): see non-chunked path
-                    // above. Same cancellation observation needed
-                    // here so a peer-disconnect / mesh-stop can
-                    // short-circuit the per-chunk retry loop.
-                    if Task.isCancelled { return }
                     await waitForCentralReady()
                     success = peripheralManager?.updateValue(packet, for: char, onSubscribedCentrals: [central]) ?? false
                     retries += 1
@@ -3760,51 +3066,38 @@ extension BLEMeshEngine {
         }
     }
     
-    private func sendDataDirect(
-        _ data: Data,
-        to peer: MeshPeer,
-        type: CBCharacteristicWriteType = .withoutResponse,
-        serviceUUID: CBUUID = BLEMeshEngine.serviceUUID,
-        characteristicUUID: CBUUID = BLEMeshEngine.messageCharacteristicUUID
-    ) async {
+    private func sendDataDirect(_ data: Data, to peer: MeshPeer, type: CBCharacteristicWriteType = .withoutResponse) async {
         guard let services = peer.peripheral.services,
-              let service = services.first(where: { $0.uuid == serviceUUID }),
+              let service = services.first(where: { $0.uuid == Self.serviceUUID }),
               let characteristics = service.characteristics,
-              let char = characteristics.first(where: { $0.uuid == characteristicUUID }) else {
+              let char = characteristics.first(where: { $0.uuid == Self.messageCharacteristicUUID }) else {
             return
         }
-
+        
         peer.peripheral.writeValue(data, for: char, type: type)
     }
-
-    private func sendDataChunkedToPeer(
-        _ data: Data,
-        peer: MeshPeer,
-        serviceUUID: CBUUID = BLEMeshEngine.serviceUUID,
-        characteristicUUID: CBUUID = BLEMeshEngine.messageCharacteristicUUID
-    ) async {
+    
+    private func sendDataChunkedToPeer(_ data: Data, peer: MeshPeer) async {
         // Bug 2 fix: Use .withoutResponse + waitForPeripheralReady for flow control.
         // .withResponse fires hundreds of XPC requests without waiting for didWriteValueFor,
         // overflowing iOS's internal queue and causing "Peripheral is busy" disconnects.
         let maxWrite = peer.peripheral.maximumWriteValueLength(for: .withoutResponse)
         let maxDataPerPacket = max(maxWrite - Self.headerSize - 1, 20)
-
+        
         if data.count <= maxDataPerPacket {
             var packet = Data([0])
             packet.append(data)
             await waitForPeripheralReady(peer.peripheral)
-            await sendDataDirect(packet, to: peer, type: .withoutResponse,
-                                 serviceUUID: serviceUUID,
-                                 characteristicUUID: characteristicUUID)
+            await sendDataDirect(packet, to: peer, type: .withoutResponse)
             return
         }
-
+        
         let chunkPayloadSize = maxDataPerPacket
         let chunks = splitIntoChunks(data, payloadSize: chunkPayloadSize)
         guard chunks.count <= 255 else { return }
-
+        
         let messageHash = UInt32(truncatingIfNeeded: data.hashValue).littleEndian
-
+        
         for (index, chunk) in chunks.enumerated() {
             // 🛡️ Ghost-loop guard: abort immediately if peer disconnected mid-transfer.
             // Without this, each remaining chunk waits 2s for timeout (250 chunks × 2s = 8 min hang).
@@ -3814,246 +3107,20 @@ extension BLEMeshEngine {
                 #endif
                 break
             }
-
+            
             var packet = Data([1])
             let hashBytes = withUnsafeBytes(of: messageHash) { Array($0) }
             packet.append(contentsOf: hashBytes)
             packet.append(UInt8(chunks.count))
             packet.append(UInt8(index))
             packet.append(chunk)
-
+            
             await waitForPeripheralReady(peer.peripheral)
-            await sendDataDirect(packet, to: peer, type: .withoutResponse,
-                                 serviceUUID: serviceUUID,
-                                 characteristicUUID: characteristicUUID)
-
+            await sendDataDirect(packet, to: peer, type: .withoutResponse)
+            
             // 🛑 FIX 1: Prevent CoreBluetooth XPC Flood (Result accumulator timeout)
             // دادن فرصت ۱۵ میلیثانیهای به iOS برای هضم پکت در صف سختافزاری
             try? await Task.sleep(nanoseconds: 15_000_000)
-        }
-    }
-
-    // MARK: - V2 framing helper
-    //
-    // Wrap an already-AES-GCM-encrypted v1 ciphertext blob in a v2
-    // binary envelope. Symmetric to RAVEN-MacApp/.../BLEMeshEngine.swift's
-    // `encodeV2Frame` — same wire format on both ends.
-    //
-    // The v2 frame is a thin transport upgrade for now: payload still
-    // carries the v1 AES-GCM ciphertext, so existing chat ingest works
-    // unchanged. Phase C.1 swaps the inner crypto for Noise IK.
-    func encodeV2FrameForPeer(
-        encryptedV1Payload: Data,
-        clientMessageID: String,
-        peerAgreementKey: Data,
-        hopCount: Int = 0
-    ) -> Data? {
-        guard let myAgreement = DeviceIdentityService.shared.agreementPublicKeyData else {
-            return nil
-        }
-        let mySenderPID = RUMProtocolV2.peerID(fromPublicKey: myAgreement)
-        let destPID     = RUMProtocolV2.peerID(fromPublicKey: peerAgreementKey)
-        guard let msgID = uuidStringToBytes(clientMessageID) else { return nil }
-
-        let v2 = RUMProtocolV2.Envelope(
-            type: .text,
-            ttl: RUMProtocolV2.defaultTTL,
-            flags: [.encrypted, .needsForwarding],
-            timestamp: UInt32(clamping: Int(Date().timeIntervalSince1970)),
-            msgID: msgID,
-            senderPID: mySenderPID,
-            destPID: destPID,
-            hopCount: UInt8(min(255, max(0, hopCount))),
-            sprayRemaining: RUMProtocolV2.defaultSprayCopies,
-            payload: encryptedV1Payload,
-            signature: nil
-        )
-        do {
-            let encoded = try RUMProtocolV2.encode(v2)
-            return RUMProtocolV2.pad(encoded)
-        } catch {
-            #if DEBUG
-            print("[mesh-v2] encode failed: \(error)")
-            #endif
-            return nil
-        }
-    }
-
-    /// Wrap a v1 ciphertext in a v2 envelope encrypted with the cached
-    /// Noise transport-mode key for `peerPID`. AD = the envelope's
-    /// `msg_id` so a replay against a different envelope fails the
-    /// AEAD verify cleanly. Returns nil when no Noise session exists
-    /// for `peerPID` — the caller should then fall back to the
-    /// handshake encoder below.
-    @MainActor
-    func encodeV2NoiseTransportFrameForPeer(
-        encryptedV1Payload: Data,
-        nativeSignedPayload: Data? = nil,
-        clientMessageID: String,
-        peerPID: Data,
-        hopCount: Int = 0
-    ) -> Data? {
-        guard let myAgreement = DeviceIdentityService.shared.agreementPublicKeyData else { return nil }
-        guard let msgID = uuidStringToBytes(clientMessageID) else { return nil }
-
-        // C.1.f: when both peers are on a build that handles
-        // Noise-native receive (handled in C.1.e for Mac+iOS), drop
-        // the inner AES-GCM layer. We only switch when the caller
-        // gave us a `nativeSignedPayload` AND the protocol-level
-        // flag is on; either condition false → fall back to hybrid
-        // (Noise-wraps-AES-GCM).
-        let plaintextForNoise: Data
-        let frameFlags: RUMProtocolV2.Flags
-        if RUMProtocolV2.preferNoiseNativeTransport, let native = nativeSignedPayload {
-            plaintextForNoise = native
-            frameFlags = [.noiseTransport, .needsForwarding]
-        } else {
-            plaintextForNoise = encryptedV1Payload
-            frameFlags = [.encrypted, .noiseTransport, .needsForwarding]
-        }
-
-        guard let noiseCT = NoiseSessionStore.shared.encrypt(
-            plaintextForNoise,
-            ad: msgID,
-            forPeer: peerPID
-        ) else { return nil }
-
-        let mySenderPID = RUMProtocolV2.peerID(fromPublicKey: myAgreement)
-        let v2 = RUMProtocolV2.Envelope(
-            type: .text,
-            ttl: RUMProtocolV2.defaultTTL,
-            flags: frameFlags,
-            timestamp: UInt32(clamping: Int(Date().timeIntervalSince1970)),
-            msgID: msgID,
-            senderPID: mySenderPID,
-            destPID: peerPID,
-            hopCount: UInt8(min(255, max(0, hopCount))),
-            sprayRemaining: RUMProtocolV2.defaultSprayCopies,
-            payload: noiseCT,
-            signature: nil
-        )
-        return (try? RUMProtocolV2.encode(v2)).map(RUMProtocolV2.pad)
-    }
-
-    /// Build a v2 envelope of `type=noiseHandshake1` that bundles the
-    /// v1 ciphertext as the embedded M1 payload. The receiver
-    /// processes M1, establishes transport keys, decrypts the
-    /// embedded payload, and emits M2 back. Future sends to this peer
-    /// then use `encodeV2NoiseTransportFrameForPeer` — no extra
-    /// round-trip beyond this initial 1-RTT IK handshake.
-    @MainActor
-    func encodeV2NoiseHandshake1FrameForPeer(
-        encryptedV1Payload: Data,
-        clientMessageID: String,
-        peerAgreementKey: Data,
-        hopCount: Int = 0
-    ) -> Data? {
-        guard let myAgreement = DeviceIdentityService.shared.agreementPublicKeyData else { return nil }
-        guard let msgID = uuidStringToBytes(clientMessageID) else { return nil }
-        let peerPubKey: Curve25519.KeyAgreement.PublicKey
-        do {
-            peerPubKey = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: peerAgreementKey)
-        } catch {
-            return nil
-        }
-
-        let m1Bytes: Data
-        let peerPID: Data
-        do {
-            let result = try NoiseSessionStore.shared.startHandshake(
-                toPeer: peerPubKey,
-                payload: encryptedV1Payload
-            )
-            m1Bytes = result.message1
-            peerPID = result.peerID
-        } catch {
-            return nil
-        }
-
-        let mySenderPID = RUMProtocolV2.peerID(fromPublicKey: myAgreement)
-        let v2 = RUMProtocolV2.Envelope(
-            type: .noiseHandshake1,
-            ttl: RUMProtocolV2.defaultTTL,
-            flags: [.needsForwarding],
-            timestamp: UInt32(clamping: Int(Date().timeIntervalSince1970)),
-            msgID: msgID,
-            senderPID: mySenderPID,
-            destPID: peerPID,
-            hopCount: UInt8(min(255, max(0, hopCount))),
-            sprayRemaining: RUMProtocolV2.defaultSprayCopies,
-            payload: m1Bytes,
-            signature: nil
-        )
-        return (try? RUMProtocolV2.encode(v2)).map(RUMProtocolV2.pad)
-    }
-
-    /// "12345678-1234-…" → 16 raw bytes for the v2 envelope's `msg_id`.
-    private func uuidStringToBytes(_ s: String) -> Data? {
-        guard let u = UUID(uuidString: s) else { return nil }
-        let t = u.uuid
-        return Data([
-            t.0,  t.1,  t.2,  t.3,  t.4,  t.5,  t.6,  t.7,
-            t.8,  t.9,  t.10, t.11, t.12, t.13, t.14, t.15
-        ])
-    }
-
-    /// Forward an already-encoded v2 envelope to every v2-capable peer
-    /// currently connected, except the one named in `except` (so we
-    /// don't echo it straight back to the source). Called by
-    /// `RUMRelayService` for multi-hop spray. The payload is the inner
-    /// AES-GCM ciphertext addressed to the original recipient — a
-    /// relay device cannot read what it forwards.
-    ///
-    /// Fans out over BOTH transports:
-    ///   1. **BLE** — every v2-capable connected peripheral.
-    ///   2. **MPC** — every authenticated MultipeerConnectivity peer
-    ///      (Apple-only, Wi-Fi-Direct-or-LAN, ~250 Mbps vs BLE's
-    ///      ~50 kbps). Receivers dedup via the bloom filter on
-    ///      `msg_id`, so cross-transport duplicates collapse cleanly.
-    func relayV2EnvelopeBytesToAllPeers(_ bytes: Data, except sourceDeviceId: String) async {
-        let snapshot = getSnapshot()
-        for peer in snapshot {
-            if peer.deviceId == sourceDeviceId { continue }
-            let caps = peerCapabilities[peer.id] ?? []
-            guard caps.contains(.v2Protocol) else { continue }
-            await sendDataChunkedToPeer(
-                bytes,
-                peer: peer,
-                serviceUUID: RUMProtocolV2.serviceUUID,
-                characteristicUUID: RUMProtocolV2.messageCharacteristicUUID
-            )
-        }
-
-        // MPC fan-out — only authenticated peers (the service rejects
-        // sends to unauthenticated). `connectedPeerIds` is read once
-        // here, so a peer disconnecting mid-loop is harmless (the send
-        // throws and we log + continue).
-        for mpcPeer in MPCTransportService.shared.connectedPeerIds {
-            if mpcPeer.displayName == sourceDeviceId { continue }
-            do {
-                try MPCTransportService.shared.sendBulkData(bytes, to: mpcPeer)
-            } catch {
-                #if DEBUG
-                print("[mesh-v2-relay] mpc send to \(mpcPeer.displayName) failed: \(error)")
-                #endif
-            }
-        }
-
-        // Wi-Fi Aware fan-out (iOS 26+; no-op when the scaffold isn't
-        // yet wired). Same exclusion + cross-transport dedup contract
-        // as MPC and BLE. The transport is @MainActor-isolated, so
-        // we hop briefly to MainActor for the send loop.
-        await MainActor.run {
-            for waPeer in WiFiAwareTransport.shared.connectedPeerIds {
-                if waPeer.displayName == sourceDeviceId { continue }
-                do {
-                    try WiFiAwareTransport.shared.sendBulkData(bytes, to: waPeer)
-                } catch {
-                    #if DEBUG
-                    print("[mesh-v2-relay] wifi-aware send to \(waPeer.displayName) failed: \(error)")
-                    #endif
-                }
-            }
         }
     }
     
@@ -4209,6 +3276,8 @@ extension BLEMeshEngine {
     /// Handle an incoming INV_BLOOM frame from a peer.
     /// Compare their Bloom against our local IDs and send a WANT for messages they seem to be missing.
     private func handleInvBloom(_ frame: InvBloomFrame, from peerDeviceId: String) async {
+        let myDeviceId = DeviceIdentityService.shared.fingerprint ?? ""
+        
         // Learn userId from handshake frame — enables bridge to fetch messages for this peer
         if let userId = frame.userId, !userId.isEmpty {
             let actualPeerId = String(frame.peerDeviceId.prefix(8))
@@ -4449,10 +3518,7 @@ extension BLEMeshEngine {
             print("  [Bridge Downlink] Got \(validResponse.count) messages to relay via BLE")
             #endif
             
-            // UIDevice.current is MainActor-isolated; read the vendor ID from
-            // there in one explicit hop instead of in a nonisolated autoclosure.
-            let vendorId = await MainActor.run { UIDevice.current.identifierForVendor?.uuidString }
-            let myDeviceId = DeviceIdentityService.shared.fingerprint ?? vendorId ?? UUID().uuidString
+            let myDeviceId = DeviceIdentityService.shared.fingerprint ?? UIDevice.current.identifierForVendor?.uuidString ?? UUID().uuidString
             
             var relayedCount = 0
             for msg in validResponse.messages {
@@ -4530,10 +3596,12 @@ extension BLEMeshEngine {
             
             // Cleanup is now handled inline by the TTL filter above — no
             // separate eviction needed. The map self-trims on every poll.
+            
+        } catch {
+            #if DEBUG
+            print("⚠️ [Bridge Downlink] Poll failed: \(error)")
+            #endif
         }
-        // The outer `do` is just a scope here; the only failing API calls
-        // (NetworkService.post) are wrapped in their own do/catch above, so
-        // there is no error path to catch out here.
     }
 }
 
@@ -4850,9 +3918,7 @@ extension MessageType {
         case "file": return .file
         case "voice": return .voice
         case "location": return .location
-        case "poll": return .poll
         case "post_share", "postshare": return .postShare
-        case "contact_card", "contactcard": return .contactCard
         case "video": return .video
         case "video_note", "videonote": return .videoNote
         case "ephemeral_photo", "ephemeralphoto": return .ephemeralPhoto

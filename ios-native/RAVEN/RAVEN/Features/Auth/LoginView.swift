@@ -21,36 +21,21 @@ struct LoginView: View {
         ScrollView {
             VStack(spacing: 32) {
                 // Header
-                VStack(spacing: 12) {
-                    ZStack {
-                        Circle()
-                            .fill(
-                                LinearGradient(
-                                    colors: [.blue.opacity(0.2), .purple.opacity(0.1)],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                )
-                            )
-                            .frame(width: 110, height: 110)
-                            .blur(radius: 2)
-
-                        Image("RavenLogo")
-                            .resizable()
-                            .scaledToFit()
-                            .frame(width: 70, height: 70)
-                            .clipShape(RoundedRectangle(cornerRadius: 16))
-                    }
-                    .padding(.bottom, 4)
-
+                VStack(spacing: 8) {
+                    Image(systemName: "bird.fill")
+                        .font(.system(size: 70))
+                        .foregroundStyle(.blue)
+                        .padding(.bottom, 8)
+                    
                     Text("Welcome Back")
                         .font(.title)
                         .fontWeight(.bold)
-
+                    
                     Text("Sign in to continue messaging")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
-                .padding(.top, 40)
+                .padding(.top, 60)
                 
                 // Form
                 VStack(spacing: 16) {

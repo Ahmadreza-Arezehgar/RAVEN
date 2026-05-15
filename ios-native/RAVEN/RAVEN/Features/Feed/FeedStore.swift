@@ -29,7 +29,7 @@ final class FeedStore: ObservableObject {
     private var friendsFeedOffset = 0
     @Published var hasMoreFriends = true
     
-    private let pageSize = 15  // ⚡ Reduced from 20 — faster first paint, infinite scroll loads more
+    private let pageSize = 20
     
     // MARK: - Recommended Backfill (Twitter/X-style endless feed)
     @Published var isBackfillingLocal = false
@@ -47,44 +47,21 @@ final class FeedStore: ObservableObject {
     private let postRepository = PostRepository.shared
     
     // MARK: - View Tracking (prevent duplicate views)
-    // Bounded — long sessions used to grow this set unbounded. When it
-    // reaches the cap we drop the oldest half (FIFO via insertion order).
-    // 2,000 IDs ≈ ~80KB memory, comfortably above any realistic session.
-    private var viewedPostIds: [String] = []        // insertion-ordered for FIFO eviction
-    private var viewedPostIdsSet: Set<String> = []  // O(1) membership test
-    private static let maxViewedPostIds = 2_000
-
+    private var viewedPostIds: Set<String> = []
+    
     // MARK: - Sequential View Recording (prevents Thundering Herd)
     // Each recordView fires independently (Bug 5 fix: no more chaining)
     // viewedPostIds deduplication prevents repeat requests.
-
+    
     // MARK: - Comments Cache
-    // Bounded LRU — capped at 200 posts. Hot posts get re-promoted on
-    // access. Each entry holds a small array of Comment structs; 200
-    // posts × ~10 comments ≈ a few hundred KB at worst.
     private var commentsCache: [String: [Comment]] = [:]
-    private var commentsAccessOrder: [String] = []   // most-recently-accessed last
-    private static let maxCommentsCacheEntries = 200
     private var commentsPrefetchingIds: Set<String> = []
     
     // MARK: - Cache Status
     @Published var isLoadingFromCache = false
-    /// Whether initial server fetch has completed at least once (prevents empty state flash)
-    @Published var isInitialLoadComplete = false
     
     private var meshPostObserver: NSObjectProtocol?
     private var locationCancellable: AnyCancellable?
-
-    /// Per-post worker that owns the in-flight `/like` and `/repost`
-    /// network calls. Rapid taps used to spawn one Task per tap, and
-    /// the responses raced — the heart visibly bounced between liked
-    /// and not-liked as each one's reconcile pass overwrote the UI.
-    /// Now we keep at most one worker per post; if a tap arrives while
-    /// one is running, the worker re-checks the (already-flipped)
-    /// optimistic UI state on its next iteration and converges with
-    /// the server in a single extra round-trip.
-    private var likeWorker: [String: Task<Void, Never>] = [:]
-    private var repostWorker: [String: Task<Void, Never>] = [:]
     
     private init(networkService: NetworkService = .shared) {
         self.networkService = networkService
@@ -102,27 +79,12 @@ final class FeedStore: ObservableObject {
         }
         
         // ✅ FIX Bug 6: Sync currentLocation from LocationManager so local feed actually works
-        // ⚡ PERF: Debounce location updates — only update if moved >15m AND >5s since last update.
-        // Without this, every minor GPS jitter triggers a full feed re-rank (O(n log n)).
         self.locationCancellable = LocationManager.shared.$lastLocation
             .compactMap { $0 }
             .receive(on: DispatchQueue.main)
-            .filter { [weak self] newLocation in
-                guard let self, let current = self.currentLocation else { return true }
-                // Minimum 15m movement AND 5s cooldown
-                return newLocation.distance(from: current) > 15 &&
-                       newLocation.timestamp.timeIntervalSince(current.timestamp) > 5
-            }
             .sink { [weak self] location in
                 self?.currentLocation = location
             }
-        
-        // 🚀 EAGER CACHE WARM: Load cached posts IMMEDIATELY when FeedStore is created.
-        // This runs before FeedView even appears, so the feed is never empty on cold start.
-        // Uses the fast shallow query (top 30 posts) for <10ms first-paint.
-        Task { @MainActor [weak self] in
-            await self?.warmCacheOnStartup()
-        }
     }
     
     // MARK: - Deduplicate Helper
@@ -137,29 +99,13 @@ final class FeedStore: ObservableObject {
     /// Get cached comments for a post (returns nil if not cached)
     func getCachedComments(for postId: String) -> [Comment]? {
         let serverId = postId.components(separatedBy: "-loop-")[0]
-        if commentsCache[serverId] != nil {
-            // Promote on access (LRU bookkeeping)
-            commentsAccessOrder.removeAll { $0 == serverId }
-            commentsAccessOrder.append(serverId)
-        }
         return commentsCache[serverId]
     }
-
-    /// Set cached comments for a post (with LRU eviction at the cap)
+    
+    /// Set cached comments for a post
     func setCachedComments(_ comments: [Comment], for postId: String) {
         let serverId = postId.components(separatedBy: "-loop-")[0]
         commentsCache[serverId] = comments
-        commentsAccessOrder.removeAll { $0 == serverId }
-        commentsAccessOrder.append(serverId)
-        evictCommentsCacheIfNeeded()
-    }
-
-    /// Drop oldest entries when over the cap.
-    private func evictCommentsCacheIfNeeded() {
-        while commentsAccessOrder.count > Self.maxCommentsCacheEntries {
-            let evictKey = commentsAccessOrder.removeFirst()
-            commentsCache.removeValue(forKey: evictKey)
-        }
     }
     
     /// Check if comments are being prefetched
@@ -179,14 +125,13 @@ final class FeedStore: ObservableObject {
         guard serverId.first?.isUppercase != true else { return }
         
         commentsPrefetchingIds.insert(serverId)
-
+        
         Task {
             do {
                 let comments: [Comment] = try await networkService.get(
                     path: "/api/comments/post/\(serverId)"
                 )
-                // Use the LRU-aware setter rather than touching the dict directly
-                setCachedComments(comments, for: serverId)
+                commentsCache[serverId] = comments
                 #if DEBUG
                 print("💬 Prefetched \(comments.count) comments for post: \(serverId.prefix(8))...")
                 #endif
@@ -198,55 +143,16 @@ final class FeedStore: ObservableObject {
             commentsPrefetchingIds.remove(serverId)
         }
     }
-
+    
     /// Clear comments cache for a specific post (call after adding new comment)
     func invalidateCommentsCache(for postId: String) {
         let serverId = postId.components(separatedBy: "-loop-")[0]
         commentsCache.removeValue(forKey: serverId)
-        commentsAccessOrder.removeAll { $0 == serverId }
     }
     
-    // MARK: - Eager Cache Warm (Twitter-style instant feed)
-    /// Called from init() — loads top 30 cached posts per feed BEFORE any view appears.
-    /// Uses the fast shallow query for <10ms latency.
-    private func warmCacheOnStartup() async {
-        isLoadingFromCache = true
-        
-        do {
-            // 🚀 Parallel cache load — both feeds at once for maximum speed
-            async let cachedLocal = postRepository.getRecentPosts(feedType: .local, limit: 30)
-            async let cachedFriends = postRepository.getRecentPosts(feedType: .friends, limit: 30)
-            
-            let (local, friends) = try await (cachedLocal, cachedFriends)
-            
-            if !local.isEmpty {
-                mergedLocalPosts = deduplicateByID(local)
-                #if DEBUG
-                print("🚀💾 Eager warm: \(mergedLocalPosts.count) cached local posts")
-                #endif
-            }
-            
-            if !friends.isEmpty {
-                friendsPosts = deduplicateByID(friends)
-                #if DEBUG
-                print("🚀💾 Eager warm: \(friendsPosts.count) cached friends posts")
-                #endif
-            }
-        } catch {
-            #if DEBUG
-            print("⚠️ Failed to warm cache: \(error)")
-            #endif
-        }
-        
-        isLoadingFromCache = false
-    }
-    
-    // MARK: - Load from Cache (full — fallback if eager warm missed)
-    /// Loads cached posts from SQLite. Used as fallback if eager warm hasn't run yet.
+    // MARK: - Load from Cache (on app startup)
+    /// Loads cached posts from SQLite immediately on startup
     func loadFromCache() async {
-        // Skip if eager warm already populated the feed
-        guard mergedLocalPosts.isEmpty && friendsPosts.isEmpty else { return }
-        
         isLoadingFromCache = true
         
         do {
@@ -316,10 +222,8 @@ final class FeedStore: ObservableObject {
             #endif
         }
         
-        // Insert optimistically in memory.
-        // `isVerified` snapshotted from AuthService here because that
-        // type is now @MainActor and asPost() is non-isolated.
-        let post = draft.asPost(isVerified: AuthService.shared.currentUser?.isVerified ?? false)
+        // Insert optimistically in memory
+        let post = draft.asPost()
         
         if feedType == .local {
             // Posts intended for Local tab (with GPS or public fallback, guard against duplicates)
@@ -355,30 +259,13 @@ final class FeedStore: ObservableObject {
             print("⚠️ Failed to update post status: \(error)")
             #endif
         }
-
-        // Build the final id: take the server's canonical (lowercase)
-        // UUID and append back any client-side `-loop-N` suffix that
-        // we use internally to disambiguate duplicate appearances of
-        // the same post.
-        //
-        // BUG FIX: previously this preserved the WHOLE client id
-        // (`updatedPost.id = mergedLocalPosts[i].id`), which kept the
-        // Swift-generated uppercase UUID even after the server
-        // returned its lowercase canonical form. The mismatch then
-        // broke deletes (`DELETE /api/posts/<UPPERCASE>` → 404).
-        func mergedId(for oldId: String) -> String {
-            if let range = oldId.range(of: "-loop-") {
-                return serverPost.id + String(oldId[range.lowerBound...])
-            }
-            return serverPost.id
-        }
-
+        
         // Update in-memory: find by clientPostId (case-insensitive) and replace with serverPost
         // IMPORTANT: Preserve draft's media if server returns nil (server may not support multi-image yet)
         for i in mergedLocalPosts.indices {
             if mergedLocalPosts[i].serverId.lowercased() == clientPostId.lowercased() {
                 var updatedPost = serverPost.withSource(.nearby)
-                updatedPost.id = mergedId(for: mergedLocalPosts[i].id)
+                updatedPost.id = mergedLocalPosts[i].id // preserve loop suffix if any
                 if updatedPost.media == nil || updatedPost.media?.isEmpty == true {
                     updatedPost.media = mergedLocalPosts[i].media
                 }
@@ -388,7 +275,7 @@ final class FeedStore: ObservableObject {
         for i in friendsPosts.indices {
             if friendsPosts[i].serverId.lowercased() == clientPostId.lowercased() {
                 var updatedPost = serverPost
-                updatedPost.id = mergedId(for: friendsPosts[i].id)
+                updatedPost.id = friendsPosts[i].id // preserve loop suffix if any
                 if updatedPost.media == nil || updatedPost.media?.isEmpty == true {
                     updatedPost.media = friendsPosts[i].media
                 }
@@ -497,10 +384,19 @@ final class FeedStore: ObservableObject {
             // Combine raw posts for RavenRank
             let combinedRawPosts = nearbyTagged + forYouTagged
             
+            // 🌟 Pass through the RavenRank™ engine 🌟
+            var rankedPosts = await RavenRankEngine.shared.rankLocalFeed(
+                posts: combinedRawPosts,
+                userLocation: self.currentLocation,
+                currentUserId: myId,
+                limit: 1000  // High limit for endless feel
+            )
+            
             // --- SMART MERGE & DEDUPLICATION (LOWERCASE FIX) ---
             // 1. Preserve pending offline posts (client-side UUIDs or mesh posts)
+            let serverIds = Set(rankedPosts.map { $0.serverId.lowercased() })
             var serverPostBySignature: [String: Post] = [:]
-            for post in combinedRawPosts {
+            for post in rankedPosts {
                 if post.content.count > 5 {
                     let sig = "\(post.authorId)_|_\(post.content)"
                     serverPostBySignature[sig] = post
@@ -524,14 +420,14 @@ final class FeedStore: ObservableObject {
                         return false
                     }
                 }
-                if combinedRawPosts.contains(where: { $0.serverId.lowercased() == pending.serverId.lowercased() }) { return false }
+                if rankedPosts.contains(where: { $0.serverId.lowercased() == pending.serverId.lowercased() }) { return false }
                 return true
             }
             
             let existingIds = Set(existingServerPosts.map { $0.serverId.lowercased() })
-            let newPosts = combinedRawPosts.filter { !existingIds.contains($0.serverId.lowercased()) }
+            let newPosts = rankedPosts.filter { !existingIds.contains($0.serverId.lowercased()) }
             
-            let freshPostsDict = Dictionary(combinedRawPosts.map { ($0.serverId.lowercased(), $0) }, uniquingKeysWith: { first, _ in first })
+            let freshPostsDict = Dictionary(rankedPosts.map { ($0.serverId.lowercased(), $0) }, uniquingKeysWith: { first, _ in first })
             let updatedExisting = existingServerPosts.compactMap { oldPost -> Post? in
                 if let fresh = freshPostsDict[oldPost.serverId.lowercased()] { 
                     var copy = fresh
@@ -541,28 +437,10 @@ final class FeedStore: ObservableObject {
                 return oldPost // Keep old paginated posts so the feed doesn't shrink!
             }
             
-            var finalRaw = trulyPendingPosts + newPosts + updatedExisting
-
-            // BUG FIX (2026-05-14): If the geo-bounded queries returned
-            // zero posts (sparse area, new region, server cache miss),
-            // fall back to the global Recommended feed instead of
-            // showing "No posts yet". Notifications about new posts
-            // (raven_news, follows, etc.) keep arriving via the
-            // notifications endpoint, so an empty feed visibly
-            // contradicts what the user expects. The recommended feed
-            // is content-only (no geo filter) and works in any region.
-            if combinedRawPosts.isEmpty && existingServerPosts.isEmpty {
-                let userLang = Locale.current.language.languageCode?.identifier ?? "en"
-                if let recommended: [Post] = try? await networkService.get(path: "/api/feed/recommended?lang=\(userLang)") {
-                    #if DEBUG
-                    print("📡 [FeedStore] Local + ForYou both empty → backfilling with \(recommended.count) recommended posts")
-                    #endif
-                    finalRaw = trulyPendingPosts + recommended.map { $0.withSource(.forYou) }
-                }
-            }
-
-            // 🌟 Single RavenRank™ pass on the fully-merged set (was 2 passes before) 🌟
-            let rankedPosts = await RavenRankEngine.shared.rankLocalFeed(
+            let finalRaw = trulyPendingPosts + newPosts + updatedExisting
+            
+            // Feed everything back to the engine so algorithm ranks BOTH mesh & server posts
+            let finalRanked = await RavenRankEngine.shared.rankLocalFeed(
                 posts: finalRaw,
                 userLocation: self.currentLocation,
                 currentUserId: myId,
@@ -570,16 +448,8 @@ final class FeedStore: ObservableObject {
             )
             
             // 4. Animate the new posts sliding in from the top
-            #if DEBUG
-            for p in rankedPosts {
-                let hasVideoMedia = p.media?.contains(where: { $0.isVideo }) == true || p.allMedia.contains(where: { $0.isVideo })
-                if hasVideoMedia || p.postType == "video" {
-                    print("🎬🔍 [Feed→UI] VIDEO id=\(p.id.prefix(8)) postType='\(p.postType ?? "nil")' mediaCount=\(p.media?.count ?? 0) mediaTypes=\(p.media?.map({ "'\($0.mediaType ?? "nil")':\($0.url.suffix(20))" }) ?? []) imageUrl=\(p.imageUrl?.suffix(20) ?? "nil")")
-                }
-            }
-            #endif
             withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
-                mergedLocalPosts = deduplicateByID(rankedPosts)
+                mergedLocalPosts = deduplicateByID(finalRanked)
             }
             
             // 5. Fix pagination offset so Endless Scroll doesn't break
@@ -624,7 +494,6 @@ final class FeedStore: ObservableObject {
         }
         
         isLoadingLocal = false
-        isInitialLoadComplete = true
     }
     
     // MARK: - Infinite Scroll: Fetch More Local Posts
@@ -679,17 +548,14 @@ final class FeedStore: ObservableObject {
                     return
                 }
                 
-                // ⚡ PERF: Only rank the NEW page — don't re-sort the entire feed.
-                // The existing feed is already ranked; appending a ranked page preserves order.
                 let myId = AuthService.shared.currentUser?.id ?? ""
-                let taggedNew = uniqueNewPosts.map { $0.withSource(.nearby) }
                 
-                // Lightweight rank pass on just the new page (not the whole feed)
+                // Rank the newly fetched page before appending to maintain algorithm flow
                 let rankedNew = await RavenRankEngine.shared.rankLocalFeed(
-                    posts: taggedNew,
+                    posts: uniqueNewPosts.map { $0.withSource(.nearby) },
                     userLocation: self.currentLocation,
                     currentUserId: myId,
-                    limit: taggedNew.count
+                    limit: uniqueNewPosts.count
                 )
                 
                 mergedLocalPosts.append(contentsOf: rankedNew)
@@ -742,7 +608,6 @@ final class FeedStore: ObservableObject {
                     return
                 }
                 
-                // ⚡ PERF: Only rank the NEW page — don't re-sort the entire friends feed.
                 let myId = AuthService.shared.currentUser?.id ?? ""
                 let rankedNew = await RavenRankEngine.shared.rankFriendsFeed(
                     posts: uniqueNewPosts,
@@ -797,7 +662,7 @@ final class FeedStore: ObservableObject {
         do {
             let userLang = Locale.current.language.languageCode?.identifier ?? "en"
             let posts: [Post] = try await networkService.get(path: "/api/feed/recommended?lang=\(userLang)")
-
+            
             // Preserve pending posts during refresh
             let pendingPosts = mergedLocalPosts.filter { $0.id.first?.isUppercase == true }
             var result = posts.map { $0.withSource(.forYou) }
@@ -807,7 +672,7 @@ final class FeedStore: ObservableObject {
                 #endif
                 result = pendingPosts + result
             }
-
+            
             mergedLocalPosts = deduplicateByID(result)
             #if DEBUG
             print("🎯 GPS off → Loaded \(posts.count) ForYou posts as fallback")
@@ -819,14 +684,6 @@ final class FeedStore: ObservableObject {
             #endif
         }
         isLoadingLocal = false
-        // BUG FIX (2026-05-14): The GPS-off fallback path used to
-        // return without setting `isInitialLoadComplete`, which kept
-        // the FeedView in its indeterminate state (no spinner, no
-        // empty state, no posts). Mark the initial load done so the
-        // view can render either the posts we just loaded or, in the
-        // (rare) case the recommended endpoint also returned zero, the
-        // "No posts yet" empty state — not a permanently blank screen.
-        isInitialLoadComplete = true
     }
     
     // MARK: - Fetch Recommended Feed (global For You)
@@ -874,10 +731,18 @@ final class FeedStore: ObservableObject {
                 path: "/api/posts/feed/friends"
             )
             
+            //   Rank through RavenRank  engine 
+            let rankedFriendsPosts = await RavenRankEngine.shared.rankFriendsFeed(
+                posts: response.items,
+                currentUserId: myId,
+                affinities: [:],
+                limit: 1000 
+            )
+            
             // --- SMART MERGE & DEDUPLICATION FOR FRIENDS FEED (LOWERCASE FIX) ---
-            let serverPosts = response.items
+            let serverIds = Set(rankedFriendsPosts.map { $0.serverId.lowercased() })
             var serverPostBySignature: [String: Post] = [:]
-            for post in serverPosts {
+            for post in rankedFriendsPosts {
                 if post.content.count > 5 {
                     let sig = "\(post.authorId)_|_\(post.content)"
                     serverPostBySignature[sig] = post
@@ -900,14 +765,14 @@ final class FeedStore: ObservableObject {
                         return false
                     }
                 }
-                if serverPosts.contains(where: { $0.serverId.lowercased() == pending.serverId.lowercased() }) { return false }
+                if rankedFriendsPosts.contains(where: { $0.serverId.lowercased() == pending.serverId.lowercased() }) { return false }
                 return true
             }
             
             let existingIds = Set(existingServerPosts.map { $0.serverId.lowercased() })
-            let newPosts = serverPosts.filter { !existingIds.contains($0.serverId.lowercased()) }
+            let newPosts = rankedFriendsPosts.filter { !existingIds.contains($0.serverId.lowercased()) }
             
-            let freshPostsDict = Dictionary(serverPosts.map { ($0.serverId.lowercased(), $0) }, uniquingKeysWith: { first, _ in first })
+            let freshPostsDict = Dictionary(rankedFriendsPosts.map { ($0.serverId.lowercased(), $0) }, uniquingKeysWith: { first, _ in first })
             let updatedExisting = existingServerPosts.compactMap { oldPost -> Post? in
                 if let fresh = freshPostsDict[oldPost.serverId.lowercased()] { 
                     var copy = fresh
@@ -919,15 +784,14 @@ final class FeedStore: ObservableObject {
             
             let finalRaw = trulyPendingPosts + newPosts + updatedExisting
             
-            // 🌟 Single RavenRank™ pass on the fully-merged set (was 2 passes before) 🌟
-            let rankedFriendsPosts = await RavenRankEngine.shared.rankFriendsFeed(
+            let finalRanked = await RavenRankEngine.shared.rankFriendsFeed(
                 posts: finalRaw,
                 currentUserId: myId,
                 limit: max(1000, finalRaw.count)
             )
             
             withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
-                friendsPosts = deduplicateByID(rankedFriendsPosts)
+                friendsPosts = deduplicateByID(finalRanked)
             }
             
             if existingIds.isEmpty {
@@ -972,25 +836,9 @@ final class FeedStore: ObservableObject {
         }
         
         isLoadingFriends = false
-        isInitialLoadComplete = true
     }
     
-    // MARK: - Toggle Like (Optimistic + Single-Worker Convergence)
-    //
-    // Tapping the heart is a TOGGLE on the server (`POST /api/posts/{id}/like`
-    // flips the state and returns the new `(isLiked, likes)`). With the old
-    // implementation each rapid tap spawned its own Task; the responses came
-    // back out of order and the UI visibly oscillated (the "delay / odd"
-    // behaviour the user reported). The new flow:
-    //
-    //   1. Optimistically flip the UI on EVERY tap so feedback stays instant.
-    //   2. Keep at most ONE network worker per post. A second tap arriving
-    //      while a worker is in flight is absorbed by the worker's next loop
-    //      iteration: it re-reads the latest UI desire and fires another
-    //      toggle until the server's `isLiked` matches the user's intent.
-    //   3. On hard network failure, rebuild the UI to whatever the server
-    //      last reported (or revert to the captured initial state if no
-    //      server response ever came back).
+    // MARK: - Toggle Like (Optimistic)
     func toggleLike(postId: String) async {
         let serverId = postId.components(separatedBy: "-loop-")[0]
         // Skip client-side UUIDs (uppercase format) that haven't synced to server yet
@@ -1000,204 +848,109 @@ final class FeedStore: ObservableObject {
             #endif
             return
         }
-
-        // Step 1 — Optimistic UI flip on every tap.
-        let initialPost = findPost(byId: serverId)
-        let initialLiked = initialPost?.isLiked ?? false
-        let initialLikes = initialPost?.likes ?? 0
+        
+        // ⚡ Step 1: OPTIMISTIC UPDATE — instantly toggle UI (0ms perceived latency)
+        // Capture previous state for rollback
+        let previousPost = findPost(byId: serverId)
+        let wasLiked = previousPost?.isLiked ?? false
+        let previousLikes = previousPost?.likes ?? 0
+        
+        // Fix: Use struct copy mutation to preserve ALL fields (badgeType, subscriptionTier, etc.)
         updatePostInFeeds(postId: serverId) { post in
             var updated = post
             updated.likes = post.isLiked ? max(post.likes - 1, 0) : post.likes + 1
             updated.isLiked = !post.isLiked
             return updated
         }
-
-        // Step 2 — Coalesce concurrent taps. If a worker is already
-        // running, it'll observe the new optimistic state on its next
-        // iteration; bail out so we don't spawn a second one.
-        guard likeWorker[serverId] == nil else { return }
-
-        likeWorker[serverId] = Task { [weak self] in
-            await self?.runLikeConvergence(
-                serverId: serverId,
-                fallbackLiked: initialLiked,
-                fallbackLikes: initialLikes
+        
+        // ⚡ Step 2: SYNC with server in background
+        do {
+            let response: LikeResponse = try await networkService.post(
+                path: "/api/posts/\(serverId)/like",
+                body: EmptyBody()
             )
-            self?.likeWorker[serverId] = nil
-        }
-    }
-
-    /// Loop POSTs to `/like` until the server's reported `isLiked` matches
-    /// the latest optimistic UI desire, or we run out of retries / the
-    /// network errors out (in which case we revert to `fallback*`).
-    private func runLikeConvergence(
-        serverId: String,
-        fallbackLiked: Bool,
-        fallbackLikes: Int
-    ) async {
-        // Cap at 4 iterations so a runaway tap-fest can't pin the loop
-        // indefinitely. Four is enough to absorb a triple-tap burst
-        // (one extra round-trip per non-matching tap) while still
-        // bounded for telemetry.
-        for _ in 0..<4 {
-            let desiredLiked = findPost(byId: serverId)?.isLiked ?? fallbackLiked
-            do {
-                let response: LikeResponse = try await networkService.post(
-                    path: "/api/posts/\(serverId)/like",
-                    body: EmptyBody()
-                )
-
-                if response.isLiked == desiredLiked {
-                    // Server matches user intent — apply final count + exit.
-                    updatePostInFeeds(postId: serverId) { post in
-                        var updated = post
-                        updated.likes = response.likes
-                        updated.isLiked = response.isLiked
-                        return updated
-                    }
-                    #if DEBUG
-                    print("❤️ \(response.action) post \(serverId) (converged)")
-                    #endif
-                    return
-                }
-                // Mismatch → user has tapped again since we fired. Loop
-                // and toggle once more without touching the UI (which
-                // already reflects the latest desire optimistically).
-            } catch {
-                #if DEBUG
-                print("❌ Like error (reverting to initial): \(error)")
-                #endif
-                updatePostInFeeds(postId: serverId) { post in
-                    var updated = post
-                    updated.isLiked = fallbackLiked
-                    updated.likes = fallbackLikes
-                    return updated
-                }
-                Haptics.error()
-                return
+            
+            // Reconcile with server truth (fixes count drift)
+            updatePostInFeeds(postId: serverId) { post in
+                var updated = post
+                updated.likes = response.likes
+                updated.isLiked = response.isLiked
+                return updated
             }
+            
+            #if DEBUG
+            print("❤️ \(response.action) post \(serverId)")
+            #endif
+        } catch {
+            // ⚡ Step 3: ROLLBACK on failure — revert to previous state
+            #if DEBUG
+            print("❌ Like error (reverting): \(error)")
+            #endif
+            updatePostInFeeds(postId: serverId) { post in
+                var updated = post
+                updated.likes = previousLikes
+                updated.isLiked = wasLiked
+                return updated
+            }
+            Haptics.error()
         }
     }
     
-    // MARK: - Toggle Repost (Optimistic + Single-Worker Convergence)
-    //
-    // Same pattern as `toggleLike`: only one in-flight worker per post,
-    // optimistic UI flips on every tap, the worker re-reads the latest
-    // optimistic state and converges with the server. Quote-reposts
-    // (`quote != nil`) are NOT a pure toggle — they always create a new
-    // post — so we keep the legacy single-shot path for them.
+    // MARK: - Toggle Repost (Optimistic)
     func toggleRepost(postId: String, quote: String? = nil) async {
         let serverId = postId.components(separatedBy: "-loop-")[0]
+        // Skip client-side UUIDs (uppercase format) that haven't synced to server yet
         guard serverId.first?.isUppercase != true else {
             #if DEBUG
             print("⏭️ Skipping repost for client-side post: \(serverId.prefix(8))...")
             #endif
             return
         }
-
-        // Quote reposts mint a new post each time — never debounce.
-        if quote != nil {
-            await runRepostQuoteOnce(serverId: serverId, quote: quote)
-            return
-        }
-
-        let initialPost = findPost(byId: serverId)
-        let initialReposted = initialPost?.isReposted ?? false
-        let initialReposts = initialPost?.reposts ?? 0
-
+        
+        // ⚡ Step 1: OPTIMISTIC UPDATE
+        let previousPost = findPost(byId: serverId)
+        let wasReposted = previousPost?.isReposted ?? false
+        let previousReposts = previousPost?.reposts ?? 0
+        
         updatePostInFeeds(postId: serverId) { post in
             var updated = post
             updated.reposts = post.isReposted ? max(post.reposts - 1, 0) : post.reposts + 1
             updated.isReposted = !post.isReposted
             return updated
         }
-
-        guard repostWorker[serverId] == nil else { return }
-
-        repostWorker[serverId] = Task { [weak self] in
-            await self?.runRepostConvergence(
-                serverId: serverId,
-                fallbackReposted: initialReposted,
-                fallbackReposts: initialReposts
-            )
-            self?.repostWorker[serverId] = nil
-        }
-    }
-
-    /// Single-shot quote repost (legacy path). Each call mints a new
-    /// quote post on the server; coalescing them would silently drop
-    /// the user's content.
-    private func runRepostQuoteOnce(serverId: String, quote: String?) async {
-        let initialPost = findPost(byId: serverId)
-        let initialReposted = initialPost?.isReposted ?? false
-        let initialReposts = initialPost?.reposts ?? 0
-
-        updatePostInFeeds(postId: serverId) { post in
-            var updated = post
-            updated.reposts = post.isReposted ? max(post.reposts - 1, 0) : post.reposts + 1
-            updated.isReposted = !post.isReposted
-            return updated
-        }
-
+        
+        // ⚡ Step 2: SYNC with server
         do {
+            let body = RepostBody(content: quote)
+            
             let response: RepostResponse = try await networkService.post(
                 path: "/api/posts/\(serverId)/repost",
-                body: RepostBody(content: quote)
+                body: body
             )
+            
+            // Reconcile with server truth
             updatePostInFeeds(postId: serverId) { post in
                 var updated = post
                 updated.reposts = response.reposts
                 updated.isReposted = response.isReposted
                 return updated
             }
+            
+            #if DEBUG
+            print("🔄 \(response.action) post \(serverId)")
+            #endif
         } catch {
+            // ⚡ Step 3: ROLLBACK on failure
+            #if DEBUG
+            print("❌ Repost error (reverting): \(error)")
+            #endif
             updatePostInFeeds(postId: serverId) { post in
                 var updated = post
-                updated.reposts = initialReposts
-                updated.isReposted = initialReposted
+                updated.reposts = previousReposts
+                updated.isReposted = wasReposted
                 return updated
             }
             Haptics.error()
-        }
-    }
-
-    private func runRepostConvergence(
-        serverId: String,
-        fallbackReposted: Bool,
-        fallbackReposts: Int
-    ) async {
-        for _ in 0..<4 {
-            let desiredReposted = findPost(byId: serverId)?.isReposted ?? fallbackReposted
-            do {
-                let response: RepostResponse = try await networkService.post(
-                    path: "/api/posts/\(serverId)/repost",
-                    body: RepostBody(content: nil)
-                )
-                if response.isReposted == desiredReposted {
-                    updatePostInFeeds(postId: serverId) { post in
-                        var updated = post
-                        updated.reposts = response.reposts
-                        updated.isReposted = response.isReposted
-                        return updated
-                    }
-                    #if DEBUG
-                    print("🔄 \(response.action) post \(serverId) (converged)")
-                    #endif
-                    return
-                }
-            } catch {
-                #if DEBUG
-                print("❌ Repost error (reverting to initial): \(error)")
-                #endif
-                updatePostInFeeds(postId: serverId) { post in
-                    var updated = post
-                    updated.isReposted = fallbackReposted
-                    updated.reposts = fallbackReposts
-                    return updated
-                }
-                Haptics.error()
-                return
-            }
         }
     }
     
@@ -1207,18 +960,9 @@ final class FeedStore: ObservableObject {
         // Skip client-side UUIDs (uppercase format) that haven't synced to server yet
         if serverId.first?.isUppercase == true { return nil }
         
-        // Prevent duplicate view calls in same session (bounded — see
-        // FIFO eviction below; keeps memory usage flat over long sessions).
-        guard !viewedPostIdsSet.contains(serverId) else { return nil }
-        viewedPostIdsSet.insert(serverId)
-        viewedPostIds.append(serverId)
-        if viewedPostIds.count > Self.maxViewedPostIds {
-            // Drop oldest half so we amortise the work — single-element
-            // removal would O(n)-shift the array on every view past the cap.
-            let drop = viewedPostIds.prefix(Self.maxViewedPostIds / 2)
-            viewedPostIdsSet.subtract(drop)
-            viewedPostIds.removeFirst(drop.count)
-        }
+        // Prevent duplicate view calls in same session
+        guard !viewedPostIds.contains(serverId) else { return nil }
+        viewedPostIds.insert(serverId)
         
         do {
             let response: ViewResponse = try await networkService.post(
@@ -1240,36 +984,23 @@ final class FeedStore: ObservableObject {
     
     // MARK: - Delete Post (owner only)
     func deletePost(postId: String) async -> Bool {
-        let rawServerId = postId.components(separatedBy: "-loop-")[0]
-        // Server stores UUIDs in canonical lowercase form; Swift's
-        // `UUID().uuidString` produces UPPERCASE. If the post still
-        // carries a Swift-generated id (failed/in-flight upload, or
-        // the legacy bug where updatePost preserved the client-side
-        // id), the path `DELETE /api/posts/<UPPERCASE>` returns 404.
-        // Normalising here makes the call resilient regardless of
-        // which form the in-memory model holds.
-        let serverId = rawServerId.lowercased()
-        // Skip client-side UUIDs that haven't synced. Detection:
-        // if the ORIGINAL string contained any uppercase ASCII letter,
-        // it can only be a Swift-generated id (server canonical
-        // form is all-lowercase hex digits), so the post never
-        // reached the server and we just drop it locally.
-        let containsUppercaseLetter = rawServerId.contains { $0.isASCII && $0.isLetter && $0.isUppercase }
-        if containsUppercaseLetter {
-            removePostFromFeeds(postId: rawServerId)
+        let serverId = postId.components(separatedBy: "-loop-")[0]
+        // Skip client-side UUIDs that haven't synced
+        guard serverId.first?.isUppercase != true else {
+            // For unsynced posts, just remove locally
             removePostFromFeeds(postId: serverId)
             #if DEBUG
-            print("🗑️ Removed local draft post: \(rawServerId.prefix(8))...")
+            print("🗑️ Removed local draft post: \(serverId.prefix(8))...")
             #endif
             return true
         }
-
+        
         // ⚡ Optimistic: snapshot feeds for rollback, then remove immediately
         let snapshotLocal = mergedLocalPosts
         let snapshotFriends = friendsPosts
         let snapshotRecommended = recommendedPosts
         removePostFromFeeds(postId: serverId)
-
+        
         do {
             let _: DeletePostResponse = try await networkService.delete(
                 path: "/api/posts/\(serverId)"
@@ -1302,153 +1033,12 @@ final class FeedStore: ObservableObject {
         friendsPosts.removeAll { $0.serverId == postId }
         recommendedPosts.removeAll { $0.serverId == postId }
     }
-
-    // MARK: - Not Interested (local hide)
-    /// Locally remove a post from every feed and remember the choice so we
-    /// don't surface it again next session. Server-side reranking can be
-    /// wired later — for now the user-visible behaviour matches Twitter's
-    /// "Not interested" instantly hiding the card.
-    func markNotInterested(postId: String) {
-        let serverId = postId.components(separatedBy: "-loop-")[0]
-        removePostFromFeeds(postId: serverId)
-        var hidden = Set(UserDefaults.standard.stringArray(forKey: "raven.feed.notInterested") ?? [])
-        hidden.insert(serverId)
-        UserDefaults.standard.set(Array(hidden), forKey: "raven.feed.notInterested")
-    }
-
-    // MARK: - Bookmark (server-backed + UserDefaults mirror)
-    //
-    // Bookmarks now live on the server (`POST /api/posts/{id}/bookmark`,
-    // `DELETE …/bookmark`, `GET /api/posts/me/bookmarks`). The local
-    // UserDefaults set is kept as a *cache* so:
-    //   1) The button reflects the right state instantly on cold-start
-    //      before the feed has loaded.
-    //   2) Offline taps still flip the icon and survive a relaunch;
-    //      the next online toggle reconciles with the server.
-    private static let bookmarksKey = "raven.feed.bookmarks"
-
-    /// Best-effort sync read. Prefers the server-backed
-    /// `Post.isBookmarked` if the cached post knows it; falls back to
-    /// the UserDefaults mirror.
-    func isBookmarked(postId: String) -> Bool {
-        let serverId = postId.components(separatedBy: "-loop-")[0]
-        if let post = findPost(byId: serverId), let server = post.isBookmarked {
-            return server
-        }
-        let saved = UserDefaults.standard.stringArray(forKey: Self.bookmarksKey) ?? []
-        return saved.contains(serverId)
-    }
-
-    /// Optimistic flip: updates the local mirror + cached Post and
-    /// fires the server call. Returns the new state immediately so
-    /// the UI button can show its colour without an `await`. If the
-    /// network call fails the local state is rolled back and the
-    /// caller (via the next body re-eval) sees the original value.
-    @discardableResult
-    func toggleBookmark(postId: String) -> Bool {
-        let serverId = postId.components(separatedBy: "-loop-")[0]
-        let wasSaved = isBookmarked(postId: serverId)
-        let nowSaved = !wasSaved
-
-        // Mirror cache flip
-        var saved = Set(UserDefaults.standard.stringArray(forKey: Self.bookmarksKey) ?? [])
-        if nowSaved { saved.insert(serverId) } else { saved.remove(serverId) }
-        UserDefaults.standard.set(Array(saved), forKey: Self.bookmarksKey)
-
-        // Cached Post flip so the bar re-renders against the live state.
-        updatePostInFeeds(postId: serverId) { post in
-            var updated = post
-            updated.isBookmarked = nowSaved
-            return updated
-        }
-
-        // Server sync — best-effort. Skip if id is a client-side UUID
-        // (still pending mesh→online sync).
-        guard serverId.first?.isUppercase != true else { return nowSaved }
-        let net = networkService
-        Task { [weak self] in
-            do {
-                struct BookmarkResp: Decodable {
-                    let status: String
-                    let action: String?
-                    let is_bookmarked: Bool?
-                }
-                if nowSaved {
-                    let _: BookmarkResp = try await net.post(
-                        path: "/api/posts/\(serverId)/bookmark",
-                        body: EmptyBody()
-                    )
-                } else {
-                    let _: BookmarkResp = try await net.delete(
-                        path: "/api/posts/\(serverId)/bookmark"
-                    )
-                }
-                _ = self
-            } catch {
-                // Roll back on failure so the icon doesn't lie.
-                #if DEBUG
-                print("❌ [Bookmark] sync failed, rolling back: \(error)")
-                #endif
-                await MainActor.run { [weak self] in
-                    guard let self else { return }
-                    var rb = Set(UserDefaults.standard.stringArray(forKey: Self.bookmarksKey) ?? [])
-                    if wasSaved { rb.insert(serverId) } else { rb.remove(serverId) }
-                    UserDefaults.standard.set(Array(rb), forKey: Self.bookmarksKey)
-                    self.updatePostInFeeds(postId: serverId) { post in
-                        var updated = post
-                        updated.isBookmarked = wasSaved
-                        return updated
-                    }
-                }
-            }
-        }
-
-        return nowSaved
-    }
-
-    // MARK: - Save Offline (local)
-    private static let offlineKey = "raven.feed.savedOffline"
-    func isSavedOffline(postId: String) -> Bool {
-        let serverId = postId.components(separatedBy: "-loop-")[0]
-        let saved = UserDefaults.standard.stringArray(forKey: Self.offlineKey) ?? []
-        return saved.contains(serverId)
-    }
-    @discardableResult
-    func toggleSaveOffline(postId: String) -> Bool {
-        let serverId = postId.components(separatedBy: "-loop-")[0]
-        var saved = Set(UserDefaults.standard.stringArray(forKey: Self.offlineKey) ?? [])
-        let nowSaved: Bool
-        if saved.contains(serverId) { saved.remove(serverId); nowSaved = false }
-        else { saved.insert(serverId); nowSaved = true }
-        UserDefaults.standard.set(Array(saved), forKey: Self.offlineKey)
-        return nowSaved
-    }
     
     // MARK: - Helper: Find post by ID across all feeds
     private func findPost(byId postId: String) -> Post? {
         return mergedLocalPosts.first(where: { $0.serverId == postId })
             ?? friendsPosts.first(where: { $0.serverId == postId })
             ?? recommendedPosts.first(where: { $0.serverId == postId })
-    }
-
-    /// Public lookup — used by views (e.g. the fullscreen video
-    /// player) that need to render live like/repost counts. Hits the
-    /// same `@Published` arrays as the private helper, so callers
-    /// observing this `FeedStore` get re-rendered automatically when
-    /// counts mutate.
-    func livePost(byId postId: String) -> Post? {
-        let serverId = postId.components(separatedBy: "-loop-")[0]
-        return findPost(byId: serverId)
-    }
-
-    /// Public read-only accessor for surfaces that need to display
-    /// live post stats (likes / reposts / isLiked) — e.g. the
-    /// fullscreen video player's bottom action bar. Reads from the
-    /// same @Published arrays so SwiftUI re-renders observers when
-    /// `toggleLike` / `toggleRepost` mutate state.
-    func liveSnapshot(of postId: String) -> Post? {
-        let serverId = postId.components(separatedBy: "-loop-")[0]
-        return findPost(byId: serverId)
     }
     
     // MARK: - Helper: Update post in all feeds
@@ -1604,4 +1194,3 @@ private struct EmptyBody: Encodable {}
 private struct RepostBody: Encodable {
     let content: String?
 }
-

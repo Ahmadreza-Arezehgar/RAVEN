@@ -53,19 +53,6 @@ struct CreateGroupRequest: Encodable {
     let memberIds: [String]
     let avatarUrl: String?
     let description: String?
-    /// Optional client-supplied UUID. When present the server adopts it as the
-    /// group's canonical ID, so a group created locally while offline keeps
-    /// the SAME id once it reconciles online — no message-row remapping
-    /// needed.
-    let clientId: String?
-
-    init(name: String, memberIds: [String], avatarUrl: String? = nil, description: String? = nil, clientId: String? = nil) {
-        self.name = name
-        self.memberIds = memberIds
-        self.avatarUrl = avatarUrl
-        self.description = description
-        self.clientId = clientId
-    }
 }
 
 struct AddMembersRequest: Encodable {

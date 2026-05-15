@@ -239,37 +239,14 @@ actor PendingACKRepository {
         }
     }
     
-    /// Clear old pending ACKs (older than 7 days).
-    /// BUG FIX (2026-05-10): the previous version did an unconditional
-    /// `DELETE … WHERE created_at < ?` over the 7-day window. An ACK
-    /// that had been actively retrying (server unreachable on a long
-    /// offline trip) was silently dropped — the recipient never learned
-    /// the message was delivered AND no dead-letter entry survived for
-    /// post-mortem. New behaviour: only delete entries that have
-    /// EITHER (a) exhausted their `attempts` budget OR (b) are old AND
-    /// not actively retrying (next_retry_at IS NULL or in the past).
-    /// Anything else is kept so the retry loop has a chance to catch up.
+    /// Clear old pending ACKs (older than 7 days)
     func cleanup() async throws {
         let cutoff = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
         let cutoffStr = SharedDateFormatters.formatISO8601(cutoff)
-        let nowStr = SharedDateFormatters.formatISO8601(Date())
-
-        // Hard-delete only the entries that are genuinely lost causes.
-        // An entry that's >7 days old AND has used >=maxAttempts is
-        // unrecoverable; one that's old but still has retry budget left
-        // is preserved.
-        let sql = """
-            DELETE FROM pending_acks
-            WHERE created_at < ?
-              AND (
-                  attempts >= ?
-                  OR next_retry_at IS NULL
-                  OR next_retry_at <= ?
-              )
-        """
-        try await db.execute(sql, params: [cutoffStr, maxAttempts, nowStr])
-
-        // Dead-letter table pruned at 30 days unchanged.
+        
+        let sql = "DELETE FROM pending_acks WHERE created_at < ?"
+        try await db.execute(sql, params: [cutoffStr])
+        
         let deadLetterCutoff = Calendar.current.date(byAdding: .day, value: -30, to: Date()) ?? Date()
         let deadLetterCutoffTs = deadLetterCutoff.timeIntervalSince1970
         try await db.execute(

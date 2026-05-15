@@ -1,13 +1,43 @@
 import SwiftUI
 
-// MARK: - Quick Reply Sheet Transition
+// MARK: - Droplet Transition (Top Right)
+/// Custom transition for toast notifications - slides in/out from top-right
 extension AnyTransition {
+    /// Slide in from top-right, slide out to top-right
+    static var dropletTopRight: AnyTransition {
+        .asymmetric(
+            insertion: .modifier(
+                active: DropletModifier(offsetX: 200, offsetY: -50, scale: 0.6, opacity: 0),
+                identity: DropletModifier(offsetX: 0, offsetY: 0, scale: 1, opacity: 1)
+            ),
+            removal: .modifier(
+                active: DropletModifier(offsetX: 200, offsetY: -50, scale: 0.6, opacity: 0),
+                identity: DropletModifier(offsetX: 0, offsetY: 0, scale: 1, opacity: 1)
+            )
+        )
+    }
+    
     /// Droplet slide up from bottom
     static var dropletSlideUp: AnyTransition {
         .asymmetric(
             insertion: .move(edge: .bottom).combined(with: .opacity),
             removal: .move(edge: .bottom).combined(with: .opacity)
         )
+    }
+}
+
+// MARK: - Droplet Modifier
+struct DropletModifier: ViewModifier {
+    let offsetX: CGFloat
+    let offsetY: CGFloat
+    let scale: CGFloat
+    let opacity: Double
+    
+    func body(content: Content) -> some View {
+        content
+            .offset(x: offsetX, y: offsetY)
+            .scaleEffect(scale)
+            .opacity(opacity)
     }
 }
 
@@ -23,34 +53,36 @@ struct ToastHostOverlay: View {
             Color.clear
                 .allowsHitTesting(false)
             
-            // MARK: - Current Toast (Centered Capsule)
+            // MARK: - Current Toast
             if let item = pipeline.currentToast {
                 VStack {
-                    // Centered horizontally, positioned below dynamic island / notch
-                    LiquidToastView(
-                        item: item,
-                        onTap: { pipeline.handleTap(item) },
-                        onReply: { pipeline.openQuickReply(item) },
-                        onAcceptFriendRequest: { toast in
-                            pipeline.acceptFriendRequest(toast)
-                        },
-                        onDeclineFriendRequest: { toast in
-                            pipeline.declineFriendRequest(toast)
-                        },
-                        onSendReply: { toast, text in
-                            Task {
-                                await pipeline.sendInlineReply(toast: toast, text: text)
+                    HStack {
+                        Spacer()
+                        
+                        LiquidToastView(
+                            item: item,
+                            onTap: { pipeline.handleTap(item) },
+                            onReply: { pipeline.openQuickReply(item) },
+                            onAcceptFriendRequest: { toast in
+                                pipeline.acceptFriendRequest(toast)
+                            },
+                            onDeclineFriendRequest: { toast in
+                                pipeline.declineFriendRequest(toast)
+                            },
+                            onSendReply: { toast, text in
+                                Task {
+                                    await pipeline.sendInlineReply(toast: toast, text: text)
+                                }
                             }
-                        }
-                    )
-                    .frame(maxWidth: 380)
-                    .padding(.horizontal, 20)
-                    .padding(.top, 54) // Below dynamic island / notch
+                        )
+                        .frame(maxWidth: 380)
+                        .padding(.trailing, 16)
+                        .padding(.top, 50) // Below dynamic island / notch
+                    }
                     
                     Spacer()
                 }
-                .frame(maxWidth: .infinity) // Center horizontally
-                .transition(.move(edge: .top).combined(with: .opacity))
+                .transition(.dropletTopRight)
                 .zIndex(9998)
             }
             
@@ -76,7 +108,7 @@ struct ToastHostOverlay: View {
             print("🎯 ToastHostOverlay appeared")
             #endif
         }
-        .animation(.spring(response: 0.35, dampingFraction: 0.8), value: pipeline.currentToast?.id)
+        .animation(.spring(response: 0.35, dampingFraction: 0.86), value: pipeline.currentToast?.id)
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: pipeline.quickReplyState != nil)
     }
 }

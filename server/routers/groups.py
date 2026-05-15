@@ -18,7 +18,7 @@ Endpoints:
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
 
@@ -29,7 +29,7 @@ from encryption import encrypt_text, decrypt_text
 import json
 import uuid
 import secrets
-from ws_manager import ws_manager  # singleton instance, NOT the module
+import ws_manager
 
 router = APIRouter(prefix="/api/groups", tags=["groups"])
 
@@ -43,11 +43,6 @@ class CreateGroupRequest(BaseModel):
     member_ids: List[str]  # User IDs to add as members
     avatar_url: Optional[str] = None
     description: Optional[str] = None
-    # ⚡ Offline-first: clients that created the group locally (because the
-    # network was down at create time) supply their `local_<uuid>` ID here.
-    # The server adopts it verbatim so we don't need to remap message rows /
-    # conversation rows after the fact. If omitted, server mints its own.
-    client_id: Optional[str] = None
 
 
 class GroupMemberResponse(BaseModel):
@@ -103,7 +98,7 @@ class InviteLinkResponse(BaseModel):
 # ═══════════════════════════════════════════════════════════════════════════
 
 @router.post("", response_model=GroupResponse)
-async def create_group(
+def create_group(
     req: CreateGroupRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -119,64 +114,14 @@ async def create_group(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Group name is required"
         )
-
-    # ⚡ Offline-first: if the client supplied its locally-created ID, adopt
-    # it. We accept any reasonable string (the iOS client uses
-    # `local_<UUID>`) so the SAME ID is used everywhere from offline → online.
-    # Idempotency: if a row with that ID already exists AND the caller is the
-    # creator, return it instead of inserting a duplicate.
-    desired_id: Optional[str] = None
-    if req.client_id:
-        cid = req.client_id.strip()
-        if cid:
-            # Reject obviously malformed IDs (defense-in-depth).
-            if len(cid) > 64 or any(c.isspace() for c in cid):
-                raise HTTPException(status_code=400, detail="Invalid client_id")
-            existing = db.query(Group).filter(Group.id == cid).first()
-            if existing is not None:
-                if existing.created_by != current_user.id:
-                    raise HTTPException(
-                        status_code=409,
-                        detail="A group with this client_id already exists"
-                    )
-                # Idempotent re-create — return the existing group.
-                members = db.query(GroupMember).filter(GroupMember.group_id == existing.id).all()
-                creator = db.query(User).filter(User.id == existing.created_by).first()
-                return GroupResponse(
-                    id=existing.id,
-                    name=existing.name,
-                    avatar_url=existing.avatar_url,
-                    description=existing.description,
-                    created_by=existing.created_by,
-                    creator_username=creator.username if creator else None,
-                    created_at=existing.created_at,
-                    member_count=len(members),
-                    members=[
-                        GroupMemberResponse(
-                            user_id=m.user_id,
-                            username=(db.query(User).filter(User.id == m.user_id).first().username
-                                      if db.query(User).filter(User.id == m.user_id).first() else ""),
-                            avatar_url=None,
-                            role=m.role,
-                            joined_at=m.joined_at
-                        )
-                        for m in members
-                    ],
-                    is_frozen=existing.is_frozen or False,
-                    frozen_by=existing.frozen_by,
-                )
-            desired_id = cid
-
+    
     # Create the group
-    group_kwargs = dict(
+    group = Group(
         name=req.name.strip(),
         avatar_url=req.avatar_url,
         description=req.description,
-        created_by=current_user.id,
+        created_by=current_user.id
     )
-    if desired_id is not None:
-        group_kwargs["id"] = desired_id
-    group = Group(**group_kwargs)
     db.add(group)
     db.flush()  # Get the group ID
     
@@ -188,32 +133,12 @@ async def create_group(
     )
     db.add(creator_member)
     
-    # 🛡️ Block-list filter — refuse to add anyone who has blocked the
-    # creator OR whom the creator has blocked. Without this, a user could
-    # drag any stranger (or someone who blocked them) into a group chat.
-    from models import Block as _Block
-    from sqlalchemy import or_ as _or_, and_ as _and_
-    blocked_pair_ids: set[str] = set()
-    if req.member_ids:
-        rows = db.query(_Block).filter(
-            _or_(
-                _and_(_Block.blocker_id == current_user.id, _Block.blocked_id.in_(req.member_ids)),
-                _and_(_Block.blocked_id == current_user.id, _Block.blocker_id.in_(req.member_ids)),
-            )
-        ).all()
-        blocked_pair_ids = {b.blocked_id for b in rows} | {b.blocker_id for b in rows}
-        blocked_pair_ids.discard(current_user.id)
-
     # Add other members
     member_count = 1  # Creator
-    skipped_blocked = 0
     for member_id in req.member_ids:
         if member_id == current_user.id:
             continue  # Skip creator (already added)
-        if member_id in blocked_pair_ids:
-            skipped_blocked += 1
-            continue  # Block-list filter
-
+        
         # Verify user exists
         user = db.query(User).filter(User.id == member_id).first()
         if user:
@@ -224,26 +149,11 @@ async def create_group(
             )
             db.add(member)
             member_count += 1
-    if skipped_blocked:
-        print(f"🛡️ [GroupCreate] Skipped {skipped_blocked} blocked-pair members during creation of {group.id[:8]}")
-
+    
     db.commit()
     db.refresh(group)
-
-    # 🔐 Per-group symmetric key — mint version 1 immediately so the first
-    # mesh-broadcast group message can be encrypted client-side. Members
-    # fetch via GET /api/groups/{id}/key.
-    try:
-        from routers.group_keys import ensure_group_key
-        ensure_group_key(db, group.id)
-        db.commit()
-    except Exception as e:
-        print(f"⚠️ [GroupCreate] ensure_group_key failed: {e}")
     
-    # ✅ Create notification + PUSH for each added member (so they know they were added)
-    from services.apns_service import get_apns_service, APNsService
-    sender_display = APNsService.build_push_display_name(current_user)
-    
+    # ✅ Create notification for each added member (so they know they were added)
     for member_id in req.member_ids:
         if member_id == current_user.id:
             continue  # Don't notify creator
@@ -260,23 +170,6 @@ async def create_group(
             is_read=False
         )
         db.add(notif)
-        
-        # Send push notification for added-to-group
-        member_user = db.query(User).filter(User.id == member_id).first()
-        if member_user and member_user.push_token and member_user.push_platform == "ios":
-            try:
-                apns = get_apns_service()
-                badge = APNsService.get_unread_badge_count(db, member_id)
-                await apns.send_added_to_group_notification(
-                    device_token=member_user.push_token,
-                    adder_name=sender_display,
-                    group_name=group.name,
-                    group_id=group.id,
-                    badge=badge
-                )
-                print(f"📱 ✅ [Groups] Added-to-group push queued for {member_user.username}")
-            except Exception as e:
-                print(f"📱 ❌ [Groups] Added-to-group push failed for member {member_id}: {e}")
     
     db.commit()
     print(f"👥 [Groups] Created group '{group.name}' with {member_count} members by {current_user.username}")
@@ -417,7 +310,7 @@ def get_group_details(
 
 
 @router.post("/{group_id}/members", response_model=GroupResponse)
-async def add_members(
+def add_members(
     group_id: str,
     req: AddMembersRequest,
     current_user: User = Depends(get_current_user),
@@ -438,41 +331,19 @@ async def add_members(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only admins can add members"
         )
-
-    # 🛡️ Block-list filter — refuse to add anyone who blocked the
-    # adder OR whom the adder has blocked. Same protection as on group
-    # create. Without this, an admin could drag a stranger or someone
-    # they're blocked-by into the group.
-    from models import Block as _Block
-    from sqlalchemy import or_ as _or_, and_ as _and_
-    blocked_pair_ids: set[str] = set()
-    if req.member_ids:
-        rows = db.query(_Block).filter(
-            _or_(
-                _and_(_Block.blocker_id == current_user.id, _Block.blocked_id.in_(req.member_ids)),
-                _and_(_Block.blocked_id == current_user.id, _Block.blocker_id.in_(req.member_ids)),
-            )
-        ).all()
-        blocked_pair_ids = {b.blocked_id for b in rows} | {b.blocker_id for b in rows}
-        blocked_pair_ids.discard(current_user.id)
-
+    
     # Add members
     added_count = 0
-    skipped_blocked = 0
     for member_id in req.member_ids:
-        if member_id in blocked_pair_ids:
-            skipped_blocked += 1
-            continue
-
         # Check if already a member
         existing = db.query(GroupMember).filter(
             GroupMember.group_id == group_id,
             GroupMember.user_id == member_id
         ).first()
-
+        
         if existing:
             continue
-
+        
         # Verify user exists
         user = db.query(User).filter(User.id == member_id).first()
         if user:
@@ -499,24 +370,6 @@ async def add_members(
                 is_read=False
             )
             db.add(notif)
-            
-            # Send push notification for added-to-group
-            if user.push_token and user.push_platform == "ios":
-                try:
-                    from services.apns_service import get_apns_service, APNsService
-                    apns = get_apns_service()
-                    sender_display = APNsService.build_push_display_name(current_user)
-                    badge = APNsService.get_unread_badge_count(db, member_id)
-                    await apns.send_added_to_group_notification(
-                        device_token=user.push_token,
-                        adder_name=sender_display,
-                        group_name=group.name if group else "Unknown",
-                        group_id=group_id,
-                        badge=badge
-                    )
-                    print(f"📱 ✅ [Groups] Added-to-group push queued for {user.username}")
-                except Exception as e:
-                    print(f"📱 ❌ [Groups] Added-to-group push failed for {user.username}: {e}")
     
     db.commit()
     
@@ -585,55 +438,14 @@ def leave_group(
                 if next_admin:
                     next_admin.role = "admin"
                     print(f"👥 [Groups] Promoted user {next_admin.user_id} to admin")
-
+        
         # Remove membership
         db.delete(membership)
-
-        # 🔐 ROTATE the group key on leave (same forward-secrecy reason as kick).
-        # If we don't rotate here, a leaver retains their cached key indefinitely
-        # — they can decrypt every future mesh broadcast even though they're no
-        # longer in the group. Combined with the iOS cache fix, this gives the
-        # documented forward-secrecy guarantee for both leave + kick.
-        new_key_version = None
-        try:
-            from routers.group_keys import _mint_new_key
-            new_key = _mint_new_key(db, group_id)
-            new_key_version = new_key.version
-        except Exception as rotate_err:
-            db.rollback()
-            print(f"❌ [Groups] leave aborted — group-key rotation failed: {rotate_err}")
-            raise HTTPException(
-                status_code=500,
-                detail="Failed to rotate group key after leave; aborted to preserve forward secrecy",
-            )
-
-        # System message visible to remaining members
-        try:
-            sys_msg = GroupMessage(
-                id=str(uuid.uuid4()),
-                group_id=group_id,
-                sender_id=current_user.id,
-                content=encrypt_text(f"{current_user.username} left the group"),
-                message_type="system",
-                timestamp=datetime.utcnow()
-            )
-            db.add(sys_msg)
-        except Exception:
-            # Non-fatal — leave still succeeds even if system msg fails
-            pass
-
         db.commit()
-
-        print(
-            f"👥 [Groups] User {current_user.username} left group {group_id} "
-            f"→ rotated to key v{new_key_version}"
-        )
-
-        return {
-            "success": True,
-            "message": "Left group successfully",
-            "new_key_version": new_key_version,
-        }
+        
+        print(f"👥 [Groups] User {current_user.username} left group {group_id}")
+        
+        return {"success": True, "message": "Left group successfully"}
     
     except Exception as e:
         db.rollback()
@@ -649,17 +461,11 @@ def leave_group(
 # ═══════════════════════════════════════════════════════════════════════════
 
 class MentionEntityPayload(BaseModel):
-    """Mention entity from iOS — accepts both camelCase and snake_case
-    (iOS NetworkService runs `.convertToSnakeCase` on its encoder so we
-    receive `user_id` / `range_start` / `range_length`). Same fix as
-    `routers/comments.py`."""
-    model_config = ConfigDict(populate_by_name=True)
-
-    type: str = "mention"
-    userId: str = Field(alias="user_id")
+    type: str = "mention"  # always "mention"
+    userId: str
     username: str
-    rangeStart: int = Field(alias="range_start")
-    rangeLength: int = Field(alias="range_length")
+    rangeStart: int
+    rangeLength: int
 
 
 class SendGroupMessageRequest(BaseModel):
@@ -820,40 +626,10 @@ async def send_group_message(
     db.commit()
     
     print(f"💬 [Groups] Message sent to group {group.name} by {current_user.username}")
-
-    # ⚡ INSTANT PUSH: Notify all WebSocket-connected group members.
-    #
-    # 🛡️ Previously this was `ws_manager.notify(uid)` — a SINGLE-ARG, NON-AWAITED
-    # call. The actual signature is `async def notify(self, user_id, message_data)`,
-    # so the call raised TypeError + RuntimeWarning (coroutine never awaited)
-    # for EVERY group send → real-time fan-out was silently broken in production.
-    # Other members only saw the message on the next 30s WS poll fallback.
-    push_payload = {
-        "id": message.id,
-        "sender_id": message.sender_id,
-        "recipient_id": group_id,                   # group fan-out → recipient = the group
-        "room_id": group_id,
-        "group_id": group_id,
-        "group_name": group.name,
-        "content": req.content,
-        "timestamp": message.timestamp.isoformat() + "Z",
-        "read_at": None,
-        "delivered_at": None,
-        "sender_username": current_user.username,
-        "sender_name": f"{current_user.first_name} {current_user.last_name}",
-        "message_type": req.message_type or "text",
-        "audio_url": message.audio_url,
-        "audio_duration_seconds": message.audio_duration_seconds,
-        "file_name": message.file_name,
-        "file_size": message.file_size,
-        "mime_type": message.mime_type,
-        "reply_to_message_id": message.reply_to_message_id,
-        "reply_to_text_preview": message.reply_to_text_preview,
-        "reply_to_sender_name": message.reply_to_sender_name,
-        "reply_to_type": message.reply_to_type,
-    }
+    
+    # ⚡ Instant WebSocket push to all group members
     for uid in [m for m in all_member_ids if m != current_user.id]:
-        await ws_manager.notify(uid, push_payload)
+        ws_manager.notify(uid)
     
     # ========== IN-APP NOTIFICATION + PUSH FOR ALL MEMBERS ==========
     # Same pattern as 1:1 send_message and _bridge_group_message
@@ -895,7 +671,6 @@ async def send_group_message(
                     "group_name": group.name,
                     "sender_id": current_user.id,
                     "sender_username": current_user.username,
-                    "sender_avatar": current_user.avatar_path,
                     "preview": preview_text,
                     "message_type": req.message_type
                 }),
@@ -911,10 +686,9 @@ async def send_group_message(
                     badge = APNsService.get_unread_badge_count(db, member.id)
                     try:
                         apns = get_apns_service()
-                        push_result = await apns.send_group_message_notification(
+                        push_result = await apns.send_message_notification(
                             device_token=member.push_token,
-                            sender_name=sender_display,
-                            group_name=group.name,
+                            sender_name=f"{sender_display} in {group.name}",
                             message_preview=display_preview,
                             room_id=group_id,
                             sender_id=current_user.id,
@@ -942,19 +716,13 @@ async def send_group_message(
         
         snippet = req.content[:80] if len(req.content) > 80 else req.content
         deep_link = f"app://chat/{group_id}?message={message.id}"
-
+        
         # Anti-spam: max 5 mentions, dedup by userId
         seen_user_ids = set()
         mention_count = 0
-
+        
         sender_display = APNsService.build_push_display_name(current_user)
-
-        # 🛡️ Block-list filter — was missing. Without this, A could @mention
-        # a group member who blocked them (or whom A has blocked) and still
-        # push them a notification. Cross-block harassment vector.
-        from routers.blocks import get_blocked_user_ids
-        blocked_ids = set(get_blocked_user_ids(db, current_user.id))
-
+        
         for entity in req.entities:
             if entity.type != "mention":
                 continue
@@ -967,11 +735,6 @@ async def send_group_message(
                 continue  # No self-mention notification
             if entity.userId not in group_member_ids:
                 print(f"⚠️ [Mentions] User {entity.userId} not in group, skipping")
-                continue
-            if entity.userId in blocked_ids:
-                # Blocked-pair: silently skip. Group-message itself is still
-                # delivered (group membership decides that); just no mention
-                # notification gets pushed.
                 continue
             
             seen_user_ids.add(entity.userId)
@@ -1269,29 +1032,9 @@ def kick_member(
     
     target_user = db.query(User).filter(User.id == user_id).first()
     target_name = target_user.username if target_user else "Unknown"
-
+    
     db.delete(target)
-
-    # 🔐 ROTATE THE GROUP KEY *atomically* with the kick.
-    # Without this, the kicked member's cached AES-256 key still decrypts
-    # every future mesh / cipher broadcast — silently breaking the
-    # forward-secrecy guarantee documented in routers/group_keys.py.
-    # Done in the same transaction so a partial failure (kick succeeds,
-    # rotate fails) cannot leave the group in a leaky state.
-    new_key_version: Optional[int] = None
-    try:
-        from routers.group_keys import _mint_new_key
-        new_key = _mint_new_key(db, group_id)
-        new_key_version = new_key.version
-    except Exception as rotate_err:
-        # Roll the kick back too — refusing to half-do this is safer.
-        db.rollback()
-        print(f"❌ [Groups] kick aborted — group key rotation failed: {rotate_err}")
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to rotate group key after kick; kick aborted to preserve forward secrecy",
-        )
-
+    
     # System message
     sys_msg = GroupMessage(
         id=str(uuid.uuid4()),
@@ -1303,16 +1046,9 @@ def kick_member(
     )
     db.add(sys_msg)
     db.commit()
-
-    print(
-        f"🦶 [Groups] {current_user.username} kicked {target_name} from {group_id} "
-        f"→ rotated to key v{new_key_version}"
-    )
-    return {
-        "success": True,
-        "message": f"{target_name} removed from group",
-        "new_key_version": new_key_version,
-    }
+    
+    print(f"🦶 [Groups] {current_user.username} kicked {target_name} from {group_id}")
+    return {"success": True, "message": f"{target_name} removed from group"}
 
 
 @router.post("/{group_id}/members/{user_id}/promote")
@@ -1708,41 +1444,10 @@ def create_poll(
         timestamp=datetime.utcnow()
     )
     db.add(sys_msg)
-
-    # Fan-out a persistent notification to every other group member so the
-    # bell on iOS / NotificationsColumn on macOS surfaces "X created a poll
-    # in <group>" the moment they next open the panel.
-    import json as _json
-    members = db.query(GroupMember).filter(
-        GroupMember.group_id == group_id,
-        GroupMember.user_id != current_user.id,
-    ).all()
-    grp = db.query(Group).filter(Group.id == group_id).first()
-    grp_name = grp.name if grp else None
-    question_preview = req.question.strip()
-    if len(question_preview) > 80:
-        question_preview = question_preview[:77] + "…"
-    for m in members:
-        notif = Notification(
-            user_id=m.user_id,
-            type="poll_created",
-            data=_json.dumps({
-                "actor_id": current_user.id,
-                "actor_username": current_user.username,
-                "actor_avatar": current_user.avatar_path,
-                "room_id": group_id,
-                "group_id": group_id,
-                "group_name": grp_name,
-                "poll_id": poll.id,
-                "preview": question_preview,
-            }),
-            is_read=False,
-        )
-        db.add(notif)
-
+    
     db.commit()
     db.refresh(poll)
-
+    
     print(f"📊 [Fun Pack] Poll created in group {group_id} by {current_user.username}: {req.question[:50]}")
     return _build_poll_response(poll, current_user.id, db)
 

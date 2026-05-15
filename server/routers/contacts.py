@@ -29,12 +29,6 @@ class MatchedUser(BaseModel):
     username: str
     displayName: str
     avatarUrl: Optional[str] = None
-    # Same reason we added these to UserProfile/search: official accounts
-    # (raven_news, raven_economic, …) lost their verified checkmark when
-    # surfaced through contact-sync because the response shape didn't
-    # carry the badge flags.
-    isVerified: Optional[bool] = False
-    isPremium: Optional[bool] = False
 
 
 class ContactSyncResponse(BaseModel):
@@ -104,9 +98,7 @@ async def sync_contacts(
             userId=user.id,
             username=user.username or "",
             displayName=display_name,
-            avatarUrl=user.avatar_path,
-            isVerified=user.is_verified or False,
-            isPremium=user.is_premium or False,
+            avatarUrl=user.avatar_path
         ))
     
     return ContactSyncResponse(matches=matches)

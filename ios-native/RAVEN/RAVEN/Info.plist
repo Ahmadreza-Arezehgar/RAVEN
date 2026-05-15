@@ -2,31 +2,38 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>BGTaskSchedulerPermittedIdentifiers</key>
-	<array>
-		<!-- 2026-05-10: removed `im.raven.sync` — it was declared
-		     but never registered (no `BGTaskScheduler.shared.register`
-		     handler exists for it), so submitting a request would
-		     throw `BGTaskSchedulerErrorDomain Code=1` and on iOS 26
-		     the launch-time auditor warns about unregistered
-		     identifiers. Re-add when a handler is wired. -->
-		<string>com.raven.mesh.refresh</string>
-		<string>com.raven.mesh.processing</string>
-	</array>
-	<key>CFBundleDevelopmentRegion</key>
-	<string>en</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
-	<key>CFBundleIconName</key>
-	<string>AppIcon</string>
-	<key>CFBundleIdentifier</key>
-	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 	<key>CFBundleName</key>
 	<string>$(PRODUCT_NAME)</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>UILaunchScreen</key>
+	<dict/>
 	<key>CFBundleShortVersionString</key>
-	<string>$(MARKETING_VERSION)</string>
+	<string>1.1</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleIconName</key>
+	<string>AppIcon</string>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -50,55 +57,30 @@
 			</array>
 		</dict>
 	</array>
-	<key>CFBundleVersion</key>
-	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>GIDClientID</key>
 	<string>516053629173-teh5np0h3i3ar6b25sd78d6o8ft1qhg9.apps.googleusercontent.com</string>
-	<key>ITSAppUsesNonExemptEncryption</key>
-	<false/>
+	<key>NSCameraUsageDescription</key>
+	<string>RAVEN needs camera access to take photos and videos</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>RAVEN needs microphone access for voice messages and audio rooms</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>RAVEN needs photo library access to share images</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>RAVEN needs permission to save photos and videos to your library.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>RAVEN uses your location to find nearby users and improve message delivery.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>RAVEN uses background location for two features: (1) Live Location Sharing, which lets you share your real-time location with friends in a conversation, and (2) mesh networking, which relays messages to nearby users offline. You can disable either feature at any time.</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>RAVEN uses Bluetooth to send and receive messages with nearby users, even when offline or when the app is in the background. Your device can also help relay messages between other users.</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>
 	<string>RAVEN needs Bluetooth to advertise your device to nearby users for offline messaging.</string>
-	<key>NSBonjourServices</key>
-	<array>
-		<string>_raven-mesh._tcp</string>
-		<string>_raven-mesh._udp</string>
-	</array>
-	<key>NSCameraUsageDescription</key>
-	<string>RAVEN needs camera access to take photos and videos</string>
-	<key>NSContactsUsageDescription</key>
-	<string>RAVEN uses your contacts to help you find friends who are already on the app.</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>RAVEN uses Face ID to protect your privacy and secure access to the app.</string>
-	<key>NSLocalNetworkUsageDescription</key>
-	<string>RAVEN uses the local network to transfer photos, videos, and files to nearby devices at high speed when internet is unavailable.</string>
-	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>RAVEN uses background location for two features: (1) Live Location Sharing, which lets you share your real-time location with friends in a conversation, and (2) mesh networking, which relays messages to nearby users offline. You can disable either feature at any time.</string>
-	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>RAVEN uses your location to find nearby users and improve message delivery.</string>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>RAVEN needs microphone access for voice messages and audio rooms</string>
-	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>RAVEN uses on-device speech recognition to generate video captions. Audio never leaves your device.</string>
-	<key>NSPhotoLibraryAddUsageDescription</key>
-	<string>RAVEN needs permission to save photos and videos to your library.</string>
-	<key>NSPhotoLibraryUsageDescription</key>
-	<string>RAVEN needs photo library access to share images</string>
-	<key>NSSupportsLiveActivities</key>
-	<true/>
-	<key>NSUserActivityTypes</key>
-	<array>
-		<string>INSendMessageIntent</string>
-		<string>INStartCallIntent</string>
-	</array>
+	<key>NSContactsUsageDescription</key>
+	<string>RAVEN uses your contacts to help you find friends who are already on the app.</string>
 	<key>UIBackgroundModes</key>
 	<array>
-		<!-- 2026-05-10: removed `audio` background mode. App Store
-		     rejection 2.5.4 — no continuous-audio justification
-		     (voice messages play in foreground; no NowPlaying /
-		     remote-command center). Restore + wire NowPlaying when
-		     the audio-room feature ships. -->
 		<string>bluetooth-central</string>
 		<string>bluetooth-peripheral</string>
 		<string>remote-notification</string>
@@ -106,19 +88,22 @@
 		<string>fetch</string>
 		<string>processing</string>
 	</array>
-	<key>UILaunchScreen</key>
-	<dict/>
-	<key>UISupportedInterfaceOrientations</key>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
-		<string>UIInterfaceOrientationPortrait</string>
+		<string>com.raven.mesh.refresh</string>
+		<string>com.raven.mesh.processing</string>
+		<string>im.raven.sync</string>
 	</array>
-	<key>UISupportedInterfaceOrientations~ipad</key>
+	<key>NSUserActivityTypes</key>
 	<array>
-		<string>UIInterfaceOrientationPortrait</string>
-		<string>UIInterfaceOrientationPortraitUpsideDown</string>
-		<string>UIInterfaceOrientationLandscapeLeft</string>
-		<string>UIInterfaceOrientationLandscapeRight</string>
+		<string>INSendMessageIntent</string>
+		<string>INStartCallIntent</string>
 	</array>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+
 	<key>UISupportsCameraControl</key>
 	<false/>
 </dict>

@@ -82,31 +82,26 @@ final class LiveLocationSyncService: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] notification in
-            guard let location = notification.userInfo?["location"] as? CLLocation,
+            guard let self = self,
+                  let location = notification.userInfo?["location"] as? CLLocation,
                   let sid = notification.userInfo?["sessionId"] as? String,
-                  sid == sessionId else { return }
-
-            // queue: .main guarantees we're already on the main thread, so
-            // assumeIsolated lets us read MainActor state without an await.
-            MainActor.assumeIsolated {
-                guard let self = self,
-                      self.activeSession?.sessionId == sessionId else { return }
-
-                // Throttle
-                let now = Date()
-                guard now.timeIntervalSince(lastSentAt) >= minInterval else { return }
-                lastSentAt = now
-
-                // Check expiry
-                guard expiresAt > now else { return }
-
-                // ✅ Update the anchor message with new coordinates (same clientMessageId)
-                let updatePayload = LocationPayload.live(
-                    from: location, sessionId: sessionId, expiresAt: expiresAt
-                )
-                Task {
-                    try? await messageStore.sendLocation(updatePayload, clientMessageId: anchorId)
-                }
+                  sid == sessionId,
+                  self.activeSession?.sessionId == sessionId else { return }
+            
+            // Throttle
+            let now = Date()
+            guard now.timeIntervalSince(lastSentAt) >= minInterval else { return }
+            lastSentAt = now
+            
+            // Check expiry
+            guard expiresAt > now else { return }
+            
+            // ✅ Update the anchor message with new coordinates (same clientMessageId)
+            let updatePayload = LocationPayload.live(
+                from: location, sessionId: sessionId, expiresAt: expiresAt
+            )
+            Task {
+                try? await messageStore.sendLocation(updatePayload, clientMessageId: anchorId)
             }
         }
         

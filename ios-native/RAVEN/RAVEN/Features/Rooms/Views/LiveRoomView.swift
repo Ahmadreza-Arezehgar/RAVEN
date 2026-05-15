@@ -44,13 +44,7 @@ struct LiveRoomView: View {
     @State private var livePulse = false
 
     
-    // ⚡ Audit fix: Use a connect-on-demand publisher we can cancel on view exit.
-    // Previously `.autoconnect()` started the timer the moment the view was
-    // initialised AND kept firing until the view's value-type was deallocated,
-    // wasting CPU after dismiss. We now connect in `.onAppear` and cancel in
-    // `.onDisappear` via `timerCancellable`.
-    private let refreshTimer = Timer.publish(every: 5, on: .main, in: .common)
-    @State private var timerCancellable: Cancellable?
+    private let refreshTimer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
     
     // Gradient palette for participant avatars
     private let gradients: [[Color]] = [
@@ -185,53 +179,6 @@ struct LiveRoomView: View {
             if hasJoined {
                 Task { await refreshParticipants() }
             }
-        }
-        // ⚡ Real-time room events from /ws/inbox.
-        // Server fans out join/leave/raise-hand/role/mute/kick/end via the
-        // existing WebSocket; RealtimeEngine routes them as
-        // `RoomEventReceived`. Reacting here makes raise-hand → host accept
-        // → speaker promotion appear INSTANT instead of up to 5 s late.
-        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("RoomEventReceived"))) { note in
-            guard hasJoined,
-                  let info = note.userInfo as? [String: Any],
-                  let eventRoomId = info["room_id"] as? String,
-                  eventRoomId == roomId else { return }
-            let event = info["event"] as? String ?? "?"
-            #if DEBUG
-            print("⚡ [LiveRoomView] WS room_event: \(event)")
-            #endif
-            // Refresh local state immediately. For role_changed events that
-            // affect *us* we additionally refresh the LiveKit token so the
-            // new publish grant kicks in without an audio drop.
-            Task {
-                await refreshParticipants()
-                if event == "role_changed",
-                   let uid = info["user_id"] as? String,
-                   uid == AuthService.shared.currentUser?.id,
-                   info["needs_token_refresh"] as? Bool == true,
-                   let me = myParticipant {
-                    try? await audioManager.refreshToken(
-                        roomId: roomId, participantName: me.safeDisplayName
-                    )
-                }
-                if event == "ended" {
-                    // Host ended the room — clean up and dismiss
-                    await audioManager.disconnect()
-                    hasJoined = false
-                    connectionError = "The host ended this room."
-                }
-            }
-        }
-        .onAppear {
-            timerCancellable = refreshTimer.connect()
-        }
-        .onDisappear {
-            // ⚡ Audit fix: cancel the polling timer so it stops firing once
-            // the user has minimised / left the room view. Saves CPU and
-            // matches the heartbeat cleanup pattern already used in
-            // AudioRoomManager.stopHeartbeat().
-            timerCancellable?.cancel()
-            timerCancellable = nil
         }
         .preferredColorScheme(.dark)
     }
@@ -386,16 +333,7 @@ struct LiveRoomView: View {
                             SpeakerBubble(
                                 participant: p,
                                 gradient: gradients[idx % gradients.count],
-                                // 🐛 FIX: was keyed by `safeDisplayName` but
-                                // `speakingParticipants` is populated from
-                                // `participant.identity?.stringValue` which is
-                                // the user_id (the LiveKit JWT sets sub=user.id).
-                                // Display names rarely matched identities → the
-                                // speaking-now glow never fired.
-                                isSpeaking: audioManager.speakingParticipants.contains(p.userId),
-                                // ⚡ Continuous waveform meter — drives the ring
-                                // scale + 3-bar visualizer below the avatar.
-                                audioLevel: audioManager.audioLevels[p.userId] ?? 0
+                                isSpeaking: audioManager.speakingParticipants.contains(p.safeDisplayName)
                             )
                         }
                     }
@@ -569,7 +507,7 @@ struct LiveRoomView: View {
             if !myRole.canSpeak || isMuted {
                 HStack(spacing: 3) {
                     ForEach(0..<3, id: \.self) { i in
-                        RoundedRectangle(cornerRadius: 1, style: .continuous)
+                        RoundedRectangle(cornerRadius: 1)
                             .fill(RoomDesign.accent.opacity(0.5))
                             .frame(width: 2, height: livePulse ? CGFloat(6 + i * 3) : CGFloat(4 + i * 1))
                             .animation(
@@ -829,22 +767,14 @@ struct LiveRoomView: View {
                 let nowListenerOnly = !updatedMe.role.canSpeak
                 
                 if wasListener && nowSpeaker {
-                    // 🚀 PROMOTION FIX: previously this did disconnect+reconnect
-                    // (1-2 second audio outage; everyone else saw the speaker
-                    // disappear and rejoin). Instead we refresh the LiveKit
-                    // token in place — the new token has `canPublish:true`
-                    // grants, after which `setMicrophone(true)` actually
-                    // publishes the audio track WITHOUT dropping the room
-                    // membership or audio output.
+                    await audioManager.disconnect()
+                    try? await Task.sleep(nanoseconds: 500_000_000)
                     do {
-                        try await audioManager.refreshToken(
-                            roomId: roomId,
-                            participantName: updatedMe.safeDisplayName
-                        )
+                        try await audioManager.connect(roomId: roomId, participantName: updatedMe.safeDisplayName)
                         try? await audioManager.setMicrophone(enabled: true)
                     } catch {
                         #if DEBUG
-                        print("❌ Failed to refresh token after promotion: \(error)")
+                        print("❌ Failed to reconnect as speaker: \(error)")
                         #endif
                     }
                 }
@@ -921,21 +851,9 @@ struct SpeakerBubble: View {
     let participant: AudioRoomParticipant
     let gradient: [Color]
     let isSpeaking: Bool
-    /// Continuous audio level [0…1] from LiveKit. Drives the ring scale +
-    /// the 3-bar waveform meter below the avatar. 0 = silent.
-    var audioLevel: Float = 0
-
+    
     @State private var pulse = false
-
-    /// Smooth the raw audio level: the LiveKit value jitters per 100 ms
-    /// sample. We expand the range a bit so even quiet talking pushes the
-    /// ring noticeably (audioLevel rarely exceeds ~0.6 in practice).
-    private var ringScale: CGFloat {
-        guard isSpeaking else { return 1.0 }
-        let amp = min(1.0, CGFloat(audioLevel) * 1.6)
-        return 1.0 + amp * 0.10  // up to +10% scale
-    }
-
+    
     var body: some View {
         VStack(spacing: 8) {
             ZStack {
@@ -949,14 +867,13 @@ struct SpeakerBubble: View {
                             )
                         )
                         .frame(width: 100, height: 100)
-                        .scaleEffect(ringScale)
-                        .animation(.easeOut(duration: 0.1), value: ringScale)
+                        .scaleEffect(pulse ? 1.15 : 1.0)
                 }
-
+                
                 // Avatar
                 avatarView(size: 72)
-
-                // Speaking ring — driven by real audioLevel, not just a fixed pulse
+                
+                // Speaking ring
                 if isSpeaking {
                     Circle()
                         .stroke(
@@ -967,8 +884,7 @@ struct SpeakerBubble: View {
                             lineWidth: 2.5
                         )
                         .frame(width: 78, height: 78)
-                        .scaleEffect(ringScale)
-                        .animation(.easeOut(duration: 0.1), value: ringScale)
+                        .scaleEffect(pulse ? 1.06 : 1.0)
                 } else if participant.role.canSpeak && !participant.isMuted {
                     Circle()
                         .stroke(RoomDesign.speakingGlow.opacity(0.25), lineWidth: 1.5)
@@ -1015,16 +931,6 @@ struct SpeakerBubble: View {
                     .foregroundStyle(.white)
                     .lineLimit(1)
             }
-
-            // 🎙️ 3-bar waveform meter — visible whenever the speaker has
-            // any audio level. Each bar samples a different "frequency
-            // band" of the smoothed level for a Discord-style look.
-            if !participant.isMuted && participant.role.canSpeak {
-                WaveformBars(level: audioLevel)
-                    .frame(height: 8)
-                    .opacity(audioLevel > 0.02 ? 1 : 0.25)
-                    .animation(.easeOut(duration: 0.12), value: audioLevel > 0.02)
-            }
         }
         .onAppear {
             if isSpeaking {
@@ -1041,7 +947,7 @@ struct SpeakerBubble: View {
             }
         }
     }
-
+    
     @ViewBuilder
     private func avatarView(size: CGFloat) -> some View {
         if participant.displayMode == .anonymous {
@@ -1066,50 +972,6 @@ struct SpeakerBubble: View {
         }
     }
 }
-
-// MARK: - Waveform Bars (Discord-style 3-bar mic level meter)
-
-/// Animated 3-bar mic-level visualizer.
-/// Each bar represents a slightly different "frequency band" of the same
-/// underlying audioLevel — driven by phase-shifted sin waves so the bars
-/// don't all bounce in lockstep. Cheap to render: just 3 rounded rects
-/// whose height interpolates with the level.
-struct WaveformBars: View {
-    let level: Float
-
-    var body: some View {
-        TimelineView(.animation(minimumInterval: 0.04, paused: level <= 0.02)) { context in
-            let t = context.date.timeIntervalSinceReferenceDate
-            HStack(spacing: 2) {
-                bar(scale: barScale(t: t, phase: 0.0))
-                bar(scale: barScale(t: t, phase: 0.5))
-                bar(scale: barScale(t: t, phase: 1.0))
-            }
-        }
-    }
-
-    private func barScale(t: TimeInterval, phase: Double) -> CGFloat {
-        // amp envelope from audioLevel (clamped + smoothed)
-        let amp = CGFloat(min(1.0, max(0.05, Double(level) * 1.6)))
-        // small time-varying jitter so bars feel alive
-        let jitter = (sin(t * 6 + phase * .pi) + 1) / 2  // 0…1
-        return 0.20 + amp * (0.55 + 0.45 * CGFloat(jitter))
-    }
-
-    private func bar(scale: CGFloat) -> some View {
-        RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-            .fill(
-                LinearGradient(
-                    colors: [RoomDesign.speakingGlow, RoomDesign.accentBright],
-                    startPoint: .bottom, endPoint: .top
-                )
-            )
-            .frame(width: 3)
-            .scaleEffect(y: scale, anchor: .center)
-            .animation(.linear(duration: 0.05), value: scale)
-    }
-}
-
 
 // MARK: - Listener Bubble
 

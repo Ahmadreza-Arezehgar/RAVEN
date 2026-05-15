@@ -1,6 +1,4 @@
 import SwiftUI
-import AVFoundation
-import CoreMedia
 
 // MARK: - Post Detail View (Liquid Glass Redesign)
 /// Full post detail with hero layout, threaded comments, sort controls, rich composer, and glass aesthetic.
@@ -35,20 +33,12 @@ struct PostDetailView: View {
     @State private var selectedHashtag: String? = nil
     @State private var showLinkBrowser = false
     @State private var detectedURL: URL? = nil
-    /// 🆕 Seconds offset from a tapped `v0:21` chip in the description.
-    /// Drives the full-screen video sheet with chapter markers.
-    @State private var videoTimestampJump: Double? = nil
     
     // Like
     @State private var isLikeAnimating = false
-    @State private var isRepostAnimating = false
-    /// Bumped after every Bookmark toggle so the body re-evaluates
-    /// `feedStore.isBookmarked(...)` (UserDefaults-backed, not @Published).
-    @State private var bookmarkBumper: Int = 0
     
     // Profile navigation
     @State private var navigateToProfile = false
-    @State private var navigateToMentionUserId: String? = nil
     
     // Forward
     @State private var showForwardSheet = false
@@ -174,19 +164,10 @@ struct PostDetailView: View {
             currentUserId = await KeychainService.shared.getUserId() ?? ""
             await loadData()
         }
-        // Profile navigation (author avatar tap)
+        // Profile navigation
         .navigationDestination(isPresented: $navigateToProfile) {
             if let post = post {
                 UserProfileView(userId: post.authorId)
-            }
-        }
-        // Mention profile navigation (@username tap)
-        .navigationDestination(isPresented: Binding(
-            get: { navigateToMentionUserId != nil },
-            set: { if !$0 { navigateToMentionUserId = nil } }
-        )) {
-            if let userId = navigateToMentionUserId {
-                UserProfileView(userId: userId)
             }
         }
         // Report Post
@@ -240,29 +221,10 @@ struct PostDetailView: View {
                 )
             }
         }
-        // 🆕 Open the video full-screen at a specific second when the
-        // viewer taps a `v0:21` chip in the description.
-        .fullScreenCover(item: Binding(
-            get: { videoTimestampJump.map { TimestampJumpToken(seconds: $0) } },
-            set: { videoTimestampJump = $0?.seconds }
-        )) { jump in
-            if let post = post,
-               let videoIndex = post.allMedia.firstIndex(where: { $0.isVideo }) {
-                FullScreenVideoPlayer(
-                    media: post.allMedia,
-                    startIndex: videoIndex,
-                    startTime: CMTime(seconds: jump.seconds, preferredTimescale: 600),
-                    chapters: VideoTimestampParser.extract(from: post.content),
-                    post: post
-                )
-            }
-        }
-        // In-app browser for link preview — SFSafariViewController for
-        // the faster cold start. See SafariSheet.swift for rationale.
+        // In-app browser for link preview
         .sheet(isPresented: $showLinkBrowser) {
             if let url = detectedURL {
-                SafariSheet(url: url)
-                    .ignoresSafeArea()
+                InAppBrowserSheet(url: url)
             }
         }
         // Hashtag sheet
@@ -406,15 +368,7 @@ struct PostDetailView: View {
                     onHashtagTap: { tag in
                         Haptics.light()
                         selectedHashtag = tag
-                    },
-                    onMentionTap: { username in
-                        Haptics.light()
-                        resolveMentionToProfile(username)
-                    },
-                    onVideoTimestampTap: post.allMedia.contains(where: { $0.isVideo }) ? { seconds in
-                        Haptics.selection()
-                        videoTimestampJump = seconds
-                    } : nil
+                    }
                 )
                 .lineLimit(nil)
                 .multilineTextAlignment(.leading)
@@ -446,16 +400,12 @@ struct PostDetailView: View {
             // ── Hero media (full-width, taller) ──
             let media = post.allMedia
             if !media.isEmpty {
-                PeekCarouselView(media: media, post: post) { index in
+                PeekCarouselView(media: media) { index in
                     Haptics.light()
                     selectedMediaIndex = index
                     showFullScreenMedia = true
                 }
-                // Detail view media — bumped from 320 → 480 (~1.5×)
-                // to stay larger than the feed equivalent (420), which
-                // matches the visual hierarchy users expect when they
-                // tap into a post.
-                .frame(height: 480)
+                .frame(height: 320)
                 .padding(.horizontal, DS.space8)
                 
                 // Glass page indicator
@@ -487,37 +437,15 @@ struct PostDetailView: View {
     
     // MARK: - Hero Action Bar
     private func heroActionBar(_ post: Post) -> some View {
-        // Reading the bumper here forces SwiftUI to re-evaluate the
-        // bookmark icon after a tap (UserDefaults isn't @Published).
-        let _ = bookmarkBumper
-        let isBookmarked = feedStore.isBookmarked(postId: post.id)
-        return HStack(spacing: DS.space12) {
-            // Comment
+        HStack(spacing: DS.space16) {
+            // Comment count
             heroStatPill(
                 icon: "bubble.left.fill",
                 count: post.comments,
                 activeColor: .blue,
                 isActive: false
             ) { /* already on detail */ }
-
-            // Repost — long-press opens forward-to-chat sheet.
-            heroStatPill(
-                icon: "arrow.2.squarepath",
-                count: post.reposts,
-                activeColor: .green,
-                isActive: post.isReposted
-            ) {
-                tapRepost(post)
-            }
-            .scaleEffect(isRepostAnimating ? 1.15 : 1.0)
-            .simultaneousGesture(
-                LongPressGesture(minimumDuration: 0.4)
-                    .onEnded { _ in
-                        Haptics.selection()
-                        showForwardSheet = true
-                    }
-            )
-
+            
             // Like
             heroStatPill(
                 icon: post.isLiked ? "heart.fill" : "heart",
@@ -539,29 +467,13 @@ struct PostDetailView: View {
                 }
             }
             .scaleEffect(isLikeAnimating ? 1.15 : 1.0)
-
-            // Bookmark — UserDefaults-backed for now.
-            Button {
-                Haptics.light()
-                _ = feedStore.toggleBookmark(postId: post.id)
-                bookmarkBumper &+= 1
-            } label: {
-                Image(systemName: isBookmarked ? "bookmark.fill" : "bookmark")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(isBookmarked ? Color.yellow : .secondary)
-                    .padding(8)
-                    .background(
-                        Color(isBookmarked ? .yellow : .secondaryLabel)
-                            .opacity(isBookmarked ? 0.12 : 0.08)
-                    )
-                    .clipShape(Circle())
-            }
-            .buttonStyle(.plain)
-
-            // Forward (legacy share-arrow icon — kept for users who
-            // want to send the post to a chat conversation).
+            
+            // Forward / share
             Button {
                 Haptics.selection()
+                #if DEBUG
+                print("📤 [PostDetail] Forward tapped for post \(post.id)")
+                #endif
                 showForwardSheet = true
             } label: {
                 Image(systemName: "arrowshape.turn.up.forward.fill")
@@ -572,9 +484,9 @@ struct PostDetailView: View {
                     .clipShape(Circle())
             }
             .buttonStyle(.plain)
-
+            
             Spacer()
-
+            
             // View count
             HStack(spacing: 4) {
                 Image(systemName: "eye")
@@ -584,36 +496,6 @@ struct PostDetailView: View {
             }
             .foregroundStyle(.tertiary)
         }
-    }
-
-    // MARK: - Repost handler
-
-    /// Real repost via FeedStore (server) + mesh fan-out via
-    /// MeshRepostService. Optimistic UI update with rollback.
-    private func tapRepost(_ post: Post) {
-        let nowReposted = !post.isReposted
-        withAnimation(.spring(response: 0.25, dampingFraction: 0.55)) {
-            isRepostAnimating = true
-        }
-        Haptics.selection()
-        Task {
-            await feedStore.toggleRepost(postId: post.id)
-            // Sync local cached post so the icon flips.
-            if let updated = feedStore.mergedLocalPosts.first(where: { $0.id == post.id })
-                ?? feedStore.friendsPosts.first(where: { $0.id == post.id }) {
-                self.post = updated
-            }
-            await MainActor.run {
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                    isRepostAnimating = false
-                }
-            }
-        }
-        // TODO(mesh-repost): MeshRepostService is not yet ported to this
-        // codebase — restore the broadcastRepost call here once the
-        // service lands. Until then the repost still works via the
-        // server path; mesh fan-out is a no-op.
-        _ = (post.serverId, post.authorId, nowReposted)
     }
     
     // MARK: - Stat Pill
@@ -684,11 +566,12 @@ struct PostDetailView: View {
     // MARK: - Initial Mesh Badge (Liquid Glass)
     @ViewBuilder
     private func initialMeshBadge() -> some View {
-        HStack(spacing: 3) {
-            Image(systemName: "dot.radiowaves.left.and.right")
+        HStack(spacing: 4) {
+            Image(systemName: "antenna.radiowaves.left.and.right")
                 .font(.system(size: 9, weight: .bold))
-            Text("post via mesh")
-                .font(.system(size: 10, weight: .semibold, design: .rounded))
+            Text("INITIALLY POST VIA MESH")
+                .font(.system(size: 8, weight: .heavy, design: .rounded))
+                .kerning(0.3)
         }
         .foregroundStyle(
             LinearGradient(
@@ -987,66 +870,19 @@ struct PostDetailView: View {
         hasVoiceComment || !commentText.trimmingCharacters(in: .whitespaces).isEmpty
     }
     
-    // MARK: - Resolve @mention username → profile navigation
-    private func resolveMentionToProfile(_ username: String) {
-        Task {
-            do {
-                struct UserResult: Decodable {
-                    let id: String
-                    let username: String
-                }
-                let results: [UserResult] = try await networkService.get(
-                    path: "/api/users/search?q=\(username)"
-                )
-                if let match = results.first(where: { $0.username.lowercased() == username.lowercased() }) {
-                    await MainActor.run {
-                        navigateToMentionUserId = match.id
-                    }
-                }
-            } catch {
-                #if DEBUG
-                print("❌ [Mention] Failed to resolve @\(username): \(error)")
-                #endif
-            }
-        }
-    }
-    
     // MARK: - Load Data
     private func loadData() async {
         isLoading = true
         
-        // 🚀 Step 1: Instant display — check if post is already in memory from FeedStore
-        // This makes "tap post → detail" feel instant (0ms) instead of waiting for server.
-        let inMemory = feedStore.mergedLocalPosts.first(where: { $0.serverId == realPostId })
-            ?? feedStore.friendsPosts.first(where: { $0.serverId == realPostId })
-            ?? feedStore.recommendedPosts.first(where: { $0.serverId == realPostId })
-        
-        if let inMemory = inMemory {
-            post = inMemory
-            // Start loading comments immediately with cached post visible
-            isLoading = false
-            await loadComments()
-        }
-        
-        // 🔄 Step 2: Background server fetch for fresh data (updated likes, comments count, etc.)
-        // If Step 1 found the post, this silently refreshes it.
-        // If Step 1 found nothing (e.g. deep link), this is the primary load.
         do {
-            let freshPost: Post = try await networkService.get(
+            post = try await networkService.get(
                 path: "/api/posts/\(realPostId)"
             )
-            post = freshPost
-            
-            // If we didn't get comments from Step 1, load them now
-            if inMemory == nil {
-                await loadComments()
-            }
+            await loadComments()
         } catch {
             #if DEBUG
-            print("❌ Failed to load post from server: \(error)")
+            print("❌ Failed to load post: \(error)")
             #endif
-            // If we already have the post from Step 1, that's fine — keep showing it.
-            // Only set isLoading = false if we have NO post at all (true error state).
         }
         
         isLoading = false
@@ -1412,7 +1248,7 @@ private struct SkeletonBlock: View {
     @State private var shimmerOffset: CGFloat = -200
     
     var body: some View {
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
+        RoundedRectangle(cornerRadius: 12)
             .fill(Color.gray.opacity(0.12))
             .frame(height: 60)
             .shimmer(offset: shimmerOffset, delay: delay)
@@ -1437,17 +1273,17 @@ private struct SkeletonCommentRow: View {
                 .shimmer(offset: shimmerOffset, delay: delay)
             
             VStack(alignment: .leading, spacing: 8) {
-                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                RoundedRectangle(cornerRadius: 4)
                     .fill(Color.gray.opacity(0.2))
                     .frame(width: 100, height: 14)
                     .shimmer(offset: shimmerOffset, delay: delay)
                 
-                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                RoundedRectangle(cornerRadius: 4)
                     .fill(Color.gray.opacity(0.15))
                     .frame(height: 12)
                     .shimmer(offset: shimmerOffset, delay: delay)
                 
-                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                RoundedRectangle(cornerRadius: 4)
                     .fill(Color.gray.opacity(0.15))
                     .frame(width: 180, height: 12)
                     .shimmer(offset: shimmerOffset, delay: delay)

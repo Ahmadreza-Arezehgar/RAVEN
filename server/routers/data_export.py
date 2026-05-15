@@ -220,14 +220,13 @@ def export_user_data(
     # ═══════════════════════════════════════════════
     # 7. FRIENDS
     # ═══════════════════════════════════════════════
-    friend_rows = db.query(FriendRequest).filter(
-        FriendRequest.status == "accepted",
-        or_(FriendRequest.requester_id == user_id, FriendRequest.recipient_id == user_id)
+    friend_rows = db.query(Friendship).filter(
+        or_(Friendship.user_id == user_id, Friendship.friend_id == user_id)
     ).all()
 
     friend_ids = set()
     for f in friend_rows:
-        friend_ids.add(f.recipient_id if f.requester_id == user_id else f.requester_id)
+        friend_ids.add(f.friend_id if f.user_id == user_id else f.user_id)
 
     friend_users = {}
     if friend_ids:

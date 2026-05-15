@@ -373,21 +373,8 @@ actor MessageRepository {
         )
     }
     
-    // MARK: - Re-key (offline group reconciliation)
-
-    /// Move all messages from one room_id to another. Used when a locally-
-    /// created group's server-assigned ID is finally received and the old
-    /// `local_<UUID>` rows must be re-pointed at the canonical server ID.
-    func remapRoomId(from oldRoomId: String, to newRoomId: String) async throws {
-        guard oldRoomId != newRoomId else { return }
-        try await db.execute(
-            "UPDATE messages SET room_id = ? WHERE room_id = ?",
-            params: [newRoomId, oldRoomId]
-        )
-    }
-
     // MARK: - Update Status
-
+    
     func updateStatus(clientMessageId: String, status: MessageStatus) async throws {
         try await db.execute(
             "UPDATE messages SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE client_message_id = ?",
@@ -704,23 +691,6 @@ actor MessageRepository {
         try await db.execute(
             "UPDATE messages SET local_path = ?, updated_at = CURRENT_TIMESTAMP WHERE client_message_id = ?",
             params: [localPath, clientMessageId]
-        )
-    }
-
-    /// Mark a message's media download as failed so the chat row can
-    /// surface a "tap to retry" affordance instead of an infinite
-    /// loading spinner. Stores the failure reason in `last_error`
-    /// for diagnostic visibility. 🟠 (2026-05-10).
-    func markMediaDownloadFailed(clientMessageId: String, reason: String) async throws {
-        try await db.execute(
-            """
-            UPDATE messages
-            SET sync_state = 'failed_download',
-                last_error = ?,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE client_message_id = ?
-            """,
-            params: [reason, clientMessageId]
         )
     }
     

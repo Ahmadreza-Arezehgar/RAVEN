@@ -34,61 +34,32 @@ ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1008
 REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "3650"))
 
 
-#
-# Password hashing — Phase 1.5 of the auth security roadmap.
-#
-# Defaults: Argon2id for all NEW hashes. Verifies legacy bcrypt hashes
-# (so existing accounts keep working) and silently re-hashes them to
-# Argon2id on the next successful login via `verify_and_maybe_rehash`.
-#
-# Argon2id parameters chosen to be GPU-resistant while staying under
-# ~250ms on a typical web-tier CPU:
-#   • time_cost=3       — three iterations
-#   • memory_cost=65536 — 64 MB working set per hash (kills GPU farms)
-#   • parallelism=4     — saturates a small box; bigger doesn't help
-#
-# Phase 2 (full OPAQUE PAKE) is tracked separately under
-# routers/auth_opaque.py — once that lands, this hashing path becomes
-# the legacy verify-only fallback.
-#
-pwd_context = CryptContext(
-    schemes=["argon2", "bcrypt"],
-    default="argon2",
-    deprecated=["bcrypt"],
-    argon2__time_cost=3,
-    argon2__memory_cost=65536,
-    argon2__parallelism=4,
-)
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 def hash_password(password: str) -> str:
-    """Hash a password using the current best scheme (argon2id)."""
+    """
+    Hash password using bcrypt.
+    
+    Args:
+        password: Plain text password
+        
+    Returns:
+        Hashed password
+    """
     return pwd_context.hash(password)
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verify a password against a hash from any supported scheme."""
-    return pwd_context.verify(plain_password, hashed_password)
-
-def verify_and_maybe_rehash(plain_password: str, hashed_password: str) -> tuple[bool, str | None]:
-    """Verify a password and return a fresh argon2id hash if the input
-    hash is legacy bcrypt.
-
-    Caller is expected to persist the returned hash on success — that's
-    the silent migration path. Returns ``(verified, new_hash_or_None)``.
-
-    Use this in the login handler:
-
-        ok, fresh = verify_and_maybe_rehash(req.password, user.password_hash)
-        if not ok:
-            raise HTTPException(401)
-        if fresh is not None:
-            user.password_hash = fresh
-            db.commit()
     """
-    if not pwd_context.verify(plain_password, hashed_password):
-        return False, None
-    if pwd_context.needs_update(hashed_password):
-        return True, pwd_context.hash(plain_password)
-    return True, None
+    Verify password against hash.
+    
+    Args:
+        plain_password: Plain text password
+        hashed_password: Hashed password from database
+        
+    Returns:
+        True if password matches
+    """
+    return pwd_context.verify(plain_password, hashed_password)
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     """
@@ -386,42 +357,27 @@ def revoke_all_user_tokens(db, user_id: str) -> int:
     db.commit()
     return count
 
-def decode_token(token: str, expected_type: Optional[str] = "access") -> Optional[dict]:
+def decode_token(token: str) -> Optional[dict]:
     """
     Decode and verify JWT token with claim validation.
-
+    
     Args:
         token: JWT token string
-        expected_type: Required value of the "type" claim. Defaults to
-            "access" so any caller authenticating an API request gets
-            access-only enforcement automatically. Pass `None` to skip
-            the type check (e.g. legacy tooling). Pass an explicit string
-            like "refresh" to require a different type.
-
+        
     Returns:
-        Decoded token data or None if invalid or wrong type.
+        Decoded token data or None if invalid
     """
     try:
         payload = jwt.decode(
-            token,
-            SECRET_KEY,
+            token, 
+            SECRET_KEY, 
             algorithms=[ALGORITHM],
             issuer="hybrid-messenger",
             audience="hybrid-messenger-app"
         )
+        return payload
     except JWTError:
         return None
-
-    # 🛡️ Token-type enforcement
-    # Without this check, a long-lived JWT refresh token issued by the legacy
-    # `create_refresh_token` (10-year expiry) presents as a 10-year access
-    # token — bypassing the 7-day access expiry.
-    if expected_type is not None:
-        token_type = payload.get("type")
-        if token_type != expected_type:
-            return None
-
-    return payload
 
 
 # Optional dependency imports for get_current_user_optional

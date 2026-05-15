@@ -1,15 +1,4 @@
 import SwiftUI
-import AVFoundation
-import CoreMedia
-
-/// Lightweight Identifiable wrapper so `fullScreenCover(item:)` can drive
-/// the video-jump sheet. Shared by PostCard + PostDetailView. Pure value
-/// type — equality on `seconds` so re-presenting at the same offset
-/// doesn't accidentally toggle the sheet.
-struct TimestampJumpToken: Identifiable, Equatable {
-    let seconds: Double
-    var id: Double { seconds }
-}
 
 /// Twitter-style Post Card
 struct PostCard: View {
@@ -22,17 +11,10 @@ struct PostCard: View {
     var onAvatarTap: (() -> Void)? = nil  // NEW: Direct avatar → profile
     
     @State private var isLikeAnimating = false
-    @State private var isRepostAnimating = false
-
+    
     // Optimistic local state for likes
     @State private var localIsLiked: Bool? = nil
     @State private var localLikesCount: Int? = nil
-    // Optimistic local state for reposts
-    @State private var localIsReposted: Bool? = nil
-    @State private var localRepostCount: Int? = nil
-    /// Bumped after every Bookmark toggle so the body re-evaluates
-    /// `feedStore.isBookmarked(...)` (UserDefaults-backed, not @Published).
-    @State private var bookmarkBumper: Int = 0
     
     // Local view count (prevents whole-feed re-render on view record)
     @State private var localViewCount: Int? = nil
@@ -40,44 +22,20 @@ struct PostCard: View {
 
     private var currentIsLiked: Bool { localIsLiked ?? post.isLiked }
     private var currentLikesCount: Int { localLikesCount ?? post.likes }
-    private var currentIsReposted: Bool { localIsReposted ?? post.isReposted }
-    private var currentRepostCount: Int { localRepostCount ?? post.reposts }
     var onHashtagTap: ((String) -> Void)? = nil
-    var onMentionTap: ((String) -> Void)? = nil
     @State private var showReportSheet = false
     @State private var showDeleteConfirmation = false  // Delete alert
     @State private var isDeleting = false  // Deletion in progress
     @State private var showFullScreenMedia = false  // Multi-image slider
-    @State private var selectedMediaIndex = 0  // Index used for full-screen present
-    /// Live index of the inline carousel — drives the page-indicator
-    /// highlight AND lets taps on the "1 / 2 / 3" capsules scroll the
-    /// carousel to that media item. Two-way bound to PeekCarouselView.
-    @State private var carouselIndex = 0
+    @State private var selectedMediaIndex = 0  // Current media index
     @State private var showLinkBrowser = false  // In-app browser for link preview
     @State private var detectedURL: URL? = nil  // Detected URL from post content
     @State private var showBlockConfirm = false  // Block user confirmation
     @State private var showAvatarPreview = false  // Avatar long-press preview
-    /// 🆕 When the viewer taps a `v0:21` chip in the description, this holds
-    /// the seconds offset to jump to. Drives the full-screen video sheet.
-    @State private var videoTimestampJump: Double? = nil
     
     /// Check if current user owns this post
     private var isOwner: Bool {
         post.authorId == currentUserId
-    }
-
-    /// Does this post have at least one video the timestamp chips could
-    /// possibly jump into? Drives whether `v0:21` tokens render as
-    /// tappable Liquid Glass chips or as plain text.
-    private var hasVideoMedia: Bool {
-        post.allMedia.contains(where: { $0.isVideo })
-    }
-
-    /// First video item in the post — the target of every `vM:SS` chip.
-    /// (Multi-video posts pick the earliest one; if you need per-chip
-    /// targeting you'd encode the index in the token, e.g. `v2/0:21`.)
-    private var primaryVideoIndex: Int? {
-        post.allMedia.firstIndex(where: { $0.isVideo })
     }
     
     var body: some View {
@@ -181,22 +139,13 @@ struct PostCard: View {
                     }
                 }
                 
-                // Post content with clickable hashtags, @mentions, and
-                // (when the post has a video) `v0:21`-style jump chips.
+                // Post content with clickable hashtags
                 InteractiveHashtagText(
                     text: post.content,
                     onHashtagTap: { tag in
                         Haptics.light()
                         onHashtagTap?(tag)
-                    },
-                    onMentionTap: { username in
-                        Haptics.light()
-                        onMentionTap?(username)
-                    },
-                    onVideoTimestampTap: hasVideoMedia ? { seconds in
-                        Haptics.selection()
-                        videoTimestampJump = seconds
-                    } : nil
+                    }
                 )
                 .lineLimit(nil)
                 .multilineTextAlignment(.leading)
@@ -238,74 +187,32 @@ struct PostCard: View {
                 // Media (slideshow up to 4 items)
                 let media = post.allMedia
                 if !media.isEmpty {
-                    // Always use peek carousel for consistent styling.
-                    // Bind `carouselIndex` so the indicator below stays in
-                    // sync with manual swipes AND can be driven by tap.
-                    PeekCarouselView(
-                        media: media,
-                        currentIndex: $carouselIndex,
-                        post: post
-                    ) { index in
+                    // Always use peek carousel for consistent styling
+                    PeekCarouselView(media: media) { index in
                         Haptics.light()
                         selectedMediaIndex = index
                         showFullScreenMedia = true
                     }
-                    // Feed media height — bumped from 280 → 420 (~1.5×)
-                    // so photos and videos read as the primary content
-                    // of the post rather than a thumbnail beside it.
-                    .frame(height: 420)
+                    .frame(height: 280)
                     .padding(.top, 8)
-
-                    // Page indicator: 1 2 3 4 — fully interactive.
-                    // Tap a number → carousel animates to that media.
-                    // Active capsule is highlighted (filled + lifted shadow).
+                    
+                    // Page indicator: 1 2 3 4
                     if media.count > 1 {
                         HStack(spacing: 8) {
                             ForEach(0..<media.count, id: \.self) { i in
-                                let isActive = (i == carouselIndex)
-                                Button {
-                                    Haptics.light()
-                                    withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
-                                        carouselIndex = i
-                                    }
-                                } label: {
-                                    Text("\(i + 1)")
-                                        .font(.system(size: 13, weight: .semibold))
-                                        .foregroundColor(isActive ? .white : .white.opacity(0.65))
-                                        .padding(.vertical, 5)
-                                        .padding(.horizontal, 10)
-                                        .background(
-                                            // Active = accent gradient capsule.
-                                            // Inactive = darker translucent capsule.
-                                            Group {
-                                                if isActive {
-                                                    LinearGradient(
-                                                        colors: [.accentColor, .accentColor.opacity(0.75)],
-                                                        startPoint: .topLeading,
-                                                        endPoint: .bottomTrailing
-                                                    )
-                                                } else {
-                                                    Color(.systemGray4).opacity(0.55)
-                                                }
-                                            }
-                                        )
-                                        .clipShape(Capsule())
-                                        .overlay(
-                                            Capsule().strokeBorder(
-                                                isActive ? Color.white.opacity(0.35) : Color.white.opacity(0.10),
-                                                lineWidth: isActive ? 1 : 0.5
-                                            )
-                                        )
-                                        .shadow(color: isActive ? .accentColor.opacity(0.40) : .clear,
-                                                radius: 6, y: 2)
-                                        .scaleEffect(isActive ? 1.08 : 1.0)
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityLabel("Show media \(i + 1) of \(media.count)")
+                                Text("\(i + 1)")
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundColor(.white)
+                                    .padding(.vertical, 5)
+                                    .padding(.horizontal, 10)
+                                    .background(Color(.systemGray4).opacity(0.85))
+                                    .clipShape(Capsule())
+                                    .overlay(
+                                        Capsule().strokeBorder(.white.opacity(0.15), lineWidth: 0.5)
+                                    )
                             }
                         }
                         .padding(.top, 6)
-                        .animation(.easeOut(duration: 0.2), value: carouselIndex)
                     }
                 }
                 
@@ -332,11 +239,6 @@ struct PostCard: View {
                 if let newCount = await feedStore.recordView(postId: post.id) {
                     localViewCount = newCount
                 }
-                // ⚡ PERF: Prefetch comments while the card is visible — eliminates loading delay
-                // when user taps the comment button. Skips if already cached or in-flight.
-                if post.comments > 0 {
-                    feedStore.prefetchComments(for: post.id)
-                }
             } catch {
                 // Task cancelled (user scrolled away) — skip network call
             }
@@ -360,60 +262,19 @@ struct PostCard: View {
         } message: {
             Text("This post will be permanently deleted. This action cannot be undone.")
         }
-        // Full-screen media presentation. Routes by content type:
-        //  • Selected media is a video → FullScreenVideoPlayer (the
-        //    redesigned Twitter-style player with top "..." menu,
-        //    bottom action bar, CC button, share sheet, etc.)
-        //  • Otherwise (image / mixed) → FullScreenMediaSlider, which
-        //    swipe-pages images in the standard photo viewer.
+        // Full-screen media slider with per-media comments
         .fullScreenCover(isPresented: $showFullScreenMedia) {
             // ✅ FIX Bug 7: Clamp index to valid range to prevent crash if
             // allMedia shrinks between tap and presentation (e.g. WebSocket update).
-            let safeIndex = min(selectedMediaIndex, max(0, post.allMedia.count - 1))
-            let selectedItem = post.allMedia.indices.contains(safeIndex)
-                ? post.allMedia[safeIndex]
-                : nil
-            if let item = selectedItem, item.isVideo {
-                FullScreenVideoPlayer(
-                    media: post.allMedia,
-                    startIndex: safeIndex,
-                    startTime: .zero,
-                    chapters: VideoTimestampParser.extract(from: post.content),
-                    post: post
-                )
-            } else {
-                FullScreenMediaSlider(
-                    media: post.allMedia,
-                    startIndex: safeIndex
-                )
-            }
+            FullScreenMediaSlider(
+                media: post.allMedia,
+                startIndex: min(selectedMediaIndex, max(0, post.allMedia.count - 1))
+            )
         }
-        // 🆕 Full-screen video opened via a `v0:21` chip in the description.
-        // Uses the custom-chrome FullScreenVideoPlayer (not the AVKit-based
-        // FullScreenMediaSlider) so we get chapter markers on the scrub bar.
-        .fullScreenCover(item: Binding(
-            get: { videoTimestampJump.map { TimestampJumpToken(seconds: $0) } },
-            set: { videoTimestampJump = $0?.seconds }
-        )) { jump in
-            if let videoIndex = primaryVideoIndex {
-                FullScreenVideoPlayer(
-                    media: post.allMedia,
-                    startIndex: videoIndex,
-                    startTime: CMTime(seconds: jump.seconds, preferredTimescale: 600),
-                    chapters: VideoTimestampParser.extract(from: post.content),
-                    post: post
-                )
-            }
-        }
-        // In-app browser for link preview — SFSafariViewController, not
-        // our custom WKWebView wrapper. Cold-start is ~5x faster because
-        // Safari's content process is OS-pre-warmed, and the user gets
-        // free Reader Mode / share / open-in-Safari without us
-        // maintaining that UI ourselves.
+        // In-app browser for link preview
         .sheet(isPresented: $showLinkBrowser) {
             if let url = detectedURL {
-                SafariSheet(url: url)
-                    .ignoresSafeArea()
+                InAppBrowserSheet(url: url)
             }
         }
         .contextMenu {
@@ -483,13 +344,6 @@ struct PostCard: View {
             }
             .background(ClearBackgroundView())
         }
-        .onChange(of: post.isReposted) { _, _ in
-            localIsReposted = nil
-            localRepostCount = nil
-        }
-        .onChange(of: post.reposts) { _, _ in
-            localRepostCount = nil
-        }
         .onChange(of: post.isLiked) { _, _ in
             localIsLiked = nil
             localLikesCount = nil
@@ -546,11 +400,12 @@ struct PostCard: View {
     // MARK: - Initial Mesh Badge (Liquid Glass)
     @ViewBuilder
     private func initialMeshBadge() -> some View {
-        HStack(spacing: 3) {
-            Image(systemName: "dot.radiowaves.left.and.right")
+        HStack(spacing: 4) {
+            Image(systemName: "antenna.radiowaves.left.and.right")
                 .font(.system(size: 9, weight: .bold))
-            Text("post via mesh")
-                .font(.system(size: 10, weight: .semibold, design: .rounded))
+            Text("INITIALLY POST VIA MESH")
+                .font(.system(size: 8, weight: .heavy, design: .rounded))
+                .kerning(0.3)
         }
         .foregroundStyle(
             LinearGradient(
@@ -581,12 +436,8 @@ struct PostCard: View {
     
     // MARK: - Action Bar (Premium Design)
     private var actionBar: some View {
-        // Reading the bumper here forces SwiftUI to re-evaluate the
-        // bookmark icon after a tap (UserDefaults isn't @Published).
-        let _ = bookmarkBumper
-        let isBookmarked = feedStore.isBookmarked(postId: post.id)
-        return HStack(spacing: 14) {
-            // Comment
+        HStack(spacing: 16) {
+            // Comment - Pill style
             statPill(
                 icon: "bubble.left.fill",
                 count: post.comments,
@@ -596,28 +447,8 @@ struct PostCard: View {
                 Haptics.light()
                 onOpenComments?()
             }
-
-            // Repost — real repost (not forward to chat). Long-press
-            // still opens the forward-to-chat sheet so the existing
-            // workflow is preserved.
-            statPill(
-                icon: "arrow.2.squarepath",
-                count: currentRepostCount,
-                activeColor: .green,
-                isActive: currentIsReposted
-            ) {
-                tapRepost()
-            }
-            .scaleEffect(isRepostAnimating ? 1.15 : 1.0)
-            .simultaneousGesture(
-                LongPressGesture(minimumDuration: 0.4)
-                    .onEnded { _ in
-                        Haptics.selection()
-                        onForward?()
-                    }
-            )
-
-            // Like
+            
+            // Like - Pill style with animation
             statPill(
                 icon: currentIsLiked ? "heart.fill" : "heart",
                 count: currentLikesCount,
@@ -626,7 +457,7 @@ struct PostCard: View {
             ) {
                 withAnimation(.spring(response: 0.25, dampingFraction: 0.6)) {
                     isLikeAnimating = true
-
+                    
                     // Optimistic local UI update
                     let wasLiked = currentIsLiked
                     localIsLiked = !wasLiked
@@ -638,31 +469,23 @@ struct PostCard: View {
                 }
             }
             .scaleEffect(isLikeAnimating ? 1.15 : 1.0)
-
-            // Bookmark — UserDefaults-backed for now (no server endpoint
-            // yet). Yellow when active.
+            
+            // Forward
             Button {
-                Haptics.light()
-                let nowSaved = feedStore.toggleBookmark(postId: post.id)
-                bookmarkBumper &+= 1
-                #if DEBUG
-                print("🔖 [PostCard] Bookmark \(nowSaved ? "added" : "removed") for \(post.serverId.prefix(8))")
-                #endif
+                Haptics.selection()
+                onForward?()
             } label: {
-                Image(systemName: isBookmarked ? "bookmark.fill" : "bookmark")
+                Image(systemName: "arrowshape.turn.up.forward.fill")
                     .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(isBookmarked ? Color.yellow : .secondary)
+                    .foregroundStyle(.secondary)
                     .padding(8)
-                    .background(
-                        Color(isBookmarked ? .yellow : .secondaryLabel)
-                            .opacity(isBookmarked ? 0.12 : 0.08)
-                    )
+                    .background(Color.secondary.opacity(0.08))
                     .clipShape(Circle())
             }
             .buttonStyle(.borderless)
-
+            
             Spacer()
-
+            
             // View count - subtle right-aligned
             HStack(spacing: 4) {
                 Image(systemName: "eye")
@@ -672,35 +495,6 @@ struct PostCard: View {
             }
             .foregroundStyle(.tertiary)
         }
-    }
-
-    // MARK: - Repost handler
-    //
-    // Optimistic flip + FeedStore.toggleRepost (internet path) + mesh
-    // fan-out via MeshRepostService (offline survives reconnect).
-    private func tapRepost() {
-        let wasReposted = currentIsReposted
-        let nowReposted = !wasReposted
-        withAnimation(.spring(response: 0.25, dampingFraction: 0.55)) {
-            isRepostAnimating = true
-            localIsReposted = nowReposted
-            localRepostCount = max(0, currentRepostCount + (wasReposted ? -1 : 1))
-        }
-        Haptics.selection()
-        Task {
-            await feedStore.toggleRepost(postId: post.id)
-            await MainActor.run {
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                    isRepostAnimating = false
-                }
-            }
-        }
-        // Fire-and-forget BLE fan-out + offline retry queue.
-        // TODO(mesh-repost): MeshRepostService is not yet ported to this
-        // codebase — restore the broadcastRepost call here once the
-        // service lands. Until then the repost still works via the
-        // server path; mesh fan-out is a no-op.
-        _ = (post.serverId, post.authorId, nowReposted)
     }
     
     // MARK: - Stat Pill Button
@@ -782,15 +576,8 @@ extension Date {
     }()
     
     var timeAgoString: String {
-        // 🟡 BUG FIX (2026-05-10): clamp negative intervals to 0 so a
-        // backward clock skew (NTP correction, time-zone change while
-        // offline, manual time set) never produces "-12m" / "-3h".
-        // The original `Date().timeIntervalSince(self)` could be
-        // negative for posts that arrived from peers whose clocks
-        // ran ahead of ours, falling into the `< 3600` branch and
-        // rendering negative integers as text.
-        let interval = max(0, Date().timeIntervalSince(self))
-
+        let interval = Date().timeIntervalSince(self)
+        
         if interval < 60 {
             return "now"
         } else if interval < 3600 {
@@ -847,9 +634,7 @@ struct MultiImageCarouselView: View {
                 }
                 .scrollTargetBehavior(.paging)
             }
-            // Legacy carousel height — bumped from 240 → 360 (~1.5×)
-            // to match the larger PeekCarouselView in the active feed.
-            .frame(height: 360)
+            .frame(height: 240)
             
             // Page Indicator (numbered: 1 2 3 4)
             if media.count > 1 {

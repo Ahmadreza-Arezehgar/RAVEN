@@ -23,17 +23,11 @@ enum AppConfig {
     /// Use "localhost" if running on simulator, or your Mac's IP for physical device
     private static let localServerURL = "http://localhost:8000"
     
-    /// Production server URLs.
-    ///
-    /// Single-region deployment as of this revision: 🇧🇪 Belgium only.
-    /// The previous Qatar (me-central1) failover was decommissioned to cut
-    /// cost — when Belgium is unreachable, the iOS client falls through
-    /// to the BLE mesh + mesh-bridge layer for messages and text-only
-    /// posts (see `MessageRouter` and `MeshPostService`). Only operations
-    /// that strictly require the server (account create, full-media post
-    /// upload, friend list refresh) will fail; everything else continues.
+    /// Production server URLs — ordered by priority.
+    /// If the primary server fails, the app automatically switches to the next one.
     static let serverList: [String] = [
-        "https://raven-server-516053629173.europe-west1.run.app",  // 🇧🇪 Belgium
+        "https://raven-server-5iwa2y5n3a-ew.a.run.app",   // 🇧🇪 Belgium (primary — closest to EU)
+        "https://raven-server-5iwa2y5n3a-ww.a.run.app",   // 🇶🇦 Doha (backup)
     ]
     
     /// The API base URL to use based on environment

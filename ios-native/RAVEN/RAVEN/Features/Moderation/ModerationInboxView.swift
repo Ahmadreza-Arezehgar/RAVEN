@@ -106,7 +106,7 @@ struct ModerationInboxView: View {
                             .background(.ultraThinMaterial)
                             .clipShape(RoundedRectangle(cornerRadius: 12))
                             .overlay(
-                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                RoundedRectangle(cornerRadius: 12)
                                     .stroke(.separator, lineWidth: 0.5)
                             )
                     }
@@ -269,7 +269,7 @@ struct DecisionCard: View {
         .background(.ultraThinMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 16))
         .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: 16)
                 .stroke(decision.decisionColor.opacity(0.2), lineWidth: 1)
         )
     }

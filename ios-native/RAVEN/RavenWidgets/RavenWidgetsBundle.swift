@@ -3,7 +3,7 @@
 //  RavenWidgets
 //
 //  Created by AHMD on 22/2/26.
-//x 
+//
 
 import WidgetKit
 import SwiftUI
@@ -12,9 +12,7 @@ import SwiftUI
 struct RavenWidgetsBundle: WidgetBundle {
     var body: some Widget {
         RavenWidgets()
-        if #available(iOS 18.0, *) {
-            RavenWidgetsControl()
-        }
+        RavenWidgetsControl()
         RavenWidgetsLiveActivity()
         AudioRoomLiveActivity()
     }

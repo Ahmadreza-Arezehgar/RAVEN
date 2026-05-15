@@ -38,16 +38,7 @@ struct FindFriendsView: View {
                 await contactsService.syncWithServer()
             }
         }
-        // BUG FIX (2026-05-10): replaced `.constant(...)` with a real
-        // two-way binding. `.constant` only re-evaluates on body
-        // recompute, so SwiftUI could see `isPresented=true` again on
-        // the next pass after the OK button niled errorMessage,
-        // flickering the alert open/closed/open. The custom Binding
-        // forwards the dismiss directly into the source-of-truth.
-        .alert("Error", isPresented: Binding(
-            get: { errorMessage != nil },
-            set: { if !$0 { errorMessage = nil } }
-        )) {
+        .alert("Error", isPresented: .constant(errorMessage != nil)) {
             Button("OK") { errorMessage = nil }
         } message: {
             Text(errorMessage ?? "")

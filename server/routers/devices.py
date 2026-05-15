@@ -11,7 +11,6 @@ from sqlalchemy import and_, or_
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
-import base64
 import uuid
 
 from database import get_db
@@ -19,50 +18,6 @@ from models import Device, User, FriendRequest
 from routers.users import get_current_user
 
 router = APIRouter(prefix="/api/devices", tags=["devices"])
-
-
-# ──────────────────────────────────────────────────────────────────────────
-# Public-key validation
-#
-# Without this, a client could store a 5MB blob in the `public_key` column.
-# Worse, a bridge-signature verifier later in the request lifecycle would
-# crash trying to load the key as Ed25519. Validate at the trust boundary.
-# ──────────────────────────────────────────────────────────────────────────
-
-# Ed25519 public keys are exactly 32 raw bytes → 44 chars base64 (incl. '=').
-# Allow a small slack (40–48) to tolerate slightly different encodings.
-_PUBKEY_MIN_B64 = 40
-_PUBKEY_MAX_B64 = 64
-_PUBKEY_RAW_LEN = 32
-
-
-def validate_public_key_b64(value: Optional[str], *, field_name: str = "public_key") -> Optional[str]:
-    """Validate a base64-encoded Ed25519/X25519 public key from a client.
-
-    Returns the value unchanged on success; raises 400 on any failure.
-    Pass `None`-tolerant — if the field is genuinely optional the caller
-    can pass None and we skip validation.
-    """
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise HTTPException(status_code=400, detail=f"{field_name} must be a string")
-    length = len(value)
-    if length < _PUBKEY_MIN_B64 or length > _PUBKEY_MAX_B64:
-        raise HTTPException(
-            status_code=400,
-            detail=f"{field_name} length out of range (got {length}, expected {_PUBKEY_MIN_B64}-{_PUBKEY_MAX_B64} base64 chars)",
-        )
-    try:
-        raw = base64.b64decode(value, validate=True)
-    except Exception:
-        raise HTTPException(status_code=400, detail=f"{field_name} is not valid base64")
-    if len(raw) != _PUBKEY_RAW_LEN:
-        raise HTTPException(
-            status_code=400,
-            detail=f"{field_name} decodes to {len(raw)} bytes; Curve25519 keys are exactly {_PUBKEY_RAW_LEN}",
-        )
-    return value
 
 
 # ==================== SCHEMAS ====================
@@ -111,16 +66,6 @@ async def register_device(
     for this user, updates last_seen_at. If registered for different user,
     returns error (key reuse attempt).
     """
-    # 🔐 Validate the supplied public key BEFORE any DB work — prevents
-    # storing 5MB blobs and prevents downstream crypto verifiers from
-    # exploding at request time.
-    validate_public_key_b64(request.public_key, field_name="public_key")
-
-    # Cap fingerprint length too — it's just a hex hash of the pubkey,
-    # 64 chars for SHA-256, but be generous.
-    if not request.device_fingerprint or len(request.device_fingerprint) > 128:
-        raise HTTPException(status_code=400, detail="Invalid device_fingerprint length")
-
     # Check if fingerprint already exists
     existing = db.query(Device).filter(
         Device.fingerprint == request.device_fingerprint

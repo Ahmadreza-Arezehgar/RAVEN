@@ -25,7 +25,7 @@ actor FriendDeviceRepository {
         guard !isCacheLoaded else { return }
         do {
             let rows = try await db.query("SELECT * FROM friend_devices")
-            for row in rows {
+            for row in rows ?? [] {
                 if let device = parseDevice(row) {
                     memoryCache[device.fingerprint] = device
                 }
@@ -41,23 +41,12 @@ actor FriendDeviceRepository {
     // MARK: - Table Creation
     
     func createTableIfNeeded() async throws {
-        // 🔐 BUG FIX (2026-05-10): include `agreement_public_key`
-        // directly in the fresh-install schema. Previously this column
-        // was added only by Migration 16 in DatabaseService — but
-        // migrations run BEFORE this method on first launch, so the
-        // ALTER TABLE silently no-op'd (table didn't exist yet) and
-        // the recreate path here never re-added the column. Result:
-        // ECDH agreement public key permanently absent → E2EE
-        // negotiation broken on every fresh install. Adding the
-        // column here fixes the fresh-install path; existing
-        // installs are still patched by Migration 16.
         let schema = """
             CREATE TABLE IF NOT EXISTS friend_devices (
                 id TEXT PRIMARY KEY,
                 friend_user_id TEXT NOT NULL,
                 fingerprint TEXT NOT NULL UNIQUE,
                 public_key BLOB NOT NULL,
-                agreement_public_key BLOB,
                 trust_state TEXT DEFAULT 'pending',
                 verified_at REAL,
                 added_at REAL NOT NULL,
@@ -110,15 +99,6 @@ actor FriendDeviceRepository {
     func getTrustedDevices(forUser friendUserId: String) async -> [FriendDevice] {
         await loadCacheIfNeeded()
         return memoryCache.values.filter { $0.friendUserId == friendUserId && $0.trustState == .trusted }
-    }
-
-    /// Get any device record for a friend regardless of trust state.
-    /// Used by the TOFU code path so it can short-circuit when a
-    /// `.unverified` row already exists, instead of churning the DB
-    /// with a fresh row per incoming message. (RE-AUDIT FIX 2026-05-10).
-    func getAnyDevice(forUser friendUserId: String, fingerprint: String) async -> FriendDevice? {
-        await loadCacheIfNeeded()
-        return memoryCache.values.first { $0.friendUserId == friendUserId && $0.fingerprint == fingerprint }
     }
     
     /// Get all trusted devices (any friend) (from cache)

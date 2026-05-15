@@ -207,7 +207,7 @@ struct PresentationCard: View {
             VStack(alignment: .leading, spacing: 8) {
                 // Preview
                 ZStack {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    RoundedRectangle(cornerRadius: 12)
                         .fill(.ultraThinMaterial)
                     
                     if asset.type == .image {
@@ -249,7 +249,7 @@ struct PresentationCard: View {
                 .foregroundStyle(.blue)
             }
             .padding(12)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
         }
         .buttonStyle(.plain)
         .fullScreenCover(isPresented: $showFullScreen) {

@@ -52,11 +52,6 @@ struct HashtagView: View {
             currentUserId = await KeychainService.shared.getUserId() ?? ""
             await loadHashtagData()
         }
-        .alert("Could not update follow", isPresented: $showFollowError) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text("Please check your connection and try again.")
-        }
     }
     
     // MARK: - Hashtag Header
@@ -183,48 +178,40 @@ struct HashtagView: View {
     }
     
     // MARK: - Follow/Unfollow
-    @State private var showFollowError = false
-    
     private func toggleFollow() async {
         Haptics.light()
         
         let safeTag = hashtag.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? hashtag
         
-        // Optimistic UI update — toggle immediately for snappy UX
-        let wasFollowing = isFollowing
-        isFollowing.toggle()
-        
         do {
             struct FollowRequest: Encodable {
                 let hashtag: String
             }
-            // Backend returns {"status": "...", "hashtag": "..."} — decode flexibly
             struct FollowResponse: Decodable {
                 let status: String
             }
             
-            if wasFollowing {
+            if isFollowing {
                 // Unfollow
                 let _: FollowResponse = try await networkService.delete(
                     path: "/api/hashtags/follow/\(safeTag)"
                 )
+                isFollowing = false
             } else {
                 // Follow
                 let _: FollowResponse = try await networkService.post(
                     path: "/api/hashtags/follow",
                     body: FollowRequest(hashtag: hashtag)
                 )
+                isFollowing = true
             }
             
             Haptics.success()
         } catch {
-            // Rollback optimistic update on failure
-            isFollowing = wasFollowing
             #if DEBUG
             print("❌ Failed to toggle follow: \(error)")
             #endif
             Haptics.error()
-            showFollowError = true
         }
     }
 }

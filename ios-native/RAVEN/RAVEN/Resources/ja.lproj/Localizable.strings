@@ -76,7 +76,6 @@
 // Account
 "edit_profile" = "プロフィール編集";
 "friend_requests" = "友達リクエスト";
-"follow_requests" = "フォローリクエスト";
 "joined" = "参加日";
 "add_bio" = "自己紹介を追加";
 

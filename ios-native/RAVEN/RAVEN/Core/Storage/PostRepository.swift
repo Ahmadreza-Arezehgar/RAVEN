@@ -35,13 +35,7 @@ struct LocalPostDraft {
     var voiceDuration: Int?
     var waveform: [Float]?
     
-    /// Build a `Post` from this draft. `isVerified` is passed in by the
-    /// caller because `AuthService.shared.currentUser` is now
-    /// `@MainActor`-isolated (2026-05-10) — keeping `asPost()` itself
-    /// non-isolated lets the existing call sites on `FeedStore` (which
-    /// is already main-bound) snapshot the value once and hand it down,
-    /// without forcing every caller of this struct method to `await`.
-    func asPost(isVerified: Bool = false) -> Post {
+    func asPost() -> Post {
         // Create media array from imageUrls (or fallback to single imageUrl)
         let mediaItems: [PostMedia]?
         if let urls = imageUrls, !urls.isEmpty {
@@ -80,7 +74,7 @@ struct LocalPostDraft {
             source: visibility == "local" ? .nearby : nil
         )
         post.initialSend = initialSend ?? (status == .posted ? "internet" : nil)
-        post.isVerified = isVerified
+        post.isVerified = AuthService.shared.currentUser?.isVerified ?? false
         post.isPremium = PremiumLimits.isPremium
         post.media = mediaItems
         post.voiceUrl = voiceUrl
@@ -166,49 +160,14 @@ actor PostRepository {
             }
         }
         
-        // BUG FIX (2026-05-10): switched from `INSERT OR REPLACE` to
-        // `INSERT … ON CONFLICT(id) DO UPDATE SET …` for the columns
-        // we know are server-owned. The previous `OR REPLACE` form
-        // performed an internal `DELETE+INSERT` cycle, wiping
-        // mesh-only columns (mesh_status, mesh_broadcast_stopped,
-        // latitude, longitude, show_on_raven_shot, vault_lock) every
-        // time a server-feed refresh touched the row — RavenShot map
-        // pins received earlier over BLE silently disappeared after
-        // the next /api/feed poll. Listing only server-owned columns
-        // in DO UPDATE SET preserves mesh metadata across refreshes.
         let sql = """
-            INSERT INTO posts (
+            INSERT OR REPLACE INTO posts (
                 id, client_post_id, author_id, author_username, author_avatar,
                 content, image_url, visibility, distance_m,
                 likes, comments, reposts, view_count, is_local,
-                is_liked, is_reposted, source, status, feed_type, post_type, timestamp, edited_at,
+                is_liked, is_reposted, source, status, feed_type, timestamp, edited_at,
                 is_verified, is_premium, initial_send, media_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-                author_id      = excluded.author_id,
-                author_username= excluded.author_username,
-                author_avatar  = excluded.author_avatar,
-                content        = excluded.content,
-                image_url      = excluded.image_url,
-                visibility     = excluded.visibility,
-                distance_m     = excluded.distance_m,
-                likes          = excluded.likes,
-                comments       = excluded.comments,
-                reposts        = excluded.reposts,
-                view_count     = excluded.view_count,
-                is_local       = excluded.is_local,
-                is_liked       = excluded.is_liked,
-                is_reposted    = excluded.is_reposted,
-                source         = excluded.source,
-                status         = excluded.status,
-                feed_type      = excluded.feed_type,
-                post_type      = excluded.post_type,
-                timestamp      = excluded.timestamp,
-                edited_at      = excluded.edited_at,
-                is_verified    = excluded.is_verified,
-                is_premium     = excluded.is_premium,
-                initial_send   = excluded.initial_send,
-                media_json     = excluded.media_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         
         let params: [Any] = [
@@ -231,7 +190,6 @@ actor PostRepository {
             post.source?.rawValue ?? NSNull(),
             PostStatus.posted.rawValue,
             feedType.rawValue,
-            post.postType ?? "text",
             dateFormatter.string(from: post.timestamp),
             post.editedAt.map { dateFormatter.string(from: $0) } ?? NSNull(),
             post.verifiedStatus ? 1 : 0,
@@ -241,26 +199,13 @@ actor PostRepository {
         ]
         
         try await db.execute(sql, params: params)
-        #if DEBUG
-        if post.postType == "video" || post.allMedia.contains(where: { $0.isVideo }) {
-            print("🎬💾 [PostRepo] UPSERT post_type='\(post.postType ?? "nil")' media_types=\(post.media?.map(\.mediaType) ?? []) id=\(post.id.prefix(8)) mediaJson=\(mediaJson?.prefix(100) ?? "nil")")
-        }
-        #endif
     }
     
     // MARK: - Bulk Upsert (after feed fetch)
     
     func upsertAll(_ posts: [Post], feedType: FeedType) async throws {
-        // ISO8601DateFormatter is not Sendable, so format the dates here
-        // (still inside the actor) and ship plain strings into the
-        // transaction closure.
-        let formatted: [(post: Post, timestamp: String, editedAt: String?)] = posts.map {
-            ($0,
-             dateFormatter.string(from: $0.timestamp),
-             $0.editedAt.map { dateFormatter.string(from: $0) })
-        }
         try await db.executeInTransaction { db in
-            for (post, timestampString, editedAtString) in formatted {
+            for post in posts {
                 // Encode media to JSON for persistence
                 var mediaJson: String? = nil
                 if let media = post.media, !media.isEmpty {
@@ -269,49 +214,15 @@ actor PostRepository {
                     }
                 }
                 
-                // BUG FIX (2026-05-10): same `INSERT OR REPLACE` →
-                // `ON CONFLICT(id) DO UPDATE SET …` migration the
-                // single-row `upsert(_:feedType:)` got. The previous
-                // bulk path was overlooked, so every server-feed
-                // refresh that hit `upsertAll` (the typical /api/feed
-                // poll) re-introduced the bug, wiping mesh-only
-                // columns (mesh_status, mesh_broadcast_stopped,
-                // latitude, longitude, show_on_raven_shot, vault_lock)
-                // and dropping RavenShot map pins received earlier
-                // over BLE.
+                // Inline the upsert SQL within the transaction
                 let sql = """
-                    INSERT INTO posts (
+                    INSERT OR REPLACE INTO posts (
                         id, client_post_id, author_id, author_username, author_avatar,
                         content, image_url, visibility, distance_m,
                         likes, comments, reposts, view_count, is_local,
-                        is_liked, is_reposted, source, status, feed_type, post_type, timestamp, edited_at,
+                        is_liked, is_reposted, source, status, feed_type, timestamp, edited_at,
                         is_verified, is_premium, initial_send, media_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(id) DO UPDATE SET
-                        author_id      = excluded.author_id,
-                        author_username= excluded.author_username,
-                        author_avatar  = excluded.author_avatar,
-                        content        = excluded.content,
-                        image_url      = excluded.image_url,
-                        visibility     = excluded.visibility,
-                        distance_m     = excluded.distance_m,
-                        likes          = excluded.likes,
-                        comments       = excluded.comments,
-                        reposts        = excluded.reposts,
-                        view_count     = excluded.view_count,
-                        is_local       = excluded.is_local,
-                        is_liked       = excluded.is_liked,
-                        is_reposted    = excluded.is_reposted,
-                        source         = excluded.source,
-                        status         = excluded.status,
-                        feed_type      = excluded.feed_type,
-                        post_type      = excluded.post_type,
-                        timestamp      = excluded.timestamp,
-                        edited_at      = excluded.edited_at,
-                        is_verified    = excluded.is_verified,
-                        is_premium     = excluded.is_premium,
-                        initial_send   = excluded.initial_send,
-                        media_json     = excluded.media_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """
                 
                 let params: [Any] = [
@@ -334,9 +245,8 @@ actor PostRepository {
                     post.source?.rawValue ?? NSNull(),
                     PostStatus.posted.rawValue,
                     feedType.rawValue,
-                    post.postType ?? "text",
-                    timestampString,
-                    editedAtString ?? NSNull(),
+                    self.dateFormatter.string(from: post.timestamp),
+                    post.editedAt.map { self.dateFormatter.string(from: $0) } ?? NSNull(),
                     post.verifiedStatus ? 1 : 0,
                     post.premiumStatus ? 1 : 0,
                     post.initialSend ?? NSNull(),
@@ -347,11 +257,7 @@ actor PostRepository {
             }
         }
         #if DEBUG
-        let videoCount = posts.filter { $0.postType == "video" || $0.allMedia.contains(where: { $0.isVideo }) }.count
-        print("💾 Saved \(posts.count) posts to cache (feedType: \(feedType.rawValue), videos: \(videoCount))")
-        for vp in posts where vp.postType == "video" || vp.allMedia.contains(where: { $0.isVideo }) {
-            print("🎬💾 [PostRepo] BULK UPSERT post_type='\(vp.postType ?? "nil")' media_types=\(vp.media?.map(\.mediaType) ?? []) id=\(vp.id.prefix(8))")
-        }
+        print("💾 Saved \(posts.count) posts to cache (feedType: \(feedType.rawValue))")
         #endif
     }
     
@@ -363,13 +269,12 @@ actor PostRepository {
                 id, client_post_id, author_id, author_username, author_avatar,
                 content, image_url, visibility, distance_m,
                 likes, comments, reposts, view_count, is_local,
-                is_liked, is_reposted, source, status, feed_type, post_type, timestamp,
+                is_liked, is_reposted, source, status, feed_type, timestamp,
                 mesh_status, mesh_broadcast_stopped,
-                is_verified, is_premium, initial_send,
-                latitude, longitude, show_on_raven_shot
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                is_verified, is_premium, initial_send
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
-
+        
         let params: [Any] = [
             post.id,
             post.id,  // client_post_id = id for mesh posts
@@ -390,39 +295,18 @@ actor PostRepository {
             post.source?.rawValue ?? "nearby",
             PostStatus.posted.rawValue,
             FeedType.local.rawValue,
-            post.postType ?? "text",
             dateFormatter.string(from: post.timestamp),
             meshStatus.rawValue,
             0,  // mesh_broadcast_stopped = false initially
             post.verifiedStatus ? 1 : 0,
             post.premiumStatus ? 1 : 0,
-            post.initialSend ?? "mesh",
-            post.latitude ?? NSNull(),
-            post.longitude ?? NSNull(),
-            (post.showOnRavenShot ?? false) ? 1 : 0,
+            post.initialSend ?? "mesh"
         ]
-
+        
         try await db.execute(sql, params: params)
         #if DEBUG
         print("📡 Saved mesh post: \(post.id.prefix(8))...")
         #endif
-    }
-
-    /// Mesh-only RavenShot reader: returns posts received via BLE that
-    /// opted-in to the social map AND carry coordinates. Used by
-    /// `RavenShotStore` so the map populates even with no internet.
-    func getMeshPostsForRavenShot(limit: Int = 100) async throws -> [Post] {
-        let sql = """
-            SELECT * FROM posts
-            WHERE show_on_raven_shot = 1
-              AND latitude IS NOT NULL
-              AND longitude IS NOT NULL
-              AND mesh_status IS NOT NULL
-            ORDER BY timestamp DESC
-            LIMIT ?
-        """
-        let rows = try await db.query(sql, params: [limit])
-        return rows.compactMap { parsePost(from: $0) }
     }
     
     // MARK: - Update Status (after upload success/failure)
@@ -456,21 +340,6 @@ actor PostRepository {
         """
         
         let rows = try await db.query(sql, params: [feedType.rawValue])
-        return rows.compactMap { parsePost(from: $0) }
-    }
-    
-    // MARK: - Get Recent Posts (fast shallow query for cache warming)
-    
-    /// Fast shallow query — only fetches top N posts for instant cache warm on cold start.
-    /// Lighter than getAllPosts (which fetches 100) — designed to fill ~3 screens immediately.
-    func getRecentPosts(feedType: FeedType, limit: Int = 30) async throws -> [Post] {
-        let sql = """
-            SELECT * FROM posts 
-            WHERE feed_type = ? AND status != 'failed'
-            ORDER BY timestamp DESC
-            LIMIT ?
-        """
-        let rows = try await db.query(sql, params: [feedType.rawValue, limit])
         return rows.compactMap { parsePost(from: $0) }
     }
     
@@ -545,14 +414,7 @@ actor PostRepository {
         
         var media: [PostMedia]? = nil
         if let mediaJsonStr = row["media_json"] as? String, let data = mediaJsonStr.data(using: .utf8) {
-            do {
-                media = try JSONDecoder().decode([PostMedia].self, from: data)
-            } catch {
-                #if DEBUG
-                print("⚠️🎬 [PostRepo] media_json DECODE FAILED for id=\(id.prefix(8)): \(error)")
-                print("⚠️🎬 [PostRepo] raw media_json: \(mediaJsonStr.prefix(200))")
-                #endif
-            }
+            media = try? JSONDecoder().decode([PostMedia].self, from: data)
         }
         
         var post = Post(
@@ -581,34 +443,6 @@ actor PostRepository {
         )
         post.initialSend = row["initial_send"] as? String
         post.media = media
-        
-        // 🛡️ Defense-in-depth: If media_json shows video content but post_type
-        // was NULL/text (legacy data before Migration 22), auto-correct at read time.
-        let dbPostType = row["post_type"] as? String
-        if (dbPostType == nil || dbPostType == "text"),
-           media?.contains(where: { $0.isVideo }) == true {
-            post = Post(
-                id: post.id, authorId: post.authorId, authorUsername: post.authorUsername,
-                authorAvatar: post.authorAvatar, content: post.content, imageUrl: post.imageUrl,
-                timestamp: post.timestamp, editedAt: post.editedAt, likes: post.likes,
-                comments: post.comments, reposts: post.reposts, viewCount: post.viewCount,
-                isLocal: post.isLocal, isLiked: post.isLiked, isReposted: post.isReposted,
-                visibility: post.visibility, distanceM: post.distanceM,
-                postType: "video",  // ← auto-corrected
-                roomId: post.roomId, source: post.source,
-                isVerified: post.isVerified, isPremium: post.isPremium
-            )
-            post.initialSend = row["initial_send"] as? String
-            post.media = media
-            #if DEBUG
-            print("🎬🛡️ [PostRepo] AUTO-CORRECTED post_type NULL→'video' for id=\(id.prefix(8))")
-            #endif
-        }
-        #if DEBUG
-        if dbPostType == "video" || media?.contains(where: { $0.isVideo }) == true {
-            print("🎬📖 [PostRepo] PARSE post_type='\(dbPostType ?? "NULL")' resolved='\(post.postType ?? "nil")' media_types=\(media?.map(\.mediaType) ?? []) id=\(id.prefix(8))")
-        }
-        #endif
         return post
     }
 }

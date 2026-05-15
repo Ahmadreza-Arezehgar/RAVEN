@@ -79,7 +79,7 @@ struct RoomListView: View {
                                 .font(.caption.bold())
                             }
                             .padding(12)
-                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
                         }
                         
                         if displayedRooms.isEmpty && !roomService.isLoading && fetchError == nil {
@@ -157,7 +157,7 @@ struct RoomListView: View {
         fetchError = nil
         do {
             try await roomService.fetchLiveRooms()
-            _ = try await roomService.fetchFriendsRooms()
+            try await roomService.fetchFriendsRooms()
         } catch {
             fetchError = "Couldn't load rooms. Pull to retry."
             #if DEBUG
@@ -375,10 +375,10 @@ struct GlassRoomCard: View {
                 }
                 
                 // Glass background
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                RoundedRectangle(cornerRadius: 22)
                     .fill(.ultraThinMaterial)
                     .overlay(
-                        RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        RoundedRectangle(cornerRadius: 22)
                             .strokeBorder(
                                 LinearGradient(
                                     colors: [

@@ -170,8 +170,6 @@ class APNsService:
         payload_json: str,
         priority: int = 10,
         push_type: str = "alert",
-        expiration: int = 3600,
-        collapse_id: Optional[str] = None,
     ) -> tuple:
         """
         Send a push via curl HTTP/2 to APNs.
@@ -193,22 +191,12 @@ class APNsService:
             '-H', f'apns-topic: {self.bundle_id}',
             '-H', f'apns-priority: {priority}',
             '-H', f'apns-push-type: {push_type}',
-            '-H', f'apns-expiration: {expiration}',
             '-H', 'content-type: application/json',
-        ]
-        # apns-collapse-id is APNs's native dedup mechanism — when
-        # set, an undelivered alert with the same id is replaced by
-        # this one (max 64 bytes per Apple's spec). Used so retried
-        # message pushes don't stack up in Notification Center.
-        if collapse_id:
-            collapse_truncated = collapse_id[:64]
-            curl_cmd.extend(['-H', f'apns-collapse-id: {collapse_truncated}'])
-        curl_cmd.extend([
             '-d', payload_json,
             '--max-time', '10',
             '--connect-timeout', '5',
             url
-        ])
+        ]
         
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -260,19 +248,12 @@ class APNsService:
         thread_id: Optional[str] = None,
         category: Optional[str] = None,
         mutable_content: bool = False,
-        priority: int = 10,
-        push_environment: Optional[str] = None,
-        collapse_id: Optional[str] = None,
+        priority: int = 10
     ) -> bool:
         """
         Send a push notification to an iOS device via APNs HTTP/2 API.
         Uses curl subprocess for reliable HTTP/2.
         Automatically retries with opposite environment on BadEnvironmentKeyInToken.
-        
-        Args:
-            push_environment: Optional. "sandbox" or "production". If provided,
-                sends directly to that environment (no fallback). If None, uses
-                the server's configured default and retries the opposite on error.
         """
         if not self.is_configured:
             logger.warning("APNs not configured - skipping push")
@@ -296,12 +277,6 @@ class APNsService:
         logger.info(f"📤 [Push] title=\"{title}\" body=\"{body[:50]}\" type={notif_type} token={device_token[:16]}...")
         
         # Build APNs payload
-        # ⚠️ IMPORTANT: Do NOT include content-available:1 in alert pushes.
-        # Combining content-available with apns-push-type:alert causes
-        # undefined behavior per Apple docs — APNs may silently drop the
-        # notification, which is the root cause of intermittent lock screen
-        # failures. content-available is only used in send_bridge_wake_push
-        # (which correctly uses apns-push-type:background + priority:5).
         aps_payload: Dict[str, Any] = {
             'alert': {
                 'title': title,
@@ -325,28 +300,23 @@ class APNsService:
         
         payload_json = json.dumps(payload)
         
-        # Determine which environment to try first.
-        # If push_environment is explicitly set per-user, use that directly.
-        # Otherwise fall back to the server's configured default.
-        if push_environment == "sandbox":
-            use_sandbox_first = True
-        elif push_environment == "production":
-            use_sandbox_first = False
-        else:
-            use_sandbox_first = self.use_sandbox
+        # Try configured environment first, then fallback to alternate
+        environments = [
+            (self.use_sandbox, "SANDBOX" if self.use_sandbox else "PRODUCTION"),
+        ]
         
         try:
-            # First attempt
-            host = self.sandbox_host if use_sandbox_first else self.production_host
-            env_label = "SANDBOX" if use_sandbox_first else "PRODUCTION"
+            # First attempt with configured environment
+            host = self.sandbox_host if self.use_sandbox else self.production_host
+            env_label = environments[0][1]
             url = f"{host}/3/device/{device_token}"
             
             logger.info(f"🚀 Sending push via curl to {device_token[:16]}... [{env_label}]")
             
             status_code, response_body, error = await self._curl_send(
-                url, token, payload_json, priority, collapse_id=collapse_id
+                url, token, payload_json, priority
             )
-
+            
             if error:
                 logger.error(f"❌ curl error [{env_label}]: {error}")
                 return False
@@ -364,13 +334,9 @@ class APNsService:
             except Exception:
                 pass
             
-            # If environment mismatch, retry with opposite environment.
-            # ⚠️ CRITICAL: Do NOT mutate self.use_sandbox here!
-            # The singleton is shared across ALL concurrent requests.
-            # Flipping it causes production tokens to fail after a sandbox
-            # token succeeds (or vice versa). Each retry is per-token only.
-            if reason == 'BadEnvironmentKeyInToken':
-                alt_sandbox = not use_sandbox_first
+            # If environment mismatch, retry with opposite environment
+            if reason in ('BadEnvironmentKeyInToken', 'BadDeviceToken'):
+                alt_sandbox = not self.use_sandbox
                 alt_host = self.sandbox_host if alt_sandbox else self.production_host
                 alt_label = "SANDBOX" if alt_sandbox else "PRODUCTION"
                 alt_url = f"{alt_host}/3/device/{device_token}"
@@ -378,7 +344,7 @@ class APNsService:
                 logger.warning(f"🔄 Retrying push with {alt_label} (got {reason} from {env_label})")
                 
                 status_code2, response_body2, error2 = await self._curl_send(
-                    alt_url, token, payload_json, priority, collapse_id=collapse_id
+                    alt_url, token, payload_json, priority
                 )
                 
                 if error2:
@@ -387,6 +353,9 @@ class APNsService:
                 
                 if status_code2 == 200:
                     logger.info(f"📱 Push sent [{alt_label}] type={notif_type} to {device_token[:16]}... (fallback worked!)")
+                    # Update preference for future sends
+                    self.use_sandbox = alt_sandbox
+                    logger.info(f"🔧 Switched APNs environment to {alt_label} for future pushes")
                     return True
                 else:
                     reason2 = "Unknown"
@@ -397,23 +366,12 @@ class APNsService:
                     except Exception:
                         pass
                     logger.error(f"❌ APNs error [{alt_label}] ({status_code2}): {reason2}")
-                    
-                    # If both environments reject the token, it's truly invalid
-                    if reason2 in ('BadDeviceToken', 'Unregistered'):
-                        logger.warning(f"🧹 Token invalid in both environments: {device_token[:16]}... — cleaning up")
-                        import asyncio
-                        asyncio.ensure_future(self.cleanup_stale_token(device_token))
-                    
                     return False
             
             logger.error(f"❌ APNs error [{env_label}] ({status_code}): {reason} | type={notif_type} token={device_token[:16]}...")
             
             if reason == 'Unregistered':
                 logger.warning(f"🧹 Device unregistered: {device_token[:16]}... — cleaning up stale token")
-                import asyncio
-                asyncio.ensure_future(self.cleanup_stale_token(device_token))
-            elif reason == 'BadDeviceToken':
-                logger.warning(f"🧹 Bad device token: {device_token[:16]}... — cleaning up stale token")
                 import asyncio
                 asyncio.ensure_future(self.cleanup_stale_token(device_token))
                 
@@ -432,19 +390,10 @@ class APNsService:
         room_id: str,
         sender_id: str,
         message_type: str = "text",
-        badge: Optional[int] = None,
-        push_environment: Optional[str] = None,
-        message_id: Optional[str] = None,
-        client_message_id: Optional[str] = None,
+        badge: Optional[int] = None
     ) -> bool:
-        """Send push notification for a new message.
-
-        ``message_id`` / ``client_message_id`` are echoed in the data
-        payload AND used as the APNs collapse id so the iOS client
-        can dedup against a mesh-delivered copy of the same message.
-        Either id works — when both are present, message_id wins.
-        """
-
+        """Send push notification for a new message."""
+        
         # Format notification based on message type
         if message_type == "voice":
             body = "🎤 Voice message"
@@ -455,117 +404,21 @@ class APNsService:
         else:
             # Truncate text preview
             body = message_preview[:100] if len(message_preview) > 100 else message_preview
-
-        data = {
-            'type': 'message',
-            'room_id': room_id,
-            'sender_id': sender_id,
-            'message_type': message_type,
-        }
-        if message_id:
-            data['message_id'] = message_id
-        if client_message_id:
-            data['client_message_id'] = client_message_id
-
-        # Prefer the server message id for the collapse key — same
-        # value the iOS client uses as the local-notification
-        # identifier in `RAVENApp.swift`'s mesh handler. APNs
-        # collapses outgoing alerts that share this id so retransmits
-        # don't pile up either.
-        collapse_id = message_id or client_message_id
-
+        
         return await self.send_push(
             device_token=device_token,
             title=sender_name,
             body=body,
-            data=data,
+            data={
+                'type': 'message',
+                'room_id': room_id,
+                'sender_id': sender_id,
+                'message_type': message_type
+            },
             thread_id=f"chat_{room_id}",
             category='MESSAGE',
             mutable_content=True,
-            badge=badge,
-            push_environment=push_environment,
-            collapse_id=collapse_id,
-        )
-    
-    async def send_group_message_notification(
-        self,
-        device_token: str,
-        sender_name: str,
-        group_name: str,
-        message_preview: str,
-        room_id: str,
-        sender_id: str,
-        message_type: str = "text",
-        badge: Optional[int] = None,
-        push_environment: Optional[str] = None
-    ) -> bool:
-        """Send push notification for a group message.
-        
-        Uses type='group_message' so the iOS client can distinguish
-        group messages from DMs and show the correct thread grouping.
-        """
-        
-        # Format notification based on message type
-        if message_type == "voice":
-            body = "🎤 Voice message"
-        elif message_type == "image":
-            body = "📷 Image"
-        elif message_type == "video":
-            body = "🎬 Video"
-        elif message_type == "video_note":
-            body = "🎥 Video note"
-        elif message_type == "location":
-            body = "📍 Location"
-        elif message_type == "file":
-            body = "📎 File"
-        else:
-            body = message_preview[:100] if len(message_preview) > 100 else message_preview
-        
-        return await self.send_push(
-            device_token=device_token,
-            title=f"{sender_name} in {group_name}",
-            body=body,
-            data={
-                'type': 'group_message',
-                'room_id': room_id,
-                'group_id': room_id,
-                'group_name': group_name,
-                'sender_id': sender_id,
-                'sender_name': sender_name,
-                'message_type': message_type,
-                'preview': body
-            },
-            thread_id=f"group_{room_id}",
-            category='MESSAGE',
-            mutable_content=True,
-            badge=badge,
-            push_environment=push_environment
-        )
-    
-    async def send_added_to_group_notification(
-        self,
-        device_token: str,
-        adder_name: str,
-        group_name: str,
-        group_id: str,
-        badge: Optional[int] = None,
-        push_environment: Optional[str] = None
-    ) -> bool:
-        """Send push notification when a user is added to a group."""
-        return await self.send_push(
-            device_token=device_token,
-            title=f"Added to {group_name}",
-            body=f"{adder_name} added you to {group_name}",
-            data={
-                'type': 'added_to_group',
-                'group_id': group_id,
-                'room_id': group_id,
-                'group_name': group_name,
-                'sender_name': adder_name
-            },
-            thread_id=f"group_{group_id}",
-            badge=badge,
-            push_environment=push_environment
+            badge=badge
         )
     
     async def send_bridge_wake_push(
@@ -673,8 +526,7 @@ class APNsService:
         device_token: str,
         liker_name: str,
         post_id: str,
-        badge: Optional[int] = None,
-        push_environment: Optional[str] = None
+        badge: Optional[int] = None
     ) -> bool:
         """Send push notification for a post like."""
         return await self.send_push(
@@ -687,8 +539,7 @@ class APNsService:
             },
             thread_id=f"likes_{post_id}",
             category='LIKE',
-            badge=badge,
-            push_environment=push_environment
+            badge=badge
         )
     
     async def send_comment_notification(
@@ -697,8 +548,7 @@ class APNsService:
         commenter_name: str,
         comment_preview: str,
         post_id: str,
-        badge: Optional[int] = None,
-        push_environment: Optional[str] = None
+        badge: Optional[int] = None
     ) -> bool:
         """Send push notification for a new comment."""
         return await self.send_push(
@@ -711,8 +561,7 @@ class APNsService:
             },
             thread_id=f"comments_{post_id}",
             category='COMMENT',
-            badge=badge,
-            push_environment=push_environment
+            badge=badge
         )
     
     async def send_friend_request_notification(
@@ -720,8 +569,7 @@ class APNsService:
         device_token: str,
         requester_name: str,
         requester_id: str,
-        badge: Optional[int] = None,
-        push_environment: Optional[str] = None
+        badge: Optional[int] = None
     ) -> bool:
         """Send push notification for a friend request."""
         return await self.send_push(
@@ -733,8 +581,7 @@ class APNsService:
                 'requester_id': requester_id
             },
             category='FRIEND_REQUEST',
-            badge=badge,
-            push_environment=push_environment
+            badge=badge
         )
     
     async def send_mention_notification(
@@ -747,8 +594,7 @@ class APNsService:
         room_id: str = None,
         post_id: str = None,
         source_id: str = None,
-        group_name: str = None,
-        push_environment: Optional[str] = None
+        group_name: str = None
     ) -> bool:
         """
         Send push notification for an @mention.
@@ -786,8 +632,7 @@ class APNsService:
             data=data,
             thread_id=thread_id,
             category='MENTION',
-            mutable_content=True,
-            push_environment=push_environment
+            mutable_content=True
         )
 
     async def send_new_post_notification(
@@ -796,8 +641,7 @@ class APNsService:
         author_name: str,
         post_preview: str,
         post_id: str,
-        author_id: str,
-        push_environment: Optional[str] = None
+        author_id: str
     ) -> bool:
         """Send push notification when a subscribed user creates a new post."""
         body = post_preview[:100] if len(post_preview) > 100 else post_preview
@@ -811,199 +655,7 @@ class APNsService:
                 'author_id': author_id
             },
             thread_id=f"posts_{author_id}",
-            category='NEW_POST',
-            push_environment=push_environment
-        )
-    
-    async def send_audio_room_notification(
-        self,
-        device_token: str,
-        host_name: str,
-        room_title: str,
-        room_id: str,
-        host_id: str,
-        badge: int = 0,
-        push_environment: Optional[str] = None
-    ) -> bool:
-        """Send push notification when a subscribed user creates an audio room."""
-        return await self.send_push(
-            device_token=device_token,
-            title=f"🎙️ {host_name} started a room",
-            body=room_title[:100],
-            data={
-                'type': 'audio_room',
-                'room_id': room_id,
-                'host_id': host_id
-            },
-            badge=badge,
-            thread_id=f"rooms_{host_id}",
-            category='AUDIO_ROOM',
-            push_environment=push_environment
-        )
-
-    # ────────────────────────────────────────────────────────────────────
-    # Privacy & Safety pushes (added 2026-05-14)
-    # ────────────────────────────────────────────────────────────────────
-
-    async def send_security_alert(
-        self,
-        device_token: str,
-        title: str,
-        body: str,
-        event_id: str,
-        push_environment: Optional[str] = None
-    ) -> bool:
-        """New-device sign-in, password change, biometric disabled, etc."""
-        return await self.send_push(
-            device_token=device_token,
-            title=title,
-            body=body[:200],
-            data={'type': 'security_alert', 'event_id': event_id},
-            thread_id="security",
-            category='SECURITY_ALERT',
-            push_environment=push_environment
-        )
-
-    async def send_live_location_started(
-        self,
-        device_token: str,
-        sharer_name: str,
-        room_id: str,
-        sharer_id: str,
-        push_environment: Optional[str] = None
-    ) -> bool:
-        return await self.send_push(
-            device_token=device_token,
-            title=f"📍 {sharer_name} is sharing live location",
-            body="Tap to open the map.",
-            data={
-                'type': 'live_location_started',
-                'room_id': room_id,
-                'sharer_id': sharer_id
-            },
-            thread_id=f"livelocation_{room_id}",
-            category='LIVE_LOCATION',
-            push_environment=push_environment
-        )
-
-    async def send_live_location_ended(
-        self,
-        device_token: str,
-        sharer_name: str,
-        room_id: str,
-        sharer_id: str,
-        push_environment: Optional[str] = None
-    ) -> bool:
-        return await self.send_push(
-            device_token=device_token,
-            title=f"📍 {sharer_name} stopped sharing live location",
-            body="",
-            data={
-                'type': 'live_location_ended',
-                'room_id': room_id,
-                'sharer_id': sharer_id
-            },
-            thread_id=f"livelocation_{room_id}",
-            category='LIVE_LOCATION',
-            push_environment=push_environment
-        )
-
-    async def send_reaction_notification(
-        self,
-        device_token: str,
-        reactor_name: str,
-        emoji: str,
-        room_id: str,
-        message_id: str,
-        push_environment: Optional[str] = None
-    ) -> bool:
-        return await self.send_push(
-            device_token=device_token,
-            title=f"{emoji} {reactor_name}",
-            body="reacted to your message",
-            data={
-                'type': 'reaction',
-                'room_id': room_id,
-                'message_id': message_id,
-                'emoji': emoji
-            },
-            thread_id=f"reactions_{room_id}",
-            category='REACTION',
-            push_environment=push_environment
-        )
-
-    async def send_contact_shared_notification(
-        self,
-        device_token: str,
-        sharer_name: str,
-        recipient_name: str,
-        room_id: str,
-        sharer_id: str,
-        push_environment: Optional[str] = None
-    ) -> bool:
-        """Notify a user that their profile was shared as a contact card."""
-        return await self.send_push(
-            device_token=device_token,
-            title="👤 Your profile was shared",
-            body=f"{sharer_name} shared your contact with {recipient_name}.",
-            data={
-                'type': 'contact_shared',
-                'room_id': room_id,
-                'sharer_id': sharer_id
-            },
-            thread_id="contact_shared",
-            category='CONTACT_SHARED',
-            push_environment=push_environment
-        )
-
-    async def send_profile_view_notification(
-        self,
-        device_token: str,
-        viewer_name: str,
-        viewer_id: str,
-        push_environment: Optional[str] = None
-    ) -> bool:
-        """Sent only when the viewer is NOT a friend (filter at call site)."""
-        return await self.send_push(
-            device_token=device_token,
-            title="👀 Someone viewed your profile",
-            body=f"{viewer_name} opened your profile.",
-            data={'type': 'profile_view', 'viewer_id': viewer_id},
-            thread_id="profile_views",
-            category='PROFILE_VIEW',
-            push_environment=push_environment
-        )
-
-    async def send_screenshot_notification(
-        self,
-        device_token: str,
-        viewer_name: str,
-        viewer_id: str,
-        scope: str,
-        room_id: Optional[str] = None,
-        push_environment: Optional[str] = None
-    ) -> bool:
-        """`scope` is 'profile' or 'chat'."""
-        if scope == "chat":
-            cat = 'SCREENSHOT_CHAT'
-            body = f"{viewer_name} took a screenshot of your chat."
-            data = {
-                'type': 'screenshot_chat',
-                'viewer_id': viewer_id,
-                'room_id': room_id or ""
-            }
-        else:
-            cat = 'SCREENSHOT_PROFILE'
-            body = f"{viewer_name} took a screenshot of your profile."
-            data = {'type': 'screenshot_profile', 'viewer_id': viewer_id}
-        return await self.send_push(
-            device_token=device_token,
-            title="📸 Screenshot detected",
-            body=body,
-            data=data,
-            thread_id="screenshots",
-            category=cat,
-            push_environment=push_environment
+            category='NEW_POST'
         )
     
     @staticmethod
@@ -1051,61 +703,17 @@ class APNsService:
                 return result
         
         elif notification_type == "mention":
-            # Check granular mention preference
-            if not getattr(user, 'mention_notifications_enabled', True):
-                result["allowed"] = False
-                return result
+            # Mentions always go through if push is enabled (master switch)
+            pass
         
         elif notification_type == "new_post":
-            # Check granular new post preference
-            if not getattr(user, 'new_post_notifications_enabled', True):
-                result["allowed"] = False
-                return result
+            # New post notifications always go through if push is enabled
+            pass
         
-        elif notification_type == "audio_room":
-            # Check granular audio room preference
-            if not getattr(user, 'audio_room_notifications_enabled', True):
-                result["allowed"] = False
-                return result
-
-        # ── New types added 2026-05-14 (Privacy & Safety section) ──
-        elif notification_type == "security_alert":
-            if not getattr(user, 'security_alert_notifications_enabled', True):
-                result["allowed"] = False
-                return result
-
-        elif notification_type in ("live_location_started", "live_location_ended"):
-            if not getattr(user, 'live_location_notifications_enabled', True):
-                result["allowed"] = False
-                return result
-
-        elif notification_type == "reaction":
-            if not getattr(user, 'reaction_notifications_enabled', True):
-                result["allowed"] = False
-                return result
-
-        elif notification_type == "contact_shared":
-            if not getattr(user, 'contact_shared_notifications_enabled', True):
-                result["allowed"] = False
-                return result
-
-        elif notification_type == "profile_view":
-            # Default OFF (opt-in) — see migration. The getattr default
-            # mirrors that, so existing users with no column entry stay
-            # silent until they explicitly opt in.
-            if not getattr(user, 'profile_view_notifications_enabled', False):
-                result["allowed"] = False
-                return result
-
-        elif notification_type in ("screenshot_profile", "screenshot_chat"):
-            if not getattr(user, 'screenshot_notifications_enabled', True):
-                result["allowed"] = False
-                return result
-
         # Sound preference
         if not getattr(user, 'sounds_enabled', True):
             result["sound"] = None
-
+        
         return result
 
 

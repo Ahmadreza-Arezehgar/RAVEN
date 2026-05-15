@@ -104,28 +104,6 @@ actor GroupRepository {
         let sql = "UPDATE groups SET sync_status = ? WHERE id = ?"
         try await db.execute(sql, params: [status.rawValue, groupId])
     }
-
-    /// All groups that were created locally and haven't been confirmed by the
-    /// server yet (offline-first creation path). Used by `syncPendingGroups()`
-    /// on reconnect to retry the create call.
-    func allPending() async throws -> [ChatGroup] {
-        let sql = "SELECT * FROM groups WHERE sync_status = 'pending'"
-        let rows = try await db.query(sql, params: [])
-        return rows.compactMap { parseGroup($0) }
-    }
-
-    /// Re-key a locally-created group to its server-assigned ID after the
-    /// pending create succeeds. Replaces the row at the new ID, deletes the
-    /// old one, and applies the up-to-date server fields (memberCount,
-    /// members, etc.). Caller is also responsible for re-keying messages
-    /// and conversation rows referencing the old ID.
-    func remapId(from oldId: String, to newId: String, applying server: ChatGroup) async throws {
-        // Insert/Update with the new server identity, then drop the local row.
-        try await upsert(server)
-        if oldId != newId {
-            try await db.execute("DELETE FROM groups WHERE id = ?", params: [oldId])
-        }
-    }
     
     // MARK: - Helpers
     

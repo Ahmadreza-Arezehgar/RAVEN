@@ -171,11 +171,6 @@ struct DeviceIdentitySettingsView: View {
         case .pending:
             Image(systemName: "clock.fill")
                 .foregroundStyle(.orange)
-        case .unverified:
-            // 2026-05-10: TOFU first-seen — yellow exclamation so the
-            // user knows they should verify via Safety Number.
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(.yellow)
         case .trusted:
             Image(systemName: "checkmark.shield.fill")
                 .foregroundStyle(.green)

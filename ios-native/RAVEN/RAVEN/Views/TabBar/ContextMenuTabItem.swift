@@ -11,7 +11,6 @@ struct ContextMenuTabItem: UIViewRepresentable {
     let tab: AppTab
     let isSelected: Bool
     let badgeCount: Int
-    var userAvatarURL: URL? = nil
     let actions: [TabAction]
     let onTap: () -> Void
     
@@ -21,7 +20,6 @@ struct ContextMenuTabItem: UIViewRepresentable {
             tab: tab,
             isSelected: isSelected,
             badgeCount: badgeCount,
-            userAvatarURL: userAvatarURL,
             actions: actions,
             onTap: onTap
         )
@@ -33,7 +31,6 @@ struct ContextMenuTabItem: UIViewRepresentable {
             tab: tab,
             isSelected: isSelected,
             badgeCount: badgeCount,
-            userAvatarURL: userAvatarURL,
             actions: actions,
             onTap: onTap
         )
@@ -45,12 +42,10 @@ final class ContextMenuTabUIView: UIView {
     private var tab: AppTab = .messages
     private var isSelected: Bool = false
     private var badgeCount: Int = 0
-    private var userAvatarURL: URL? = nil
     private var actions: [TabAction] = []
     private var onTap: (() -> Void)?
     
     private let iconView = UIImageView()
-    private let avatarImageView = UIImageView()
     private let titleLabel = UILabel()
     private let badgeLabel = UILabel()
     private let stackView = UIStackView()
@@ -74,14 +69,6 @@ final class ContextMenuTabUIView: UIView {
         iconView.contentMode = .scaleAspectFit
         iconView.tintColor = .secondaryLabel
         
-        // Avatar (for account tab with profile photo)
-        avatarImageView.contentMode = .scaleAspectFill
-        avatarImageView.clipsToBounds = true
-        avatarImageView.layer.cornerRadius = 12 // 24/2
-        avatarImageView.isHidden = true
-        avatarImageView.layer.borderWidth = 1.5
-        avatarImageView.layer.borderColor = UIColor.clear.cgColor
-        
         // Title
         titleLabel.font = .systemFont(ofSize: 10, weight: .regular)
         titleLabel.textColor = .secondaryLabel
@@ -101,7 +88,6 @@ final class ContextMenuTabUIView: UIView {
         stackView.alignment = .center
         stackView.spacing = 4
         stackView.addArrangedSubview(iconView)
-        stackView.addArrangedSubview(avatarImageView)
         stackView.addArrangedSubview(titleLabel)
         
         addSubview(stackView)
@@ -118,9 +104,6 @@ final class ContextMenuTabUIView: UIView {
             stackView.centerYAnchor.constraint(equalTo: centerYAnchor),
             iconView.widthAnchor.constraint(equalToConstant: 24),
             iconView.heightAnchor.constraint(equalToConstant: 24),
-            
-            avatarImageView.widthAnchor.constraint(equalToConstant: 24),
-            avatarImageView.heightAnchor.constraint(equalToConstant: 24),
             
             badgeLabel.topAnchor.constraint(equalTo: iconView.topAnchor, constant: -6),
             badgeLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: -8),
@@ -152,34 +135,18 @@ final class ContextMenuTabUIView: UIView {
         }
     }
     
-    func configure(tab: AppTab, isSelected: Bool, badgeCount: Int, userAvatarURL: URL? = nil, actions: [TabAction], onTap: @escaping () -> Void) {
+    func configure(tab: AppTab, isSelected: Bool, badgeCount: Int, actions: [TabAction], onTap: @escaping () -> Void) {
         self.tab = tab
         self.isSelected = isSelected
         self.badgeCount = badgeCount
-        self.userAvatarURL = userAvatarURL
         self.actions = actions
         self.onTap = onTap
         
-        // Check if we should show avatar instead of icon
-        if tab == .account, let avatarURL = userAvatarURL {
-            // Show avatar, hide icon
-            iconView.isHidden = true
-            avatarImageView.isHidden = false
-            avatarImageView.layer.borderColor = isSelected ? UIColor.label.cgColor : UIColor.clear.cgColor
-            
-            // Load avatar image asynchronously
-            loadAvatar(from: avatarURL)
-        } else {
-            // Show icon, hide avatar
-            iconView.isHidden = false
-            avatarImageView.isHidden = true
-            
-            // Update icon
-            let iconName = isSelected ? tab.selectedIcon : tab.icon
-            let config = UIImage.SymbolConfiguration(weight: isSelected ? .semibold : .regular)
-            iconView.image = UIImage(systemName: iconName, withConfiguration: config)
-            iconView.tintColor = isSelected ? .label : .secondaryLabel
-        }
+        // Update icon
+        let iconName = isSelected ? tab.selectedIcon : tab.icon
+        let config = UIImage.SymbolConfiguration(weight: isSelected ? .semibold : .regular)
+        iconView.image = UIImage(systemName: iconName, withConfiguration: config)
+        iconView.tintColor = isSelected ? .label : .secondaryLabel
         
         // Update title
         titleLabel.text = tab.title
@@ -195,32 +162,6 @@ final class ContextMenuTabUIView: UIView {
         } else {
             badgeLabel.isHidden = true
         }
-    }
-    
-    // MARK: - Avatar Loading
-    
-    private static var cachedAvatarURL: URL?
-    private static var cachedAvatarImage: UIImage?
-    
-    private func loadAvatar(from url: URL) {
-        // Use cached image if URL hasn't changed
-        if url == Self.cachedAvatarURL, let cached = Self.cachedAvatarImage {
-            avatarImageView.image = cached
-            return
-        }
-        
-        // Download asynchronously
-        URLSession.shared.dataTask(with: url) { [weak self] data, _, error in
-            guard let data = data, error == nil,
-                  let image = UIImage(data: data) else { return }
-            
-            Self.cachedAvatarURL = url
-            Self.cachedAvatarImage = image
-            
-            DispatchQueue.main.async {
-                self?.avatarImageView.image = image
-            }
-        }.resume()
     }
 }
 

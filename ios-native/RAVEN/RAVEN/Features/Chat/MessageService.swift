@@ -4,7 +4,7 @@ import UIKit
 // MARK: - Message Service (Send with Atomic Attachment)
 @MainActor // BUG FIX [P3]: Added MainActor isolation to prevent Swift 6 concurrency warnings
 @Observable final class MessageService {
-    static let shared = MessageService()
+    nonisolated(unsafe) static let shared = MessageService()
     
     private let messageRepo = MessageRepository.shared
     // BUG FIX [P3]: Removed `private let conversationStore = ConversationStore.shared`
@@ -23,23 +23,25 @@ import UIKit
         forwardedFromChannelId: String? = nil,
         forwardedFromChannelName: String? = nil
     ) async throws {
-        // 1. Generate client_message_id only when the caller didn't supply
-        // one. The previous version unconditionally minted a fresh UUID
-        // here and SHADOWED the parameter — so retried sends from the
-        // OutboxManager arrived at the server with a different
-        // `client_message_id` each attempt, breaking the server-side
-        // dedup keyed on that field. The comment block below ("the
-        // caller-supplied client ID") had been a lie since the shadow
-        // was introduced.
-        let clientMessageId = clientMessageId ?? UUID().uuidString
+        // 1. Generate client_message_id
+        let clientMessageId = UUID().uuidString
         let roomId = isGroup ? recipientId : await makeRoomId(with: recipientId)
         let senderId = await currentUserId()
         let senderName = await currentUsername()
         let deviceId = await deviceIdentifier()
         
-        // 2. Build the local message directly with the caller-supplied client
-        // ID. (Earlier code built a default factory message and then threw it
-        // away, so the factory call was dead.)
+        // 2. Create local message using factory (includes DTN defaults)
+        var message = ChatMessage.newTextMessage(
+            to: recipientId,
+            text: text,
+            senderId: senderId,
+            senderName: senderName,
+            roomId: roomId,
+            originDeviceId: deviceId
+        )
+        
+        // Override ID so we control it
+        // (We can't mutate id directly since it's let, so we use memberwise init approach)
         let finalMessage = ChatMessage(
             id: clientMessageId,
             serverId: nil,
@@ -242,86 +244,8 @@ import UIKit
         )
     }
     
-    // MARK: - Send Contact Card
-
-    /// Share a Raven friend's profile into a chat as a postcard. Mirrors
-    /// `sendPostShare` but the embedded JSON is a `ContactSharePayload`
-    /// and the message type is `.contactCard`. The recipient's client
-    /// renders this with `ContactCardMessageView`.
-    func sendContactShare(friend: GroupFriendInfo, to recipientId: String, isGroup: Bool = false) async throws {
-        let clientMessageId = UUID().uuidString
-        let roomId = isGroup ? recipientId : await makeRoomId(with: recipientId)
-        let senderId = await currentUserId()
-        let senderName = await currentUsername()
-        let deviceId = await deviceIdentifier()
-
-        let payload = ContactSharePayload(from: friend)
-        guard let payloadJson = payload.encode() else {
-            throw NSError(
-                domain: "MessageService",
-                code: 2,
-                userInfo: [NSLocalizedDescriptionKey: "Failed to encode contact-share payload"]
-            )
-        }
-
-        let message = ChatMessage(
-            id: clientMessageId,
-            serverId: nil,
-            roomId: roomId,
-            senderId: senderId,
-            senderName: senderName,
-            recipientId: recipientId,
-            text: payloadJson,
-            timestamp: Date(),
-            type: .contactCard,
-            status: .sending,
-            deliveryAuthority: .server,
-            createdAt: Date(),
-            deliveredAt: nil,
-            readAt: nil,
-            hopCount: 0,
-            routePath: [deviceId],
-            sprayCounter: PremiumLimits.meshSprayBudget,
-            hopLimit: PremiumLimits.meshHopLimit,
-            originDeviceId: deviceId,
-            needsForwarding: false,
-            attachmentUrl: nil,
-            thumbnailUrl: friend.avatarUrl,
-            fileName: nil,
-            mimeType: nil,
-            fileSize: nil,
-            audioDurationSeconds: nil,
-            syncState: .queued,
-            localPath: nil,
-            uploadProgress: nil,
-            lastError: nil,
-            replyToMessageId: nil,
-            replyToTextPreview: nil,
-            replyToSenderName: nil,
-            replyToType: nil,
-            sendMode: nil,
-            scheduledAtUtc: nil
-        )
-
-        try await messageRepo.upsert(message)
-        await ConversationStore.shared.handleIncomingMessage(message)
-        await MainActor.run {
-            NotificationCenter.default.post(
-                name: NSNotification.Name("AttachmentService.messageInserted"),
-                object: nil
-            )
-        }
-
-        try await MessageRouter.shared.send(
-            to: recipientId,
-            text: payloadJson,
-            clientMessageId: clientMessageId,
-            roomId: roomId
-        )
-    }
-
     // MARK: - Helpers
-
+    
     private func makeRoomId(with peerId: String) async -> String {
         let myId = await currentUserId()
         let sorted = [myId, peerId].sorted()
@@ -353,16 +277,13 @@ import UIKit
         case .text:
             // For text messages, use actual text (truncated) - but filter encrypted content
             guard let text = message.text, !text.isEmpty else { return nil }
-
+            
             // Check if text looks encrypted (Fernet, JWT, or long base64)
             if text.hasPrefix("gAAAA") || text.hasPrefix("eyJ") ||
                (text.count > 100 && text.range(of: "^[A-Za-z0-9+/=_-]+$", options: .regularExpression) != nil) {
                 return "Message"
             }
-            // Mistyped contact-card stored as text.
-            if ContactSharePayload.looksLikeContactCard(text) {
-                return "👤 Shared contact"
-            }
+            
             return String(text.prefix(50))
         case .image:
             return "📷 Photo"
@@ -384,10 +305,6 @@ import UIKit
             return "📍 Location"
         case .postShare:
             return "📬 Shared post"
-        case .contactCard:
-            return "👤 Shared contact"
-        case .poll:
-            return "📊 Poll"
         case .system:
             return "📢 Notification"
         }

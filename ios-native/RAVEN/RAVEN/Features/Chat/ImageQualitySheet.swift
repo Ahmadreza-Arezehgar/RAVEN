@@ -109,7 +109,7 @@ struct ImageQualitySheet: View {
                     .foregroundStyle(.tertiary)
             }
             .padding()
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
         }
         .buttonStyle(.plain)
     }

@@ -72,12 +72,24 @@ final class MessageRouter: ObservableObject {
         let canReachServer = net.serverReachable
         let pathType = (net as? NetworkMonitor)?.connectionType.rawValue ?? "Unknown"
         
-        // 🚨 DTN: Protect user-initiated send with a background task. The state
-        // is held in a @MainActor-isolated TaskBox so we don't need an NSLock —
-        // both the expiration callback (which UIKit fires on the main thread)
-        // and our explicit end() calls funnel through the same actor.
-        let box = await MainActor.run { SendBackgroundTaskBox() }
-
+        // 🚨 DTN: Protect user-initiated send with background task
+        final class TaskBox { 
+            var id: UIBackgroundTaskIdentifier = .invalid 
+            var isEnded = false  // 🛡️ Guards against expiration-handler race
+            let lock = NSLock()
+            func end() {
+                lock.lock()
+                defer { lock.unlock() }
+                isEnded = true
+                if id != .invalid {
+                    UIApplication.shared.endBackgroundTask(id)
+                    id = .invalid
+                }
+            }
+        }
+        
+        let box = TaskBox()
+        
         let assignedId = await MainActor.run {
             UIApplication.shared.beginBackgroundTask(withName: "raven.send.\(mid.prefix(8))") {
                 #if DEBUG
@@ -86,10 +98,15 @@ final class MessageRouter: ObservableObject {
                 box.end()
             }
         }
-
-        // 🛡️ If the expiration handler fired before the ID was assigned,
-        // setId() will end it for us instead of leaking the assertion.
-        await MainActor.run { box.setId(assignedId) }
+        
+        box.lock.lock()
+        box.id = assignedId
+        // 🛡️ If expiration handler fired before ID was assigned, end it now
+        if box.isEnded && assignedId != .invalid {
+            UIApplication.shared.endBackgroundTask(assignedId)
+            box.id = .invalid
+        }
+        box.lock.unlock()
         
         // NOTE: Do NOT use defer { box.end() } here — the background task must
         // stay alive until the async server send completes. box.end() is called
@@ -108,12 +125,11 @@ final class MessageRouter: ObservableObject {
             try await outbox.insert(entry)
             
             // Bug #7 fix: Create persistent DeliveryJobs for background processing.
-            // Without this, DeliveryJobRunner never picks up messages sent via
-            // MessageRouter. MessageRouter only handles text messages, which
-            // are always allowed over both server and mesh.
+            // Without this, DeliveryJobRunner never picks up messages sent via MessageRouter.
+            let allowMesh = true  // MessageRouter only handles text messages
             try await DeliveryJobRepository.shared.createJobs(
                 messageId: mid,
-                channels: [.server, .mesh]
+                channels: allowMesh ? [.server, .mesh] : [.server]
             )
         } catch {
             await MainActor.run { box.end() }
@@ -301,17 +317,8 @@ final class MessageRouter: ObservableObject {
         let msgType = MessageType.from(name: typeStr)
         
         let myId = await KeychainService.shared.getUserId() ?? ""
-        // AuthService is now @MainActor (2026-05-10) — hop to main once.
-        let myName = await MainActor.run { AuthService.shared.currentUser?.displayName ?? "" }
+        let myName = AuthService.shared.currentUser?.displayName ?? ""
         let deviceId = await getDeviceId()
-        
-        // Adaptive Spray: use network density-based spray count when enabled
-        let sprayCount: Int
-        if FeatureFlag.isAdaptiveSprayEnabled {
-            sprayCount = await BLEMeshEngine.shared.adaptiveSprayCount()
-        } else {
-            sprayCount = config.sprayCounter
-        }
         
         var envelope = MeshEnvelope(
             clientMessageId: mid,
@@ -322,7 +329,7 @@ final class MessageRouter: ObservableObject {
             type: msgType.index,
             text: payload,
             timestamp: Date().timeIntervalSince1970,
-            sprayCounter: sprayCount,
+            sprayCounter: config.sprayCounter,
             hopCount: 0,
             hopLimit: PremiumLimits.meshHopLimit,
             routePath: [deviceId],
@@ -331,36 +338,17 @@ final class MessageRouter: ObservableObject {
         )
         envelope.ttlSeconds = PremiumLimits.meshTTLSeconds
         
-        #if DEBUG
-        print("📡 [Router] Message \(mid.prefix(8)) created with sprayCount=\(sprayCount) (adaptive=\(FeatureFlag.isAdaptiveSprayEnabled))")
-        #endif
-        
         // Bug 2 fix: Use DB-based group detection instead of string comparison
         let actualRoomId = msgRow?["room_id"] as? String ?? receiverId
         let isGroupMsg = (try? await DatabaseService.shared.exists("SELECT 1 FROM groups WHERE id = ? LIMIT 1", params: [actualRoomId])) ?? false
         envelope.isGroup = isGroupMsg
-
-        // 🔐 Per-group AES-GCM encryption — for group mesh messages we
-        // wrap the payload with the group's symmetric key BEFORE broadcast.
-        // Outsiders who learn the groupId can no longer flood the cluster
-        // with valid envelopes; they'd also need the symmetric key.
-        if isGroupMsg {
-            if let (cipherB64, version) = await GroupKeyService.shared.encrypt(payload, groupId: actualRoomId) {
-                envelope.text = cipherB64
-                envelope.groupKeyVersion = version
-            } else {
-                #if DEBUG
-                print("⚠️ [Router] Could not fetch group key for \(actualRoomId.prefix(8)) — sending plaintext (server still encrypts in transit)")
-                #endif
-            }
-        }
-
+        
         if let replyToId = msgRow?["reply_to_message_id"] as? String {
             envelope.replyToMessageId = replyToId
             envelope.replyToTextPreview = msgRow?["reply_to_text_preview"] as? String
             envelope.replyToSenderName = msgRow?["reply_to_sender_name"] as? String
         }
-
+        
         await mesh.enqueueForBroadcast(envelope)
         try? await outbox.updateTimeline(clientMessageId: mid, field: .firstMeshSend)
     }
@@ -507,40 +495,10 @@ final class MessageRouter: ObservableObject {
     }
     
     // MARK: - Helpers
-
+    
     private func getDeviceId() async -> String {
         await MainActor.run {
             UIDevice.current.identifierForVendor?.uuidString ?? UUID().uuidString
-        }
-    }
-}
-
-/// Holds the UIKit background-task identifier for an in-flight send. UIKit
-/// invokes the expiration handler on the main thread, and our async send
-/// path also hops to MainActor whenever it touches this state, so all
-/// reads/writes are serialised by the actor without needing an NSLock.
-@MainActor
-final class SendBackgroundTaskBox {
-    private var id: UIBackgroundTaskIdentifier = .invalid
-    private(set) var isEnded = false
-
-    func setId(_ newId: UIBackgroundTaskIdentifier) {
-        // If end() already fired (because UIKit expired the task before we
-        // even got the identifier back), end the freshly-issued one too —
-        // otherwise the assertion leaks until the app is suspended.
-        if isEnded, newId != .invalid {
-            UIApplication.shared.endBackgroundTask(newId)
-            id = .invalid
-            return
-        }
-        id = newId
-    }
-
-    func end() {
-        isEnded = true
-        if id != .invalid {
-            UIApplication.shared.endBackgroundTask(id)
-            id = .invalid
         }
     }
 }

@@ -36,11 +36,6 @@ extension Notification.Name {
     /// Posted when a mesh network error occurs
     /// UserInfo contains: "error" (MeshError), optionally "messageId" (String)
     static let meshError = Notification.Name("meshError")
-
-    /// Posted when a v2 binary envelope arrives over BLE. Phase B only —
-    /// chat ingest / ack / STOP handling lands in Phase C.
-    /// UserInfo: `["envelope": RUMProtocolV2.Envelope, "peerDeviceId": String]`
-    static let ravenMeshV2EnvelopeReceived = Notification.Name("RavenMeshV2EnvelopeReceived")
 }
 
 // MARK: - Convenience Poster

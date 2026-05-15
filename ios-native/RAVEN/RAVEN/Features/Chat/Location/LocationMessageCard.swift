@@ -297,17 +297,10 @@ struct LocationMapSheet: View {
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
     
-    /// 🟡 BUG FIX (2026-05-10): hoist the formatter to a `static let`
-    /// so re-allocations stop happening per body recompute. Was a
-    /// measurable allocation per visible card per ticker tick.
-    private static let relativeFormatter: RelativeDateTimeFormatter = {
-        let f = RelativeDateTimeFormatter()
-        f.unitsStyle = .short
-        return f
-    }()
-
     private var timeAgo: String {
-        return "Shared \(Self.relativeFormatter.localizedString(for: payload.timestamp, relativeTo: Date()))"
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return "Shared \(formatter.localizedString(for: payload.timestamp, relativeTo: Date()))"
     }
     
     private var actionButtons: some View {

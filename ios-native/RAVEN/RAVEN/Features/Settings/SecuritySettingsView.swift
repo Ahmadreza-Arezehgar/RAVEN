@@ -117,62 +117,6 @@ struct SecuritySettingsView: View {
                     }
                     .buttonStyle(.plain)
                 }
-
-                // Encryption section — the user-facing home for
-                // ATSAM (Raven's production security protocol) and
-                // its companion add-ons (Vault Mode for OTP text,
-                // online pair flow). ATSAM core is on by default;
-                // the user can toggle it off inside ATSAM settings.
-                SettingsSection(title: "Encryption") {
-                    NavigationLink {
-                        ATSAMSettingsView()
-                    } label: {
-                        SettingsNavigationRow(
-                            title: "ATSAM Protocol",
-                            subtitle: "On by default · tap to manage or turn off",
-                            icon: "atom",
-                            iconColor: .purple
-                        )
-                    }
-                    .buttonStyle(.plain)
-
-                    NavigationLink {
-                        VaultModeSettingsView()
-                    } label: {
-                        SettingsNavigationRow(
-                            title: "Vault Mode",
-                            subtitle: "One-time-pad protection for sensitive text",
-                            icon: "rhombus.fill",
-                            iconColor: .purple
-                        )
-                    }
-                    .buttonStyle(.plain)
-
-                    NavigationLink {
-                        ATSAMOnlinePairView()
-                    } label: {
-                        SettingsNavigationRow(
-                            title: "Pair a device",
-                            subtitle: "60-digit safety number over the internet",
-                            icon: "link.circle.fill",
-                            iconColor: .blue
-                        )
-                    }
-                    .buttonStyle(.plain)
-
-                    #if DEBUG
-                    NavigationLink {
-                        ATSAMPairView()
-                    } label: {
-                        SettingsNavigationRow(
-                            title: "ATSAM pair (developer)",
-                            icon: "link",
-                            iconColor: .gray
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    #endif
-                }
             }
             .padding(16)
         }
@@ -232,10 +176,9 @@ struct SecuritySettingsView: View {
 // MARK: - Settings Navigation Row
 struct SettingsNavigationRow: View {
     let title: String
-    var subtitle: String? = nil
     let icon: String
     let iconColor: Color
-
+    
     var body: some View {
         HStack(spacing: 14) {
             Circle()
@@ -246,21 +189,13 @@ struct SettingsNavigationRow: View {
                         .font(.system(size: 16, weight: .medium))
                         .foregroundStyle(iconColor)
                 )
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundStyle(.primary)
-                if let subtitle, !subtitle.isEmpty {
-                    Text(subtitle)
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
-            }
-
-            Spacer(minLength: 8)
-
+            
+            Text(title)
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(.primary)
+            
+            Spacer()
+            
             Image(systemName: "chevron.right")
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(.secondary.opacity(0.5))
@@ -606,55 +541,38 @@ struct TwoFactorSetupSheet: View {
     @State private var step = 1
     @State private var verificationCode = ""
     @State private var isVerifying = false
-    @State private var isLoadingSetup = true
     @State private var showError = false
     @State private var errorMessage = ""
-    @State private var secret = ""
-    @State private var provisioningUri = ""
-    @State private var recoveryCodes: [String] = []
     
     var body: some View {
         NavigationStack {
             VStack(spacing: 24) {
-                if isLoadingSetup {
-                    ProgressView("Setting up 2FA...")
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if step == 1 {
+                if step == 1 {
                     // Step 1: Show QR Code
                     VStack(spacing: 16) {
                         Text("Scan this QR code with your authenticator app")
                             .font(.headline)
                             .multilineTextAlignment(.center)
                         
-                        // Generate QR code from provisioning URI
-                        if let qrImage = generateQRCode(from: provisioningUri) {
-                            Image(uiImage: qrImage)
-                                .interpolation(.none)
-                                .resizable()
-                                .scaledToFit()
-                                .frame(width: 200, height: 200)
-                                .clipShape(RoundedRectangle(cornerRadius: 16))
-                        } else {
-                            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                .fill(Color(.systemGray5))
-                                .frame(width: 200, height: 200)
-                                .overlay(
-                                    Image(systemName: "qrcode")
-                                        .font(.system(size: 80))
-                                        .foregroundStyle(.secondary)
-                                )
-                        }
+                        // Placeholder QR Code
+                        RoundedRectangle(cornerRadius: 16)
+                            .fill(Color(.systemGray5))
+                            .frame(width: 200, height: 200)
+                            .overlay(
+                                Image(systemName: "qrcode")
+                                    .font(.system(size: 80))
+                                    .foregroundStyle(.secondary)
+                            )
                         
                         Text("Or enter this code manually:")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                         
-                        Text(secret)
+                        Text("XXXX-XXXX-XXXX-XXXX")
                             .font(.system(.body, design: .monospaced))
                             .padding(12)
                             .background(.ultraThinMaterial)
                             .clipShape(RoundedRectangle(cornerRadius: 8))
-                            .textSelection(.enabled)
                         
                         Button {
                             step = 2
@@ -715,48 +633,12 @@ struct TwoFactorSetupSheet: View {
                     Button("Cancel") { dismiss() }
                 }
             }
-            .task {
-                await fetchSetup()
-            }
             .alert("Verification Failed", isPresented: $showError) {
                 Button("OK", role: .cancel) {}
             } message: {
                 Text(errorMessage)
             }
         }
-    }
-    
-    private func fetchSetup() async {
-        isLoadingSetup = true
-        defer { isLoadingSetup = false }
-        
-        do {
-            let response: TwoFactorSetupResponse = try await NetworkService.shared.post(
-                path: "/api/users/2fa/setup",
-                body: EmptyBody()
-            )
-            await MainActor.run {
-                secret = response.secret
-                provisioningUri = response.provisioningUri
-                recoveryCodes = response.recoveryCodes ?? []
-            }
-        } catch {
-            await MainActor.run {
-                errorMessage = "Failed to set up 2FA. Please try again."
-                showError = true
-            }
-        }
-    }
-    
-    private func generateQRCode(from string: String) -> UIImage? {
-        guard let data = string.data(using: .ascii),
-              let filter = CIFilter(name: "CIQRCodeGenerator") else { return nil }
-        filter.setValue(data, forKey: "inputMessage")
-        filter.setValue("M", forKey: "inputCorrectionLevel")
-        guard let ciImage = filter.outputImage else { return nil }
-        let transform = CGAffineTransform(scaleX: 10, y: 10)
-        let scaledImage = ciImage.transformed(by: transform)
-        return UIImage(ciImage: scaledImage)
     }
     
     private func verifyAndEnable() async {
@@ -783,12 +665,6 @@ struct TwoFactorSetupSheet: View {
             }
         }
     }
-}
-
-private struct TwoFactorSetupResponse: Decodable {
-    let secret: String
-    let provisioningUri: String
-    let recoveryCodes: [String]?
 }
 
 private struct TwoFactorVerifyPayload: Encodable {
@@ -1077,11 +953,11 @@ struct SessionSkeletonView: View {
                 .frame(width: 44, height: 44)
             
             VStack(alignment: .leading, spacing: 8) {
-                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                RoundedRectangle(cornerRadius: 4)
                     .fill(Color(.systemGray5))
                     .frame(width: 120, height: 14)
                 
-                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                RoundedRectangle(cornerRadius: 4)
                     .fill(Color(.systemGray6))
                     .frame(width: 80, height: 12)
             }

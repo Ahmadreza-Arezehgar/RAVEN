@@ -29,7 +29,7 @@ struct ConversationSearchSheet: View {
         guard !searchText.isEmpty else { return [] }
         return conversationStore.conversations.filter { conversation in
             conversation.peer.displayName.localizedCaseInsensitiveContains(searchText) ||
-            conversation.peer.username.localizedCaseInsensitiveContains(searchText) ||
+            (conversation.peer.username.localizedCaseInsensitiveContains(searchText) ?? false) ||
             (conversation.lastMessage?.content?.localizedCaseInsensitiveContains(searchText) ?? false)
         }
     }
@@ -65,7 +65,7 @@ struct ConversationSearchSheet: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
                 .padding(.horizontal)
                 .padding(.top, 8)
                 
@@ -203,55 +203,22 @@ struct ConversationSearchSheet: View {
     }
     
     private func searchMessagesInDatabase(query: String) async throws -> [MessageSearchResult] {
-        // ⚡ FTS5-backed search — instant even at 100k+ messages.
-        // We pass a prefix-tokenized form of the user query (`word*`) so
-        // typing "ban" matches "banana" interactively. Each token is
-        // wrapped in double-quotes to escape FTS5 special characters
-        // (e.g. - " * ' :).
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return [] }
-        let ftsQuery = trimmed
-            .split(whereSeparator: { $0.isWhitespace })
-            .map { token -> String in
-                let escaped = token.replacingOccurrences(of: "\"", with: "\"\"")
-                return "\"\(escaped)\"*"
-            }
-            .joined(separator: " ")
-
-        // Try FTS first — fall back to LIKE if the virtual table doesn't
-        // exist yet (e.g. fresh install before migration ran on this DB
-        // file, or older app versions that haven't seen migration 34).
-        let ftsSQL = """
-            SELECT m.client_message_id, m.room_id, m.sender_id, m.sender_name,
+        let searchPattern = "%\(query)%"
+        
+        let sql = """
+            SELECT m.client_message_id, m.room_id, m.sender_id, m.sender_name, 
                    m.text, m.file_name, m.type, m.timestamp,
                    c.peer_first_name, c.peer_last_name, c.peer_username, c.peer_avatar_path
-            FROM messages_fts
-            JOIN messages m ON m.rowid = messages_fts.rowid
+            FROM messages m
             LEFT JOIN conversations c ON m.room_id = c.room_id
-            WHERE messages_fts MATCH ?
+            WHERE m.text LIKE ? 
+               OR m.file_name LIKE ?
+               OR m.sender_name LIKE ?
             ORDER BY m.timestamp DESC
             LIMIT 50
         """
-        let rows: [[String: Any]]
-        do {
-            rows = try await DatabaseService.shared.query(ftsSQL, params: [ftsQuery])
-        } catch {
-            // Fallback: legacy LIKE path — slower but correct.
-            let likeSQL = """
-                SELECT m.client_message_id, m.room_id, m.sender_id, m.sender_name,
-                       m.text, m.file_name, m.type, m.timestamp,
-                       c.peer_first_name, c.peer_last_name, c.peer_username, c.peer_avatar_path
-                FROM messages m
-                LEFT JOIN conversations c ON m.room_id = c.room_id
-                WHERE m.text LIKE ?
-                   OR m.file_name LIKE ?
-                   OR m.sender_name LIKE ?
-                ORDER BY m.timestamp DESC
-                LIMIT 50
-            """
-            let pattern = "%\(trimmed)%"
-            rows = try await DatabaseService.shared.query(likeSQL, params: [pattern, pattern, pattern])
-        }
+        
+        let rows = try await DatabaseService.shared.query(sql, params: [searchPattern, searchPattern, searchPattern])
         
         return rows.compactMap { row -> MessageSearchResult? in
             guard let id = row["client_message_id"] as? String,
@@ -365,13 +332,11 @@ struct MessageSearchRow: View {
         case .voice: return "waveform"
         case .location: return "location"
         case .postShare: return "square.and.arrow.up"
-        case .contactCard: return "person.crop.rectangle.stack.fill"
-        case .poll: return "chart.bar.doc.horizontal"
         case .ephemeralPhoto: return "camera.viewfinder"
         case .system: return "bell"
         }
     }
-
+    
     private var iconColor: Color {
         switch result.type {
         case .text: return .blue
@@ -382,13 +347,11 @@ struct MessageSearchRow: View {
         case .voice: return .purple
         case .location: return .red
         case .postShare: return .cyan
-        case .contactCard: return .orange
-        case .poll: return .orange
         case .ephemeralPhoto: return .pink
         case .system: return .gray
         }
     }
-
+    
     private var typeLabel: String {
         switch result.type {
         case .text: return "Message"
@@ -399,8 +362,6 @@ struct MessageSearchRow: View {
         case .voice: return "Voice message"
         case .location: return "Location"
         case .postShare: return "Shared post"
-        case .contactCard: return "Shared contact"
-        case .poll: return "Poll"
         case .ephemeralPhoto: return "Snap Photo"
         case .system: return "Notification"
         }

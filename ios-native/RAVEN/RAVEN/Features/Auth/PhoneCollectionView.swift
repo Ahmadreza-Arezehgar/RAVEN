@@ -285,7 +285,7 @@ struct PhoneCollectionView: View {
                         .clipShape(Capsule())
                         .overlay(
                             Capsule()
-                                .stroke(Color.primary.opacity(0.12), lineWidth: 1)
+                                .stroke(.white.opacity(0.2), lineWidth: 1)
                         )
                     }
                     .buttonStyle(.plain)
@@ -300,7 +300,7 @@ struct PhoneCollectionView: View {
                         .clipShape(Capsule())
                         .overlay(
                             Capsule()
-                                .stroke(Color.primary.opacity(0.12), lineWidth: 1)
+                                .stroke(.white.opacity(0.2), lineWidth: 1)
                         )
                 }
                 .padding(.horizontal, 24)

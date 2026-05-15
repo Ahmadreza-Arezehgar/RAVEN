@@ -5,12 +5,6 @@ import SwiftUI
 // Helper for empty POST body
 private struct EmptyBody: Encodable {}
 
-private extension String {
-    /// Returns nil instead of an empty string. Lets `??` chain
-    /// gracefully through optional fallbacks.
-    var nonEmpty: String? { isEmpty ? nil : self }
-}
-
 // MARK: - Notification Pipeline
 /// Central service for managing toast notifications with queue and merge logic
 @MainActor
@@ -21,11 +15,6 @@ final class NotificationPipeline: ObservableObject {
     
     // MARK: - Published State
     @Published var currentToast: ToastItem?
-
-    /// Sliding-window dedupe to suppress same-message-multiple-channel
-    /// duplicates (WebSocket + APNS typically arrive within ~50–200ms of
-    /// each other). Key → time-of-first-show.
-    private var recentlyShown: [String: Date] = [:]
     @Published var quickReplyState: QuickReplyState?
     @Published var unreadCount: Int = 0
     
@@ -46,44 +35,10 @@ final class NotificationPipeline: ObservableObject {
     
     /// Enqueue a new toast notification
     func enqueue(_ item: ToastItem) {
-        // 🔴 Bug fix (2026-05-09): if both title and body come in
-        // empty (race between push payload arrival and conversation
-        // metadata resolution, or a malformed mesh frame), the toast
-        // capsule rendered as a nearly-empty box with just the type
-        // dot — looked broken to the user. Sanitize at the boundary
-        // so we ALWAYS show something meaningful instead.
-        var item = item
-        let trimmedTitle = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedBody  = item.body.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmedTitle.isEmpty {
-            item.title = item.senderName?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty
-                ?? defaultTitle(for: item.type)
-        }
-        if trimmedBody.isEmpty {
-            item.body = defaultBody(for: item.type)
-        }
-
         #if DEBUG
         print("🍞🍞 [NotificationPipeline] enqueue called for: \(item.type) - \(item.title)")
         #endif
-
-        // ⚡ DEDUPE: WebSocket and APNS often deliver the same message within
-        // milliseconds — without dedupe, the user gets two in-app toasts for
-        // ONE message. We keep a 5-second sliding window of recently-shown
-        // toast keys and drop exact duplicates. The key is type + chatId +
-        // sender + first 60 chars of body, which uniquely identifies a
-        // single notification across delivery channels.
-        let dedupeKey = "\(item.type.rawValue)|\(item.chatId ?? "")|\(item.senderId ?? "")|\(item.body.prefix(60))"
-        let now = Date()
-        recentlyShown = recentlyShown.filter { $0.value.timeIntervalSince(now) > -5 }
-        if recentlyShown[dedupeKey] != nil {
-            #if DEBUG
-            print("🍞🍞 [NotificationPipeline] 🔁 Duplicate suppressed: \(dedupeKey.prefix(50))")
-            #endif
-            return
-        }
-        recentlyShown[dedupeKey] = now
-
+        
         // Check for merge with existing queue items
         if let lastIndex = queue.lastIndex(where: { shouldMerge($0, item) }) {
             queue[lastIndex] = merged(queue[lastIndex], item)
@@ -396,7 +351,7 @@ final class NotificationPipeline: ObservableObject {
         dismissTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: self?.displayDuration ?? 3_000_000_000)
             guard !Task.isCancelled else { return }
-            self?.dismissCurrent()
+            await self?.dismissCurrent()
         }
     }
     
@@ -416,33 +371,6 @@ final class NotificationPipeline: ObservableObject {
         return abs(a.receivedAt.timeIntervalSince(b.receivedAt)) < mergeWindow
     }
     
-    // MARK: - Empty toast fallbacks
-
-    private func defaultTitle(for type: ToastType) -> String {
-        switch type {
-        case .message:        return "New message"
-        case .voice:          return "Voice message"
-        case .friendRequest:  return "Friend request"
-        case .like:           return "New like"
-        case .comment:        return "New comment"
-        case .security:       return "Security alert"
-        case .groupInvite:    return "Group invite"
-        case .appUpdate:      return "Update"
-        }
-    }
-
-    private func defaultBody(for type: ToastType) -> String {
-        switch type {
-        case .message, .voice: return "You have a new message"
-        case .friendRequest:   return "Someone wants to connect"
-        case .like:            return "Someone liked your post"
-        case .comment:         return "Someone commented"
-        case .security:        return "Account activity"
-        case .groupInvite:     return "You were invited to a group"
-        case .appUpdate:       return "RAVEN was updated"
-        }
-    }
-
     /// Merge two notifications
     private func merged(_ a: ToastItem, _ b: ToastItem) -> ToastItem {
         var merged = b

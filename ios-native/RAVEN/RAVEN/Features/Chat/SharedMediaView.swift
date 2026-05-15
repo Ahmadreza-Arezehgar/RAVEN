@@ -12,8 +12,7 @@ struct SharedMediaView: View {
     @State private var files: [MediaItem] = []
     @State private var voices: [MediaItem] = []
     @State private var isLoading = true
-    @State private var loadError: String?
-
+    
     @State private var selectedPhoto: MediaItem?
     @State private var selectedFile: MediaItem?
     @State private var playingVoice: MediaItem?
@@ -37,32 +36,6 @@ struct SharedMediaView: View {
                     Spacer()
                     ProgressView()
                         .scaleEffect(1.2)
-                    Spacer()
-                } else if let loadError {
-                    Spacer()
-                    VStack(spacing: 12) {
-                        Image(systemName: "exclamationmark.triangle")
-                            .font(.system(size: 36))
-                            .foregroundStyle(.secondary)
-                        Text("Couldn't load shared media")
-                            .font(.headline)
-                        Text(loadError)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal, 32)
-                        Button {
-                            Task { await loadMedia() }
-                        } label: {
-                            Label("Try again", systemImage: "arrow.clockwise")
-                                .font(.subheadline.weight(.semibold))
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 8)
-                                .background(.tint, in: Capsule())
-                                .foregroundStyle(.white)
-                        }
-                        .buttonStyle(.plain)
-                    }
                     Spacer()
                 } else {
                     TabView(selection: $selectedTab) {
@@ -112,29 +85,17 @@ struct SharedMediaView: View {
     
     private func loadMedia() async {
         isLoading = true
-        loadError = nil
-
+        
         let messageRepo = MessageRepository.shared
-
-        // Fetch all media messages for this room (both directions). Surface
-        // failures so the user gets a retry instead of a silently empty grid.
-        let allMessages: [[String: Any]]
-        do {
-            allMessages = try await messageRepo.getMessages(roomId: roomId, limit: 500)
-        } catch {
-            #if DEBUG
-            print("❌ [SharedMedia] load failed: \(error)")
-            #endif
-            loadError = error.localizedDescription
-            isLoading = false
-            return
-        }
-
+        
+        // Fetch all media messages for this room (both directions)
+        let allMessages = try? await messageRepo.getMessages(roomId: roomId, limit: 500)
+        
         var photoItems: [MediaItem] = []
         var fileItems: [MediaItem] = []
         var voiceItems: [MediaItem] = []
-
-        for row in allMessages {
+        
+        for row in allMessages ?? [] {
             guard let typeStr = row["type"] as? String,
                   let id = row["client_message_id"] as? String,
                   let timestampStr = row["timestamp"] as? String,
@@ -403,7 +364,7 @@ struct FileRowView: View {
         HStack(spacing: 12) {
             // File icon
             ZStack {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                RoundedRectangle(cornerRadius: 8)
                     .fill(iconColor.opacity(0.15))
                     .frame(width: 44, height: 44)
                 
@@ -672,10 +633,10 @@ struct VoiceRowView: View {
                 // Waveform / Progress
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
-                        RoundedRectangle(cornerRadius: 2, style: .continuous)
+                        RoundedRectangle(cornerRadius: 2)
                             .fill(.gray.opacity(0.2))
                         
-                        RoundedRectangle(cornerRadius: 2, style: .continuous)
+                        RoundedRectangle(cornerRadius: 2)
                             .fill(.blue)
                             .frame(width: geo.size.width * playbackStore.progressFor(itemId: item.id))
                     }

@@ -23,7 +23,7 @@ struct MeshEnvelope: Codable, Identifiable {
     // MARK: - Content
     
     let type: Int                    // MessageType raw value
-    var text: String?                // Mutable so the per-group encryption layer can swap plaintext → ciphertext before broadcast.
+    let text: String?
     let timestamp: TimeInterval      // Unix timestamp
     
     // MARK: - DTN Controls
@@ -63,17 +63,6 @@ struct MeshEnvelope: Codable, Identifiable {
     // MARK: - Group Flag (Bug 2 fix)
     
     var isGroup: Bool? = false   // True when message targets a group (recipientId = groupId)
-
-    // MARK: - Group Key Version (per-group AES-GCM encryption)
-    /// When set, the `text` field has been AES-GCM-encrypted with the group's
-    /// symmetric key (version `groupKeyVersion`). Receivers look up the key
-    /// via `GroupKeyService` and decrypt before display. Outsiders who learn
-    /// the groupId cannot decrypt without the key.
-    var groupKeyVersion: Int? = nil
-    
-    // MARK: - Geo Fence (Feature 3)
-    
-    var geoFence: GeoFence?  // Optional location restriction for delivery
     
     // MARK: - Encoding Keys (Short for BLE efficiency)
     
@@ -104,8 +93,6 @@ struct MeshEnvelope: Codable, Identifiable {
         case replyToSenderName = "rtsn"
         case isBridged = "ib"
         case isGroup = "ig"
-        case groupKeyVersion = "gkv"
-        case geoFence = "gf"
         case originalSignature = "os"
         case originalSignerPublicKey = "ospk"
     }
@@ -145,24 +132,6 @@ extension MeshEnvelope {
     var estimatedSize: Int {
         guard let data = try? JSONEncoder().encode(self) else { return 0 }
         return data.count
-    }
-    
-    // MARK: - Transport Routing
-    
-    /// Payload size category for transport selection (BLE vs MPC)
-    enum PayloadCategory {
-        case small   // < 4 KB — BLE optimal
-        case medium  // 4 KB – 1 MB — MPC preferred
-        case large   // > 1 MB — MPC required
-    }
-    
-    /// Determine the best transport for this envelope based on payload size
-    var payloadCategory: PayloadCategory {
-        let size = estimatedSize
-        // 4 KB threshold — matches MPCTransportService.bulkThreshold
-        if size < 4096 { return .small }
-        if size < 1_048_576 { return .medium }
-        return .large
     }
 }
 
@@ -265,13 +234,6 @@ extension MessageType {
         case .video: return 7
         case .videoNote: return 8
         case .ephemeralPhoto: return 9
-        // Polls are server-only (groups), never relayed via mesh — but the
-        // exhaustiveness check still requires a case. Pin to a high index
-        // that won't collide with future additions.
-        case .poll: return 10
-        // Contact-card shares are an online (server-routed) feature — same
-        // reason as polls, kept here for exhaustiveness.
-        case .contactCard: return 11
         }
     }
     

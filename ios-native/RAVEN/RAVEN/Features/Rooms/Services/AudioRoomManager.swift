@@ -22,12 +22,6 @@ class AudioRoomManager: ObservableObject {
     // Participants with audio levels
     @Published var speakingParticipants: Set<String> = []
     @Published var remoteParticipants: [RemoteParticipant] = []
-    /// Continuous audio level per participant (keyed by `participant.identity`,
-    /// i.e. the user_id from the JWT `sub` claim). Range [0.0 … 1.0].
-    /// Powers the waveform meter on the speaker tiles. Updated 10×/s while
-    /// connected; cleared on disconnect.
-    @Published var audioLevels: [String: Float] = [:]
-    private var audioLevelPollTask: Task<Void, Never>?
     
     // Debug logs
     @Published var debugLogs: [String] = []
@@ -36,18 +30,10 @@ class AudioRoomManager: ObservableObject {
     private var room: Room?
     private var roomId: String?
     
-    // Bug 3 fix: heartbeat — uses a Task.sleep loop instead of Timer so it
-    // keeps firing even when the main run-loop is busy with animations.
-    // Was `Timer.scheduledTimer` on main → during a heavy SwiftUI transition
-    // the heartbeat would skip and the server would mark the participant
-    // stale (auto-removed after 30 s).
-    private var heartbeatTask: Task<Void, Never>?
-    private let heartbeatInterval: UInt64 = 15_000_000_000  // 15 s in nanoseconds
-
-    // Last participant name used for the connection — needed by refreshToken
-    // when a server WS event tells us the role changed.
-    private var lastParticipantName: String?
-
+    // Bug 3 fix: heartbeat timer to prevent server from auto-removing participants
+    private var heartbeatTimer: Timer?
+    private let heartbeatInterval: TimeInterval = 15  // Server stale threshold is 30s
+    
     private var interruptionObserver: NSObjectProtocol?
     
     private init() {
@@ -91,7 +77,7 @@ class AudioRoomManager: ObservableObject {
             // block 1–3s with Bluetooth headphones, freezing the entire UI.
             Task.detached(priority: .userInitiated) {
                 let session = AVAudioSession.sharedInstance()
-                try? session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothHFP])
+                try? session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetooth])
                 try? session.setActive(true)
             }
             log("▶️ Audio interruption ended — session reactivating on background")
@@ -107,14 +93,13 @@ class AudioRoomManager: ObservableObject {
         let logMessage = "[\(timestamp)] \(message)"
         #if DEBUG
         print(logMessage)
-        // Only mutate the @Published debugLogs in DEBUG. In release, every log
-        // call was triggering a SwiftUI re-render of any view observing
-        // `audioManager` — wasted CPU + battery during long rooms.
+        #endif
         debugLogs.append(logMessage)
+        
+        // Keep only last 50 logs
         if debugLogs.count > 50 {
             debugLogs.removeFirst()
         }
-        #endif
     }
     
     // MARK: - Token Request
@@ -196,7 +181,7 @@ class AudioRoomManager: ObservableObject {
             log("🔊 STEP 0.5: Configuring AVAudioSession...")
             do {
                 let session = AVAudioSession.sharedInstance()
-                try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothHFP])
+                try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetooth])
                 // ⚡ FIX: setActive is blocking (0.5-3s with Bluetooth) — run on background
                 await Task.detached(priority: .userInitiated) {
                     try? session.setActive(true)
@@ -208,7 +193,6 @@ class AudioRoomManager: ObservableObject {
             }
             
             // STEP 1: Get token from server
-            self.lastParticipantName = participantName  // remember for refreshToken
             let tokenResponse = try await fetchToken(roomId: roomId, participantName: participantName)
             
             // STEP 2: Create Room object
@@ -302,14 +286,17 @@ class AudioRoomManager: ObservableObject {
         remoteParticipants.removeAll()
         AudioRoomActivityManager.shared.endActivity()
         
-        // Release the microphone hardware. Errors are already swallowed by
-        // `try?` inside the detached task, so no enclosing do/catch needed.
-        // ⚡ FIX: setActive is blocking — run on background
-        await Task.detached(priority: .userInitiated) {
-            let session = AVAudioSession.sharedInstance()
-            try? session.setActive(false, options: .notifyOthersOnDeactivation)
-            try? session.setCategory(.playback, mode: .default)
-        }.value
+        // Release the microphone hardware
+        do {
+            // ⚡ FIX: setActive is blocking — run on background
+            await Task.detached(priority: .userInitiated) {
+                let session = AVAudioSession.sharedInstance()
+                try? session.setActive(false, options: .notifyOthersOnDeactivation)
+                try? session.setCategory(.playback, mode: .default)
+            }.value
+        } catch {
+            log("Failed to deactivate audio session: \(error)")
+        }
         
         // Bug 3 fix: stop heartbeat timer
         stopHeartbeat()
@@ -323,66 +310,19 @@ class AudioRoomManager: ObservableObject {
     /// this participant is still active (server removes stale participants after 30s).
     private func startHeartbeat() {
         stopHeartbeat()
-        guard let rid = roomId else { return }
-        heartbeatTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: self?.heartbeatInterval ?? 15_000_000_000)
-                if Task.isCancelled { break }
-                await self?.sendHeartbeat(roomId: rid)
+        guard let roomId = roomId else { return }
+        
+        heartbeatTimer = Timer.scheduledTimer(withTimeInterval: heartbeatInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                await self?.sendHeartbeat(roomId: roomId)
             }
         }
-        log("💓 Heartbeat started (Task loop, every 15 s)")
-        startAudioLevelPolling()
+        log("💓 Heartbeat started (every \(Int(heartbeatInterval))s)")
     }
-
+    
     private func stopHeartbeat() {
-        heartbeatTask?.cancel()
-        heartbeatTask = nil
-        stopAudioLevelPolling()
-    }
-
-    // MARK: - Audio Level Polling (drives waveform meter)
-    //
-    // LiveKit publishes an `audioLevel: Float` on each Participant that
-    // updates as the SDK measures the incoming audio. We poll 10×/s and
-    // expose it as `audioLevels[identity]` for the SpeakerBubble waveform.
-    // Cheaper than rendering N CADisplayLink animators per tile.
-
-    private func startAudioLevelPolling() {
-        audioLevelPollTask?.cancel()
-        audioLevelPollTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 100_000_000) // 100 ms = 10 fps
-                if Task.isCancelled { break }
-                await self?.sampleAudioLevels()
-            }
-        }
-    }
-
-    private func stopAudioLevelPolling() {
-        audioLevelPollTask?.cancel()
-        audioLevelPollTask = nil
-        audioLevels.removeAll()
-    }
-
-    private func sampleAudioLevels() async {
-        guard let room = self.room else { return }
-        var snapshot: [String: Float] = [:]
-        // Local participant
-        if let id = room.localParticipant.identity?.stringValue {
-            snapshot[id] = Float(room.localParticipant.audioLevel)
-        }
-        // Remote participants
-        for p in room.remoteParticipants.values {
-            if let id = p.identity?.stringValue {
-                snapshot[id] = Float(p.audioLevel)
-            }
-        }
-        // Only update if something changed (avoids triggering 10 needless
-        // SwiftUI re-renders per second when the room is silent).
-        if snapshot != audioLevels {
-            audioLevels = snapshot
-        }
+        heartbeatTimer?.invalidate()
+        heartbeatTimer = nil
     }
     
     private func sendHeartbeat(roomId: String) async {
@@ -415,7 +355,7 @@ class AudioRoomManager: ObservableObject {
                 // ⚡ FIX: setActive is blocking — run on background
                 await Task.detached(priority: .userInitiated) {
                     let session = AVAudioSession.sharedInstance()
-                    try? session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothHFP])
+                    try? session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetooth])
                     try? session.setActive(true)
                 }.value
             }
@@ -439,46 +379,6 @@ class AudioRoomManager: ObservableObject {
         }
     }
     
-    // MARK: - Token Refresh
-    //
-    // LiveKit grants (roomJoin, canPublish, canSubscribe) are baked into the
-    // JWT — they don't change at runtime. So when the host promotes us
-    // listener→speaker, the `canPublish:true` flag must come from a NEW
-    // token. Same when our token is about to expire.
-    //
-    // LiveKit Swift SDK 2.11 doesn't expose `Room.updateToken`, so the
-    // reliable way to apply a fresh token is a quick disconnect→connect
-    // cycle. We minimise the audio outage by:
-    //   1. Pre-fetching the new token BEFORE tearing down the connection
-    //   2. Using a 0.3 s reconnect delay (down from the previous 0.5 s)
-    // Net outage: ~0.5–1 s vs the >2 s of the original promotion path
-    // (which fetched token AFTER disconnect).
-    //
-    // For role changes, the server has ALREADY updated the participant's
-    // SFU permissions via livekit_service.update_participant_grants by the
-    // time we get here, so the new token is just the cherry on top.
-
-    /// Re-fetch a fresh LiveKit token and apply it to the live room.
-    /// Used after server-side role changes and as a safety net when
-    /// connection state drops to `.reconnecting`.
-    func refreshToken(roomId: String, participantName: String) async throws {
-        log("🔁 Refreshing LiveKit token for \(roomId.prefix(8))…")
-        // Pre-fetch first so we minimise the disconnected window.
-        let resp = try await fetchToken(roomId: roomId, participantName: participantName)
-        guard let oldRoom = room else {
-            log("⚠️ refreshToken called with no active room — skipping")
-            return
-        }
-        // Quick reconnect with the fresh token.
-        await oldRoom.disconnect()
-        try? await Task.sleep(nanoseconds: 300_000_000) // 0.3 s
-        let newRoom = Room()
-        newRoom.add(delegate: self)
-        try await newRoom.connect(url: resp.url, token: resp.token)
-        self.room = newRoom
-        log("✅ Token refreshed via reconnect (fast path)")
-    }
-
     /// Set microphone state
     func setMicrophone(enabled: Bool) async throws {
         guard let room = room else {
@@ -493,7 +393,7 @@ class AudioRoomManager: ObservableObject {
             // ⚡ FIX: setActive is blocking — run on background
             await Task.detached(priority: .userInitiated) {
                 let session = AVAudioSession.sharedInstance()
-                try? session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothHFP])
+                try? session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetooth])
                 try? session.setActive(true)
             }.value
         }
@@ -576,22 +476,9 @@ extension AudioRoomManager: RoomDelegate {
             case .disconnected:
                 isConnected = false
                 log("❌ DELEGATE: Room disconnected")
-            case .disconnecting:
-                isConnecting = false
-                log("👋 DELEGATE: Room disconnecting…")
             case .connecting, .reconnecting:
                 isConnecting = true
                 log("⏳ DELEGATE: Room connecting/reconnecting...")
-                // 🔁 Token-refresh on reconnect.
-                // LiveKit's auto-reconnect uses the original cached token —
-                // once it's expired, we're toast. Pre-emptively fetch a
-                // fresh token so when reconnect succeeds, the session is
-                // already validated against current grants.
-                if let rid = roomId, let pname = lastParticipantName {
-                    Task { [weak self] in
-                        try? await self?.refreshToken(roomId: rid, participantName: pname)
-                    }
-                }
             @unknown default:
                 log("❓ DELEGATE: Unknown connection state")
             }
@@ -648,24 +535,20 @@ extension AudioRoomManager: RoomDelegate {
         }
     }
     
-    // The single-participant `didUpdateSpeaking` callback was removed from
-    // RoomDelegate; LiveKit now emits the full speaking set in one call.
-    // Reconcile against `speakingParticipants` so we still log transitions.
-    nonisolated func room(_ room: Room, didUpdateSpeakingParticipants participants: [Participant]) {
-        let identities = participants.compactMap { $0.identity?.stringValue }
+    nonisolated func room(_ room: Room, participant: Participant, didUpdateSpeaking isSpeaking: Bool) {
         Task { @MainActor in
-            let next = Set(identities)
-            for added in next.subtracting(speakingParticipants) {
-                log("🗣️ DELEGATE: \(added) is speaking")
+            let identity = participant.identity?.stringValue ?? ""
+            if isSpeaking {
+                speakingParticipants.insert(identity)
+                log("🗣️ DELEGATE: \(identity) is speaking")
+            } else {
+                speakingParticipants.remove(identity)
+                log("🤫 DELEGATE: \(identity) stopped speaking")
             }
-            for removed in speakingParticipants.subtracting(next) {
-                log("🤫 DELEGATE: \(removed) stopped speaking")
-            }
-            speakingParticipants = next
         }
     }
-
-    nonisolated func room(_ room: Room, didFailToConnectWithError error: LiveKitError?) {
+    
+    nonisolated func room(_ room: Room, didFailToConnectWithError error: Error?) {
         Task { @MainActor in
             log("💥 DELEGATE: Failed to connect: \(error?.localizedDescription ?? "unknown")")
             CrashGuard.shared.log(.error, "AudioRoom delegate: connection failed", metadata: [

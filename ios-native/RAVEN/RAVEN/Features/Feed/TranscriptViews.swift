@@ -321,16 +321,16 @@ struct TranscriptGlassPanel: View {
         .background(
             ZStack {
                 // Glass background
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                RoundedRectangle(cornerRadius: 14)
                     .fill(.ultraThinMaterial)
                 
                 // Light tint for contrast safety
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                RoundedRectangle(cornerRadius: 14)
                     .fill(Color.primary.opacity(0.05))
             }
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
+            RoundedRectangle(cornerRadius: 14)
                 .stroke(Color.primary.opacity(0.1), lineWidth: 0.5)
         )
         .shadow(color: .black.opacity(0.2), radius: 8, y: 4)
@@ -441,7 +441,7 @@ struct WaveSpinner: View {
     var body: some View {
         HStack(spacing: 2) {
             ForEach(0..<4, id: \.self) { index in
-                RoundedRectangle(cornerRadius: 1, style: .continuous)
+                RoundedRectangle(cornerRadius: 1)
                     .fill(Color.blue)
                     .frame(width: 2)
                     .scaleEffect(y: animate ? 1.0 : 0.3, anchor: .center)

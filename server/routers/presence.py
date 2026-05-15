@@ -33,32 +33,30 @@ class PresenceUpdateRequest(BaseModel):
     device_id: Optional[str] = None
 
 
-# MARK: - DB-backed presence
-# Cloud Run runs multiple instances — an in-memory cache only works
-# within a single instance, which broke cross-device presence (heartbeat
-# hits instance A, query hits instance B → "offline"). Now we read/write
-# users.last_active_at directly so presence survives instance scale-up
-# and is consistent across the cluster.
+# MARK: - In-Memory Presence Cache (for MVP)
+# TODO: Replace with Redis for production
 
+_presence_cache: dict[str, dict] = {}
 ONLINE_THRESHOLD_SECONDS = 60  # Consider offline after 60s of no heartbeat
 
 
-def _is_online(target_user: User) -> tuple[bool, bool, Optional[datetime]]:
-    """Check if user is online based on last_active_at column.
-
-    "Online" means: heartbeat received within the last 60s AND the client
-    is currently reporting it has internet. The /offline endpoint flips
-    last_active_has_internet=false so backgrounded apps reflect as
-    offline immediately rather than waiting for the 60s threshold.
-    """
-    last_active = getattr(target_user, "last_active_at", None)
-    if not last_active:
+def _is_online(user_id: str) -> tuple[bool, bool, Optional[datetime]]:
+    """Check if user is online based on recent heartbeat"""
+    if user_id not in _presence_cache:
         return False, False, None
-
+    
+    entry = _presence_cache[user_id]
+    last_seen = entry.get("last_seen")
+    
+    if not last_seen:
+        return False, False, None
+    
+    # Check if heartbeat is recent enough
     now = datetime.utcnow()
-    has_internet = bool(getattr(target_user, "last_active_has_internet", False))
-    is_recent = (now - last_active).total_seconds() < ONLINE_THRESHOLD_SECONDS
-    return (is_recent and has_internet), has_internet, last_active
+    is_online = (now - last_seen).total_seconds() < ONLINE_THRESHOLD_SECONDS
+    has_internet = entry.get("has_internet", False) if is_online else False
+    
+    return is_online, has_internet, last_seen
 
 
 # MARK: - Endpoints
@@ -81,8 +79,8 @@ def get_presence(
             detail="User not found"
         )
     
-    online, has_internet, last_seen = _is_online(target_user)
-
+    online, has_internet, last_seen = _is_online(user_id)
+    
     # ✅ Privacy: hide online status if user disabled it
     if not getattr(target_user, 'show_online_status', True):
         return PresenceResponse(
@@ -90,7 +88,7 @@ def get_presence(
             hasInternet=False,
             lastSeenAt=None
         )
-
+    
     return PresenceResponse(
         online=online,
         hasInternet=has_internet,
@@ -101,51 +99,53 @@ def get_presence(
 @router.post("/heartbeat")
 async def heartbeat(
     req: PresenceUpdateRequest,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    current_user: User = Depends(get_current_user)
 ):
     """
     Client sends heartbeat to indicate it's online.
     Should be called every 30 seconds while app is active.
-    Writes to DB so presence is consistent across Cloud Run instances.
+    
+    ⚡ Optimized: Uses in-memory cache only, no DB queries.
     """
-    now = datetime.utcnow()
-    current_user.last_active_at = now
-    current_user.last_active_has_internet = bool(req.has_internet)
-    db.commit()
-
-    return {"status": "ok", "timestamp": now.isoformat()}
+    user_id = str(current_user.id)
+    
+    _presence_cache[user_id] = {
+        "last_seen": datetime.utcnow(),
+        "has_internet": req.has_internet,
+        "device_id": req.device_id
+    }
+    
+    print(f"💓 [Presence] Heartbeat from {user_id[:8]}, hasInternet={req.has_internet}")
+    
+    return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
 
 
 @router.post("/offline")
-def go_offline(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
+def go_offline(current_user: User = Depends(get_current_user)):
     """
-    Client explicitly goes offline (app backgrounded, closed, etc.).
-    We do NOT clear last_active_at — that's used for "last seen N min ago".
-    Instead we set last_active_has_internet=False so reads return offline
-    immediately (without waiting for the 60s heartbeat threshold).
+    Client explicitly goes offline (app backgrounded, closed, etc.)
     """
-    current_user.last_active_has_internet = False
-    db.commit()
+    user_id = str(current_user.id)
+    
+    if user_id in _presence_cache:
+        _presence_cache[user_id]["has_internet"] = False
+        # Keep last_seen for "last seen X minutes ago"
+    
+    print(f"👋 [Presence] User {user_id[:8]} went offline")
+    
     return {"status": "ok"}
 
 
 @router.get("/debug/all")
-def debug_all_presence(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """Debug: return everyone's presence row (admin only — TODO add gate)."""
-    rows = db.query(User).filter(User.last_active_at.isnot(None)).limit(50).all()
+def debug_all_presence(current_user: User = Depends(get_current_user)):
+    """Debug endpoint to see all presence data (admin only)"""
+    # TODO: Add admin check
     result = {}
-    for u in rows:
-        online, has_internet, last_seen = _is_online(u)
-        result[u.id[:8]] = {
+    for user_id, data in _presence_cache.items():
+        online, has_internet, last_seen = _is_online(user_id)
+        result[user_id[:8]] = {
             "online": online,
             "has_internet": has_internet,
-            "last_seen": last_seen.isoformat() if last_seen else None,
+            "last_seen": last_seen.isoformat() if last_seen else None
         }
     return result

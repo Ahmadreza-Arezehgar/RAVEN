@@ -51,9 +51,9 @@ struct AttachmentPickerView: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: 28, style: .continuous)
-                .stroke(Color.primary.opacity(0.12), lineWidth: 0.6)
+                .stroke(.white.opacity(0.20), lineWidth: 0.6)
         )
-        .shadow(color: .black.opacity(0.18), radius: 20, x: 0, y: 10)
+        .shadow(color: .black.opacity(0.25), radius: 20, x: 0, y: 10)
         .padding(.horizontal, 16)
         .padding(.bottom, 8)
         .onAppear {
@@ -125,11 +125,11 @@ struct DropletButton: View {
             .padding(.vertical, 12)
             .background(
                 Capsule()
-                    .fill(.ultraThinMaterial)
+                    .fill(.ultraThinMaterial.opacity(0.6))
             )
             .overlay(
                 Capsule()
-                    .stroke(Color.primary.opacity(0.10), lineWidth: 0.5)
+                    .stroke(.white.opacity(0.15), lineWidth: 0.5)
             )
         }
         .buttonStyle(DropletButtonStyle())
@@ -259,15 +259,11 @@ struct ImagePickerView: UIViewControllerRepresentable {
                 DispatchQueue.main.async { self.parent.dismiss() }
                 return
             }
-            // Pull the callbacks out of self before crossing the concurrency
-            // boundary — capturing `self` (a mutable weak reference) inside
-            // the detached Task is a Swift 6 data-race error.
-            let onImage = self.parent.onImage
             provider.loadObject(ofClass: UIImage.self) { [weak self] image, _ in
                 if let uiImage = image as? UIImage {
                     Task.detached(priority: .userInitiated) {
                         let processed = uiImage.downscaled(maxDimension: PremiumLimits.maxImageDimension)
-                        await MainActor.run { onImage(processed) }
+                        await MainActor.run { self?.parent.onImage(processed) }
                     }
                 } else {
                     DispatchQueue.main.async { self?.parent.dismiss() }
@@ -428,7 +424,7 @@ struct VoiceRecorderView: View {
                             .frame(width: 72, height: 72)
                         
                         if isRecording {
-                            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                            RoundedRectangle(cornerRadius: 4)
                                 .fill(.white)
                                 .frame(width: 24, height: 24)
                         } else {

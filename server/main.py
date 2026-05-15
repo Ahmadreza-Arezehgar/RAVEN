@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from database import engine, Base
-from routers import auth, users, messages, posts, uploads, comments, search, counts, voice, backup, subscriptions, notifications, devices, knowledge, groups, reports, blocks, debug_email, ai, events, recommendation, hashtags, admin, presence, contacts, rooms, livekit, mentions, verification_identity, discovery, data_export, webhook_revenuecat, snaps, message_requests, channels, stats, invites, group_keys, linked_devices, nearby, diagnostics, concert_mode, mesh, qr_login, e2ee, auth_opaque, gateway, atsam_prekey, ghost_route
+from routers import auth, users, messages, posts, uploads, comments, search, counts, voice, backup, subscriptions, notifications, devices, knowledge, groups, reports, blocks, debug_email, ai, events, recommendation, hashtags, admin, presence, contacts, rooms, livekit, mentions, verification_identity, discovery, data_export, webhook_revenuecat, snaps, message_requests, channels, stats
 import models  # ✅ CRITICAL: Import all models to register them with Base.metadata
 from logging_config import configure_secure_logging
 import os
@@ -29,24 +29,6 @@ def run_migrations():
     from database import SessionLocal
     
     migrations = [
-        # ═══════════════════════════════════════════════════════════════════════════
-        # INVITES (referral) - referrer + redeemer both get 30 days of Raven+
-        # ═══════════════════════════════════════════════════════════════════════════
-        ("""
-        CREATE TABLE IF NOT EXISTS invite_redemptions (
-            id VARCHAR PRIMARY KEY,
-            inviter_id VARCHAR NOT NULL,
-            redeemer_id VARCHAR NOT NULL,
-            code VARCHAR NOT NULL,
-            device_fingerprint VARCHAR,
-            redeemed_at TIMESTAMP DEFAULT NOW()
-        )
-        """, "invite_redemptions table"),
-        ("CREATE INDEX IF NOT EXISTS idx_invite_redemptions_inviter ON invite_redemptions(inviter_id)", "invite_redemptions.inviter_id idx"),
-        ("CREATE INDEX IF NOT EXISTS idx_invite_redemptions_redeemer ON invite_redemptions(redeemer_id)", "invite_redemptions.redeemer_id idx"),
-        ("CREATE INDEX IF NOT EXISTS idx_invite_redemptions_device ON invite_redemptions(device_fingerprint)", "invite_redemptions.device_fingerprint idx"),
-        ("CREATE UNIQUE INDEX IF NOT EXISTS idx_invite_redemptions_inviter_redeemer ON invite_redemptions(inviter_id, redeemer_id)", "invite_redemptions.unique idx"),
-
         # Create content_consumptions table
         ("""
         CREATE TABLE IF NOT EXISTS content_consumptions (
@@ -398,7 +380,6 @@ def run_migrations():
         # Push notification columns
         ("ALTER TABLE users ADD COLUMN IF NOT EXISTS push_token VARCHAR", "users.push_token"),
         ("ALTER TABLE users ADD COLUMN IF NOT EXISTS push_platform VARCHAR", "users.push_platform"),
-        ("ALTER TABLE users ADD COLUMN IF NOT EXISTS push_environment VARCHAR", "users.push_environment"),
         # Spotify columns
         ("ALTER TABLE users ADD COLUMN IF NOT EXISTS spotify_track_id VARCHAR", "users.spotify_track_id"),
         ("ALTER TABLE users ADD COLUMN IF NOT EXISTS spotify_track_title VARCHAR", "users.spotify_track_title"),
@@ -554,15 +535,6 @@ def run_migrations():
         # ═══════════════════════════════════════════════════════════════════════════
         ("ALTER TABLE audio_rooms ADD COLUMN IF NOT EXISTS last_activity TIMESTAMP", "audio_rooms.last_activity"),
         ("ALTER TABLE audio_room_participants ADD COLUMN IF NOT EXISTS last_heartbeat_at TIMESTAMP", "audio_room_participants.last_heartbeat_at"),
-        # 🔒 is_locked — was settable via /settings, but the column never existed
-        # so SQLAlchemy's setattr silently dropped it. Now the host's "lock room"
-        # control actually keeps people out (see join_room).
-        ("ALTER TABLE audio_rooms ADD COLUMN IF NOT EXISTS is_locked BOOLEAN DEFAULT FALSE", "audio_rooms.is_locked"),
-        # ✏️ Comment edit + 📌 pin support
-        ("ALTER TABLE comments ADD COLUMN IF NOT EXISTS edited_at TIMESTAMP", "comments.edited_at"),
-        ("ALTER TABLE comments ADD COLUMN IF NOT EXISTS is_pinned BOOLEAN DEFAULT FALSE", "comments.is_pinned"),
-        ("ALTER TABLE comments ADD COLUMN IF NOT EXISTS pinned_at TIMESTAMP", "comments.pinned_at"),
-        ("CREATE INDEX IF NOT EXISTS idx_comments_pinned ON comments(post_id, is_pinned)", "comments.pinned idx"),
         # ═══════════════════════════════════════════════════════════════════════════
         # RAVEN+ PREMIUM SUBSCRIPTION
         # ═══════════════════════════════════════════════════════════════════════════
@@ -643,316 +615,50 @@ def run_migrations():
         )
         """, "channel_invite_links table"),
         ("CREATE INDEX IF NOT EXISTS idx_channel_invite_code ON channel_invite_links(invite_code)", "channel_invite_links.invite_code index"),
-        # ═══════════════════════════════════════════════════════════════════════════
-        # HASHTAG FOLLOWS TABLE
-        # ═══════════════════════════════════════════════════════════════════════════
-        ("""
-        CREATE TABLE IF NOT EXISTS hashtag_follows (
-            id VARCHAR PRIMARY KEY,
-            user_id VARCHAR NOT NULL REFERENCES users(id),
-            hashtag VARCHAR NOT NULL,
-            created_at TIMESTAMP DEFAULT NOW(),
-            UNIQUE(user_id, hashtag)
-        )
-        """, "hashtag_follows table"),
-        ("CREATE INDEX IF NOT EXISTS idx_hashtag_follows_user ON hashtag_follows(user_id)", "hashtag_follows.user_id index"),
-        ("CREATE INDEX IF NOT EXISTS idx_hashtag_follows_hashtag ON hashtag_follows(hashtag)", "hashtag_follows.hashtag index"),
-        # ═══════════════════════════════════════════════════════════════════════════
-        # POST MEDIA — Video thumbnail support
-        # ═══════════════════════════════════════════════════════════════════════════
-        ("ALTER TABLE post_media ADD COLUMN IF NOT EXISTS thumbnail_url VARCHAR", "post_media.thumbnail_url"),
-        # ═══════════════════════════════════════════════════════════════════════════
-        # PROFILE TAB PRIVACY — show/hide liked posts and replies on profile
-        # ═══════════════════════════════════════════════════════════════════════════
-        ("ALTER TABLE users ADD COLUMN IF NOT EXISTS show_liked_posts BOOLEAN DEFAULT TRUE", "users.show_liked_posts"),
-        ("ALTER TABLE users ADD COLUMN IF NOT EXISTS show_replies BOOLEAN DEFAULT TRUE", "users.show_replies"),
-        # ═══════════════════════════════════════════════════════════════════════════
-        # GRANULAR SOCIAL NOTIFICATION PREFERENCES
-        # ═══════════════════════════════════════════════════════════════════════════
-        ("ALTER TABLE users ADD COLUMN IF NOT EXISTS new_post_notifications_enabled BOOLEAN DEFAULT TRUE", "users.new_post_notifications_enabled"),
-        ("ALTER TABLE users ADD COLUMN IF NOT EXISTS audio_room_notifications_enabled BOOLEAN DEFAULT TRUE", "users.audio_room_notifications_enabled"),
-        ("ALTER TABLE users ADD COLUMN IF NOT EXISTS mention_notifications_enabled BOOLEAN DEFAULT TRUE", "users.mention_notifications_enabled"),
-        # ═══════════════════════════════════════════════════════════════════════════
-        # USER NOTIFICATION SUBSCRIPTIONS (Bell icon per-user)
-        # ═══════════════════════════════════════════════════════════════════════════
-        ("""
-        CREATE TABLE IF NOT EXISTS user_notification_subscriptions (
-            id VARCHAR PRIMARY KEY,
-            subscriber_id VARCHAR NOT NULL REFERENCES users(id),
-            target_id VARCHAR NOT NULL REFERENCES users(id),
-            notify_posts BOOLEAN DEFAULT TRUE,
-            notify_audio_rooms BOOLEAN DEFAULT TRUE,
-            created_at TIMESTAMP DEFAULT NOW(),
-            updated_at TIMESTAMP DEFAULT NOW(),
-            UNIQUE(subscriber_id, target_id)
-        )
-        """, "user_notification_subscriptions table"),
-        ("CREATE INDEX IF NOT EXISTS idx_notif_sub_subscriber ON user_notification_subscriptions(subscriber_id)", "user_notification_subscriptions.subscriber_id index"),
-        ("CREATE INDEX IF NOT EXISTS idx_notif_sub_target ON user_notification_subscriptions(target_id)", "user_notification_subscriptions.target_id index"),
-        # ═══════════════════════════════════════════════════════════════════════════
-        # FOLLOW SYSTEM (Instagram-style directional follows)
-        # ═══════════════════════════════════════════════════════════════════════════
-        ("""
-        CREATE TABLE IF NOT EXISTS follows (
-            id VARCHAR PRIMARY KEY,
-            follower_id VARCHAR NOT NULL REFERENCES users(id),
-            following_id VARCHAR NOT NULL REFERENCES users(id),
-            created_at TIMESTAMP DEFAULT NOW(),
-            UNIQUE(follower_id, following_id)
-        )
-        """, "follows table"),
-        ("CREATE INDEX IF NOT EXISTS idx_follows_follower ON follows(follower_id)", "follows.follower_id index"),
-        ("CREATE INDEX IF NOT EXISTS idx_follows_following ON follows(following_id)", "follows.following_id index"),
-        # ═══════════════════════════════════════════════════════════════════════════
-        # TWO-FACTOR AUTHENTICATION COLUMNS
-        # ═══════════════════════════════════════════════════════════════════════════
-        ("ALTER TABLE users ADD COLUMN IF NOT EXISTS two_factor_enabled BOOLEAN DEFAULT FALSE", "users.two_factor_enabled"),
-        ("ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret VARCHAR", "users.totp_secret"),
-        # ═══════════════════════════════════════════════════════════════════════════
-        # RAVEN SHOT — Social Map opt-in column
-        # ═══════════════════════════════════════════════════════════════════════════
-        ("ALTER TABLE posts ADD COLUMN IF NOT EXISTS show_on_raven_shot BOOLEAN DEFAULT FALSE", "posts.show_on_raven_shot"),
-        ("CREATE INDEX IF NOT EXISTS idx_posts_raven_shot ON posts(show_on_raven_shot) WHERE show_on_raven_shot = TRUE", "posts.show_on_raven_shot index"),
-        # ═══════════════════════════════════════════════════════════════════════════
-        # LOCATION NAME — Human-readable place name on posts
-        # ═══════════════════════════════════════════════════════════════════════════
-        ("ALTER TABLE posts ADD COLUMN IF NOT EXISTS location_name VARCHAR", "posts.location_name"),
-        # ═══════════════════════════════════════════════════════════════════════════
-        # POST TAGS — Tag people in posts/photos (Instagram-style)
-        # ═══════════════════════════════════════════════════════════════════════════
-        ("""
-        CREATE TABLE IF NOT EXISTS post_tags (
-            id VARCHAR PRIMARY KEY,
-            post_id VARCHAR NOT NULL REFERENCES posts(id),
-            media_id VARCHAR,
-            tagged_user_id VARCHAR NOT NULL REFERENCES users(id),
-            tagged_by_user_id VARCHAR NOT NULL REFERENCES users(id),
-            x_position FLOAT,
-            y_position FLOAT,
-            timestamp TIMESTAMP DEFAULT NOW(),
-            UNIQUE(post_id, tagged_user_id)
-        )
-        """, "post_tags table"),
-        ("CREATE INDEX IF NOT EXISTS idx_post_tags_post ON post_tags(post_id)", "post_tags.post_id index"),
-        ("CREATE INDEX IF NOT EXISTS idx_post_tags_user ON post_tags(tagged_user_id)", "post_tags.tagged_user_id index"),
-        ("CREATE INDEX IF NOT EXISTS idx_post_tags_by ON post_tags(tagged_by_user_id)", "post_tags.tagged_by_user_id index"),
     ]
 
     
     from database import engine as _engine
     
-    # ── Always-run mini migrations ──
-    # Brand-new tables added in recent deploys. These are SAFE to run on every
-    # startup (CREATE TABLE IF NOT EXISTS is a no-op when the table exists)
-    # and they MUST run unconditionally because the guard below will short-
-    # circuit the main migration list once the marker column exists.
-    always_run = [
-        ("""
-        CREATE TABLE IF NOT EXISTS invite_redemptions (
-            id VARCHAR PRIMARY KEY,
-            inviter_id VARCHAR NOT NULL,
-            redeemer_id VARCHAR NOT NULL,
-            code VARCHAR NOT NULL,
-            device_fingerprint VARCHAR,
-            redeemed_at TIMESTAMP DEFAULT NOW()
-        )
-        """, "invite_redemptions table (always-run)"),
-        ("CREATE INDEX IF NOT EXISTS idx_invite_redemptions_inviter ON invite_redemptions(inviter_id)", "invite_redemptions.inviter_id idx"),
-        ("CREATE INDEX IF NOT EXISTS idx_invite_redemptions_redeemer ON invite_redemptions(redeemer_id)", "invite_redemptions.redeemer_id idx"),
-        ("CREATE INDEX IF NOT EXISTS idx_invite_redemptions_device ON invite_redemptions(device_fingerprint)", "invite_redemptions.device_fingerprint idx"),
-        ("CREATE UNIQUE INDEX IF NOT EXISTS idx_invite_redemptions_inviter_redeemer ON invite_redemptions(inviter_id, redeemer_id)", "invite_redemptions.unique idx"),
-        # ── Per-group AES-256 keys (mesh anti-spoof) ──
-        ("""
-        CREATE TABLE IF NOT EXISTS group_keys (
-            id VARCHAR PRIMARY KEY,
-            group_id VARCHAR NOT NULL,
-            version INTEGER NOT NULL,
-            key_b64 VARCHAR NOT NULL,
-            created_at TIMESTAMP DEFAULT NOW() NOT NULL
-        )
-        """, "group_keys table"),
-        ("CREATE UNIQUE INDEX IF NOT EXISTS idx_group_keys_group_version ON group_keys(group_id, version)", "group_keys.unique idx"),
-        # ── Linked devices (multi-device sessions) ──
-        ("""
-        CREATE TABLE IF NOT EXISTS linked_devices (
-            id VARCHAR PRIMARY KEY,
-            user_id VARCHAR NOT NULL,
-            device_name VARCHAR,
-            device_model VARCHAR,
-            device_os VARCHAR,
-            ip_first VARCHAR,
-            paired_at TIMESTAMP DEFAULT NOW() NOT NULL,
-            last_seen_at TIMESTAMP DEFAULT NOW() NOT NULL,
-            revoked_at TIMESTAMP
-        )
-        """, "linked_devices table"),
-        ("CREATE INDEX IF NOT EXISTS idx_linked_devices_user ON linked_devices(user_id)", "linked_devices.user_id idx"),
-        # ── 🚨 CRITICAL: posts schema columns that the feed query depends on ──
-        # These were added to the BIG migration list above the guard, so on
-        # databases provisioned before they existed the feed crashes with
-        # `UndefinedColumn`. Promoting them to always-run guarantees the feed
-        # endpoints return 200 regardless of which migration generation the
-        # database started at. `IF NOT EXISTS` makes this a no-op once applied.
-        ("ALTER TABLE posts ADD COLUMN IF NOT EXISTS show_on_raven_shot BOOLEAN DEFAULT FALSE", "posts.show_on_raven_shot (always-run)"),
-        ("CREATE INDEX IF NOT EXISTS idx_posts_raven_shot ON posts(show_on_raven_shot) WHERE show_on_raven_shot = TRUE", "posts.show_on_raven_shot idx (always-run)"),
-        ("ALTER TABLE posts ADD COLUMN IF NOT EXISTS location_name VARCHAR", "posts.location_name (always-run)"),
-        ("ALTER TABLE posts ADD COLUMN IF NOT EXISTS latitude DOUBLE PRECISION", "posts.latitude (always-run)"),
-        ("ALTER TABLE posts ADD COLUMN IF NOT EXISTS longitude DOUBLE PRECISION", "posts.longitude (always-run)"),
-        # ── Crash / perf diagnostics intake (MetricKit) ──
-        ("""
-        CREATE TABLE IF NOT EXISTS crash_reports (
-            id VARCHAR PRIMARY KEY,
-            user_id VARCHAR,
-            type VARCHAR NOT NULL,
-            occurred_at TIMESTAMP NOT NULL,
-            received_at TIMESTAMP DEFAULT NOW() NOT NULL,
-            app_version VARCHAR,
-            os_version VARCHAR,
-            device_model VARCHAR,
-            session_id VARCHAR,
-            summary VARCHAR,
-            payload_size INTEGER DEFAULT 0,
-            payload TEXT
-        )
-        """, "crash_reports table"),
-        ("CREATE INDEX IF NOT EXISTS idx_crash_reports_user ON crash_reports(user_id)", "crash_reports.user idx"),
-        ("CREATE INDEX IF NOT EXISTS idx_crash_reports_type_occurred ON crash_reports(type, occurred_at DESC)", "crash_reports.type+occurred idx"),
-        # ── Concert Mode (ephemeral venue groups) ──
-        ("""
-        CREATE TABLE IF NOT EXISTS concert_groups (
-            id VARCHAR PRIMARY KEY,
-            h3_cell VARCHAR NOT NULL,
-            group_id VARCHAR NOT NULL,
-            created_at TIMESTAMP DEFAULT NOW() NOT NULL,
-            expires_at TIMESTAMP NOT NULL
-        )
-        """, "concert_groups table"),
-        ("CREATE INDEX IF NOT EXISTS idx_concert_h3_active ON concert_groups(h3_cell, expires_at)", "concert_groups.h3 idx"),
-    ]
+    # ── Guard: skip migrations if latest column already exists ──
+    # This avoids re-running 80+ DDL statements on every cold start,
+    # which takes minutes over cross-region Cloud SQL and can hang the process.
     try:
-        with _engine.connect() as ar_conn:
-            ar_conn.execute(text("SET statement_timeout = '10s'"))
-            for sql, desc in always_run:
-                try:
-                    ar_conn.execute(text(sql))
-                    ar_conn.commit()
-                    logger.info(f"✅ Always-run migration: {desc}")
-                except Exception as e:
-                    logger.warning(f"⚠️ Always-run migration failed for {desc}: {e}")
+        with _engine.connect() as guard_conn:
+            guard_conn.execute(text("SET statement_timeout = '10s'"))
+            result = guard_conn.execute(text(
+                "SELECT 1 FROM pg_indexes "
+                "WHERE indexname = 'idx_channel_posts_channel_ts'"
+            ))
+            if result.fetchone():
+                logger.info("✅ Migrations already applied (guard column exists), skipping")
+                return
     except Exception as e:
-        logger.warning(f"⚠️ Always-run migrations connection failed: {e}")
-
-    # ─────────────────────────────────────────────────────────────────────
-    # APPLIED-MIGRATIONS LEDGER (Alembic-style)
-    # ─────────────────────────────────────────────────────────────────────
-    # Replaces the previous "marker column" guard which caused the
-    # `posts.show_on_raven_shot does not exist` outage: any new migration
-    # added AFTER `users.push_environment` was already in production
-    # silently failed to apply on existing databases.
-    #
-    # New design:
-    #   * `applied_migrations(key TEXT PRIMARY KEY, applied_at TIMESTAMP)`
-    #     stores the set of migrations that have run against THIS database.
-    #   * `key` = the second tuple element ("description") of each migration,
-    #     which is already a unique human-readable string in the codebase.
-    #   * On each startup we read the set, skip migrations whose key is
-    #     present, and INSERT the key for each newly-applied one.
-    #
-    # Bootstrap: on the FIRST startup with this code, the ledger is empty,
-    # so EVERY migration runs once. Every migration in the list is
-    # idempotent (`CREATE … IF NOT EXISTS`, `ALTER … ADD COLUMN IF NOT
-    # EXISTS`, or pure UPDATE statements), so a one-time replay is safe.
-    # Subsequent startups see all keys already in the ledger and become
-    # near-zero overhead — solving the "minutes over cross-region Cloud SQL"
-    # concern that motivated the original guard.
-    try:
-        with _engine.connect() as ledger_conn:
-            ledger_conn.execute(text("SET statement_timeout = '10s'"))
-            ledger_conn.execute(text("""
-                CREATE TABLE IF NOT EXISTS applied_migrations (
-                    key TEXT PRIMARY KEY,
-                    applied_at TIMESTAMP DEFAULT NOW() NOT NULL
-                )
-            """))
-            ledger_conn.commit()
-    except Exception as e:
-        logger.error(f"❌ Could not create applied_migrations ledger: {e}")
-        # Without the ledger we'd risk re-running the whole list every cold
-        # start. Bail out — the always-run block above already ran the
-        # critical schema fixes, so the app stays up.
-        return
-
-    # Pull the set of already-applied keys.
-    applied_keys: set[str] = set()
-    try:
-        with _engine.connect() as read_conn:
-            read_conn.execute(text("SET statement_timeout = '10s'"))
-            rows = read_conn.execute(text("SELECT key FROM applied_migrations")).fetchall()
-            applied_keys = {r[0] for r in rows}
-    except Exception as e:
-        logger.warning(f"⚠️ Could not read applied_migrations: {e}")
-
-    pending = [(sql, desc) for sql, desc in migrations if desc not in applied_keys]
-    if not pending:
-        logger.info(f"✅ Migrations up-to-date ({len(applied_keys)} applied, 0 pending)")
-        return
-
-    logger.info(f"📦 Running {len(pending)} pending migrations ({len(applied_keys)} already applied)")
-
-    # Run each pending migration; mark as applied on success.
-    # Each migration in its own AUTOCOMMIT transaction so a single failure
-    # doesn't abort the rest. Wrapped with a generous per-statement timeout.
-    success = 0
-    failed = 0
-    for i, (sql, description) in enumerate(pending):
+        logger.warning(f"⚠️ Migration guard check failed ({e}), running migrations...")
+    
+    # Use raw connection (not SessionLocal) with a single transaction
+    # to avoid 100+ individual commits (each ~30s due to cross-region latency).
+    # All DDL uses IF NOT EXISTS, so safe to run in one batch.
+    with _engine.connect() as conn:
         try:
-            with _engine.connect() as conn:
-                conn.execute(text("SET statement_timeout = '30s'"))
-                conn.execute(text(sql))
-                conn.execute(
-                    text("INSERT INTO applied_migrations(key) VALUES (:k) ON CONFLICT (key) DO NOTHING"),
-                    {"k": description},
-                )
-                conn.commit()
-                success += 1
-                if (i + 1) % 25 == 0 or (i + 1) == len(pending):
-                    logger.info(f"📦 Migration progress: {i + 1}/{len(pending)}")
-        except Exception as e:
-            err = str(e).lower()
-            # Common benign case: the column / index / table was added by an
-            # earlier always-run entry or by the OLD guard-skipping run.
-            # Treat as success and record the key so we don't keep retrying.
-            #
-            # ⚠️ Match SCHEMA-OBJECT-already-exists patterns specifically.
-            # Naïvely matching "duplicate" is dangerous: PostgreSQL also
-            # writes "duplicate key violates unique constraint" for unrelated
-            # FK / unique violations, which would silently mark a never-applied
-            # migration as applied.
-            benign_patterns = (
-                "already exists",         # "relation X already exists", "column X already exists"
-                "duplicate column",       # PG: duplicate column on ALTER ADD COLUMN
-                "duplicate object",       # PG: duplicate_object SQLSTATE 42710
-                "duplicate_object",
-                "duplicate table",
-                "duplicate schema",
-                "duplicate index",
-            )
-            if any(p in err for p in benign_patterns):
+            # Set a generous per-statement timeout to prevent infinite hangs
+            conn.execute(text("SET statement_timeout = '30s'"))
+            
+            total = len(migrations)
+            for i, (sql, description) in enumerate(migrations):
                 try:
-                    with _engine.connect() as conn2:
-                        conn2.execute(
-                            text("INSERT INTO applied_migrations(key) VALUES (:k) ON CONFLICT (key) DO NOTHING"),
-                            {"k": description},
-                        )
-                        conn2.commit()
-                        success += 1
-                except Exception:
-                    pass
-            else:
-                failed += 1
-                logger.warning(f"⚠️ Migration failed: {description} — {e}")
-
-    logger.info(f"✅ Migrations done: {success} applied, {failed} failed (will retry next startup)")
+                    conn.execute(text(sql))
+                    if (i + 1) % 20 == 0:
+                        logger.info(f"📦 Migrations progress: {i + 1}/{total}")
+                except Exception as e:
+                    err = str(e).lower()
+                    if "already exists" not in err and "duplicate" not in err:
+                        logger.warning(f"⚠️ Migration failed: {description} - {e}")
+            conn.commit()
+            logger.info(f"✅ All {total} migrations applied successfully")
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"❌ Migration batch failed: {e}")
 
 # run_migrations() and setup_admin_user() are now called in @app.on_event("startup")
 
@@ -1057,9 +763,9 @@ class RequestSizeLimitMiddleware:
         if method in ("POST", "PUT", "PATCH"):
             path = scope.get("path", "")
             
-            # Upload routes get a much higher limit for file/voice/video uploads
+            # Upload routes get a higher limit (100MB) for file/voice/video uploads
             if path.startswith("/api/uploads") or path.startswith("/api/snaps"):
-                effective_max = 500 * 1024 * 1024  # 500MB — covers premium 2GB tier after compression
+                effective_max = 100 * 1024 * 1024  # 100MB
             else:
                 effective_max = self.max_size
             
@@ -1098,17 +804,6 @@ app.include_router(knowledge.router)  # Offline Wiki facts
 app.include_router(groups.router)  # Group chats
 app.include_router(reports.router)  # Content moderation reports
 app.include_router(blocks.router)  # User blocking
-app.include_router(invites.router)  # Referral / invite-a-friend → 1 month Raven+ for both
-app.include_router(group_keys.router)  # Per-group symmetric keys (mesh anti-spoof)
-app.include_router(e2ee.router)  # X3DH pre-key bundle distribution for Double Ratchet sessions
-app.include_router(auth_opaque.router)  # OPAQUE PAKE auth (Phase 2 — stubs return 501 until libopaque is wired)
-app.include_router(linked_devices.router)  # Multi-device session registry
-app.include_router(qr_login.router)  # Desktop login via mobile QR scan (WhatsApp-Web pattern)
-app.include_router(nearby.router)  # Nearby people via mesh discovery
-app.include_router(mesh.router)  # Cross-platform mesh bridge (Windows ↔ iOS/Mac)
-app.include_router(gateway.router)  # Mesh-to-Internet Gateway (v1.6 MVP — stubs)
-app.include_router(diagnostics.router)  # MetricKit crash + perf diagnostics intake
-app.include_router(concert_mode.router)  # Auto-group everyone in a venue
 app.include_router(debug_email.router)  # Debug email testing
 app.include_router(ai.router)  # Gemini AI Ask
 app.include_router(events.router)  # Event tracking for recommendations
@@ -1127,8 +822,6 @@ app.include_router(snaps.router)  # Ephemeral photo messages
 app.include_router(message_requests.router)  # Message request accept/decline
 app.include_router(channels.router)  # Broadcast channels (Telegram-style)
 app.include_router(stats.router)  # Public live stats (user count dashboard)
-app.include_router(atsam_prekey.router)  # ATSAM hybrid pre-key bundles + pair-init queue
-app.include_router(ghost_route.router)   # Ghost Route online inbox (tag-keyed mailbox, no per-user routing identifier)
 
 # Mount static files for uploaded images
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
@@ -1192,20 +885,12 @@ async def websocket_inbox(websocket: WebSocket, token: str = Query(None)):
                     return_when=asyncio.FIRST_COMPLETED
                 )
                 
-                # Cancel whichever didn't complete.
-                #
-                # ⚠️ Catch `RuntimeError` too — Starlette raises
-                # `RuntimeError("WebSocket is not connected...")` or
-                # `Cannot call "receive" once a disconnect message has been
-                # received` when receive_text() is awaited on an already-
-                # disconnected socket. Without this catch the cancel-and-
-                # await path leaks the exception → "Task exception was never
-                # retrieved" log spam (was filling the audit logs).
+                # Cancel whichever didn't complete
                 for task in pending:
                     task.cancel()
                     try:
                         await task
-                    except (asyncio.CancelledError, WebSocketDisconnect, RuntimeError):
+                    except (asyncio.CancelledError, WebSocketDisconnect):
                         pass
                 
                 if queue_task in done:
@@ -1225,15 +910,8 @@ async def websocket_inbox(websocket: WebSocket, token: str = Query(None)):
                     continue
                 
                 if client_task in done:
-                    # Client sent a message — OR the websocket disconnected
-                    # and receive_text() raised. Inspect the exception so we
-                    # don't keep recreating a doomed task in the next loop
-                    # iteration (was the source of WS log spam).
-                    exc = client_task.exception()
-                    if exc is not None:
-                        # Disconnect / runtime error → exit cleanly
-                        raise WebSocketDisconnect()
-                    # Client sent a real message (ping/pong or app-level)
+                    # Client sent a message (ping/pong or app-level)
+                    # Just continue the loop
                     continue
                 
                 # Timeout — do a fallback DB catch-up poll every 30s
@@ -1417,14 +1095,6 @@ async def startup_db_init():
             # 3. Setup admin user
             _setup_admin_user()
             
-            # 4. Flush stale feed caches (ensures new response format is served)
-            try:
-                from cache import cache as _cache
-                cleared = _cache.invalidate("feed:*")
-                logger.info(f"🗑️ [Startup] Flushed {cleared} cached feed entries")
-            except Exception as ce:
-                logger.warning(f"⚠️ [Startup] Cache flush failed: {ce}")
-            
             logger.info("✅ [Startup] Database initialization complete")
         except Exception as e:
             logger.error(f"❌ [Startup] Database initialization failed: {e}")
@@ -1435,14 +1105,9 @@ async def startup_db_init():
     
     # Start background cleanup job for stale audio rooms
     asyncio.create_task(_room_cleanup_loop())
-
+    
     # Start background cleanup for expired registration verification tokens
     asyncio.create_task(_registration_token_cleanup_loop())
-
-    # Start the scheduled-message wake-up worker — flips scheduled
-    # messages whose scheduled_at_utc has passed back to the regular
-    # delivery path, fan-outs the WS event + push notification.
-    asyncio.create_task(_scheduled_messages_loop())
 
 
 async def _registration_token_cleanup_loop():
@@ -1483,132 +1148,6 @@ async def _registration_token_cleanup_loop():
             logger.error(f"❌ [TokenCleanup] Error in cleanup loop: {e}")
         
         await _asyncio.sleep(300)  # Every 5 minutes
-
-
-async def _scheduled_messages_loop():
-    """Background task: deliver scheduled messages whose `scheduled_at_utc`
-    has passed.
-
-    Every 30 seconds we sweep for `Message` rows with
-    `send_mode == "scheduled"` and `scheduled_at_utc <= utcnow()`. For each
-    we:
-
-      1. Flip `send_mode` to "instant" so subsequent inbox queries treat
-         it like a regular message.
-      2. Create the `Notification` row that `send_message` would have
-         created on instant send.
-      3. Push the WS event so any open recipient client renders it.
-
-    Push-notifications via APNs are intentionally skipped here — the
-    deferred APNs path in `send_message` is heavy (token lookups + provider
-    round-trip), and the server-side cron worker pattern would need to
-    re-derive sender + recipient context. Clients re-render the message
-    via the WS event or the next inbox poll, which is sufficient.
-    """
-    import asyncio as _asyncio
-
-    # Wait for DB init to complete.
-    await _asyncio.sleep(20)
-
-    logger.info("⏰ [ScheduledMessages] Worker loop started")
-
-    while True:
-        try:
-            from database import SessionLocal
-            from models import Message as _Message, Notification, User as _User
-            from encryption import decrypt_text
-            import json as _json
-
-            db = SessionLocal()
-            try:
-                now = datetime.utcnow()
-                due = db.query(_Message).filter(
-                    _Message.send_mode == "scheduled",
-                    _Message.scheduled_at_utc != None,  # noqa: E711
-                    _Message.scheduled_at_utc <= now,
-                ).limit(50).all()
-
-                for msg in due:
-                    msg.send_mode = "instant"
-
-                    # Compose a friendly preview based on message_type so
-                    # the notification panel reads cleanly without doing
-                    # a fresh decrypt per type.
-                    if msg.message_type == "voice":
-                        preview = "🎤 Voice message"
-                    elif msg.message_type == "image":
-                        preview = "📷 Image"
-                    elif msg.message_type == "video":
-                        preview = "🎬 Video"
-                    elif msg.message_type == "location":
-                        preview = "📍 Location"
-                    else:
-                        try:
-                            decrypted = decrypt_text(msg.content) if msg.content else ""
-                        except Exception:
-                            decrypted = ""
-                        if decrypted == "[DECRYPT_FAILED]":
-                            decrypted = ""
-                        preview = decrypted[:100] if decrypted else "New message"
-
-                    sender = db.query(_User).filter(_User.id == msg.sender_id).first()
-                    notif = Notification(
-                        user_id=msg.recipient_id,
-                        type="message",
-                        data=_json.dumps({
-                            "room_id": msg.sender_id,
-                            "sender_id": msg.sender_id,
-                            "sender_username": sender.username if sender else None,
-                            "sender_avatar": sender.avatar_path if sender else None,
-                            "preview": preview,
-                            "message_type": msg.message_type or "text",
-                        }),
-                        is_read=False,
-                    )
-                    db.add(notif)
-
-                    # WS push so any open client renders the message in
-                    # real time. Mirrors the payload shape from
-                    # send_message's instant path.
-                    try:
-                        decrypted_for_ws = decrypt_text(msg.content) if msg.content else ""
-                    except Exception:
-                        decrypted_for_ws = ""
-                    await ws_manager.notify(msg.recipient_id, {
-                        "id": msg.id,
-                        "sender_id": msg.sender_id,
-                        "recipient_id": msg.recipient_id,
-                        "content": decrypted_for_ws,
-                        "timestamp": msg.timestamp.isoformat() + "Z",
-                        "read_at": None,
-                        "delivered_at": None,
-                        "sender_username": sender.username if sender else None,
-                        "message_type": msg.message_type or "text",
-                        "room_id": msg.sender_id,
-                        "audio_url": msg.audio_url,
-                        "audio_duration_seconds": msg.audio_duration_seconds,
-                        "file_name": msg.file_name,
-                        "file_size": msg.file_size,
-                        "mime_type": msg.mime_type,
-                        "reply_to_message_id": msg.reply_to_message_id,
-                        "reply_to_text_preview": msg.reply_to_text_preview,
-                        "reply_to_sender_name": msg.reply_to_sender_name,
-                        "reply_to_type": msg.reply_to_type,
-                        "expiry_mode": msg.expiry_mode,
-                        "expires_at": msg.expires_at.isoformat() + "Z" if msg.expires_at else None,
-                        "allow_forward": msg.allow_forward if msg.allow_forward is not None else True,
-                    })
-
-                if due:
-                    db.commit()
-                    logger.info(f"⏰ [ScheduledMessages] Delivered {len(due)} scheduled message(s)")
-            finally:
-                db.close()
-
-        except Exception as e:
-            logger.error(f"❌ [ScheduledMessages] Error in worker loop: {e}")
-
-        await _asyncio.sleep(30)
 
 
 async def _room_cleanup_loop():
@@ -1689,43 +1228,21 @@ async def _room_cleanup_loop():
 
 
 def _setup_admin_user():
-    """Create or update admin user and Apple reviewer demo accounts.
-
-    Both passwords MUST be set via environment variables:
-      - ADMIN_BOOTSTRAP_PASSWORD  → admin "Raven-messenger" account
-      - REVIEWER_PASSWORD         → reviewer1 / reviewer2 (Apple review)
-
-    If env vars are missing we SKIP creation/update for that account
-    rather than re-seeding a hardcoded value (which made manual rotation
-    impossible). To rotate, change the env var and restart.
-    """
+    """Create or update admin user and Apple reviewer demo accounts."""
     from sqlalchemy import text
     from database import SessionLocal
     from auth import hash_password
     import uuid
-    import os as _os
-
+    
     admin_username = "Raven-messenger"
-    admin_password = _os.getenv("ADMIN_BOOTSTRAP_PASSWORD")
-    reviewer_password = _os.getenv("REVIEWER_PASSWORD")
-
+    admin_password = "REDACTED-ROTATE-ME"
+    
     db = SessionLocal()
     try:
         # ── 1. Admin account ──
         result = db.execute(text("SELECT id FROM users WHERE username = :u"), {"u": admin_username}).fetchone()
-
-        if not admin_password:
-            if not result:
-                logger.warning(
-                    "⚠️ ADMIN_BOOTSTRAP_PASSWORD not set — admin account '%s' was never created",
-                    admin_username,
-                )
-            else:
-                logger.info(
-                    "ℹ️ ADMIN_BOOTSTRAP_PASSWORD not set — leaving existing admin '%s' password unchanged",
-                    admin_username,
-                )
-        elif not result:
+        
+        if not result:
             user_id = str(uuid.uuid4())
             hashed = hash_password(admin_password)
             db.execute(text("""
@@ -1747,39 +1264,31 @@ def _setup_admin_user():
                 "ph": hashed, "u": admin_username
             })
             db.commit()
-            logger.info(f"✅ Admin user password updated from ADMIN_BOOTSTRAP_PASSWORD: {admin_username}")
+            logger.info(f"✅ Admin user password updated: {admin_username}")
         
         # ── 2. Apple Reviewer demo accounts ──
         # These accounts let Apple reviewers test the app during App Store review.
-        # Password is read from REVIEWER_PASSWORD env var (must be set by deployer
-        # via Cloud Run secret manager). If unset, reviewer accounts are skipped
-        # entirely — DO NOT hardcode a default. To rotate, change the secret and
-        # restart the service.
-        if not reviewer_password:
-            logger.warning(
-                "⚠️ REVIEWER_PASSWORD env var not set — skipping reviewer account "
-                "setup. Set this in Cloud Run before App Review submission."
-            )
-            return
-
+        # Login with USERNAME (not email) — e.g. username: "reviewer1", password: "REDACTED-ROTATE-ME"
         reviewer_accounts = [
             {
                 "username": "reviewer1",
+                "password": "REDACTED-ROTATE-ME",
                 "first_name": "Apple",
                 "last_name": "Reviewer",
                 "email": "apple-reviewer-1@raven-messenger.com",
             },
             {
                 "username": "reviewer2",
+                "password": "REDACTED-ROTATE-ME",
                 "first_name": "App",
                 "last_name": "Reviewer",
                 "email": "apple-reviewer-2@raven-messenger.com",
             },
         ]
-
+        
         import hashlib
         from encryption import encrypt_text
-
+        
         reviewer_ids = []
         for acct in reviewer_accounts:
             row = db.execute(
@@ -1787,7 +1296,7 @@ def _setup_admin_user():
                 {"u": acct["username"]}
             ).fetchone()
             
-            hashed_pw = hash_password(reviewer_password)
+            hashed_pw = hash_password(acct["password"])
             email_hash = hashlib.sha256(acct["email"].lower().encode()).hexdigest()
             
             if not row:

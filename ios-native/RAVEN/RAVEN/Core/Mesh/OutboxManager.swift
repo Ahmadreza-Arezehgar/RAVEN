@@ -7,14 +7,9 @@ import Foundation
 @Observable
 class OutboxManager {
     static let shared = OutboxManager()
-
-    // BUG FIX (2026-05-10): `syncTimer` was declared but never
-    // assigned anywhere — `OutboxManager` no longer drives its own
-    // sync loop (DeliveryJobRunner does). Kept the field as `_unused`
-    // commented-out so a future reader doesn't think a timer is in
-    // play. `isProcessing` was similarly orphaned.
-    // private var syncTimer: Timer?
-    // private var isProcessing = false
+    
+    private var syncTimer: Timer?
+    private var isProcessing = false
     private let messageRepo = MessageRepository.shared
     private let net: any NetworkStatusProviding
     
@@ -62,13 +57,7 @@ class OutboxManager {
     }
     
     // MARK: - Transport: Server (Primary)
-    //
-    // BUG FIX (2026-05-10): `sendViaServer` is DEAD CODE — no callers
-    // remain after Bug 8 fix above moved network delivery to
-    // `DeliveryJobRunner`. Marked private to enforce that. Keep the
-    // body for one release as a reference for the migration; remove
-    // entirely in v1.7.
-    @available(*, deprecated, message: "Network delivery is handled by DeliveryJobRunner; this method is dead code and will be removed in v1.7.")
+    
     private func sendViaServer(_ message: ChatMessage) async {
         do {
             try await messageRepo.updateStatus(clientMessageId: message.id, status: .sending)

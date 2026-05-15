@@ -123,7 +123,7 @@ final class AudioRecorderService: NSObject {
         // Configure audio session
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetoothHFP])
+            try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
             // ⚡ FIX: setActive is blocking (0.5-3s with Bluetooth) — run on background
             await Task.detached(priority: .userInitiated) {
                 try? AVAudioSession.sharedInstance().setActive(true)

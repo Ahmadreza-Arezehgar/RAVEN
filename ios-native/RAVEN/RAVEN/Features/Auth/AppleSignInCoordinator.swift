@@ -135,13 +135,9 @@ class AppleSignInCoordinator: NSObject, ASAuthorizationControllerDelegate, ASAut
                 print("   → Status: Not interactive")
                 #endif
                 completion?(.failure(error))
-            default:
-                // Catches the iOS 18+ cases (matchedExcludedCredential,
-                // credentialImport, credentialExport, …) plus anything Apple
-                // adds later. We don't have UI for them, so surface the
-                // underlying error verbatim.
+            @unknown default:
                 #if DEBUG
-                print("   → Status: ASAuthorization error code \(authError.code.rawValue)")
+                print("   → Status: Unknown ASAuthorization error code")
                 #endif
                 completion?(.failure(error))
             }

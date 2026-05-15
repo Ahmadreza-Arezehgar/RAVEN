@@ -62,7 +62,7 @@ struct RoomCardView: View {
             // Room title + icon
             HStack(spacing: 12) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    RoundedRectangle(cornerRadius: 12)
                         .fill(.linearGradient(
                             colors: [.purple.opacity(0.8), .blue.opacity(0.8)],
                             startPoint: .topLeading,
@@ -101,18 +101,18 @@ struct RoomCardView: View {
                 .fontWeight(.semibold)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 12)
-                .background(.blue, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .background(.blue, in: RoundedRectangle(cornerRadius: 12))
                 .foregroundStyle(.white)
             }
         }
         .padding()
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20))
     }
 }
 
 #Preview {
-    @Previewable @Namespace var namespace
-
+    @Namespace var namespace
+    
     return RoomCardView(
         room: AudioRoom(
             id: "preview-id",

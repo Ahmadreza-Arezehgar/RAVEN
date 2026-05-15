@@ -43,7 +43,7 @@ struct CreateRoomSheet: View {
                         TextField("What's the topic?", text: $title)
                             .textFieldStyle(.plain)
                             .padding()
-                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
                     }
                     
                     // Description Field
@@ -56,7 +56,7 @@ struct CreateRoomSheet: View {
                             .textFieldStyle(.plain)
                             .lineLimit(3...6)
                             .padding()
-                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
                     }
                     
                     // Privacy Picker
@@ -91,7 +91,7 @@ struct CreateRoomSheet: View {
                         }
                         .padding()
                     }
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
                     
                     Spacer(minLength: 40)
                 }

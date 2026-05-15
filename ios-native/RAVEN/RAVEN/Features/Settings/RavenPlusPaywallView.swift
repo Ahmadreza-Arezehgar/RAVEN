@@ -315,33 +315,12 @@ struct RavenPlusPaywallView: View {
                     }
                 }
             } else {
-                // Error / empty state — now surfaces the underlying
-                // RevenueCat reason (no current offering, no packages,
-                // network error, etc.) so users / dev know what to fix
-                // instead of seeing a generic "Unable to load plans".
+                // Error / empty state
                 VStack(spacing: 12) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 22))
-                        .foregroundStyle(.orange)
-
                     Text("Unable to load plans")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(.primary)
-
-                    if let reason = subscriptionService.lastOfferingsError {
-                        Text(reason)
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal, 20)
-                    } else {
-                        Text("Could not reach the subscription store. Check your internet connection and try again.")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal, 20)
-                    }
-
+                        .font(.system(size: 15))
+                        .foregroundStyle(.secondary)
+                    
                     Button {
                         Task { await subscriptionService.fetchOfferings() }
                     } label: {

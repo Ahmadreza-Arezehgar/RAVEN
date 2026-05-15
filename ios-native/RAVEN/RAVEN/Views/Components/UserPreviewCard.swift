@@ -153,7 +153,7 @@ struct UserPreviewCard: View {
         }
         .padding(24)
         .frame(width: 300)
-        // Liquid Glass material effect (iOS 15+)
+        // Apple Native Liquid Glass Effect (iOS 26+)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 28))
         .shadow(color: .black.opacity(0.2), radius: 20, x: 0, y: 10)
         // Native iOS context menu style animation

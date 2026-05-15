@@ -152,40 +152,12 @@ final class BackgroundMeshManager: NSObject, ObservableObject {
         #endif
     }
     
-    /// Request location permission — call from UI when user enables
-    /// background mode. iOS 14+ enforces a two-step prompt: must
-    /// request `WhenInUse` first, THEN later upgrade to `Always`.
-    /// Skipping straight to `requestAlwaysAuthorization` from a
-    /// fresh-install state silently degrades to the WhenInUse prompt
-    /// only — `startMonitoringSignificantLocationChanges` and the
-    /// beacon region get registered but never fire wake events.
-    /// 🟠 BUG FIX (2026-05-10).
+    /// Request location permission - call from UI when user enables background mode
     func requestLocationPermission() {
-        guard let lm = locationManager else { return }
         #if DEBUG
-        print("📍 [BackgroundMesh] Requesting location permission (status=\(lm.authorizationStatus.rawValue))…")
+        print("📍 [BackgroundMesh] Requesting location permission...")
         #endif
-        switch lm.authorizationStatus {
-        case .notDetermined:
-            // Fresh install — start with WhenInUse. The Always upgrade
-            // is requested below once the user grants WhenInUse, via
-            // the delegate callback.
-            lm.requestWhenInUseAuthorization()
-        case .authorizedWhenInUse:
-            // User already granted WhenInUse — now safe to upgrade.
-            lm.requestAlwaysAuthorization()
-        case .authorizedAlways:
-            // Already where we want to be.
-            break
-        case .denied, .restricted:
-            // User said no — surface this to the UI rather than
-            // silently failing.
-            #if DEBUG
-            print("⚠️ [BackgroundMesh] Location permission denied/restricted; background mesh wake will not fire.")
-            #endif
-        @unknown default:
-            break
-        }
+        locationManager?.requestAlwaysAuthorization()
     }
     
     /// Start background location anchor - call after permission granted
@@ -455,22 +427,13 @@ final class BackgroundMeshManager: NSObject, ObservableObject {
         #endif
     }
     
-    /// Remove a background-task entry under the lock. Extracted as a sync
-    /// helper so async callers don't touch the NSLock directly (Swift 6
-    /// flags `NSLock.lock()` from `await`-reachable code as an error).
-    private func removeTrackedTask(forKey key: String) {
-        taskLock.lock()
-        defer { taskLock.unlock() }
-        activeBackgroundTasks.removeValue(forKey: key)
-    }
-
     /// End all active background tasks
     func endAllBackgroundTasks() {
         taskLock.lock()
         let tasks = activeBackgroundTasks
         taskLock.unlock()
         
-        for (_, task) in tasks {
+        for (identifier, task) in tasks {
             if task != .invalid {
                 UIApplication.shared.endBackgroundTask(task)
             }
@@ -511,7 +474,9 @@ final class BackgroundMeshManager: NSObject, ObservableObject {
         box.lock.lock()
         box.id = UIApplication.shared.beginBackgroundTask(withName: timerKey) { [weak self] in
             box.end()
-            self?.removeTrackedTask(forKey: timerKey)
+            self?.taskLock.lock()
+            self?.activeBackgroundTasks.removeValue(forKey: timerKey)
+            self?.taskLock.unlock()
         }
         let assignedId = box.id
         if box.isEnded && assignedId != .invalid {
@@ -581,7 +546,9 @@ final class BackgroundMeshManager: NSObject, ObservableObject {
             
             // 🛑 CPU goes back to sleep
             box.end()
-            self.removeTrackedTask(forKey: timerKey)
+            self.taskLock.lock()
+            self.activeBackgroundTasks.removeValue(forKey: timerKey)
+            self.taskLock.unlock()
         }
     }
 

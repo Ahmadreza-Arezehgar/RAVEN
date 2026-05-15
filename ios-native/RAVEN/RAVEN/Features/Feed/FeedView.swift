@@ -90,33 +90,7 @@ struct FeedView: View {
                 .offset(y: isChromeHidden ? -120 : 0)
                 .opacity(isChromeHidden ? 0 : 1)
                 .animation(.spring(response: 0.32, dampingFraction: 0.86), value: isChromeHidden)
-            
-            // 3) Upload Status Toast (appears below header during background upload)
-            if PostUploadManager.shared.showToast {
-                VStack {
-                    PostUploadToast(
-                        state: PostUploadManager.shared.state,
-                        onRetry: { PostUploadManager.shared.retry() },
-                        onDismiss: { PostUploadManager.shared.dismissToast() }
-                    )
-                    .transition(.move(edge: .top).combined(with: .opacity))
-                    Spacer()
-                }
-                .padding(.top, headerHeight + 8)
-                .animation(.spring(response: 0.35, dampingFraction: 0.8), value: PostUploadManager.shared.state)
-            }
-
-            // 4) 🌐 Disaster Mode banner — shows when offline + mesh peers
-            // connected. Pinned BELOW the floating Local/Friends header so
-            // it doesn't overlap the segmented pill the user came here to use.
-            VStack {
-                DisasterModeBanner()
-                Spacer()
-            }
-            .padding(.top, headerHeight + 14)
-            .allowsHitTesting(false)
         }
-        .animation(.spring(response: 0.3, dampingFraction: 0.85), value: PostUploadManager.shared.showToast)
         .task {
             // Fetch current user ID for ownership check
             currentUserId = await KeychainService.shared.getUserId() ?? ""
@@ -125,7 +99,7 @@ struct FeedView: View {
         // Auto-refresh every 30 seconds (reduced from 10s to prevent layout thrashing)
         // ✅ FIX Bug 9: Move Task{} outside withTransaction so the
         // transaction context actually applies to the @Published mutations.
-        .onReceive(Timer.publish(every: 60, on: .main, in: .common).autoconnect()) { _ in
+        .onReceive(Timer.publish(every: 30, on: .main, in: .common).autoconnect()) { _ in
             // ✅ FIX Bug 5: Only refresh when app is in foreground.
             // Without this guard, the timer fires in background every 30s,
             // causing iOS Watchdog to kill the app (0x8badf00d).
@@ -259,9 +233,6 @@ struct FeedView: View {
     // MARK: - Feed Content
     // ✅ FIX Bug 5: Use ZStack+opacity instead of switch to preserve both
     // ScrollViews (and their scroll positions) across tab changes.
-    // ✨ A 0.22s ease-in-out on the opacity gives a buttery cross-fade
-    //    when the user toggles Local ↔ Friends — without re-allocating
-    //    either ScrollView (scroll positions persist).
     private var feedContent: some View {
         ZStack {
             localFeedList
@@ -271,7 +242,6 @@ struct FeedView: View {
                 .opacity(selectedTab == .friends ? 1 : 0)
                 .allowsHitTesting(selectedTab == .friends)
         }
-        .animation(.easeInOut(duration: 0.22), value: selectedTab)
     }
     
     // MARK: - Local Feed List
@@ -302,22 +272,16 @@ struct FeedView: View {
                     liveRoomsSection(rooms: localRooms, title: "Live Now")
                 }
                 
-                if feedStore.isLoadingLocal && feedStore.mergedLocalPosts.isEmpty && !feedStore.isLoadingFromCache {
-                    // Only show spinner AFTER cache attempt completes with nothing
+                if feedStore.isLoadingLocal && feedStore.mergedLocalPosts.isEmpty {
                     ProgressView()
                         .padding(.top, 100)
-                } else if feedStore.mergedLocalPosts.isEmpty && localRooms.isEmpty && feedStories.isEmpty && feedStore.isInitialLoadComplete {
+                } else if feedStore.mergedLocalPosts.isEmpty && localRooms.isEmpty && feedStories.isEmpty {
                     emptyStateView(message: "No posts yet")
                 } else {
                     // ✅ FIX Bug 1: Removed Array(enumerated()) — it copied the entire
                     // array on every state change, causing OOM on large feeds.
                     // ✅ FIX Bug 2: Replaced NavigationLink with Button + DeepLinkRouter
                     // to prevent simultaneous double-push when inner buttons are tapped.
-                    // ✨ Animate insertions/removals on the loop itself so the
-                    //    per-row `.transition(...)` actually fires (transitions
-                    //    require an `animation(_:value:)` ancestor watching the
-                    //    identity collection). Watches `.count` — cheaper than
-                    //    deep-equating the full Post array on each mutation.
                         // Posts are already sorted by algorithm on server
                         ForEach(uniqueLocalPosts, id: \.id) { post in
                             VStack(spacing: 0) {
@@ -348,15 +312,11 @@ struct FeedView: View {
                                         },
                                         onHashtagTap: { tag in
                                             selectedHashtag = tag
-                                        },
-                                        onMentionTap: { username in
-                                            resolveMentionToProfile(username)
                                         }
                                     )
                                     .contentShape(Rectangle())
                                     .onTapGesture {
-                                        // Only navigate for text/voice posts — media posts show content inline
-                                        guard post.allMedia.isEmpty else { return }
+                                        // 🟢 Direct navigation — no DeepLinkRouter delay
                                         selectedPostItem = FeedPostNavigationItem(id: post.id)
                                     }
                                 }
@@ -366,28 +326,12 @@ struct FeedView: View {
                                     Divider()
                                 }
                             }
-                            // 🎨 Buttery spring transition for posts as they
-                            //   enter the viewport — a subtle move-up + fade
-                            //   so the feed feels alive without distracting
-                            //   from reading. Spring physics > linear easing
-                            //   for "natural" feel; response 0.45 +
-                            //   dampingFraction 0.85 lands without overshoot.
-                            .transition(.asymmetric(
-                                insertion: .move(edge: .bottom).combined(with: .opacity),
-                                removal: .opacity
-                            ))
                             .onAppear {
-                                // 🟢 BUG FIX (2026-05-14): use a position-aware
-                                // tail-comparison instead of `firstIndex(where:)`
-                                // — the previous version scanned the entire
-                                // array O(N) per onAppear, which on a 200-post
-                                // feed cost 200 × 200 = 40,000 string compares
-                                // every full scroll. We only need to know
-                                // "is this post in the last 6?", which is a
-                                // suffix check on the live array.
+                                // 🟢 O(1) pagination trigger — no array allocations
                                 let posts = feedStore.mergedLocalPosts
-                                let tail = posts.suffix(6)
-                                if tail.contains(where: { $0.id == post.id }) {
+                                let threshold = max(0, posts.count - 6)
+                                
+                                if let idx = posts.firstIndex(where: { $0.id == post.id }), idx >= threshold {
                                     Task {
                                         guard !feedStore.isLoadingMoreLocal && !feedStore.isBackfillingLocal else { return }
                                         if feedStore.hasMoreLocal {
@@ -395,27 +339,6 @@ struct FeedView: View {
                                         } else if feedStore.hasMoreRecommendedLocal {
                                             await feedStore.fetchRecommendedBackfillLocal()
                                         }
-                                    }
-                                }
-                                
-                                // ⚡ PERF: Prefetch images for 3 cards ahead — eliminates placeholder flash on fast scroll
-                                if let idx = posts.firstIndex(where: { $0.id == post.id }) {
-                                    var urlsToPrefetch: [URL] = []
-                                    let lookAhead = min(idx + 4, posts.count) // 3 cards ahead
-                                    for i in (idx + 1)..<lookAhead {
-                                        let upcoming = posts[i]
-                                        // Prefetch avatar
-                                        if let avatarUrl = AppConfig.mediaURL(from: upcoming.authorAvatar) {
-                                            urlsToPrefetch.append(avatarUrl)
-                                        }
-                                        // Prefetch first media image
-                                        if let firstMedia = upcoming.allMedia.first, !firstMedia.isVideo,
-                                           let mediaUrl = URL(string: firstMedia.url) {
-                                            urlsToPrefetch.append(mediaUrl)
-                                        }
-                                    }
-                                    if !urlsToPrefetch.isEmpty {
-                                        ImageCache.shared.prefetch(urls: urlsToPrefetch)
                                     }
                                 }
                             }
@@ -454,13 +377,6 @@ struct FeedView: View {
                     // }
                 }
             } // LazyVStack
-            // ✨ Animate insertions/removals on the local feed.
-            //   Watching `.count` (an Int) is cheap; watching the full
-            //   `mergedLocalPosts` array would force a deep-equality check
-            //   on every state mutation. Spring physics (response 0.45,
-            //   damping 0.85) feels natural without overshoot — slow
-            //   enough to be noticed, fast enough not to feel laggy.
-            .animation(.spring(response: 0.45, dampingFraction: 0.85), value: feedStore.mergedLocalPosts.count)
             } // VStack
         } // ScrollView
         .coordinateSpace(name: "feedScroll")
@@ -504,11 +420,10 @@ struct FeedView: View {
                     liveRoomsSection(rooms: friendsRooms, title: "Friends Live")
                 }
                 
-                if feedStore.isLoadingFriends && feedStore.friendsPosts.isEmpty && !feedStore.isLoadingFromCache {
-                    // Only show spinner AFTER cache attempt completes with nothing
+                if feedStore.isLoadingFriends && feedStore.friendsPosts.isEmpty {
                     ProgressView()
                         .padding(.top, 100)
-                } else if feedStore.friendsPosts.isEmpty && friendsRooms.isEmpty && feedStories.isEmpty && feedStore.isInitialLoadComplete {
+                } else if feedStore.friendsPosts.isEmpty && friendsRooms.isEmpty && feedStories.isEmpty {
                     emptyStateView(message: "No friend posts yet")
                 } else {
                     // ✅ FIX Bug 1 & 2: Same fixes as local feed — no enumerated(), Button instead of NavigationLink.
@@ -542,15 +457,11 @@ struct FeedView: View {
                                         },
                                         onHashtagTap: { tag in
                                             selectedHashtag = tag
-                                        },
-                                        onMentionTap: { username in
-                                            resolveMentionToProfile(username)
                                         }
                                     )
                                     .contentShape(Rectangle())
                                     .onTapGesture {
-                                        // Only navigate for text/voice posts — media posts show content inline
-                                        guard post.allMedia.isEmpty else { return }
+                                        // 🟢 Direct navigation — no DeepLinkRouter delay
                                         selectedPostItem = FeedPostNavigationItem(id: post.id)
                                     }
                                 }
@@ -573,25 +484,6 @@ struct FeedView: View {
                                         } else if feedStore.hasMoreRecommendedFriends {
                                             await feedStore.fetchRecommendedBackfillFriends()
                                         }
-                                    }
-                                }
-                                
-                                // ⚡ PERF: Prefetch images for 3 cards ahead
-                                if let idx = posts.firstIndex(where: { $0.id == post.id }) {
-                                    var urlsToPrefetch: [URL] = []
-                                    let lookAhead = min(idx + 4, posts.count)
-                                    for i in (idx + 1)..<lookAhead {
-                                        let upcoming = posts[i]
-                                        if let avatarUrl = AppConfig.mediaURL(from: upcoming.authorAvatar) {
-                                            urlsToPrefetch.append(avatarUrl)
-                                        }
-                                        if let firstMedia = upcoming.allMedia.first, !firstMedia.isVideo,
-                                           let mediaUrl = URL(string: firstMedia.url) {
-                                            urlsToPrefetch.append(mediaUrl)
-                                        }
-                                    }
-                                    if !urlsToPrefetch.isEmpty {
-                                        ImageCache.shared.prefetch(urls: urlsToPrefetch)
                                     }
                                 }
                             }
@@ -626,8 +518,6 @@ struct FeedView: View {
                     }
                 }
             } // LazyVStack
-            // ✨ Same buttery spring on the friends feed.
-            .animation(.spring(response: 0.45, dampingFraction: 0.85), value: feedStore.friendsPosts.count)
             } // VStack
         } // ScrollView
         .coordinateSpace(name: "feedScroll")
@@ -735,30 +625,37 @@ struct FeedView: View {
     
     // MARK: - Load Initial Data
     private func loadInitialData() async {
-        // ⚡ FAST PATH: If eager warm already populated posts, skip to network fetch immediately
-        if !feedStore.mergedLocalPosts.isEmpty || !feedStore.friendsPosts.isEmpty {
-            // Posts already visible from cache — go straight to server refresh
-        } else {
-            // Fallback: if eager warm somehow missed, load from cache now
+        // ۱. خواندن سریع کش (< 10ms)
+        if feedStore.mergedLocalPosts.isEmpty && feedStore.friendsPosts.isEmpty {
             await feedStore.loadFromCache()
         }
         
-        // 🚀 Fire visible-tab fetch AND rooms in parallel (independent endpoints,
-        // both bounded by RTT not bandwidth). Secondary tab follows in the
-        // background so the user never waits on it.
-        let visibleTab = feedStateManager.selectedFeedTab
-        async let visible: () = (visibleTab == .local)
-            ? feedStore.fetchMergedLocalFeed()
-            : feedStore.fetchFriendsFeed()
-        async let rooms: () = self.loadRooms()
-        _ = await (visible, rooms)
-
-        // Secondary tab — kick off after visible content is on screen
+        // 🚀 ۲. به SwiftUI اجازه می‌دهیم فورا پست‌های کش‌شده را روی صفحه رندر کند
+        await Task.yield()
+        
+        let currentTab = selectedTab
+        
+        // ۳. ریکوئست به سرور را داخل یک Task جدید می‌گذاریم تا UI را مسدود نکند
         Task {
-            if visibleTab == .local {
-                await feedStore.fetchFriendsFeed()
-            } else {
+            if currentTab == .local {
                 await feedStore.fetchMergedLocalFeed()
+            } else {
+                await feedStore.fetchFriendsFeed()
+            }
+            
+            // لود بقیه موارد در پس‌زمینه
+            Task.detached(priority: .background) {
+                if currentTab == .local {
+                    async let friends: () = feedStore.fetchFriendsFeed()
+                    async let stories: () = { }()  // ❌ DISABLED: Stories feature disabled
+                    async let rooms: () = self.loadRooms()
+                    _ = await (friends, stories, rooms)
+                } else {
+                    async let local: () = feedStore.fetchMergedLocalFeed()
+                    async let stories: () = { }()  // ❌ DISABLED: Stories feature disabled
+                    async let rooms: () = self.loadRooms()
+                    _ = await (local, stories, rooms)
+                }
             }
         }
     }
@@ -838,31 +735,6 @@ struct FeedView: View {
             #if DEBUG
             print("❌ [FeedView] Failed to load stories: \(error)")
             #endif
-        }
-    }
-    
-    // MARK: - Resolve @mention username → profile navigation
-    private func resolveMentionToProfile(_ username: String) {
-        Task {
-            do {
-                struct UserResult: Decodable {
-                    let id: String
-                    let username: String
-                }
-                let results: [UserResult] = try await NetworkService.shared.get(
-                    path: "/api/users/search?q=\(username)"
-                )
-                // Find exact username match (case-insensitive)
-                if let match = results.first(where: { $0.username.lowercased() == username.lowercased() }) {
-                    await MainActor.run {
-                        navigateToProfileUserId = match.id
-                    }
-                }
-            } catch {
-                #if DEBUG
-                print("❌ [Mention] Failed to resolve @\(username): \(error)")
-                #endif
-            }
         }
     }
     
@@ -985,9 +857,9 @@ struct CompactRoomCard: View {
         }
         .padding(12)
         .frame(width: 200)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
         .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: 16)
                 .strokeBorder(
                     LinearGradient(
                         colors: [.white.opacity(0.3), .clear],

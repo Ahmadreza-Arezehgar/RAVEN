@@ -74,16 +74,8 @@ actor MeshDedupRepository: DeduplicationProviding {
         await periodicCleanup()
     }
     
-    /// Check if nonce has been used (replay prevention).
-    /// BUG FIX (2026-05-10): the previous version's `insertToDatabase`
-    /// stored `nonce ?? ""` for messages without a nonce, which collided
-    /// every empty-nonce caller against every other empty-nonce caller
-    /// — a freshly-arrived no-nonce message looked "already used" and
-    /// got silently dropped. Now `insertToDatabase` writes NULL for
-    /// missing nonces (via NSNull binding), and this method short-
-    /// circuits to `false` for empty input rather than asking the DB.
+    /// Check if nonce has been used (replay prevention)
     func isNonceUsed(_ nonce: String) async -> Bool {
-        guard !nonce.isEmpty else { return false }
         let rows = try? await db.query(
             "SELECT 1 FROM mesh_dedup_cache WHERE nonce = ? LIMIT 1",
             params: [nonce]
@@ -123,14 +115,9 @@ actor MeshDedupRepository: DeduplicationProviding {
     
     private func insertToDatabase(messageId: String, nonce: String?) async {
         let now = PerformanceConstants.iso8601.string(from: Date())
-        // BUG FIX (2026-05-10): bind NSNull when nonce is nil so the
-        // SQL column is genuinely NULL — preserves the column's
-        // semantics for `IS NULL` filters AND prevents the
-        // empty-string collision pathology described in `isNonceUsed`.
-        let nonceParam: Any = (nonce?.isEmpty == false) ? nonce! : NSNull()
         try? await db.execute(
             "INSERT OR IGNORE INTO mesh_dedup_cache (message_id, nonce, processed_at) VALUES (?, ?, ?)",
-            params: [messageId, nonceParam, now]
+            params: [messageId, nonce ?? "", now]
         )
     }
     

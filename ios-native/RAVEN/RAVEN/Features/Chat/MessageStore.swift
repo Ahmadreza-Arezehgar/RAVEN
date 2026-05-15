@@ -7,12 +7,6 @@ import SwiftUI
 @MainActor
 @Observable
 class MessageStore {
-    /// Cached decoder used for hydrating per-row JSON payloads
-    /// (mentions, etc). 🟡 BUG FIX (2026-05-10): was previously
-    /// allocated fresh per row in `parseMessage`, costing measurable
-    /// time on each scroll-paginate.
-    static let cachedJSONDecoder = JSONDecoder()
-
     var messages: [ChatMessage] = []
     var isLoading = false
     var isSending = false
@@ -28,10 +22,9 @@ class MessageStore {
     private let messageRepo = MessageRepository.shared
     private var lastFetchedTimestamp: String?
     private var pollTimer: Timer?
-    @ObservationIgnored private var meshMessageObserver: NSObjectProtocol?
-    @ObservationIgnored private var meshACKObserver: NSObjectProtocol?
-    @ObservationIgnored private var mediaDownloadObserver: NSObjectProtocol?
-    @ObservationIgnored private var editRemoteObserver: NSObjectProtocol?
+    nonisolated(unsafe) private var meshMessageObserver: NSObjectProtocol?
+    nonisolated(unsafe) private var meshACKObserver: NSObjectProtocol?
+    nonisolated(unsafe) private var mediaDownloadObserver: NSObjectProtocol?
     private var ackedMessageIds: Set<String> = []  // Prevent re-sending ACKs within session
     
     // Notification for mesh message received
@@ -89,33 +82,10 @@ class MessageStore {
             queue: .main
         ) { [weak self] notification in
             guard let self = self, let msgId = notification.userInfo?["messageId"] as? String else { return }
-
+            
             Task { @MainActor in
                 if self.messages.contains(where: { $0.id == msgId }) {
                     await self.loadFromDB()
-                }
-            }
-        }
-
-        // 🆕 Remote edit (peer edited a message they sent us). RealtimeEngine
-        // posts this when /ws/inbox delivers a `message_edited` event; we
-        // patch the bubble in place instead of refetching the whole thread.
-        editRemoteObserver = NotificationCenter.default.addObserver(
-            forName: Notification.Name("MessageEditedRemote"),
-            object: nil,
-            queue: .main
-        ) { [weak self] note in
-            guard let self,
-                  let info = note.userInfo,
-                  let messageId = info["messageId"] as? String,
-                  let content = info["content"] as? String else { return }
-            let editedAt = info["editedAt"] as? Date ?? Date()
-            Task { @MainActor in
-                if let idx = self.messages.firstIndex(where: { $0.serverId == messageId || $0.id == messageId }) {
-                    self.messages[idx].text = content
-                    self.messages[idx].editedAt = editedAt
-                    let clientId = self.messages[idx].id
-                    try? await self.messageRepo.updateText(clientMessageId: clientId, newText: content)
                 }
             }
         }
@@ -132,13 +102,9 @@ class MessageStore {
         if let obs = mediaDownloadObserver {
             NotificationCenter.default.removeObserver(obs)
         }
-        if let obs = editRemoteObserver {
-            NotificationCenter.default.removeObserver(obs)
-        }
         meshMessageObserver = nil
         meshACKObserver = nil
         mediaDownloadObserver = nil
-        editRemoteObserver = nil
     }
     
     deinit {
@@ -244,7 +210,7 @@ class MessageStore {
         
         do {
             // Try fetching the message from the conversation endpoint (force full, no since filter)
-            let queryItems = [URLQueryItem(name: "limit", value: "50")]
+            var queryItems = [URLQueryItem(name: "limit", value: "50")]
             
             if isGroup {
                 let groupMessages: [GroupMessageResponse] = try await NetworkService.shared.get(
@@ -409,9 +375,7 @@ class MessageStore {
                         sendMode: nil,
                         scheduledAtUtc: nil
                     )
-                    var withPoll = chatMessage
-                    withPoll.pollId = gm.pollId
-                    newMessages.append(withPoll)
+                    newMessages.append(chatMessage)
                 }
                 
                 // Step 3: Batch upsert all new messages in single transaction
@@ -545,46 +509,6 @@ class MessageStore {
     
     // MARK: - Send Text Message
     
-    /// Schedule a text message for delivery at `scheduledAt`. The server
-    /// stores it with `send_mode = "scheduled"` and the background
-    /// worker flips it to instant + pushes it to the recipient when the
-    /// time arrives. Skips the local outbox path because the message
-    /// shouldn't appear in the open chat until delivery; the next inbox
-    /// poll after the worker fires will surface it on both ends.
-    func sendScheduledText(_ text: String, scheduledAt: Date) async {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        guard !isGroup else {
-            #if DEBUG
-            print("⏰ [Schedule] Group scheduling not supported")
-            #endif
-            return
-        }
-        let recipientId = extractRecipientId()
-        let clientId = UUID().uuidString
-        do {
-            let _: SendMessageResponse = try await NetworkService.shared.post(
-                path: "/api/messages/send",
-                body: SendMessageRequest(
-                    messageId: clientId,
-                    recipientId: recipientId,
-                    content: trimmed,
-                    messageType: "text",
-                    sendMode: "scheduled",
-                    scheduledAtUtc: scheduledAt
-                ),
-                idempotencyKey: clientId
-            )
-            #if DEBUG
-            print("⏰ [Schedule] Queued for \(scheduledAt) → \(recipientId.prefix(8))")
-            #endif
-        } catch {
-            #if DEBUG
-            print("❌ [Schedule] Failed: \(error)")
-            #endif
-        }
-    }
-
     func sendText(_ text: String, replyTo: ChatMessage? = nil, entities: [MentionEntity]? = nil, clientMessageId: String? = nil) async throws {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         
@@ -834,31 +758,9 @@ class MessageStore {
     /// Rule: "همیشه اولویت ارسال با اینترنت است"
     /// v2.0: Uses persistent jobs + timeout-based mesh fallback
     private func attemptDelivery(_ message: ChatMessage) async {
-        var message = message  // mutable local copy so E2EE can rewrite the body
         let clientId = message.id
         let recipientId = message.recipientId
-
-        // 🔐 E2EE: wrap plaintext into a Double-Ratchet ciphertext for
-        // transport. Local DB + UI already hold the plaintext (set
-        // during sendText); we only swap it out on the wire copy so
-        // both the server and mesh paths carry the encrypted body.
-        // No-ops when feature flag is off, in groups, or when wrap
-        // throws — in those cases the original plaintext is sent.
-        if message.type == .text,
-           let plaintextText = message.text,
-           !plaintextText.isEmpty,
-           !E2EEMessagePipeline.isEncrypted(plaintextText) {
-            let wrapped = await E2EEMessagePipeline.wrapOutgoing(
-                plaintext: plaintextText,
-                recipientUserId: recipientId,
-                messageId: clientId,
-                isGroup: isGroup
-            )
-            if wrapped != plaintextText {
-                message.text = wrapped
-            }
-        }
-
+        
         #if DEBUG
         print("[Route] deliver mid=\(clientId.prefix(8)) to=\(recipientId.prefix(8)) strategy=parallel")
         #endif
@@ -903,29 +805,6 @@ class MessageStore {
                 #if DEBUG
                 print("[Route] ❌ server failed: \(error.localizedDescription)")
                 #endif
-                // Surface user-actionable 403 / 4xx server messages to
-                // the open ChatView so the user knows a send was gated
-                // (e.g. message-request quota hit, recipient set
-                // friends-only privacy). Network / 5xx errors stay
-                // silent — the mesh path is already retrying those.
-                if case let APIError.httpError(code, detail) = error,
-                   code >= 400 && code < 500, !detail.isEmpty {
-                    await MainActor.run {
-                        NotificationCenter.default.post(
-                            name: Notification.Name("ChatSendErrorToast"),
-                            object: nil,
-                            userInfo: ["message": detail]
-                        )
-                    }
-                } else if case APIError.forbidden = error {
-                    await MainActor.run {
-                        NotificationCenter.default.post(
-                            name: Notification.Name("ChatSendErrorToast"),
-                            object: nil,
-                            userInfo: ["message": "Couldn't send: access denied."]
-                        )
-                    }
-                }
             }
         } : nil
         
@@ -1001,12 +880,7 @@ class MessageStore {
                         recipientOnline: true
                     )
                 } else {
-                    // 1:1 message: use regular endpoint. Pull the
-                    // per-thread disappearing-message default the user has
-                    // toggled on the chat composer (UserDefaults-keyed by
-                    // roomId) and pass it through so the server can stamp
-                    // expires_at and enforce the TTL.
-                    let expiryMode = ChatExpirySettings.mode(forRoom: self.roomId)?.rawValue
+                    // 1:1 message: use regular endpoint
                     let response: SendMessageResponse = try await NetworkService.shared.post(
                         path: "/api/messages/send",
                         body: SendMessageRequest(
@@ -1015,8 +889,7 @@ class MessageStore {
                             content: message.text ?? "",
                             messageType: message.type.rawValue,
                             audioUrl: nil,
-                            replyToMessageId: nil,
-                            expiryMode: expiryMode
+                            replyToMessageId: nil
                         ),
                         idempotencyKey: message.id
                     )
@@ -1137,10 +1010,7 @@ class MessageStore {
             print("✅ [MessageStore] Group message sent via server: \(clientId)")
             #endif
         } else {
-            // 1:1 message: use regular endpoint. Pull the per-thread
-            // disappearing-message default for this room and forward it
-            // to the server so it can stamp expires_at + enforce the TTL.
-            let expiryMode = ChatExpirySettings.mode(forRoom: self.roomId)?.rawValue
+            // 1:1 message: use regular endpoint
             let response: SendMessageResponse = try await NetworkService.shared.post(
                 path: "/api/messages/send",
                 body: SendMessageRequest(
@@ -1149,8 +1019,7 @@ class MessageStore {
                     content: message.text ?? "",
                     messageType: message.type.rawValue,
                     audioUrl: nil,
-                    replyToMessageId: message.replyToMessageId,
-                    expiryMode: expiryMode
+                    replyToMessageId: message.replyToMessageId
                 ),
                 idempotencyKey: clientId  // Duplicate prevention
             )
@@ -1339,7 +1208,7 @@ class MessageStore {
         // 3. ⚡️ Send Mesh Read ACKs immediately in background!
         if !newlyReadMeshMessages.isEmpty && !PremiumLimits.ghostModeEnabled {
             Task.detached(priority: .background) {
-                let deviceId = DeviceIdentityService.shared.fingerprint ?? ""
+                let deviceId = await DeviceIdentityService.shared.fingerprint ?? ""
                 for msg in newlyReadMeshMessages {
                     let ack = MeshACKEnvelope(
                         originalMessageId: msg.id,
@@ -1355,54 +1224,23 @@ class MessageStore {
         }
     }
     
-    // MARK: - Edit Message
-
-    /// Edit a sent text message. Updates the local copy optimistically and
-    /// then PATCHes `/api/messages/{id}` so the change persists across
-    /// devices and propagates to the recipient via the inbox WebSocket.
-    /// On server failure we roll back to keep the bubble truthful.
+    // MARK: - Edit Message (Local Only)
+    
+    /// Edit a sent text message — updates text + editedAt locally.
+    /// TODO: Call server edit API when available.
     func editMessage(id: String, newText: String) async {
-        guard let idx = messages.firstIndex(where: { $0.id == id }) else { return }
-        let oldText = messages[idx].text
-        let oldEditedAt = messages[idx].editedAt
-
-        // 1. Optimistic local update
-        messages[idx].text = newText
-        messages[idx].editedAt = Date()
-        try? await messageRepo.updateText(clientMessageId: id, newText: newText)
-
-        // 2. Server edit. The DTO uses snake_case to match NetworkService's
-        // global encoder; the response carries the canonical edited_at the
-        // server stamped, so we adopt that timestamp on success.
-        struct EditBody: Encodable { let content: String }
-        struct EditResponse: Decodable { let id: String; let editedAt: Date? }
-        do {
-            // Server route is PATCH /api/messages/{server_id}, but we send
-            // by server_id only — abort silently if we don't have one yet
-            // (the message hasn't synced upstream).
-            let serverId = messages[idx].serverId ?? id
-            let resp: EditResponse = try await NetworkService.shared.patch(
-                path: "/api/messages/\(serverId)",
-                body: EditBody(content: newText)
-            )
-            if let serverEditedAt = resp.editedAt,
-               let idx2 = messages.firstIndex(where: { $0.id == id }) {
-                messages[idx2].editedAt = serverEditedAt
-            }
-            #if DEBUG
-            print("✏️ [MessageStore] Edited message \(id.prefix(8)) on server")
-            #endif
-        } catch {
-            // Roll back on failure so the bubble matches reality.
-            if let i = messages.firstIndex(where: { $0.id == id }) {
-                messages[i].text = oldText
-                messages[i].editedAt = oldEditedAt
-            }
-            try? await messageRepo.updateText(clientMessageId: id, newText: oldText ?? "")
-            #if DEBUG
-            print("❌ [MessageStore] Edit failed, rolled back: \(error)")
-            #endif
+        // 1. Update in-memory
+        if let idx = messages.firstIndex(where: { $0.id == id }) {
+            messages[idx].text = newText
+            messages[idx].editedAt = Date()
         }
+        
+        // 2. Update in DB
+        try? await messageRepo.updateText(clientMessageId: id, newText: newText)
+        
+        #if DEBUG
+        print("✏️ [MessageStore] Edited message \(id.prefix(8)) → \"\(newText.prefix(40))\"")
+        #endif
     }
     
     // MARK: - Delete Message
@@ -1466,19 +1304,9 @@ class MessageStore {
     @MainActor
     func startPolling() {
         stopPolling()
-        // 🔋 BUG FIX (2026-05-10): skip the poll when the WebSocket
-        // is delivering messages already. The previous 10s timer
-        // fired regardless, duplicating every read of /api/messages
-        // for the open chat alongside the WS push. Costs measurable
-        // battery + bandwidth on long chat sessions.
         pollTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                guard let self else { return }
-                if RealtimeEngine.shared.connectionState == .websocket {
-                    // WS is live — it pushes deltas; polling is redundant.
-                    return
-                }
-                await self.fetchMessages()
+            Task {
+                await self?.fetchMessages()
             }
         }
     }
@@ -1519,10 +1347,6 @@ class MessageStore {
                (text.count > 100 && PerformanceConstants.base64Regex?.firstMatch(in: text, options: [], range: nsRange) != nil) {
                 return "Message"
             }
-            // Mistyped contact-card stored as text — see Conversation.preview.
-            if ContactSharePayload.looksLikeContactCard(text) {
-                return "👤 Shared contact"
-            }
             return String(text.prefix(50))
         case .image:
             return "📷 Photo"
@@ -1544,15 +1368,11 @@ class MessageStore {
             return "📍 Location"
         case .postShare:
             return "📬 Shared post"
-        case .contactCard:
-            return "👤 Shared contact"
-        case .poll:
-            return "📊 Poll"
         case .system:
             return "📢 Notification"
         }
     }
-
+    
     nonisolated private func parseMessage(from row: [String: Any]) -> ChatMessage? {
         // Debug: check each required field
         let id = row["client_message_id"] as? String
@@ -1643,13 +1463,10 @@ class MessageStore {
         // Map edited_at from DB
         msg.editedAt = (row["edited_at"] as? String).flatMap { SharedDateFormatters.parseISO8601($0) }
         
-        // Decode @mention entities from DB.
-        // 🟡 BUG FIX (2026-05-10): reuse the cached decoder instead
-        // of allocating a fresh one per row. On a 50-message page
-        // hydration that's 50 throwaway decoder constructions.
+        // Decode @mention entities from DB
         if let entitiesStr = row["entities_json"] as? String,
            let data = entitiesStr.data(using: .utf8) {
-            msg.entities = try? Self.cachedJSONDecoder.decode([MentionEntity].self, from: data)
+            msg.entities = try? JSONDecoder().decode([MentionEntity].self, from: data)
         }
         
         msg.forwardedFromChannelId = row["forwarded_from_channel"] as? String
@@ -1842,36 +1659,6 @@ struct APIMessageResponse: Decodable {
 // Server returns array directly
 typealias MessageFetchResponse = [APIMessageResponse]
 
-// MARK: - Per-thread disappearing-message default
-//
-// The chat composer exposes a small Liquid Glass picker that toggles a
-// disappearing-message mode on for the whole conversation. The selection
-// is local to the device — each user picks their own outgoing-message TTL
-// (mirrors WhatsApp/Signal's "default disappearing for this chat" model).
-//
-// Stored as a single ExpiryMode raw-value string in UserDefaults under a
-// key derived from the room id. Returns nil when the user hasn't enabled
-// it for this thread.
-enum ChatExpirySettings {
-    private static func key(forRoom roomId: String) -> String {
-        "chat.expiry.\(roomId)"
-    }
-
-    static func mode(forRoom roomId: String) -> ExpiryMode? {
-        guard let raw = UserDefaults.standard.string(forKey: key(forRoom: roomId)) else { return nil }
-        return ExpiryMode(rawValue: raw)
-    }
-
-    static func setMode(_ mode: ExpiryMode?, forRoom roomId: String) {
-        let k = key(forRoom: roomId)
-        if let mode {
-            UserDefaults.standard.set(mode.rawValue, forKey: k)
-        } else {
-            UserDefaults.standard.removeObject(forKey: k)
-        }
-    }
-}
-
 struct SendMessageRequest: Encodable {
     let messageId: String
     let recipientId: String
@@ -1884,15 +1671,6 @@ struct SendMessageRequest: Encodable {
     var fileName: String? = nil
     var fileSize: Int? = nil
     var mimeType: String? = nil
-    /// Disappearing-messages mode for this single send. Server-side values:
-    /// "deleteAfterRead" | "deleteAfter24h" | "deleteAfter7d" |
-    /// "deleteIfScreenshot" | "deleteIfForwarded". Pass nil for "off".
-    var expiryMode: String? = nil
-    /// "instant" (default) or "scheduled". When "scheduled", the server
-    /// stores the message but defers delivery until the background
-    /// worker flips it at `scheduled_at_utc`.
-    var sendMode: String? = nil
-    var scheduledAtUtc: Date? = nil
 }
 
 struct SendMessageResponse: Decodable {
@@ -1953,9 +1731,6 @@ struct GroupMessageResponse: Decodable {
     let replyToSenderName: String?
     let replyToType: String?
     let entities: String?  // JSON string of mention entities
-    /// When `messageType == "poll"`, the GroupPoll row id this message
-    /// announces. Clients use it to load the live tally + cast votes.
-    let pollId: String?
     let isDuplicate: Bool?
     let status: String?
 }

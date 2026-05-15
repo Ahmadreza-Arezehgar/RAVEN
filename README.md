@@ -89,19 +89,6 @@ Failover is automatic and silent. A WebSocket drop instantly switches the next m
 
 ---
 
-## ⌚ Apple Watch — companion, not a peer
-
-RAVEN ships a native watchOS app under [`RAVEN-WatchApp/`](RAVEN-WatchApp/). It lets you read and reply to DMs, react, browse the Echo Wall feed, and join audio rooms from the wrist.
-
-**The Watch is a companion surface, not an independent mesh node.** It cannot advertise itself, accept GATT writes, or relay envelopes — `CBPeripheralManager` is `API_UNAVAILABLE(watchos)` and `MultipeerConnectivity` / `WiFiAware` aren’t exposed on watchOS either. Every Watch-originated message rides one of two paths:
-
-1. **Companion via WCSession** → paired iPhone wraps it into a `MeshEnvelope` and runs it through the same mesh / server / bridge router as a phone-side compose. Mac, Windows, and Android receivers can’t tell the keystroke came from a wrist.
-2. **Standalone LTE** (Series 4+ cellular) → Watch hits the FastAPI server directly. **Online-only** — no BLE mesh from this path.
-
-The honest positioning: *RAVEN follows you to the wrist*, not *mesh on the wrist*. This is a watchOS platform limit (Apple DTS confirmed), not a roadmap item.
-
----
-
 ## 📂 What's in this repository
 
 The **security-critical core** lives here. Anything that touches your data is auditable.

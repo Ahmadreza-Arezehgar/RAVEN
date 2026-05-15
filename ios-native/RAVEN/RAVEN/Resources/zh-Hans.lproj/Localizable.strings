@@ -76,7 +76,6 @@
 // Account
 "edit_profile" = "编辑资料";
 "friend_requests" = "好友请求";
-"follow_requests" = "关注请求";
 "joined" = "加入时间";
 "add_bio" = "添加简介";
 

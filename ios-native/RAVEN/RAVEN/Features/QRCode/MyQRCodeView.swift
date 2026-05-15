@@ -2,16 +2,7 @@ import SwiftUI
 import CoreImage.CIFilterBuiltins
 
 // MARK: - My QR Code View
-//
-// Displays the user's unique QR for **friend requests only**.
-//
-// Important: this is NOT a login QR. RAVEN deliberately keeps the
-// login-QR pattern desktop-only (the macOS / Web client shows the
-// login QR; this phone scans it via `ScanQRCodeView` →
-// `DesktopLoginApprovalView`). Showing a login QR on the phone would
-// invert the security model — anyone snapping a photo of your screen
-// could attempt to sign in. The friend QR below is harmless: at worst
-// it lets a stranger send you a friend request you can decline.
+/// Displays the user's unique QR code for friend requests
 struct MyQRCodeView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var authService = AuthService.shared
@@ -49,27 +40,19 @@ struct MyQRCodeView: View {
                             .foregroundStyle(.secondary)
                     }
                     
-                    // Hint — explicit "for adding friends" so the
-                    // user can never confuse this with a login QR
-                    // (login QR is desktop-only; phones scan, never
-                    // display, login codes).
-                    VStack(spacing: 6) {
-                        Text("Friend request code")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(.primary)
-                        Text("Let others scan this to send you a friend request. This code does NOT log anyone into your account.")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal)
-                    }
+                    // Hint
+                    Text("Let others scan this code to send you a friend request")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal)
                 }
                 .padding(24)
                 .background(.ultraThinMaterial)
                 .clipShape(RoundedRectangle(cornerRadius: 24))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 24, style: .continuous)
-                        .stroke(Color.primary.opacity(0.12), lineWidth: 0.8)
+                    RoundedRectangle(cornerRadius: 24)
+                        .stroke(Color.white.opacity(0.22), lineWidth: 0.8)
                 )
                 .shadow(color: .black.opacity(0.1), radius: 20, x: 0, y: 10)
                 .padding(.horizontal, 32)
@@ -78,7 +61,7 @@ struct MyQRCodeView: View {
                 
                 Spacer()
             }
-            .navigationTitle("My Friend QR")
+            .navigationTitle("My QR Code")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {

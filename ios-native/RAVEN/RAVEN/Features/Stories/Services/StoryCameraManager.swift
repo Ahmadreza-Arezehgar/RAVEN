@@ -12,10 +12,7 @@ final class StoryCameraManager: NSObject, ObservableObject {
     @Published var error: String?
     
     // MARK: - Private Properties
-    // AVCaptureSession serialises calls on its own internal queue, so calling
-    // its sync APIs from any actor is safe. Marking the property nonisolated
-    // lets startRunning/stopRunning run on a background task without hopping.
-    nonisolated let session = AVCaptureSession()
+    let session = AVCaptureSession()
     private var currentInput: AVCaptureDeviceInput?
     private let photoOutput = AVCapturePhotoOutput()
     private var photoContinuation: CheckedContinuation<UIImage?, Error>?

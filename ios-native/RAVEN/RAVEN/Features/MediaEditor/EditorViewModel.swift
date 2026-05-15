@@ -67,15 +67,10 @@ final class EditorViewModel {
         let image = originalImage
         
         Task.detached(priority: .userInitiated) { [weak self] in
-            // Re-bind the weak capture into a `let` so the inner
-            // `MainActor.run` closures (which are @Sendable) capture a
-            // constant instead of the outer mutable `[weak self]` var —
-            // that's what was tripping the Swift 6 data-race warnings.
-            let vm = self
             #if DEBUG
             print("🟢 [EditorVM] Background task START")
             #endif
-
+            
             // 1. Generate tiny placeholder first (fast, ~5ms)
             let phMaxDim: CGFloat = 64
             let phScale = min(phMaxDim / image.size.width, phMaxDim / image.size.height, 1.0)
@@ -86,18 +81,18 @@ final class EditorViewModel {
             #if DEBUG
             print("🟢 [EditorVM] Placeholder generated")
             #endif
-
+            
             // Publish placeholder immediately so UI shows something
             await MainActor.run {
-                vm?.placeholderImage = placeholder
+                self?.placeholderImage = placeholder
             }
-
+            
             // 2. Create downscaled preview
             let preview = image.downscaled(maxDimension: 1024)
             #if DEBUG
             print("🟢 [EditorVM] Preview downscaled")
             #endif
-
+            
             // 3. Create CIImage for editing pipeline
             let ci: CIImage?
             if let cgImage = image.cgImage {
@@ -108,12 +103,12 @@ final class EditorViewModel {
             #if DEBUG
             print("🟢 [EditorVM] CIImage created")
             #endif
-
+            
             await MainActor.run {
-                vm?.previewImage = preview
-                vm?.ciOriginal = ci
-                vm?.isReady = true
-                vm?.updatePreview()
+                self?.previewImage = preview
+                self?.ciOriginal = ci
+                self?.isReady = true
+                self?.updatePreview()
                 #if DEBUG
                 print("🟢 [EditorVM] Ready — UI updated")
                 #endif

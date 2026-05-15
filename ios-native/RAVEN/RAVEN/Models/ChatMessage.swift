@@ -9,9 +9,7 @@ enum MessageType: String, Codable {
     case file
     case voice
     case location
-    case poll              // Group poll announcement — pairs with `pollId`
     case postShare = "post_share"
-    case contactCard = "contact_card"  // Shared Raven friend's profile (postcard with avatar + name + QR)
     case videoNote = "video_note"
     case ephemeralPhoto = "ephemeral_photo"
     case system          // System notifications (screenshot alerts, user actions, etc.)
@@ -173,13 +171,6 @@ struct ChatMessage: Identifiable, Codable {
     var ttlSeconds: Int?
     var ephemeralStatus: String?  // sent/delivered/opened/expired
     
-    // Vault Lock (location-encrypted messages)
-    var vaultLock: VaultLock?
-
-    // Poll (group chat only) — set when `type == .poll`. Clients fetch the
-    // live tally + cast votes via /api/groups/{group_id}/polls/{poll_id}.
-    var pollId: String? = nil
-
     // MARK: - CodingKeys (Handle snake_case from server)
     
     // NOTE: NetworkService uses .convertFromSnakeCase decoder strategy,
@@ -234,21 +225,13 @@ struct ChatMessage: Identifiable, Codable {
         case clipId
         case parentClipId
         case chainId
-        // Forwarding — the explicit raw value `forwarded_from_channel`
-        // is needed because the server's field name is shorter than
-        // the Swift property `forwardedFromChannelId` would suggest
-        // after `convertFromSnakeCase`. Tested 2026-05-10: with the
-        // explicit raw value present, the decoder matches the JSON
-        // BEFORE applying the snake_case strategy, so the binding
-        // works. Removing the raw value would break it.
+        // Forwarding
         case forwardedFromChannelId = "forwarded_from_channel"
         case forwardedFromChannelName = "forwarded_from_channel_name"
         // Ephemeral Photo (Snap)
         case snapId
         case ttlSeconds
         case ephemeralStatus
-        // Vault
-        case vaultLock
         // Extra keys only used for decoding (server variations)
         case content
         case messageType
@@ -319,8 +302,6 @@ struct ChatMessage: Identifiable, Codable {
         try container.encodeIfPresent(snapId, forKey: .snapId)
         try container.encodeIfPresent(ttlSeconds, forKey: .ttlSeconds)
         try container.encodeIfPresent(ephemeralStatus, forKey: .ephemeralStatus)
-        // Vault
-        try container.encodeIfPresent(vaultLock, forKey: .vaultLock)
     }
     
     // MARK: - Custom Decoder (Handle missing/optional fields)
@@ -465,9 +446,6 @@ struct ChatMessage: Identifiable, Codable {
         snapId = try container.decodeIfPresent(String.self, forKey: .snapId)
         ttlSeconds = try container.decodeIfPresent(Int.self, forKey: .ttlSeconds)
         ephemeralStatus = try container.decodeIfPresent(String.self, forKey: .ephemeralStatus)
-        
-        // Vault
-        vaultLock = try container.decodeIfPresent(VaultLock.self, forKey: .vaultLock)
     }
     
     // MARK: - Memberwise Initializer (Required since we have custom Decodable init)
@@ -574,8 +552,6 @@ struct ChatMessage: Identifiable, Codable {
         self.snapId = snapId
         self.ttlSeconds = ttlSeconds
         self.ephemeralStatus = ephemeralStatus
-        self.vaultLock = nil
-        self.pollId = nil
     }
     
     // MARK: - Display State (Computed)
@@ -618,25 +594,14 @@ struct ChatMessage: Identifiable, Codable {
                 return .hidden
             }
             return .ready
-
-        case .contactCard:
-            // Same shape as postShare — text holds the JSON payload.
-            guard let text = text, !text.isEmpty else {
-                return .hidden
-            }
-            return .ready
-
-        case .poll:
-            // Poll bubbles fetch their own data — always ready to render.
-            return .ready
-
+            
         case .system:
             return .ready  // System messages always display
         }
     }
-
+    
     // MARK: - Validation
-
+    
     var isValid: Bool {
         switch type {
         case .text:
@@ -652,12 +617,6 @@ struct ChatMessage: Identifiable, Codable {
         case .postShare:
             // PostShare is valid if text (payload JSON) exists
             return text != nil && !(text?.isEmpty ?? true)
-        case .contactCard:
-            return text != nil && !(text?.isEmpty ?? true)
-        case .poll:
-            // Valid as soon as the announcement message itself exists; the
-            // PollBubbleView handles its own fetch errors.
-            return true
         case .system:
             return text != nil && !(text?.isEmpty ?? true)
         }
@@ -710,13 +669,7 @@ struct ChatMessage: Identifiable, Codable {
             #endif
             return typeBasedFallback
         }
-        // 3b. Mistyped contact-card stored as text — recognise the JSON
-        // shape so the reply preview shows "👤 Shared contact" instead
-        // of the raw `{"displayName":...}` blob.
-        if ContactSharePayload.looksLikeContactCard(candidate) {
-            return "👤 Shared contact"
-        }
-
+        
         // 4. Truncate for display (1-2 lines max)
         let result: String
         if candidate.count > 80 {
@@ -755,30 +708,21 @@ struct ChatMessage: Identifiable, Codable {
             case .ephemeralPhoto: return "📸 Snap Photo"
             case .file: return "📎 File"
             case .location: return "📍 Location"
-            case .poll: return "📊 Poll"
             case .postShare: return "📬 Shared post"
-            case .contactCard: return "👤 Shared contact"
             case .system: return "📢 Notification"
             case .text, .none: return "Message"
             }
         }
         
-        // Mistyped contact-card stored as text — return friendly label so
-        // the in-bubble reply badge above a quoted contact card doesn't
-        // expose the JSON payload.
-        if ContactSharePayload.looksLikeContactCard(preview) {
-            return "👤 Shared contact"
-        }
-
         #if DEBUG
         print("🔍 [REPLY_DEBUG] ✅ Preview looks clean, using as-is")
         #endif
-
+        
         // Truncate if needed
         if preview.count > 80 {
             return String(preview.prefix(80)) + "…"
         }
-
+        
         return preview
     }
     
@@ -806,10 +750,6 @@ struct ChatMessage: Identifiable, Codable {
             return "📍 Location"
         case .postShare:
             return "📬 Shared post"
-        case .contactCard:
-            return "👤 Shared contact"
-        case .poll:
-            return "📊 Poll"
         case .text:
             return "Message"
         case .system:

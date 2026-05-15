@@ -142,33 +142,13 @@ def register(req: RegisterRequest, request: Request, db: Session = Depends(get_d
                 detail="Phone number must include country code (e.g., +1234567890)"
             )
         
-        # Validate password strength (STRONG PASSWORD POLICY).
-        # Phase 2A clients pre-stretch passwords with PBKDF2 and send
-        # `RVNS1$<base64>` instead of the raw password. The strength
-        # policy applies to the raw password and is enforced
-        # client-side BEFORE stretching, so when we see the prefix we
-        # just sanity-check the wire shape (44 chars of base64 +
-        # padding == 32 raw bytes).
-        if req.password.startswith("RVNS1$"):
-            stretched_b64 = req.password[len("RVNS1$"):]
-            if len(stretched_b64) != 44:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Malformed stretched password",
-                )
-        else:
-            is_valid, error_msg = validate_password(req.password, req.username)
-            if not is_valid:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=error_msg
-                )
-
-        # 🔐 Validate optional public_key BEFORE any DB write — same trust-boundary
-        # rationale as in routers/devices.py register_device.
-        if req.public_key is not None:
-            from routers.devices import validate_public_key_b64
-            validate_public_key_b64(req.public_key, field_name="public_key")
+        # Validate password strength (STRONG PASSWORD POLICY)
+        is_valid, error_msg = validate_password(req.password, req.username)
+        if not is_valid:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=error_msg
+            )
         
         # Check if username already exists
         existing_user = db.query(User).filter(User.username == req.username).first()
@@ -278,21 +258,13 @@ def login(req: LoginRequest, request: Request, db: Session = Depends(get_db)):
             detail="Invalid username or password"
         )
     
-    # Verify password — and silently upgrade legacy bcrypt hashes to
-    # Argon2id on the way through. The user never sees this happen,
-    # but after one successful login their stored hash is the modern
-    # GPU-resistant scheme.
-    from auth import verify_and_maybe_rehash
-    ok, fresh_hash = verify_and_maybe_rehash(req.password, user.password_hash)
-    if not ok:
+    # Verify password
+    if not verify_password(req.password, user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid username or password"
         )
-    if fresh_hash is not None:
-        user.password_hash = fresh_hash
-        logger.info("[auth] Migrated password hash to argon2id for user %s", user.id)
-
+    
     # Update last login
     user.last_login = datetime.utcnow()
     db.commit()
@@ -320,15 +292,12 @@ def login(req: LoginRequest, request: Request, db: Session = Depends(get_db)):
     user_agent = request.headers.get("User-Agent", "Unknown device")
     client_ip = request.client.host if request.client else "Unknown"
     
-    # Use the new `security_alert` type so iOS routes through the
-    # SECURITY_ALERT category (with the "Review" auth-required action)
-    # instead of the legacy generic `security` bucket.
     security_notif = Notification(
         user_id=user.id,
-        type="security_alert",
+        type="security",
         data=json.dumps({
             "event": "new_login",
-            "device": user_agent[:100],
+            "device": user_agent[:100],  # Truncate long user agents
             "ip": client_ip,
         }),
         timestamp=datetime.utcnow(),
@@ -336,31 +305,7 @@ def login(req: LoginRequest, request: Request, db: Session = Depends(get_db)):
     )
     db.add(security_notif)
     db.commit()
-
-    # Push side-effect — best effort, must never fail the login.
-    if user.push_token:
-        try:
-            from services.apns_service import get_apns_service, APNsService
-            gate = APNsService.should_send_push(user, "security_alert")
-            if gate["allowed"]:
-                import asyncio
-                async def _emit():
-                    apns = get_apns_service()
-                    await apns.send_security_alert(
-                        device_token=user.push_token,
-                        title="🔐 New sign-in",
-                        body=f"{user_agent[:80]} ({client_ip})",
-                        event_id=str(security_notif.id),
-                        push_environment=user.push_environment,
-                    )
-                # Don't block the response — fire-and-forget
-                try:
-                    asyncio.get_event_loop().create_task(_emit())
-                except RuntimeError:
-                    asyncio.run(_emit())
-        except Exception as exc:
-            print(f"⚠️ security_alert push failed (non-fatal): {exc}")
-
+    
     print(f"✅ User logged in: {user.username} ({user.id})")
     print(f"🔐 Security notification created for login from {client_ip}")
     
@@ -412,11 +357,10 @@ def refresh_token_endpoint(req: RefreshRequest, request: Request, db: Session = 
     )
     
     if not user_id:
-        # ✅ Fallback to legacy JWT validation for old tokens (no rotation).
-        # Explicit expected_type="refresh" — decode_token defaults to access-only.
-        payload = decode_token(raw_token, expected_type="refresh")
-
-        if payload:
+        # ✅ Fallback to legacy JWT validation for old tokens (no rotation)
+        payload = decode_token(raw_token)
+        
+        if payload and payload.get("type") == "refresh":
             user_id = payload.get("sub")
             # For legacy tokens, generate a new opaque refresh token to migrate them
             if user_id:

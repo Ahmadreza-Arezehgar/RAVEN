@@ -7,27 +7,12 @@ struct InboxChatNavigationItem: Identifiable, Hashable {
 
 // MARK: - Inbox View (Conversations List)
 struct InboxView: View {
-    // BUG FIX (2026-05-10): `@State` on an `@Observable` singleton is
-    // the wrong wrapper. The Observation runtime auto-tracks property
-    // reads inside `body` for any reference exposed via plain `let` —
-    // wrapping it in `@State` adds value-storage semantics this class
-    // doesn't need (and on some iOS versions can suppress observation).
-    private let conversationStore = ConversationStore.shared
+    @State private var conversationStore = ConversationStore.shared
     @ObservedObject private var networkMonitor = NetworkMonitor.shared
     @ObservedObject private var bleEngine = BLEMeshEngine.shared
     @State private var showNewChat = false
     @State private var showNewGroup = false
     @State private var showStatusSheet = false
-    @State private var showSavedMessages = false
-    /// "All" vs "Unread" filter for the conversation list — purely client
-    /// side, no server roundtrip. Defaults to All on app open.
-    @State private var unreadFilter: InboxFilter = .all
-
-    enum InboxFilter: String, CaseIterable, Identifiable {
-        case all = "All"
-        case unread = "Unread"
-        var id: String { rawValue }
-    }
     @State private var selectedRoomItem: InboxChatNavigationItem? = nil
     @State private var tempConversation: Conversation? = nil
     
@@ -90,34 +75,11 @@ struct InboxView: View {
                             .padding(.horizontal, 24)
                         }
                         
-                        // 🆕 Filter pill bar (All / Unread) — local-only,
-                        // hidden when there's nothing to filter to keep
-                        // the chrome quiet.
-                        if conversationStore.filteredConversations.contains(where: { $0.unreadCount > 0 }) {
-                            InboxFilterPills(selection: $unreadFilter)
-                                .padding(.horizontal, 16)
-                                .padding(.bottom, 4)
-                        }
-
                         // Split pending message requests from active conversations
-                        let baseList: [Conversation] = {
-                            switch unreadFilter {
-                            case .all:
-                                return conversationStore.filteredConversations
-                            case .unread:
-                                // Anything with an unread badge OR a
-                                // pending incoming friend request stays
-                                // visible in Unread mode.
-                                return conversationStore.filteredConversations.filter {
-                                    $0.unreadCount > 0 ||
-                                    ($0.requestStatus == "pending" && $0.isRequestSender == false)
-                                }
-                            }
-                        }()
-                        let pendingRequests = baseList.filter {
+                        let pendingRequests = conversationStore.filteredConversations.filter {
                             $0.requestStatus == "pending" && $0.isRequestSender == false
                         }
-                        let activeConversations = baseList.filter {
+                        let activeConversations = conversationStore.filteredConversations.filter {
                             !($0.requestStatus == "pending" && $0.isRequestSender == false)
                         }
                         
@@ -135,9 +97,6 @@ struct InboxView: View {
                             },
                             onDelete: { roomId in
                                 Task { await conversationStore.deleteConversation(roomId: roomId) }
-                            },
-                            onArchive: { roomId in
-                                Task { await conversationStore.toggleArchive(roomId: roomId) }
                             }
                         )
                     }
@@ -162,24 +121,19 @@ struct InboxView: View {
                         GlassCapsuleButton(icon: "person.2.badge.plus", size: 38) {
                             showNewGroup = true
                         }
-
+                        
                         Menu {
                             Button {
                                 showNewGroup = true
                             } label: {
                                 Label("New Group", systemImage: "person.3")
                             }
-                            Button {
-                                showSavedMessages = true
-                            } label: {
-                                Label("Saved Messages", systemImage: "bookmark")
-                            }
                         } label: {
                             GlassCapsuleButton(icon: "plus", size: 38) {}
                         }
                     }
                 }
-
+                
                 // Right: New Chat button
                 ToolbarItem(placement: .topBarTrailing) {
                     GlassCapsuleButton(icon: "square.and.pencil", size: 38) {
@@ -207,9 +161,6 @@ struct InboxView: View {
             }
             .sheet(isPresented: $showNewGroup) {
                 NewGroupView()
-            }
-            .sheet(isPresented: $showSavedMessages) {
-                SavedMessagesSheet()
             }
 
             .navigationDestination(item: $selectedRoomItem) { item in
@@ -258,15 +209,14 @@ struct InboxView: View {
             }
         }
         .task {
-            // Load from DB first (instant — cached conversations appear immediately)
+            // Load from DB first (instant)
             await conversationStore.loadFromDB()
             
-            // 🚀 Let SwiftUI render cached chats on screen
+            // 🚀 رندر فوری چت‌های قبلی روی صفحه
             await Task.yield()
             
-            // Then fetch from server after a brief delay to let Feed get priority bandwidth
+            // Then fetch from server in background
             Task {
-                try? await Task.sleep(nanoseconds: 1_000_000_000) // 1s delay
                 await conversationStore.fetchConversations()
             }
         }
@@ -294,31 +244,9 @@ struct ConversationListView: View {
     let onPin: (String) -> Void
     let onMute: (String) -> Void
     let onDelete: (String) -> Void
-    let onArchive: (String) -> Void
-
-    /// Live count of archived chats — drives the folder pill at the
-    /// top of the inbox. Recomputed on every list change.
-    @State private var archivedCount: Int = 0
     
     var body: some View {
         List {
-            // 📥 Archived folder pill — Telegram-style entry point
-            // for the archive bucket. Auto-hidden when empty so it
-            // doesn't clutter inboxes that never archive anything.
-            if archivedCount > 0 {
-                Section {
-                    NavigationLink {
-                        ArchivedConversationsView()
-                    } label: {
-                        ArchivedFolderRow(count: archivedCount, onTap: {})
-                            .allowsHitTesting(false)  // tap handled by NavigationLink
-                    }
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
-                    .listRowInsets(EdgeInsets())
-                }
-            }
-
             // Message Requests section (Instagram-style)
             if !pendingRequests.isEmpty {
                 Section {
@@ -384,22 +312,7 @@ struct ConversationListView: View {
                                 Label("Delete", systemImage: "trash")
                             }
                         }
-
-                        // Telegram-style Archive — first action revealed
-                        // by a half-swipe. Hard-swipe shoots the chat
-                        // into the archive folder, where it can be
-                        // unarchived (or fully deleted).
-                        Button {
-                            let roomId = conversation.roomId
-                            Task {
-                                try? await Task.sleep(nanoseconds: 200_000_000)
-                                onArchive(roomId)
-                            }
-                        } label: {
-                            Label("Archive", systemImage: "archivebox.fill")
-                        }
-                        .tint(.indigo)
-
+                        
                         Button {
                             let roomId = conversation.roomId
                             Task {
@@ -450,12 +363,6 @@ struct ConversationListView: View {
         .scrollContentBackground(.hidden)
         // NOTE: No .animation on List — causes NSIndexPath crashes during rapid updates
         .safeAreaPadding(.bottom, 100) // Content exists behind glass, not cut off
-        .task { await refreshArchivedCount() }
-        .onChange(of: conversations) { _, _ in
-            // The active list shrinks/grows when chats are
-            // archived/unarchived — recompute the pill count.
-            Task { await refreshArchivedCount() }
-        }
         .navigationDestination(for: String.self) { roomId in
             if let conversation = ConversationStore.shared.conversations.first(where: { $0.roomId == roomId }) {
                 ChatView(conversation: conversation)
@@ -466,32 +373,22 @@ struct ConversationListView: View {
             }
         }
     }
-
-    private func refreshArchivedCount() async {
-        let count = await ConversationStore.shared.archivedCount()
-        await MainActor.run { self.archivedCount = count }
-    }
 }
 
 // MARK: - Conversation Row View
 struct ConversationRowView: View {
     let conversation: Conversation
-
+    
     @State private var isPressed = false
-    @State private var peerIsOnline = false
-
+    
     var body: some View {
         HStack(spacing: 14) {
-            // Avatar (right side visual weight). GlassAvatar renders
-            // its own presence dot when `showOnlineIndicator` is true;
-            // we lazily fetch peer presence so the inbox doesn't need
-            // a bulk presence call on initial load.
+            // Avatar (right side visual weight)
             GlassAvatar(
                 name: conversation.displayTitle,
                 path: conversation.displayAvatarUrl,
                 size: 50,
-                showGlow: false,
-                showOnlineIndicator: !conversation.isGroup && !conversation.isChannel && peerIsOnline
+                showGlow: false
             )
             .overlay(alignment: .topTrailing) {
                 if conversation.isPinned {
@@ -503,11 +400,6 @@ struct ConversationRowView: View {
                         .clipShape(Circle())
                         .offset(x: 4, y: -4)
                 }
-            }
-            .task(id: conversation.peer.userId) {
-                guard !conversation.isGroup, !conversation.isChannel else { return }
-                let presence = await PresenceService.shared.checkPresence(conversation.peer.userId)
-                await MainActor.run { peerIsOnline = presence.online }
             }
             
             // Content
@@ -543,35 +435,23 @@ struct ConversationRowView: View {
                 }
                 
                 HStack {
-                    // Preview with delivery indicator. If the user has an
-                    // unsent draft for this conversation we surface it
-                    // ahead of the last message — matches Telegram's "Draft:
-                    // …" hint and helps users find rooms where they left
-                    // mid-thought.
+                    // Preview with delivery indicator
                     HStack(spacing: 4) {
-                        if let draft = inboxDraft(for: conversation.roomId) {
-                            Text("Draft:")
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(.orange)
-                            Text(draft)
-                                .font(.subheadline)
-                                .foregroundStyle(.primary)
-                                .lineLimit(1)
-                        } else if let lastMessage = conversation.lastMessage {
+                        if let lastMessage = conversation.lastMessage {
                             // Delivery indicator (subtle)
                             Circle()
                                 .fill(lastMessage.deliveryAuthority == .mesh ? Color.purple.opacity(0.7) : Color.blue.opacity(0.7))
                                 .frame(width: 5, height: 5)
-
+                            
                             Text(previewText)
                                 .font(.subheadline)
                                 .foregroundStyle(conversation.unreadCount > 0 ? .primary : .secondary)
                                 .lineLimit(1)
                         }
                     }
-
+                    
                     Spacer()
-
+                    
                     // Unread badge
                     UnreadBadge(count: conversation.unreadCount, isMuted: conversation.isMuted)
                 }
@@ -579,25 +459,14 @@ struct ConversationRowView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
-        // Liquid Glass material effect (iOS 15+)
+        // Apple Native Liquid Glass Effect (iOS 26+)
         // ✅ Perf fix: Solid background instead of .regularMaterial — avoids GPU blur recalc on every scroll frame
         .background(Color(.secondarySystemGroupedBackground).opacity(0.85), in: RoundedRectangle(cornerRadius: DS.radiusCard))
         .opacity(conversation.unreadCount > 0 ? 1.0 : 0.85)
         .scaleEffect(isPressed ? 0.98 : 1.0)
         .animation(.spring(response: 0.25, dampingFraction: 0.7), value: isPressed)
     }
-
-    /// Returns a non-empty draft string for this conversation, if the user
-    /// left one in ChatView's input (persisted there to UserDefaults).
-    /// We strip whitespace so a stray space doesn't show "Draft: ".
-    private func inboxDraft(for roomId: String) -> String? {
-        guard let raw = UserDefaults.standard.string(forKey: "draft_\(roomId)") else {
-            return nil
-        }
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
-    }
-
+    
     var previewText: String {
         guard let lastMessage = conversation.lastMessage else {
             return ""
@@ -608,10 +477,6 @@ struct ConversationRowView: View {
             // Guard against encrypted/base64 content
             if let content = lastMessage.content {
                 if content.looksEncrypted { return "Message" }
-                // Mistyped contact-card stored as text — see Conversation.preview.
-                if ContactSharePayload.looksLikeContactCard(content) {
-                    return "👤 Shared a contact"
-                }
                 return content
             }
             return ""
@@ -631,10 +496,6 @@ struct ConversationRowView: View {
             return "📍 Location"
         case .postShare:
             return "📬 Shared a post"
-        case .contactCard:
-            return "👤 Shared a contact"
-        case .poll:
-            return "📊 Poll"
         case .system:
             return "📢 Notification"
         }
@@ -692,7 +553,7 @@ struct EmptyInboxView: View {
             Text("Start a conversation to see it here")
         } actions: {
             Button("New Message", action: onNewChat)
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.glassProminent)
         }
     }
 }
@@ -705,42 +566,6 @@ struct LoadingView: View {
             Text("Loading conversations...")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
-        }
-    }
-}
-
-// MARK: - Inbox Filter Pills (Liquid Glass capsule)
-//
-// Compact horizontal selector above the conversation list with two
-// segments: All / Unread. Tap a pill to flip the filter; the active
-// segment is rendered with the accent fill, inactive segments stay
-// neutral on the ultraThinMaterial background.
-
-struct InboxFilterPills: View {
-    @Binding var selection: InboxView.InboxFilter
-
-    var body: some View {
-        HStack(spacing: 6) {
-            ForEach(InboxView.InboxFilter.allCases) { filter in
-                Button {
-                    Haptics.light()
-                    withAnimation(.spring(response: 0.28, dampingFraction: 0.85)) {
-                        selection = filter
-                    }
-                } label: {
-                    Text(filter.rawValue)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(selection == filter ? .white : .primary)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 6)
-                        .background(
-                            Capsule(style: .continuous)
-                                .fill(selection == filter ? Color.accentColor : Color.primary.opacity(0.06))
-                        )
-                }
-                .buttonStyle(.plain)
-            }
-            Spacer(minLength: 0)
         }
     }
 }

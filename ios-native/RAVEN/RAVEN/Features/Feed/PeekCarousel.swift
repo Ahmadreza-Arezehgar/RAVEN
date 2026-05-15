@@ -135,88 +135,26 @@ struct PeekMediaPreview: View {
 
 
 // MARK: - Peek Carousel for Feed (horizontal scroll with peek)
-/// Shows images/videos in horizontal carousel with peek of next image.
-/// Videos auto-play muted inline (Instagram/Twitter style).
-///
-/// Optional `currentIndex` binding lets the parent drive the carousel
-/// programmatically (e.g. user taps the "1 / 2 / 3" page indicator). The
-/// binding is two-way: scrolling the carousel updates the binding via
-/// `.scrollPosition`, and writing to the binding scrolls the carousel.
+/// Shows images in horizontal carousel with peek of next image
 struct PeekCarouselView: View {
     let media: [PostMedia]
-    var currentIndex: Binding<Int>?  // optional — caller decides if it cares
-    /// Optional owning post — passed through to inline `FeedVideoCard`s
-    /// so the fullscreen video player can render its action bar +
-    /// options menu (which are post-aware).
-    var post: Post?
     var onTap: (Int) -> Void
-
-    @State private var localIndex: Int = 0
-
-    init(
-        media: [PostMedia],
-        currentIndex: Binding<Int>? = nil,
-        post: Post? = nil,
-        onTap: @escaping (Int) -> Void
-    ) {
-        self.media = media
-        self.currentIndex = currentIndex
-        self.post = post
-        self.onTap = onTap
-    }
-
-    /// Backing index for `.scrollPosition` — iOS 17 wants `Binding<Int?>`.
-    /// We bridge to either the parent's binding or our local @State so the
-    /// view works whether or not the caller provides one.
-    private var scrollIndexBinding: Binding<Int?> {
-        Binding<Int?>(
-            get: { currentIndex?.wrappedValue ?? localIndex },
-            set: { newValue in
-                let v = newValue ?? 0
-                if let parent = currentIndex {
-                    if parent.wrappedValue != v { parent.wrappedValue = v }
-                } else if localIndex != v {
-                    localIndex = v
-                }
-            }
-        )
-    }
-
+    
+    @State private var currentIndex: Int = 0
+    
     var body: some View {
         GeometryReader { geo in
             let itemWidth = geo.size.width * 0.92 // 92% width = 8% peek
             let spacing: CGFloat = 10
-
+            
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: spacing) {
                     ForEach(media.indices, id: \.self) { idx in
                         let item = media[idx]
+                        let displayUrl = (item.mediaType == "video" ? item.thumbnailUrl : nil) ?? item.url
                         
-                        let _ = {
-                            #if DEBUG
-                            print("🎬🖼️ [PeekCarousel] idx=\(idx) isVideo=\(item.isVideo) mediaType='\(item.mediaType ?? "nil")' url=\(item.url.suffix(30))")
-                            #endif
-                        }()
-                        
-                        if item.isVideo {
-                            // Video: inline auto-play muted player
-                            FeedVideoCard(
-                                media: item,
-                                allMedia: media,
-                                startIndex: idx,
-                                post: post
-                            )
-                            .frame(width: itemWidth, height: geo.size.height)
-                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                    .strokeBorder(.white.opacity(0.12), lineWidth: 0.5)
-                            )
-                            .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
-                        } else {
-                            // Image: standard AsyncImage
-                            let displayUrl = item.url
-                            if let url = URL(string: displayUrl) {
+                        if let url = URL(string: displayUrl) {
+                            ZStack {
                                 AsyncImage(url: url) { phase in
                                     switch phase {
                                     case .success(let image):
@@ -238,48 +176,33 @@ struct PeekCarouselView: View {
                                         Rectangle().fill(Color.gray.opacity(0.2))
                                     }
                                 }
-                                .frame(width: itemWidth, height: geo.size.height)
-                                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                        .strokeBorder(.white.opacity(0.12), lineWidth: 0.5)
-                                )
-                                .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
-                                .contentShape(Rectangle())
-                                .onTapGesture {
-                                    Haptics.light()
-                                    onTap(idx)
+                                
+                                // Video play overlay
+                                if item.mediaType == "video" {
+                                    Image(systemName: "play.circle.fill")
+                                        .font(.system(size: 44))
+                                        .foregroundStyle(.white.opacity(0.9))
+                                        .shadow(color: .black.opacity(0.4), radius: 6)
                                 }
+                            }
+                            .frame(width: itemWidth, height: geo.size.height)
+                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                    .strokeBorder(.white.opacity(0.12), lineWidth: 0.5)
+                            )
+                            .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                Haptics.light()
+                                onTap(idx)
                             }
                         }
                     }
                 }
                 .padding(.horizontal, (geo.size.width - itemWidth) / 2)
-                // .scrollTargetLayout() pairs with .scrollPosition below so
-                // each child becomes a scroll target. Required for the
-                // binding-driven page indicator to work.
-                .scrollTargetLayoutIfAvailable()
             }
             .scrollTargetBehaviorIfAvailable()
-            // 🔗 Two-way bind to the page index — taps on the "1 2 3"
-            // indicator scroll the carousel; user swipes update the
-            // indicator highlight. Without this the indicator was purely
-            // decorative.
-            .scrollPositionIfAvailable(id: scrollIndexBinding)
-            // 🚧 Claim the gesture while the carousel is being panned so the
-            // root TabPager does NOT also switch tabs (Home ↔ Messages) when
-            // the user is actually swiping between media within a single post.
-            .simultaneousGesture(
-                DragGesture(minimumDistance: 8)
-                    .onChanged { value in
-                        if abs(value.translation.width) > abs(value.translation.height) * 1.2 {
-                            NestedSwipeCoordinator.shared.isHandlingSwipe = true
-                        }
-                    }
-                    .onEnded { _ in
-                        NestedSwipeCoordinator.shared.isHandlingSwipe = false
-                    }
-            )
         }
     }
 }
@@ -294,28 +217,17 @@ struct FullScreenMediaSlider: View {
     @State private var isPlayingVideo = false
     @State private var videoPlayer: AVPlayer?
     
-    // Swipe-down dismiss state
-    @State private var dragOffset: CGSize = .zero
-    @State private var isDragging = false
-    
-    /// Threshold in points — drag past this to dismiss
-    private let dismissThreshold: CGFloat = 120
-    
     var body: some View {
-        let dragProgress = min(1, abs(dragOffset.height) / 300) // 0→1 as user drags
-        
         ZStack {
-            // Background — fades as user drags down
-            Color.black
-                .opacity(1 - dragProgress * 0.5)
-                .ignoresSafeArea()
+            // Background
+            Color.black.ignoresSafeArea()
             
             // Media slider
             TabView(selection: $currentIndex) {
                 ForEach(media.indices, id: \.self) { i in
                     let item = media[i]
                     
-                    if item.isVideo {
+                    if item.mediaType == "video" {
                         // Video slide
                         videoSlide(item: item, index: i)
                             .tag(i)
@@ -334,98 +246,53 @@ struct FullScreenMediaSlider: View {
                 videoPlayer = nil
                 isPlayingVideo = false
             }
-            // Apply drag offset + scale for interactive feel
-            .offset(y: dragOffset.height)
-            .scaleEffect(1 - dragProgress * 0.1)
-            .gesture(
-                DragGesture()
-                    .onChanged { value in
-                        // Only respond to vertical drags (not horizontal page swipes)
-                        if abs(value.translation.height) > abs(value.translation.width) {
-                            isDragging = true
-                            dragOffset = value.translation
-                        }
-                    }
-                    .onEnded { value in
-                        isDragging = false
-                        if abs(value.translation.height) > dismissThreshold ||
-                           abs(value.predictedEndTranslation.height) > dismissThreshold * 2 {
-                            // Dismiss
-                            Haptics.light()
-                            videoPlayer?.pause()
-                            videoPlayer = nil
-                            dismiss()
-                        } else {
-                            // Snap back
-                            withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
-                                dragOffset = .zero
-                            }
-                        }
-                    }
-            )
             
-            // Top bar with close and counter — hidden during drag
-            if !isDragging {
-                VStack {
-                    HStack {
-                        // Close button
-                        Button {
-                            Haptics.light()
-                            videoPlayer?.pause()
-                            videoPlayer = nil
-                            dismiss()
-                        } label: {
-                            Image(systemName: "xmark")
-                                .font(.system(size: 14, weight: .bold))
-                                .foregroundColor(.white)
-                                .padding(12)
-                                .background(.ultraThinMaterial)
-                                .clipShape(Circle())
-                                .overlay(
-                                    Circle().strokeBorder(.white.opacity(0.15), lineWidth: 0.5)
-                                )
-                        }
-                        
-                        Spacer()
-                        
-                        // Page counter
-                        if media.count > 1 {
-                            Text("\(currentIndex + 1)/\(media.count)")
-                                .font(.system(size: 14, weight: .semibold))
-                                .foregroundColor(.white)
-                                .padding(.vertical, 8)
-                                .padding(.horizontal, 14)
-                                .background(.ultraThinMaterial)
-                                .clipShape(Capsule())
-                                .overlay(
-                                    Capsule().strokeBorder(.white.opacity(0.15), lineWidth: 0.5)
-                                )
-                        }
+            // Top bar with close and counter
+            VStack {
+                HStack {
+                    // Close button
+                    Button {
+                        Haptics.light()
+                        videoPlayer?.pause()
+                        videoPlayer = nil
+                        dismiss()
+                    } label: {
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundColor(.white)
+                            .padding(12)
+                            .background(.ultraThinMaterial)
+                            .clipShape(Circle())
+                            .overlay(
+                                Circle().strokeBorder(.white.opacity(0.15), lineWidth: 0.5)
+                            )
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.top, 12)
                     
                     Spacer()
                     
-                    // Swipe hint (subtle)
-                    VStack(spacing: 4) {
-                        Image(systemName: "chevron.compact.down")
-                            .font(.system(size: 20, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.3))
-                        Text("Swipe down to close")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.25))
-                    }
-                    .padding(.bottom, 8)
-                    
-                    // Top comments for current media (Liquid Glass panel)
-                    if currentIndex < media.count,
-                       let comments = media[currentIndex].topComments,
-                       !comments.isEmpty {
-                        topCommentsPanel(comments: comments)
-                    }
+                    // Page counter
+                    Text("\(currentIndex + 1)/\(media.count)")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.white)
+                        .padding(.vertical, 8)
+                        .padding(.horizontal, 14)
+                        .background(.ultraThinMaterial)
+                        .clipShape(Capsule())
+                        .overlay(
+                            Capsule().strokeBorder(.white.opacity(0.15), lineWidth: 0.5)
+                        )
                 }
-                .transition(.opacity)
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
+                
+                Spacer()
+                
+                // Top comments for current media (Liquid Glass panel)
+                if currentIndex < media.count,
+                   let comments = media[currentIndex].topComments,
+                   !comments.isEmpty {
+                    topCommentsPanel(comments: comments)
+                }
             }
         }
     }
@@ -459,30 +326,18 @@ struct FullScreenMediaSlider: View {
     }
     
     // MARK: - Video Slide
-    //
-    // UX note: Twitter / X auto-starts the video the moment its
-    // fullscreen view appears — the user shouldn't need to tap a
-    // separate play button on top of the thumbnail. We mirror that
-    // here by spinning up the AVPlayer in `.task` instead of in a
-    // tap handler, so the video begins loading + playing as soon
-    // as this slide becomes visible.
     @ViewBuilder
     private func videoSlide(item: PostMedia, index: Int) -> some View {
         ZStack {
-            if let player = videoPlayer, currentIndex == index {
-                // Show AVKit's stock video player — it provides the
-                // native scrubber, time labels, AirPlay button,
-                // playback-rate menu (1×/1.25×/etc.) and rotation
-                // support for free.
+            if isPlayingVideo && currentIndex == index, let player = videoPlayer {
+                // Show AVPlayer
                 VideoPlayer(player: player)
-                    .ignoresSafeArea()
                     .onAppear { player.play() }
-                    .onDisappear { player.pause() }
+                    .onDisappear {
+                        player.pause()
+                    }
             } else {
-                // Loading state — show poster while AVPlayer warms up.
-                // Even on slow networks the user immediately sees the
-                // thumbnail rather than the empty black box from
-                // before.
+                // Show thumbnail with play button
                 let thumbUrl = item.thumbnailUrl ?? item.url
                 if let url = URL(string: thumbUrl) {
                     AsyncImage(url: url) { phase in
@@ -500,34 +355,21 @@ struct FullScreenMediaSlider: View {
                         }
                     }
                 }
-                ProgressView()
-                    .scaleEffect(1.3)
-                    .tint(.white.opacity(0.85))
+                
+                // Tap to play
+                Button {
+                    Haptics.light()
+                    guard let videoURL = URL(string: item.url) else { return }
+                    let player = AVPlayer(url: videoURL)
+                    self.videoPlayer = player
+                    self.isPlayingVideo = true
+                } label: {
+                    Image(systemName: "play.circle.fill")
+                        .font(.system(size: 64))
+                        .foregroundStyle(.white.opacity(0.9))
+                        .shadow(color: .black.opacity(0.5), radius: 8)
+                }
             }
-        }
-        // Auto-spin the player when the slide is on-screen for the
-        // first time. `.task` is bound to the (item.url, index) tuple
-        // so swiping to a different video slide reinitialises the
-        // player rather than reusing a stale one.
-        .task(id: "\(item.url)|\(index)") {
-            guard currentIndex == index else { return }
-            guard videoPlayer == nil else { return }
-            guard let videoURL = URL(string: item.url) else { return }
-
-            // Allow audio in silent-mode like Twitter's player does.
-            do {
-                let session = AVAudioSession.sharedInstance()
-                try session.setCategory(.playback, mode: .default)
-                try session.setActive(true)
-            } catch {
-                #if DEBUG
-                print("⚠️ [FullScreenSlider] AVAudioSession config failed: \(error)")
-                #endif
-            }
-
-            let player = AVPlayer(url: videoURL)
-            self.videoPlayer = player
-            self.isPlayingVideo = true
         }
     }
     
@@ -595,34 +437,12 @@ struct FullScreenMediaSlider: View {
     }
 }
 
-// MARK: - Helper Extensions for iOS 17 scroll behavior
+// MARK: - Helper Extension for iOS 17 scroll behavior
 extension View {
     @ViewBuilder
     func scrollTargetBehaviorIfAvailable() -> some View {
         if #available(iOS 17.0, *) {
             self.scrollTargetBehavior(.paging)
-        } else {
-            self
-        }
-    }
-
-    @ViewBuilder
-    func scrollTargetLayoutIfAvailable() -> some View {
-        if #available(iOS 17.0, *) {
-            self.scrollTargetLayout()
-        } else {
-            self
-        }
-    }
-
-    /// Wraps `.scrollPosition(id:)` (iOS 17+) so the binding-driven page
-    /// indicator works on supported devices and silently degrades to free
-    /// scrolling on older OS (the deployment target IS 17 today, but this
-    /// keeps the file robust if anyone bumps minTarget back).
-    @ViewBuilder
-    func scrollPositionIfAvailable(id: Binding<Int?>) -> some View {
-        if #available(iOS 17.0, *) {
-            self.scrollPosition(id: id)
         } else {
             self
         }

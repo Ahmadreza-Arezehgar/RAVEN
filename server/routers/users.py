@@ -5,7 +5,7 @@ from typing import List, Optional
 from datetime import datetime
 
 from database import get_db
-from models import User, FriendRequest, ScreenshotNotification, Post, Follow
+from models import User, FriendRequest, ScreenshotNotification, Post
 from auth import decode_token
 from encryption import decrypt_text
 from middleware.rate_limit import rate_limiter
@@ -18,14 +18,7 @@ class UserProfile(BaseModel):
     username: str
     avatar_path: Optional[str]
     bio: Optional[str]
-    # Badge flags — surfaced so the iOS render path can paint a verified
-    # checkmark / premium ring directly off the search result. Without
-    # these, official accounts (raven_news, raven_economic, …) showed up
-    # un-badged in search and Discover even though `users.is_verified`
-    # was true server-side.
-    is_verified: Optional[bool] = False
-    is_premium: Optional[bool] = False
-
+    
     class Config:
         from_attributes = True
 
@@ -67,7 +60,6 @@ class PushTokenRequest(BaseModel):
     """Request model for registering push notification token."""
     token: str
     platform: str = "ios"  # ios or android
-    environment: Optional[str] = None  # "sandbox" or "production" (APNs endpoint)
 
 # Dependency to get current user from JWT token
 def get_current_user(authorization: str = Header(None), db: Session = Depends(get_db)) -> User:
@@ -159,9 +151,7 @@ def search_users(
             id=user.id,
             username=user.username,
             avatar_path=user.avatar_path,
-            bio=user.bio,
-            is_verified=user.is_verified or False,
-            is_premium=user.is_premium or False,
+            bio=user.bio
         )
         for user in users
     ]
@@ -194,13 +184,12 @@ def get_suggestions(
         
         # ── Step 1: Build exclusion set ──
         # My friends (bidirectional)
-        friend_rows = db.query(FriendRequest).filter(
-            FriendRequest.status == "accepted",
-            or_(FriendRequest.requester_id == my_id, FriendRequest.recipient_id == my_id)
+        friend_rows = db.query(Friendship).filter(
+            or_(Friendship.user_id == my_id, Friendship.friend_id == my_id)
         ).all()
         friend_ids = set()
         for f in friend_rows:
-            friend_ids.add(f.recipient_id if f.requester_id == my_id else f.requester_id)
+            friend_ids.add(f.friend_id if f.user_id == my_id else f.user_id)
         
         # Blocked users (both directions)
         block_rows = db.query(Block).filter(
@@ -242,12 +231,11 @@ def get_suggestions(
                 for user in contact_users:
                     # Count mutual friends
                     user_friends = set()
-                    user_friendships = db.query(FriendRequest).filter(
-                        FriendRequest.status == "accepted",
-                        or_(FriendRequest.requester_id == user.id, FriendRequest.recipient_id == user.id)
+                    user_friendships = db.query(Friendship).filter(
+                        or_(Friendship.user_id == user.id, Friendship.friend_id == user.id)
                     ).all()
                     for uf in user_friendships:
-                        user_friends.add(uf.recipient_id if uf.requester_id == user.id else uf.requester_id)
+                        user_friends.add(uf.friend_id if uf.user_id == user.id else uf.user_id)
                     
                     mutual_count = len(friend_ids & user_friends)
                     contact_scored.append((user, mutual_count))
@@ -268,9 +256,7 @@ def get_suggestions(
                         "source": "contact",
                         "reason": reason,
                         "mutual_friends_count": mutual_count,
-                        "is_mutual": False,
-                        "is_verified": user.is_verified or False,
-                        "is_premium": user.is_premium or False,
+                        "is_mutual": False
                     })
         
         # ── Step 3: Algorithmic suggestions (fill to limit) ──
@@ -281,12 +267,11 @@ def get_suggestions(
             
             # Source 1: Friends-of-friends
             for fid in list(friend_ids)[:50]:  # Limit to 50 friends for performance
-                fof_rows = db.query(FriendRequest).filter(
-                    FriendRequest.status == "accepted",
-                    or_(FriendRequest.requester_id == fid, FriendRequest.recipient_id == fid)
+                fof_rows = db.query(Friendship).filter(
+                    or_(Friendship.user_id == fid, Friendship.friend_id == fid)
                 ).all()
                 for fof in fof_rows:
-                    fof_id = fof.recipient_id if fof.requester_id == fid else fof.requester_id
+                    fof_id = fof.friend_id if fof.user_id == fid else fof.user_id
                     if fof_id in algo_excluded:
                         continue
                     if fof_id not in candidates:
@@ -411,9 +396,7 @@ def get_suggestions(
                         "source": "suggested",
                         "reason": reason,
                         "mutual_friends_count": mutual_count,
-                        "is_mutual": False,
-                        "is_verified": user.is_verified or False,
-                        "is_premium": user.is_premium or False,
+                        "is_mutual": False
                     })
         
         # ── Step 4: Fallback — if still not enough, add random active users ──
@@ -436,9 +419,7 @@ def get_suggestions(
                     "source": "suggested",
                     "reason": "Suggested for you",
                     "mutual_friends_count": 0,
-                    "is_mutual": False,
-                    "is_verified": user.is_verified or False,
-                    "is_premium": user.is_premium or False,
+                    "is_mutual": False
                 })
         
         print(f"👥 Suggestions for {current_user.username}: {len(results)} results "
@@ -501,62 +482,6 @@ def get_current_user_profile(current_user: User = Depends(get_current_user)):
         "authMethod": current_user.oauth_provider if current_user.oauth_provider else "password"
     }
 
-class IdentityKeyRequest(BaseModel):
-    """Body for `POST /api/users/me/identity-key`. Used by iOS native to
-    upload its Curve25519 / Ed25519 raw public key (32 bytes, ~44 chars
-    base64). Idempotent — overwriting an existing key with the same value
-    is a no-op."""
-    publicKey: str
-
-
-@router.post("/me/identity-key")
-def set_identity_key(
-    body: IdentityKeyRequest,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """Register the user's signing public key on the server.
-
-    iOS native generates an Ed25519 keypair via `DeviceIdentityService`
-    and uploads the raw 32-byte public key (base64) here. Used by
-    `qr-login` and any future server-side signature verification (mesh
-    bridge attestations, key rotation chains, etc.).
-
-    Validation: must be 40–64 base64 chars (covers both raw Ed25519
-    and X25519). Larger PEM-encoded RSA keys are accepted only via
-    the legacy registration path; new code paths use this endpoint.
-    """
-    raw = (body.publicKey or "").strip()
-    length = len(raw)
-    if length < 40 or length > 64:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"publicKey length out of range (got {length}, expected 40-64 base64 chars)",
-        )
-    # Reject obvious garbage early — the qr-login verifier will fail
-    # cleanly if base64 doesn't decode to 32 bytes, but failing here
-    # gives the client a clearer 400 vs a later 401.
-    try:
-        import base64 as _b64
-        decoded = _b64.b64decode(raw, validate=True)
-        if len(decoded) != 32:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"publicKey decodes to {len(decoded)} bytes, expected 32 (raw Ed25519)",
-            )
-    except Exception:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="publicKey is not valid base64",
-        )
-
-    if current_user.public_key == raw:
-        return {"status": "unchanged"}
-    current_user.public_key = raw
-    db.commit()
-    return {"status": "ok"}
-
-
 @router.patch("/me")
 def update_current_user_profile(
     update: ProfileUpdate,
@@ -564,7 +489,7 @@ def update_current_user_profile(
     db: Session = Depends(get_db)
 ):
     """Update current user's profile.
-
+    
     - **display_name**: Full name (will be split into first/last)
     - **username**: Must be unique
     - **bio**: User's bio text
@@ -674,7 +599,7 @@ def close_account(
         Post, Comment, CommentVote, PostLike, Repost, PostView,
         Message, FriendRequest, ScreenshotNotification, Notification,
         Device, GroupMember, Block, Report, RoomVisibility,
-        Backup, MediaObject, SyncQueue, PostSubscription, UserNotificationSubscription,
+        Backup, MediaObject, SyncQueue, PostSubscription,
         UserEvent, UserInterest, SeenPost, HashtagFollow, UserNegativeFeedback,
         VerificationToken, RefreshToken, VoiceMessage, SnapMessage
     )
@@ -718,11 +643,6 @@ def close_account(
             (FriendRequest.requester_id == user_id) | (FriendRequest.recipient_id == user_id)
         ).delete(synchronize_session=False)
         
-        # Delete follow records (both directions)
-        db.query(Follow).filter(
-            (Follow.follower_id == user_id) | (Follow.following_id == user_id)
-        ).delete(synchronize_session=False)
-        
         # Delete notifications
         db.query(Notification).filter(Notification.user_id == user_id).delete()
         db.query(ScreenshotNotification).filter(
@@ -757,11 +677,6 @@ def close_account(
         # Delete subscription data
         db.query(PostSubscription).filter(
             (PostSubscription.subscriber_id == user_id) | (PostSubscription.target_id == user_id)
-        ).delete(synchronize_session=False)
-        
-        # Delete bell notification subscriptions
-        db.query(UserNotificationSubscription).filter(
-            (UserNotificationSubscription.subscriber_id == user_id) | (UserNotificationSubscription.target_id == user_id)
         ).delete(synchronize_session=False)
         
         # Delete recommendation data
@@ -811,15 +726,12 @@ def register_push_token(
     
     - **token**: APNs device token (iOS) or FCM token (Android)
     - **platform**: "ios" or "android"
-    - **environment**: "sandbox" (Xcode/TestFlight) or "production" (App Store)
     """
     current_user.push_token = req.token
     current_user.push_platform = req.platform
-    current_user.push_environment = req.environment  # sandbox or production
     db.commit()
     
-    env_label = f", env={req.environment}" if req.environment else ""
-    print(f"📱 Push token registered for {current_user.username} ({req.platform}{env_label}): {req.token[:16]}...")
+    print(f"📱 Push token registered for {current_user.username} ({req.platform}): {req.token[:16]}...")
     
     return {"success": True, "message": "Push token registered"}
 
@@ -915,16 +827,6 @@ class NotificationPreferencesUpdate(BaseModel):
     likes_comments_enabled: Optional[bool] = None
     sounds_enabled: Optional[bool] = None
     message_preview: Optional[bool] = None
-    new_post_notifications: Optional[bool] = None
-    audio_room_notifications: Optional[bool] = None
-    mention_notifications: Optional[bool] = None
-    # ── Added 2026-05-14 — match iOS NotificationsSettingsView ──
-    security_alert_notifications: Optional[bool] = None
-    live_location_notifications: Optional[bool] = None
-    reaction_notifications: Optional[bool] = None
-    contact_shared_notifications: Optional[bool] = None
-    profile_view_notifications: Optional[bool] = None
-    screenshot_notifications: Optional[bool] = None
 
 
 class PrivacySettingsUpdate(BaseModel):
@@ -933,11 +835,6 @@ class PrivacySettingsUpdate(BaseModel):
     read_receipts: Optional[bool] = None
     who_can_message: Optional[str] = None
     who_can_see_profile: Optional[str] = None
-    show_liked_posts: Optional[bool] = None
-    show_replies: Optional[bool] = None
-    # ── Added 2026-05-14 ──
-    # Cross-feature gate read by the contact-card share flow.
-    allow_contact_share: Optional[bool] = None
 
 
 @router.patch("/notification-preferences")
@@ -964,36 +861,14 @@ def update_notification_preferences(
         current_user.sounds_enabled = update.sounds_enabled
     if update.message_preview is not None:
         current_user.message_preview_enabled = update.message_preview
-    if update.new_post_notifications is not None:
-        current_user.new_post_notifications_enabled = update.new_post_notifications
-    if update.audio_room_notifications is not None:
-        current_user.audio_room_notifications_enabled = update.audio_room_notifications
-    if update.mention_notifications is not None:
-        current_user.mention_notifications_enabled = update.mention_notifications
-    # ── Privacy & Safety (added 2026-05-14) ──────────────────────────
-    if update.security_alert_notifications is not None:
-        current_user.security_alert_notifications_enabled = update.security_alert_notifications
-    if update.live_location_notifications is not None:
-        current_user.live_location_notifications_enabled = update.live_location_notifications
-    if update.reaction_notifications is not None:
-        current_user.reaction_notifications_enabled = update.reaction_notifications
-    if update.contact_shared_notifications is not None:
-        current_user.contact_shared_notifications_enabled = update.contact_shared_notifications
-    if update.profile_view_notifications is not None:
-        current_user.profile_view_notifications_enabled = update.profile_view_notifications
-    if update.screenshot_notifications is not None:
-        current_user.screenshot_notifications_enabled = update.screenshot_notifications
-
+    
     db.commit()
-
+    
     print(f"⚙️ Notification preferences updated for {current_user.username}: "
           f"push={current_user.push_enabled}, msg={current_user.message_notifications_enabled}, "
           f"friends={current_user.friend_request_notifications_enabled}, "
           f"likes={current_user.likes_comments_notifications_enabled}, "
-          f"sounds={current_user.sounds_enabled}, preview={current_user.message_preview_enabled}, "
-          f"posts={current_user.new_post_notifications_enabled}, "
-          f"rooms={current_user.audio_room_notifications_enabled}, "
-          f"mentions={current_user.mention_notifications_enabled}")
+          f"sounds={current_user.sounds_enabled}, preview={current_user.message_preview_enabled}")
     
     return {"success": True, "message": "Notification preferences updated"}
 
@@ -1024,288 +899,14 @@ def update_privacy_settings(
         current_user.who_can_see_profile = update.who_can_see_profile
         # Sync with existing is_private field
         current_user.is_private = (update.who_can_see_profile == "friends")
-    if update.show_liked_posts is not None:
-        current_user.show_liked_posts = update.show_liked_posts
-    if update.show_replies is not None:
-        current_user.show_replies = update.show_replies
-    if update.allow_contact_share is not None:
-        current_user.allow_contact_share = update.allow_contact_share
-
+    
     db.commit()
-
+    
     print(f"🔒 Privacy settings updated for {current_user.username}: "
           f"online={current_user.show_online_status}, receipts={current_user.read_receipts_enabled}, "
-          f"msg_access={current_user.who_can_message}, profile={current_user.who_can_see_profile}, "
-          f"show_likes={current_user.show_liked_posts}, show_replies={current_user.show_replies}")
+          f"msg_access={current_user.who_can_message}, profile={current_user.who_can_see_profile}")
     
     return {"success": True, "message": "Privacy settings updated"}
-
-
-# ==================== CHANGE PASSWORD ====================
-
-class ChangePasswordRequest(BaseModel):
-    current_password: str
-    new_password: str
-
-@router.post("/change-password")
-def change_password(
-    req: ChangePasswordRequest,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """
-    Change the current user's password.
-    
-    Requires the current password for verification.
-    New password must be at least 8 characters.
-    OAuth-only users cannot change password (they don't have one).
-    """
-    from auth import verify_password, hash_password
-    
-    # OAuth-only users don't have a password
-    if not current_user.password_hash:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot change password for OAuth accounts. Use your Google/Apple login."
-        )
-    
-    # Verify current password
-    if not verify_password(req.current_password, current_user.password_hash):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Current password is incorrect"
-        )
-    
-    # Validate new password
-    if len(req.new_password) < 8:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="New password must be at least 8 characters"
-        )
-    
-    if req.current_password == req.new_password:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="New password must be different from current password"
-        )
-    
-    # Update password hash
-    current_user.password_hash = hash_password(req.new_password)
-    db.commit()
-    
-    print(f"🔑 Password changed for user: {current_user.username}")
-    
-    return {"success": True, "message": "Password changed successfully"}
-
-
-# ==================== TWO-FACTOR AUTHENTICATION ====================
-
-class TwoFactorVerifyRequest(BaseModel):
-    code: str
-
-@router.post("/2fa/setup")
-def setup_2fa(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """
-    Generate a 2FA secret and provisioning URI for QR code setup.
-    
-    Returns the secret and a URI that authenticator apps can scan.
-    The user must call /2fa/verify with a valid code to actually enable 2FA.
-    """
-    import pyotp
-    import secrets
-    
-    # Generate a new TOTP secret
-    secret = pyotp.random_base32()
-    
-    # Store the secret temporarily (not yet verified)
-    # We store it in the user record but keep 2FA disabled until verified
-    current_user.totp_secret = secret
-    db.commit()
-    
-    # Generate provisioning URI for QR code
-    totp = pyotp.TOTP(secret)
-    provisioning_uri = totp.provisioning_uri(
-        name=current_user.username,
-        issuer_name="RAVEN"
-    )
-    
-    # Generate recovery codes
-    recovery_codes = [secrets.token_hex(4).upper() for _ in range(8)]
-    
-    # Format the secret for manual entry (groups of 4)
-    formatted_secret = "-".join(
-        secret[i:i+4] for i in range(0, len(secret), 4)
-    )
-    
-    print(f"🔐 2FA setup initiated for user: {current_user.username}")
-    
-    return {
-        "secret": formatted_secret,
-        "provisioning_uri": provisioning_uri,
-        "recovery_codes": recovery_codes
-    }
-
-@router.post("/2fa/verify")
-def verify_2fa(
-    req: TwoFactorVerifyRequest,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """
-    Verify a TOTP code and enable 2FA for the user.
-    
-    Must be called after /2fa/setup with a valid 6-digit code from the authenticator app.
-    """
-    import pyotp
-    
-    secret = getattr(current_user, 'totp_secret', None)
-    if not secret:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="2FA setup not initiated. Call /2fa/setup first."
-        )
-    
-    # Verify the code (with 1 window of tolerance for clock skew)
-    totp = pyotp.TOTP(secret)
-    if not totp.verify(req.code, valid_window=1):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid verification code. Please check your authenticator app."
-        )
-    
-    # Enable 2FA
-    current_user.two_factor_enabled = True
-    db.commit()
-    
-    print(f"✅ 2FA enabled for user: {current_user.username}")
-    
-    return {"success": True, "message": "Two-factor authentication enabled successfully"}
-
-@router.post("/2fa/disable")
-def disable_2fa(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """
-    Disable 2FA for the current user.
-    Clears the TOTP secret.
-    """
-    current_user.two_factor_enabled = False
-    current_user.totp_secret = None
-    db.commit()
-    
-    print(f"⚠️ 2FA disabled for user: {current_user.username}")
-    
-    return {"success": True, "message": "Two-factor authentication disabled"}
-
-
-# ==================== ACTIVE SESSIONS ====================
-
-@router.get("/sessions")
-def get_active_sessions(
-    request: Request,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """
-    List all active sessions (refresh tokens) for the current user.
-    
-    Returns device info, platform, location, and last active time.
-    The current session is marked with is_current=True.
-    """
-    from models import RefreshToken
-    
-    # Get all active (non-revoked, non-expired) refresh tokens for this user
-    tokens = db.query(RefreshToken).filter(
-        RefreshToken.user_id == current_user.id,
-        RefreshToken.revoked_at == None,
-        RefreshToken.expires_at > datetime.utcnow()
-    ).order_by(RefreshToken.created_at.desc()).all()
-    
-    sessions = []
-    for token in tokens:
-        sessions.append({
-            "id": token.id,
-            "device_name": token.device_name or "Unknown Device",
-            "location": "Unknown Location",
-            "last_active": token.created_at.isoformat() if token.created_at else datetime.utcnow().isoformat(),
-            "is_current": False,
-            "platform": "iOS"
-        })
-    
-    # If no tokens found, return at least the current session
-    if not sessions:
-        sessions.append({
-            "id": "current",
-            "device_name": "This Device",
-            "location": "Current Session",
-            "last_active": datetime.utcnow().isoformat(),
-            "is_current": True,
-            "platform": "iOS"
-        })
-    else:
-        # Mark the most recent session as current
-        sessions[0]["is_current"] = True
-    
-    return sessions
-
-# NOTE: /sessions/all MUST come before /sessions/{session_id}
-# otherwise FastAPI matches "all" as a session_id parameter.
-@router.delete("/sessions/all")
-def revoke_all_other_sessions(
-    request: Request,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Revoke all sessions except the current one."""
-    from models import RefreshToken
-    
-    # Revoke all active refresh tokens for this user
-    tokens = db.query(RefreshToken).filter(
-        RefreshToken.user_id == current_user.id,
-        RefreshToken.revoked_at == None
-    ).all()
-    
-    revoked_count = 0
-    for token in tokens:
-        token.revoked_at = datetime.utcnow()
-        revoked_count += 1
-    
-    db.commit()
-    
-    print(f"🔒 Revoked {revoked_count} sessions for user {current_user.username}")
-    
-    return {"success": True, "message": f"Revoked {revoked_count} sessions"}
-
-@router.delete("/sessions/{session_id}")
-def revoke_session(
-    session_id: str,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Revoke a specific session (refresh token)."""
-    from models import RefreshToken
-    
-    token = db.query(RefreshToken).filter(
-        RefreshToken.id == session_id,
-        RefreshToken.user_id == current_user.id
-    ).first()
-    
-    if not token:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Session not found"
-        )
-    
-    token.revoked_at = datetime.utcnow()
-    db.commit()
-    
-    print(f"🔒 Session revoked for user {current_user.username}: {session_id}")
-    
-    return {"success": True, "message": "Session revoked"}
 
 
 @router.get("/me/settings")
@@ -1326,470 +927,17 @@ def get_user_settings(
             "likes_comments_enabled": current_user.likes_comments_notifications_enabled if current_user.likes_comments_notifications_enabled is not None else True,
             "sounds_enabled": current_user.sounds_enabled if current_user.sounds_enabled is not None else True,
             "message_preview": current_user.message_preview_enabled if current_user.message_preview_enabled is not None else True,
-            "new_post_notifications": current_user.new_post_notifications_enabled if current_user.new_post_notifications_enabled is not None else True,
-            "audio_room_notifications": current_user.audio_room_notifications_enabled if current_user.audio_room_notifications_enabled is not None else True,
-            "mention_notifications": current_user.mention_notifications_enabled if current_user.mention_notifications_enabled is not None else True,
         },
         "privacy": {
             "show_online_status": current_user.show_online_status if current_user.show_online_status is not None else True,
             "read_receipts": current_user.read_receipts_enabled if current_user.read_receipts_enabled is not None else True,
             "who_can_message": current_user.who_can_message or "everyone",
             "who_can_see_profile": current_user.who_can_see_profile or "public",
-            "show_liked_posts": current_user.show_liked_posts if current_user.show_liked_posts is not None else True,
-            "show_replies": current_user.show_replies if current_user.show_replies is not None else True,
         }
     }
 
 
-# ==================== FOLLOW SYSTEM (Instagram-style) ====================
-
-
-@router.post("/follow/{target_id}")
-async def follow_user(
-    target_id: str,
-    request: Request,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Follow a user. If target is private, creates a follow request instead."""
-    from sqlalchemy import or_, and_
-    
-    if target_id == current_user.id:
-        raise HTTPException(status_code=400, detail="Cannot follow yourself")
-    
-    # Rate limit
-    rate_limiter.check_rate_limit(
-        identifier=f"follow:{current_user.id}",
-        max_attempts=30,
-        window_minutes=60,
-        lockout_minutes=30
-    )
-    
-    # Check target exists
-    target = db.query(User).filter(User.id == target_id).first()
-    if not target:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    # Check if already following
-    existing_follow = db.query(Follow).filter(
-        Follow.follower_id == current_user.id,
-        Follow.following_id == target_id
-    ).first()
-    if existing_follow:
-        raise HTTPException(status_code=400, detail="Already following this user")
-    
-    # Check if target is private
-    is_private = getattr(target, 'is_private', False)
-    
-    if is_private:
-        # Check for existing pending request
-        existing_request = db.query(FriendRequest).filter(
-            FriendRequest.requester_id == current_user.id,
-            FriendRequest.recipient_id == target_id,
-            FriendRequest.status == "pending"
-        ).first()
-        
-        if existing_request:
-            raise HTTPException(status_code=400, detail="Follow request already sent")
-        
-        # Create follow request (reuse FriendRequest table)
-        follow_request = FriendRequest(
-            requester_id=current_user.id,
-            recipient_id=target_id,
-            status="pending"
-        )
-        db.add(follow_request)
-        db.commit()
-        db.refresh(follow_request)
-        
-        # Send push notification
-        if target.push_token and target.push_platform == "ios":
-            from services.apns_service import get_apns_service, APNsService
-            prefs = APNsService.should_send_push(target, "friend_request")
-            if prefs["allowed"]:
-                apns = get_apns_service()
-                requester_name = APNsService.build_push_display_name(current_user)
-                badge = APNsService.get_unread_badge_count(db, target.id)
-                push_result = await apns.send_friend_request_notification(
-                    device_token=target.push_token,
-                    requester_name=requester_name,
-                    requester_id=current_user.id,
-                    badge=badge
-                )
-                if push_result:
-                    print(f"📱 ✅ Follow request push sent to {target.username}")
-        
-        print(f"📤 Follow request sent: {current_user.username} → {target.username} (private)")
-        return {
-            "status": "requested",
-            "request_id": follow_request.id,
-            "message": "Follow request sent"
-        }
-    else:
-        # Public account — instant follow
-        follow = Follow(
-            follower_id=current_user.id,
-            following_id=target_id
-        )
-        db.add(follow)
-        db.commit()
-        
-        # Check if mutual follow (they already follow us)
-        reverse_follow = db.query(Follow).filter(
-            Follow.follower_id == target_id,
-            Follow.following_id == current_user.id
-        ).first()
-        
-        follow_status = "mutual" if reverse_follow else "following"
-        
-        print(f"✅ {current_user.username} followed {target.username} (status={follow_status})")
-        return {
-            "status": follow_status,
-            "message": f"Now following {target.username}"
-        }
-
-
-@router.delete("/follow/{target_id}")
-async def unfollow_user(
-    target_id: str,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Unfollow a user or cancel a pending follow request."""
-    # Try to remove follow record
-    follow = db.query(Follow).filter(
-        Follow.follower_id == current_user.id,
-        Follow.following_id == target_id
-    ).first()
-    
-    if follow:
-        db.delete(follow)
-        db.commit()
-        print(f"🗑️ {current_user.username} unfollowed {target_id}")
-        return {"status": "none", "message": "Unfollowed"}
-    
-    # Maybe it's a pending request — cancel it
-    pending = db.query(FriendRequest).filter(
-        FriendRequest.requester_id == current_user.id,
-        FriendRequest.recipient_id == target_id,
-        FriendRequest.status == "pending"
-    ).first()
-    
-    if pending:
-        db.delete(pending)
-        db.commit()
-        print(f"🗑️ {current_user.username} cancelled follow request to {target_id}")
-        return {"status": "none", "message": "Follow request cancelled"}
-    
-    raise HTTPException(status_code=404, detail="Not following this user")
-
-
-@router.get("/follow-requests", response_model=List[FriendRequestResponse])
-def get_follow_requests(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Get all pending follow requests for current user (private account)."""
-    requests = db.query(FriendRequest).filter(
-        FriendRequest.recipient_id == current_user.id,
-        FriendRequest.status == "pending"
-    ).order_by(FriendRequest.created_at.desc()).all()
-    
-    result = []
-    for req in requests:
-        requester = db.query(User).filter(User.id == req.requester_id).first()
-        result.append(FriendRequestResponse(
-            id=req.id,
-            requester_id=req.requester_id,
-            requester_username=requester.username if requester else "Unknown",
-            requester_avatar=requester.avatar_path if requester else None,
-            recipient_id=req.recipient_id,
-            status=req.status,
-            created_at=req.created_at
-        ))
-    
-    print(f"📥 {current_user.username} has {len(result)} pending follow requests")
-    return result
-
-
-@router.post("/follow-request/{request_id}/accept")
-def accept_follow_request(
-    request_id: str,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Accept a follow request → creates a Follow record."""
-    friend_request = db.query(FriendRequest).filter(
-        FriendRequest.id == request_id,
-        FriendRequest.recipient_id == current_user.id,
-        FriendRequest.status == "pending"
-    ).first()
-    
-    if not friend_request:
-        raise HTTPException(status_code=404, detail="Follow request not found")
-    
-    # Mark request as accepted
-    friend_request.status = "accepted"
-    friend_request.updated_at = datetime.utcnow()
-    
-    # Create follow record (requester → current_user)
-    follow = Follow(
-        follower_id=friend_request.requester_id,
-        following_id=current_user.id
-    )
-    db.add(follow)
-    db.commit()
-    
-    requester = db.query(User).filter(User.id == friend_request.requester_id).first()
-    print(f"✅ {current_user.username} accepted follow request from {requester.username if requester else 'Unknown'}")
-    
-    return {
-        "message": "Follow request accepted",
-        "follower_id": requester.id if requester else None,
-        "follower_username": requester.username if requester else "Unknown",
-        "follower_avatar": requester.avatar_path if requester else None
-    }
-
-
-@router.post("/follow-request/{request_id}/reject")
-def reject_follow_request_new(
-    request_id: str,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Reject a follow request."""
-    friend_request = db.query(FriendRequest).filter(
-        FriendRequest.id == request_id,
-        FriendRequest.recipient_id == current_user.id,
-        FriendRequest.status == "pending"
-    ).first()
-    
-    if not friend_request:
-        raise HTTPException(status_code=404, detail="Follow request not found")
-    
-    friend_request.status = "rejected"
-    friend_request.updated_at = datetime.utcnow()
-    db.commit()
-    
-    print(f"❌ {current_user.username} rejected follow request")
-    return {"message": "Follow request rejected"}
-
-
-@router.delete("/followers/{user_id}")
-def remove_follower(
-    user_id: str,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Remove someone from your followers (without blocking)."""
-    follow = db.query(Follow).filter(
-        Follow.follower_id == user_id,
-        Follow.following_id == current_user.id
-    ).first()
-    
-    if not follow:
-        raise HTTPException(status_code=404, detail="This user is not following you")
-    
-    db.delete(follow)
-    db.commit()
-    
-    target = db.query(User).filter(User.id == user_id).first()
-    print(f"🗑️ {current_user.username} removed follower {target.username if target else user_id}")
-    return {"message": "Follower removed"}
-
-
-@router.get("/{user_id}/followers")
-def get_user_followers(
-    user_id: str,
-    search: Optional[str] = None,
-    cursor: int = 0,
-    limit: int = 30,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Get followers list of a user (paginated, searchable)."""
-    from sqlalchemy import or_
-    
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    # Privacy check for private accounts
-    is_private = getattr(user, 'is_private', False)
-    if is_private and user_id != current_user.id:
-        # Check if viewer follows this user
-        is_following = db.query(Follow).filter(
-            Follow.follower_id == current_user.id,
-            Follow.following_id == user_id
-        ).first() is not None
-        
-        if not is_following:
-            raise HTTPException(status_code=403, detail="This account is private")
-    
-    # Get follower IDs
-    follower_ids = [f.follower_id for f in db.query(Follow).filter(
-        Follow.following_id == user_id
-    ).all()]
-    
-    if not follower_ids:
-        return {"users": [], "total": 0, "hasMore": False}
-    
-    # Query users
-    query = db.query(User).filter(User.id.in_(follower_ids))
-    if search:
-        query = query.filter(User.username.ilike(f"%{search}%"))
-    
-    total = query.count()
-    users = query.offset(cursor).limit(limit).all()
-    
-    # Check which followers the current user is following
-    current_following_ids = set()
-    if users:
-        uids = [u.id for u in users]
-        current_follows = db.query(Follow.following_id).filter(
-            Follow.follower_id == current_user.id,
-            Follow.following_id.in_(uids)
-        ).all()
-        current_following_ids = {f[0] for f in current_follows}
-    
-    return {
-        "users": [
-            {
-                "id": u.id,
-                "username": u.username,
-                "displayName": f"{decrypt_text(u.first_name) if u.first_name else ''} {decrypt_text(u.last_name) if u.last_name else ''}".strip() or None,
-                "avatarUrl": u.avatar_path,
-                "isVerified": u.is_verified or False,
-                "isPremium": u.is_premium or False,
-                "isFollowing": u.id in current_following_ids,
-            }
-            for u in users
-        ],
-        "total": total,
-        "hasMore": (cursor + limit) < total
-    }
-
-
-@router.get("/{user_id}/following")
-def get_user_following(
-    user_id: str,
-    search: Optional[str] = None,
-    cursor: int = 0,
-    limit: int = 30,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Get following list of a user (paginated, searchable)."""
-    from sqlalchemy import or_
-    
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    # Privacy check
-    is_private = getattr(user, 'is_private', False)
-    if is_private and user_id != current_user.id:
-        is_following = db.query(Follow).filter(
-            Follow.follower_id == current_user.id,
-            Follow.following_id == user_id
-        ).first() is not None
-        
-        if not is_following:
-            raise HTTPException(status_code=403, detail="This account is private")
-    
-    # Get following IDs
-    following_ids = [f.following_id for f in db.query(Follow).filter(
-        Follow.follower_id == user_id
-    ).all()]
-    
-    if not following_ids:
-        return {"users": [], "total": 0, "hasMore": False}
-    
-    # Query users
-    query = db.query(User).filter(User.id.in_(following_ids))
-    if search:
-        query = query.filter(User.username.ilike(f"%{search}%"))
-    
-    total = query.count()
-    users = query.offset(cursor).limit(limit).all()
-    
-    # Check which of these the current user is following
-    current_following_ids = set()
-    if users:
-        uids = [u.id for u in users]
-        current_follows = db.query(Follow.following_id).filter(
-            Follow.follower_id == current_user.id,
-            Follow.following_id.in_(uids)
-        ).all()
-        current_following_ids = {f[0] for f in current_follows}
-    
-    return {
-        "users": [
-            {
-                "id": u.id,
-                "username": u.username,
-                "displayName": f"{decrypt_text(u.first_name) if u.first_name else ''} {decrypt_text(u.last_name) if u.last_name else ''}".strip() or None,
-                "avatarUrl": u.avatar_path,
-                "isVerified": u.is_verified or False,
-                "isPremium": u.is_premium or False,
-                "isFollowing": u.id in current_following_ids,
-            }
-            for u in users
-        ],
-        "total": total,
-        "hasMore": (cursor + limit) < total
-    }
-
-
-@router.post("/migrate-friends-to-follows")
-def migrate_friends_to_follows(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """One-time migration: Convert accepted FriendRequests to Follow records.
-    
-    Run once to migrate existing social graph. Safe to re-run (skips duplicates).
-    """
-    from sqlalchemy import or_
-    
-    accepted_requests = db.query(FriendRequest).filter(
-        FriendRequest.status == "accepted"
-    ).all()
-    
-    created = 0
-    for req in accepted_requests:
-        # Create A→B follow
-        existing_ab = db.query(Follow).filter(
-            Follow.follower_id == req.requester_id,
-            Follow.following_id == req.recipient_id
-        ).first()
-        if not existing_ab:
-            db.add(Follow(
-                follower_id=req.requester_id,
-                following_id=req.recipient_id,
-                created_at=req.created_at
-            ))
-            created += 1
-        
-        # Create B→A follow (mutual)
-        existing_ba = db.query(Follow).filter(
-            Follow.follower_id == req.recipient_id,
-            Follow.following_id == req.requester_id
-        ).first()
-        if not existing_ba:
-            db.add(Follow(
-                follower_id=req.recipient_id,
-                following_id=req.requester_id,
-                created_at=req.created_at
-            ))
-            created += 1
-    
-    db.commit()
-    print(f"🔄 Migration complete: {created} follow records created from {len(accepted_requests)} accepted friend requests")
-    return {"migrated": created, "from_requests": len(accepted_requests)}
-
-
-# ==================== FRIEND REQUESTS (Legacy — kept for backward compatibility) ====================
+# ==================== FRIEND REQUESTS ====================
 
 
 @router.post("/friend-request")
@@ -2009,26 +1157,11 @@ def accept_friend_request(
     # Update status
     friend_request.status = "accepted"
     friend_request.updated_at = datetime.utcnow()
-    
-    # ✅ Also create Follow records (both directions = mutual friends)
-    # This bridges the legacy FriendRequest system with the new Follow system
-    from models import Follow
-    for fid, tid in [
-        (friend_request.requester_id, current_user.id),
-        (current_user.id, friend_request.requester_id)
-    ]:
-        existing = db.query(Follow).filter(
-            Follow.follower_id == fid,
-            Follow.following_id == tid
-        ).first()
-        if not existing:
-            db.add(Follow(follower_id=fid, following_id=tid))
-    
     db.commit()
     
     # ✅ Get requester info to return to client
     requester = db.query(User).filter(User.id == friend_request.requester_id).first()
-    print(f"✅ {current_user.username} accepted friend request from {requester.username if requester else 'Unknown'} (Follow records created)")
+    print(f"✅ {current_user.username} accepted friend request from {requester.username if requester else 'Unknown'}")
     
     # ✅ Return friend info so client doesn't need notification lookup
     return {
@@ -2203,9 +1336,17 @@ def get_user(
     # Count posts
     post_count = db.query(Post).filter(Post.author_id == user_id).count()
     
-    # Count followers and following from Follow table (consistent with /profile endpoint)
-    followers_count = db.query(Follow).filter(Follow.following_id == user_id).count()
-    following_count = db.query(Follow).filter(Follow.follower_id == user_id).count()
+    # Count followers (friend requests where user is recipient and accepted)
+    followers_count = db.query(FriendRequest).filter(
+        FriendRequest.recipient_id == user_id,
+        FriendRequest.status == "accepted"
+    ).count()
+    
+    # Count following (friend requests where user is requester and accepted)
+    following_count = db.query(FriendRequest).filter(
+        FriendRequest.requester_id == user_id,
+        FriendRequest.status == "accepted"
+    ).count()
     
     # Get friendship status with current user
     friendship_status = "none"
@@ -2408,7 +1549,6 @@ def get_user_full_profile(
     
     # Get counts
     posts_count = db.query(Post).filter(Post.author_id == user_id).count()
-    print(f"🔢 [Profile] {user.username}: raw posts_count={posts_count}")
     friends_count = db.query(FriendRequest).filter(
         FriendRequest.status == "accepted",
         or_(
@@ -2417,63 +1557,7 @@ def get_user_full_profile(
         )
     ).count()
     
-    # ===== Auto-migrate legacy FriendRequest → Follow records =====
-    # If accepted FriendRequests exist but no Follow records, create them.
-    # This bridges the gap between the old friend system and the new follow system.
-    try:
-        accepted_frs = db.query(FriendRequest).filter(
-            FriendRequest.status == "accepted",
-            or_(
-                FriendRequest.requester_id == user_id,
-                FriendRequest.recipient_id == user_id
-            )
-        ).all()
-        
-        migrated = 0
-        for fr in accepted_frs:
-            # Create Follow in both directions (mutual friends)
-            for fid, tid in [(fr.requester_id, fr.recipient_id), (fr.recipient_id, fr.requester_id)]:
-                existing = db.query(Follow).filter(
-                    Follow.follower_id == fid,
-                    Follow.following_id == tid
-                ).first()
-                if not existing:
-                    db.add(Follow(follower_id=fid, following_id=tid))
-                    migrated += 1
-        
-        if migrated > 0:
-            db.commit()
-            print(f"🔄 [Profile] Auto-migrated {migrated} Follow records for {user.username} from legacy FriendRequests")
-    except Exception as e:
-        db.rollback()
-        print(f"⚠️ [Profile] Follow migration failed for {user.username}: {e}")
-    
-    # ===== Follow-based counts =====
-    try:
-        followers_count = db.query(Follow).filter(Follow.following_id == user_id).count()
-        following_count = db.query(Follow).filter(Follow.follower_id == user_id).count()
-        
-        # Mutual friends = people who follow user AND user follows back
-        follower_ids = set(f.follower_id for f in db.query(Follow.follower_id).filter(Follow.following_id == user_id).all())
-        following_ids = set(f.following_id for f in db.query(Follow.following_id).filter(Follow.follower_id == user_id).all())
-        mutual_friends_count = len(follower_ids & following_ids)
-        
-        # Fallback: if Follow table is empty but FriendRequests exist,
-        # use friends_count as following/mutual (accepted friend = mutual follow)
-        if following_count == 0 and friends_count > 0:
-            following_count = friends_count
-            followers_count = friends_count
-            mutual_friends_count = friends_count
-            print(f"🔄 [Profile] Using FriendRequest fallback for follow counts (friends={friends_count})")
-    except Exception as e:
-        print(f"⚠️ [Profile] Follow counts failed: {e}")
-        followers_count = friends_count
-        following_count = friends_count
-        mutual_friends_count = friends_count
-    
-    print(f"👤 [Profile Stats] {user.username}: posts={posts_count}, followers={followers_count}, following={following_count}, friends_legacy={friends_count}, mutual={mutual_friends_count}")
-    
-    # Check friendship (legacy — keep for backward compat)
+    # Check friendship
     is_friend = db.query(FriendRequest).filter(
         FriendRequest.status == "accepted",
         or_(
@@ -2491,36 +1575,6 @@ def get_user_full_profile(
     ).first()
     
     request_status = "accepted" if is_friend else ("pending" if pending_request else "none")
-    
-    # ===== Follow status (new) =====
-    i_follow_them = db.query(Follow).filter(
-        Follow.follower_id == current_user.id,
-        Follow.following_id == user_id
-    ).first() is not None
-    
-    they_follow_me = db.query(Follow).filter(
-        Follow.follower_id == user_id,
-        Follow.following_id == current_user.id
-    ).first() is not None
-    
-    # Compute follow status
-    if user_id == current_user.id:
-        follow_status = "self"
-    elif i_follow_them and they_follow_me:
-        follow_status = "mutual"
-    elif i_follow_them:
-        follow_status = "following"
-    else:
-        # Check for pending follow request
-        pending_follow = db.query(FriendRequest).filter(
-            FriendRequest.requester_id == current_user.id,
-            FriendRequest.recipient_id == user_id,
-            FriendRequest.status == "pending"
-        ).first()
-        follow_status = "requested" if pending_follow else "none"
-    
-    # Also update is_friend to be true if mutual follow exists
-    is_friend = is_friend or (i_follow_them and they_follow_me)
     
     # Get display name
     first_name = decrypt_text(user.first_name) if user.first_name else None
@@ -2561,17 +1615,10 @@ def get_user_full_profile(
         "isPremium": user.is_premium or False,
         "postsCount": posts_count,
         "friendsCount": friends_count,
-        "followersCount": followers_count,
-        "followingCount": following_count,
-        "mutualFriendsCount": mutual_friends_count,
         "isFriend": is_friend,
         "requestStatus": request_status,
-        "followStatus": follow_status,
-        "isFollowingYou": they_follow_me,
         "canMessage": can_message,
-        "isBlocked": is_blocked,
-        "showLikedPosts": getattr(user, 'show_liked_posts', True) if user.id == current_user.id or getattr(user, 'show_liked_posts', True) else False,
-        "showReplies": getattr(user, 'show_replies', True) if user.id == current_user.id or getattr(user, 'show_replies', True) else False
+        "isBlocked": is_blocked
     }
 
 

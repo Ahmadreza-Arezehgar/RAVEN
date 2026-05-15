@@ -50,8 +50,6 @@ class User(Base):
     # Privacy settings
     is_private = Column(Boolean, default=False)  # Private profile = posts/friends hidden
     show_birthday = Column(Boolean, default=False)  # Show birthday on profile
-    show_liked_posts = Column(Boolean, default=True)  # Others can see liked posts on profile
-    show_replies = Column(Boolean, default=True)  # Others can see replies on profile
     
     # Notification preferences (server-side enforcement)
     push_enabled = Column(Boolean, default=True)  # Master switch: all push notifications
@@ -61,46 +59,11 @@ class User(Base):
     sounds_enabled = Column(Boolean, default=True)  # Push with sound vs silent
     message_preview_enabled = Column(Boolean, default=True)  # Show message text in push or "New message"
     
-    # Granular social notification preferences
-    new_post_notifications_enabled = Column(Boolean, default=True)  # Push for bell-subscribed new posts
-    audio_room_notifications_enabled = Column(Boolean, default=True)  # Push for bell-subscribed audio rooms
-    mention_notifications_enabled = Column(Boolean, default=True)  # Push for @mentions
-
-    # New notification toggles (added 2026-05-14 to match the iOS
-    # NotificationsSettingsView "Privacy & Safety" + "Social" sections).
-    # Server-side enforcement: a push of the matching type is silently
-    # dropped when the corresponding column is False — clients still
-    # respect their local toggle for when their cache is stale, but the
-    # server is the source of truth.
-    security_alert_notifications_enabled = Column(Boolean, default=True)   # New-device sign-in, password change…
-    live_location_notifications_enabled = Column(Boolean, default=True)    # Friend started/stopped live location
-    reaction_notifications_enabled = Column(Boolean, default=True)         # Emoji reaction on my message
-    contact_shared_notifications_enabled = Column(Boolean, default=True)   # Someone shared my profile as a contact card
-    profile_view_notifications_enabled = Column(Boolean, default=False)    # Non-friend opened my profile (off by default)
-    screenshot_notifications_enabled = Column(Boolean, default=True)       # Screenshot of my profile / my chat
-
-    # Cross-feature privacy toggle — read by the contact-card share
-    # flow to decide whether to accept or refuse a share request that
-    # targets THIS user. Default True for parity with prior behaviour;
-    # users can turn it off in iOS Settings → Privacy.
-    allow_contact_share = Column(Boolean, default=True)
-    
-    # Two-Factor Authentication
-    two_factor_enabled = Column(Boolean, default=False)  # Whether 2FA is active
-    totp_secret = Column(String, nullable=True)  # TOTP secret for authenticator apps
-    
     # Privacy settings (server-side enforcement)
     show_online_status = Column(Boolean, default=True)  # Others can see online/last seen
     read_receipts_enabled = Column(Boolean, default=True)  # Send read receipts to sender
     who_can_message = Column(String, default="everyone")  # "everyone" | "friends"
     who_can_see_profile = Column(String, default="public")  # "public" | "friends"
-
-    # Presence — written by /presence/heartbeat every 30s and on every
-    # authenticated request. Read by /presence/{user_id} to determine
-    # online/offline. Stored in DB (not in-memory cache) so it survives
-    # Cloud Run cold starts and works across multiple instances.
-    last_active_at = Column(DateTime, nullable=True, index=True)
-    last_active_has_internet = Column(Boolean, default=False)
     
     # Profile Enhancements
     hobbies = Column(Text, nullable=True)  # JSON array of hobbies/interests
@@ -121,7 +84,6 @@ class User(Base):
     # Push Notification fields
     push_token = Column(String, nullable=True, index=True)  # APNs or FCM device token
     push_platform = Column(String, nullable=True)  # 'ios' or 'android'
-    push_environment = Column(String, nullable=True)  # 'sandbox' or 'production' (APNs endpoint)
     
     # Relationships
     sent_messages = relationship("Message", foreign_keys="Message.sender_id", back_populates="sender")
@@ -131,7 +93,7 @@ class User(Base):
 class Message(Base):
     """Message model with encrypted content."""
     __tablename__ = "messages"
-
+    
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     sender_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
     recipient_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
@@ -139,23 +101,17 @@ class Message(Base):
     timestamp = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
     read_at = Column(DateTime)
     delivered_at = Column(DateTime)
-    # Set when the sender edits the message body. NULL means "never edited".
-    edited_at = Column(DateTime, nullable=True)
-
-    # Pin state — either party can pin/unpin in a 1:1. NULL means "not pinned".
-    pinned_at = Column(DateTime, nullable=True, index=True)
-    pinned_by_user_id = Column(String, nullable=True)
-
+    
     # Voice message fields
     message_type = Column(String, default="text")  # text, voice, image, file
     audio_url = Column(String, nullable=True)  # URL for voice/image/file on CDN
     audio_duration_seconds = Column(Integer, nullable=True)  # Voice message duration
-
+    
     # File attachment metadata (for file/image/voice messages)
     file_name = Column(String, nullable=True)  # Original filename
     file_size = Column(Integer, nullable=True)  # Size in bytes
     mime_type = Column(String, nullable=True)  # e.g. "application/pdf"
-
+    
     # ✅ Reply fields (so receivers can see reply preview)
     reply_to_message_id = Column(String, nullable=True)
     reply_to_text_preview = Column(String, nullable=True)  # Max 50 chars
@@ -231,19 +187,6 @@ class Post(Base):
     mesh_signature = Column(Text, nullable=True)  # Base64 Ed25519 signature from origin device
     mesh_signer_key = Column(String, nullable=True)  # Base64 public key of the signing device
     
-    # Raven Shot: opt-in for social map display
-    show_on_raven_shot = Column(Boolean, default=False, index=True)  # True = display on map
-
-    # Inline video-jump commands (`vM:SS`) parsed from the post body at
-    # create-time. Stored as a JSON list of {seconds: int, label: str, token:
-    # str} entries so the iOS feed can render scrub-bar chapter markers
-    # without re-running the regex per render. Plaintext is fine: the tokens
-    # are public navigation aids, not the post body.
-    video_chapters = Column(Text, nullable=True)
-    
-    # Human-readable location name (e.g. "Starbucks, Madrid")
-    location_name = Column(String, nullable=True)
-    
     # Relationships
     author = relationship("User", back_populates="posts")
     room = relationship("AudioRoom", foreign_keys=[room_id])
@@ -251,41 +194,18 @@ class Post(Base):
     media = relationship("PostMedia", back_populates="post", cascade="all, delete-orphan", order_by="PostMedia.order_index")
 
 class PostMedia(Base):
-    """Media items for multi-media posts (images + videos, max 4 free / 10 premium)."""
+    """Media items for multi-image posts (max 4 per post)."""
     __tablename__ = "post_media"
     
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     post_id = Column(String, ForeignKey("posts.id"), nullable=False, index=True)
     url = Column(String, nullable=False)
-    order_index = Column(Integer, default=0)  # 0-based ordering
+    order_index = Column(Integer, default=0)  # 0-3 for ordering
     media_type = Column(String, default='image')  # 'image' | 'video'
-    thumbnail_url = Column(String, nullable=True)  # Video thumbnail CDN URL (null for images)
     timestamp = Column(DateTime, default=datetime.utcnow, nullable=False)
     
     # Relationships
     post = relationship("Post", back_populates="media")
-
-
-class PostTag(Base):
-    """User tags on posts/photos (like Instagram's Tag People)."""
-    __tablename__ = "post_tags"
-    __table_args__ = (
-        UniqueConstraint('post_id', 'tagged_user_id', name='unique_post_tag'),
-    )
-    
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    post_id = Column(String, ForeignKey("posts.id"), nullable=False, index=True)
-    media_id = Column(String, nullable=True)  # Which photo/video (null = post-level tag)
-    tagged_user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
-    tagged_by_user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
-    x_position = Column(Float, nullable=True)  # 0.0-1.0 relative position on image
-    y_position = Column(Float, nullable=True)  # 0.0-1.0 relative position on image
-    timestamp = Column(DateTime, default=datetime.utcnow, nullable=False)
-    
-    # Relationships
-    post = relationship("Post")
-    tagged_user = relationship("User", foreign_keys=[tagged_user_id])
-    tagged_by = relationship("User", foreign_keys=[tagged_by_user_id])
 
 class FriendRequest(Base):
     """Friend request model for tracking friend requests."""
@@ -331,21 +251,7 @@ class Comment(Base):
     transcript_text = Column(Text, nullable=True)
     transcript_status = Column(String, default='none')      # none|pending|processing|ready|failed
     transcript_language = Column(String, nullable=True)
-
-    # ── Edit support ──────────────────────────────────────────────────
-    # Set on every successful PATCH /api/comments/{id}. Clients render an
-    # "edited" hint next to the timestamp when this is non-null. We keep
-    # the original `timestamp` immutable so sort order doesn't jump when
-    # someone fixes a typo on an old comment.
-    edited_at = Column(DateTime, nullable=True)
-
-    # ── Pin support ───────────────────────────────────────────────────
-    # When True, this comment floats above all others on the post.
-    # Only the POST AUTHOR can pin/unpin (not the comment author).
-    # Sort order: pinned first (by `pinned_at` desc), then by score+timestamp.
-    is_pinned = Column(Boolean, default=False, index=True)
-    pinned_at = Column(DateTime, nullable=True)
-
+    
     # Relationships
     post = relationship("Post", back_populates="comments")
     author = relationship("User", foreign_keys=[author_id])
@@ -378,21 +284,6 @@ class PostLike(Base):
     post_id = Column(String, ForeignKey("posts.id"), nullable=False, index=True)
     user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
     timestamp = Column(DateTime, default=datetime.utcnow, nullable=False)
-
-
-class PostBookmark(Base):
-    """Junction table: which posts each user has bookmarked. Mirrors
-    PostLike. Idempotent — `(post_id, user_id)` is unique so the
-    toggle endpoint can flip without polluting the table."""
-    __tablename__ = "post_bookmarks"
-    __table_args__ = (
-        UniqueConstraint('post_id', 'user_id', name='unique_post_bookmark'),
-    )
-
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    post_id = Column(String, ForeignKey("posts.id"), nullable=False, index=True)
-    user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
-    timestamp = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
 
 
 class Repost(Base):
@@ -558,30 +449,6 @@ class PostSubscription(Base):
     target_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
     enabled = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    
-    # Relationships
-    subscriber = relationship("User", foreign_keys=[subscriber_id])
-    target = relationship("User", foreign_keys=[target_id])
-
-
-class UserNotificationSubscription(Base):
-    """Per-user bell notification subscription (Bell icon on profile).
-    
-    Allows users to subscribe to specific notification categories
-    for another user (e.g., notify when they post, start audio rooms).
-    """
-    __tablename__ = "user_notification_subscriptions"
-    __table_args__ = (
-        UniqueConstraint('subscriber_id', 'target_id', name='unique_user_notification_sub'),
-    )
-    
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    subscriber_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
-    target_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
-    notify_posts = Column(Boolean, default=True)        # Notify when target posts
-    notify_audio_rooms = Column(Boolean, default=True)   # Notify when target starts audio room
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # Relationships
     subscriber = relationship("User", foreign_keys=[subscriber_id])
@@ -869,24 +736,18 @@ class GroupInviteLink(Base):
 class GroupMessage(Base):
     """Message in a group chat."""
     __tablename__ = "group_messages"
-
+    
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     group_id = Column(String, ForeignKey("groups.id"), nullable=False, index=True)
     sender_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
     content = Column(Text, nullable=False)  # Encrypted
     timestamp = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
-    # Set when the sender edits the message body. NULL means "never edited".
-    edited_at = Column(DateTime, nullable=True)
-
-    # Pin state — any group member can pin/unpin. NULL means "not pinned".
-    pinned_at = Column(DateTime, nullable=True, index=True)
-    pinned_by_user_id = Column(String, nullable=True)
-
+    
     # Message type
     message_type = Column(String, default="text")  # text, voice, image, file
     audio_url = Column(String, nullable=True)  # URL for voice/image/file on CDN
     audio_duration_seconds = Column(Integer, nullable=True)  # Voice message duration
-
+    
     # File attachment metadata
     file_name = Column(String, nullable=True)
     file_size = Column(Integer, nullable=True)
@@ -1099,30 +960,6 @@ class Friendship(Base):
     friend = relationship("User", foreign_keys=[friend_id])
 
 
-# ==================== FOLLOW SYSTEM (Instagram-style) ====================
-
-class Follow(Base):
-    """Directional follow relationship (A follows B).
-    
-    - Public accounts: Follow is instant.
-    - Private accounts: Follow requires a FriendRequest (status=pending → accepted).
-    - Mutual follows = Friends.
-    """
-    __tablename__ = "follows"
-    __table_args__ = (
-        UniqueConstraint('follower_id', 'following_id', name='unique_follow'),
-    )
-    
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    follower_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
-    following_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    
-    # Relationships
-    follower = relationship("User", foreign_keys=[follower_id])
-    following = relationship("User", foreign_keys=[following_id])
-
-
 # ==================== MESSAGE REQUESTS ====================
 
 class MessageRequest(Base):
@@ -1288,10 +1125,6 @@ class AudioRoom(Base):
     privacy = Column(String, default="public")  # public, friends, invite
     allow_anonymous = Column(Boolean, default=True)  # Allow anonymous join
     allow_raise_hand = Column(Boolean, default=True)  # Allow raise hand requests
-    # Locked rooms refuse new joiners (host-only setting). Was settable via
-    # /settings but never persisted because the column was missing — joining
-    # a "locked" room silently still worked. Now actually a Real Thing.
-    is_locked = Column(Boolean, default=False)
     
     # Shareable link
     share_slug = Column(String(12), unique=True, nullable=True, index=True)  # For deep links: raven://room/{slug}
@@ -1669,46 +1502,4 @@ class VoiceChainLink(Base):
     
     # Relationships
     chain = relationship("VoiceChain", back_populates="links")
-    user = relationship("User")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# MESSAGE REACTIONS
-# Per-user emoji reactions on a 1:1 or group message. UniqueConstraint on
-# (message_id, user_id, emoji) means a user can react with multiple distinct
-# emojis to the same message but can't double-react with the same emoji.
-# `is_group` switches which message table the FK points at — we keep the join
-# loose (string ID, no FK) so this single table serves both rooms.
-# ─────────────────────────────────────────────────────────────────────────────
-class MessageReaction(Base):
-    __tablename__ = "message_reactions"
-    __table_args__ = (
-        UniqueConstraint("message_id", "user_id", "emoji", name="uq_reaction_msg_user_emoji"),
-    )
-
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    message_id = Column(String, nullable=False, index=True)
-    is_group = Column(Boolean, default=False, nullable=False, index=True)
-    user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
-    emoji = Column(String, nullable=False)  # short string ("👍", ":custom_id:")
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-
-    user = relationship("User")
-
-
-class SavedMessage(Base):
-    """Per-user message bookmark. The same message can be pinned (visible to
-    every participant) AND saved (private to a single user) — pin and save
-    are independent."""
-    __tablename__ = "saved_messages"
-    __table_args__ = (
-        UniqueConstraint("user_id", "message_id", "is_group", name="uq_saved_user_msg"),
-    )
-
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
-    message_id = Column(String, nullable=False, index=True)
-    is_group = Column(Boolean, default=False, nullable=False)
-    saved_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
-
     user = relationship("User")

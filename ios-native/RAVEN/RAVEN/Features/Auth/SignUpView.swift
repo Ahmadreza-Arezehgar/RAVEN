@@ -36,31 +36,16 @@ struct SignUpView: View {
         ScrollView {
             VStack(spacing: 24) {
                 // Header
-                VStack(spacing: 12) {
-                    ZStack {
-                        Circle()
-                            .fill(
-                                LinearGradient(
-                                    colors: [.blue.opacity(0.2), .purple.opacity(0.1)],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                )
-                            )
-                            .frame(width: 100, height: 100)
-                            .blur(radius: 2)
-
-                        Image("RavenLogo")
-                            .resizable()
-                            .scaledToFit()
-                            .frame(width: 64, height: 64)
-                            .clipShape(RoundedRectangle(cornerRadius: 14))
-                    }
-                    .padding(.bottom, 2)
-
+                VStack(spacing: 8) {
+                    Image(systemName: "person.badge.plus")
+                        .font(.system(size: 60))
+                        .foregroundStyle(.blue)
+                        .padding(.bottom, 8)
+                    
                     Text("Create Account")
                         .font(.title)
                         .fontWeight(.bold)
-
+                    
                     Text("Join the secure messaging network")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
@@ -246,7 +231,7 @@ struct SignUpView: View {
         .navigationBarTitleDisplayMode(.inline)
         .fullScreenCover(isPresented: $showOTPView) {
             NavigationStack {
-                OTPVerificationView(email: email, purpose: "registration") {
+                OTPVerificationView(email: email) {
                     // Verified - dismiss and AuthGate will handle navigation
                     showOTPView = false
                 }
@@ -414,9 +399,10 @@ struct EmailErrorBanner: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .glassSurface(in: Capsule())
+        .background(.ultraThinMaterial, in: Capsule())
         .overlay(
-            Capsule().strokeBorder(.red.opacity(0.30), lineWidth: 0.6) // error tint on top of unified surface
+            Capsule()
+                .strokeBorder(.red.opacity(0.25), lineWidth: 0.5)
         )
         .padding(.horizontal, 4)
     }

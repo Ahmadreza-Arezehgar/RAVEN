@@ -63,11 +63,9 @@ class ReadReceiptService {
     // MARK: - Private Helpers
     
     private func storeLocalSeen(messageId: String) async {
-        guard let userId = await KeychainService.shared.getUserId() else { return }
-        // AuthService is now @MainActor — snapshot the user once.
-        let user = await MainActor.run { AuthService.shared.currentUser }
-        guard let username = user?.username else { return }
-        let avatarUrl = user?.avatarPath
+        guard let userId = await KeychainService.shared.getUserId(),
+              let username = AuthService.shared.currentUser?.username else { return }
+        let avatarUrl = AuthService.shared.currentUser?.avatarPath
         
         do {
             try await ReadReceiptRepository.shared.markSeen(

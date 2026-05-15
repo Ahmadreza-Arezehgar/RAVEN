@@ -146,28 +146,18 @@ class DeliveryJobRunner {
             
             guard !jobs.isEmpty else { return }
             
-            // Check if we have active connections (Central OR Peripheral).
-            // ⚪ BUG FIX (2026-05-10): on simulator, the previous early
-            // return silently dropped processing so any race / ordering
-            // bug between server jobs and mesh jobs was invisible
-            // until tested on physical devices. New behaviour: on the
-            // simulator we still iterate the queue but skip the
-            // hasActiveConnections gate, leaving mesh-only jobs in
-            // pending state and logging the queue size each cycle so
-            // the test harness can observe back-pressure.
-            #if targetEnvironment(simulator)
-            #if DEBUG
-            print("[Sim] DeliveryJobRunner — mesh-path skipped (no real BLE peers); jobs left pending")
-            #endif
-            return
-            #else
+            // Check if we have active connections (Central OR Peripheral)
+            #if !targetEnvironment(simulator)
             guard await mesh.hasActiveConnections else {
                 return  // No peers - jobs stay pending
             }
             #if DEBUG
             print("[JobRunner] \(jobs.count) mesh jobs pending delivery")
             #endif
-
+            #else
+            return // simulator
+            #endif
+            
             for job in jobs {
                 // Check if stopped
                 if try await StopCacheRepository.shared.isStopped(job.messageId) {
@@ -232,8 +222,7 @@ class DeliveryJobRunner {
                     )
                 }
             }
-            #endif
-
+            
         } catch {
             #if DEBUG
             print("❌ [JobRunner] Mesh processing error: \(error)")

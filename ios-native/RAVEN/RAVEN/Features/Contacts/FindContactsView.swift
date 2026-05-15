@@ -131,7 +131,7 @@ struct FindContactsView: View {
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .stroke(Color.primary.opacity(0.10), lineWidth: 0.5)
+                    .stroke(Color.white.opacity(0.1), lineWidth: 0.5)
             )
             .padding(.horizontal, 24)
             

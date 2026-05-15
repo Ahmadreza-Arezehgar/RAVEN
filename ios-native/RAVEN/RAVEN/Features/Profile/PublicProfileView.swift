@@ -26,13 +26,6 @@ struct PublicProfileView: View {
     @State private var selectedPostForComments: Post?
     @State private var selectedPostForForward: Post?
     
-    // Tabbed content
-    @State private var selectedTab: ProfileTab = .posts
-    @State private var likedPosts: [Post] = []
-    @State private var repliedPosts: [Post] = []
-    @State private var isLoadingLikes = false
-    @State private var isLoadingReplies = false
-    
     struct PublicProfilePostNavigationItem: Identifiable, Hashable {
         let id: String
     }
@@ -75,98 +68,28 @@ struct PublicProfileView: View {
                         ProfileHeaderShimmer()
                             .padding(.top, DS.space12)
                     } else if let user = user {
-                        VStack(spacing: 0) {
-                            // ───── 1/4 Hero Header ─────
-                            VStack(spacing: DS.space12) {
-                                // Centered Avatar
-                                let avatarSize: CGFloat = 96 * (1.0 - collapseProgress * 0.4)
-                                ProfileAvatarView(
-                                    avatarPath: user.avatarPath,
-                                    initials: user.initials,
-                                    size: avatarSize
-                                )
-                                .shadow(color: DS.accentBlue.opacity(0.15), radius: 12, y: 4)
-                                
-                                // Name + Badges
-                                HStack(spacing: 5) {
-                                    Text(user.displayName)
-                                        .font(.system(size: 22, weight: .bold))
-                                        .lineLimit(1)
-                                    
-                                    let showVerified = user.isVerified || (isOwnProfile && AuthService.shared.currentUser?.isVerified == true)
-                                    let showPremium = user.isPremium || (isOwnProfile && SubscriptionService.shared.isPremium)
-                                    
-                                    if showVerified {
-                                        Image(systemName: "checkmark.seal.fill")
-                                            .font(.system(size: 16))
-                                            .foregroundStyle(DS.accentBlue)
-                                    }
-                                    
-                                    if showPremium {
-                                        Image(systemName: "crown.fill")
-                                            .font(.system(size: 14))
-                                            .foregroundStyle(Color(red: 0.85, green: 0.70, blue: 0.35))
-                                    }
-                                }
-                                
-                                // Username
-                                Text("@\(user.username ?? "username")")
-                                    .font(.system(size: 15, weight: .medium))
-                                    .foregroundStyle(.secondary)
-                                
-                                // Bio
-                                if let bio = user.bio, !bio.isEmpty {
-                                    Text(bio)
-                                        .font(.system(size: 14))
-                                        .foregroundStyle(.primary.opacity(0.8))
-                                        .lineLimit(3)
-                                        .multilineTextAlignment(.center)
-                                        .padding(.horizontal, DS.space32)
-                                }
-                                
-                                // Tags
-                                if let tags = user.tags, !tags.isEmpty {
-                                    FlowingTagsView(tags: tags)
-                                }
-                                
-                                // Info chips (joined date)
-                                if let createdAt = user.createdAt {
-                                    HStack(spacing: 4) {
-                                        Image(systemName: "calendar")
-                                            .font(.system(size: 10))
-                                        Text("Joined \(formatJoinedDate(createdAt))")
-                                            .font(.system(size: 12, weight: .medium))
-                                    }
-                                    .foregroundStyle(.tertiary)
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 5)
-                                    .background(.ultraThinMaterial, in: Capsule())
-                                }
-                                
-                                // Stats capsule
-                                statsRow(user)
-                                
-                                // Action Buttons
-                                actionButtons(user)
-                            }
-                            .opacity(expandProgress)
-                            .allowsHitTesting(expandProgress > 0.3)
-                            .padding(.top, DS.space12)
-                            .padding(.bottom, DS.space16)
+                        VStack(spacing: DS.space16) {
+                            // 1) Hero Card
+                            heroCard(user)
                             
-                            // ───── Divider ─────
-                            Rectangle()
-                                .fill(Color.primary.opacity(0.06))
-                                .frame(height: 0.5)
+                            // 2) Stats Row
+                            statsRow(user)
                             
-                            // ───── Segmented Capsule Tab Picker ─────
-                            publicProfileTabPicker()
-                                .padding(.top, DS.space12)
-                                .padding(.bottom, DS.space8)
-                            
-                            // ───── 3/4 Tabbed Content ─────
-                            publicTabbedContent()
+                            // 3) Action Buttons
+                            actionButtons(user)
                         }
+                        .opacity(expandProgress)
+                        .allowsHitTesting(expandProgress > 0.3)
+                        .padding(.top, DS.space12)
+                        
+                        // Divider
+                        Rectangle()
+                            .fill(Color.primary.opacity(0.08))
+                            .frame(height: 0.5)
+                            .padding(.horizontal, DS.space16)
+                        
+                        // 4) Posts / Empty
+                        postsSection
                     }
                 }
                 .padding(.horizontal, DS.space16)
@@ -296,7 +219,79 @@ struct PublicProfileView: View {
         }
     }
     
+    // MARK: - Hero Card
+    private func heroCard(_ u: User) -> some View {
+        HStack(alignment: .top, spacing: 14) {
+            // Avatar
+            ProfileAvatarView(
+                avatarPath: u.avatarPath,
+                initials: u.initials,
+                size: 80
+            )
+            
+            // Info
+            VStack(alignment: .leading, spacing: 5) {
+                // Name
+                HStack(spacing: 5) {
+                    Text(u.displayName)
+                        .font(.system(size: 20, weight: .bold))
+                        .lineLimit(1)
+                    
+                    let showVerified = u.isVerified || (isOwnProfile && AuthService.shared.currentUser?.isVerified == true)
+                    let showPremium = u.isPremium || (isOwnProfile && SubscriptionService.shared.isPremium)
 
+                    if showVerified {
+                        Image(systemName: "checkmark.seal.fill")
+                            .font(.system(size: 16))
+                            .foregroundStyle(DS.accentBlue)
+                    }
+                    
+                    if showPremium {
+                        Image(systemName: "crown.fill")
+                            .font(.system(size: 14))
+                            .foregroundStyle(Color(red: 0.85, green: 0.70, blue: 0.35))
+                    }
+                }
+                
+                // Username
+                Text("@\(u.username ?? "username")")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(.secondary)
+                
+                // Bio
+                if let bio = u.bio, !bio.isEmpty {
+                    Text(bio)
+                        .font(.system(size: 14))
+                        .foregroundStyle(.primary.opacity(0.85))
+                        .lineLimit(2)
+                        .padding(.top, 2)
+                }
+                
+                // Tags
+                if let tags = u.tags, !tags.isEmpty {
+                    FlowingTagsView(tags: tags)
+                        .padding(.top, 2)
+                }
+                
+                // Joined date
+                if let createdAt = u.createdAt {
+                    HStack(spacing: 4) {
+                        Image(systemName: "calendar")
+                            .font(.system(size: 10))
+                        Text("Joined \(formatJoinedDate(createdAt))")
+                            .font(.system(size: 12, weight: .medium))
+                    }
+                    .foregroundStyle(.tertiary)
+                    .padding(.top, 4)
+                }
+            }
+            
+            Spacer(minLength: 0)
+        }
+        .padding(DS.space16)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: DS.radiusCard, style: .continuous))
+        .shadow(color: DS.shadowColor, radius: DS.shadowRadius, y: DS.shadowY)
+    }
     
     // MARK: - Stats Row
     private func statsRow(_ u: User) -> some View {
@@ -433,77 +428,11 @@ struct PublicProfileView: View {
         }
     }
     
-    // MARK: - Segmented Capsule Tab Picker (Public Profile)
-    @Namespace private var pubTabAnimation
-    
-    private func publicProfileTabPicker() -> some View {
-        let tabs: [ProfileTab] = [.posts, .replies, .likes]
-        
-        return HStack(spacing: 0) {
-            ForEach(tabs, id: \.self) { tab in
-                Button {
-                    Haptics.selection()
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-                        selectedTab = tab
-                    }
-                    Task { await loadPublicTabData(tab) }
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: tab.icon)
-                            .font(.system(size: 13, weight: .medium))
-                        Text(tab.title)
-                            .font(.system(size: 14, weight: selectedTab == tab ? .bold : .medium))
-                    }
-                    .foregroundStyle(selectedTab == tab ? .primary : .secondary)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
-                    .background {
-                        if selectedTab == tab {
-                            Capsule()
-                                .fill(.ultraThinMaterial)
-                                .overlay(
-                                    Capsule()
-                                        .stroke(
-                                            LinearGradient(
-                                                colors: [Color.primary.opacity(0.15), Color.primary.opacity(0.05)],
-                                                startPoint: .topLeading,
-                                                endPoint: .bottomTrailing
-                                            ),
-                                            lineWidth: 0.5
-                                        )
-                                )
-                                .shadow(color: DS.shadowColor, radius: 4, y: 2)
-                                .matchedGeometryEffect(id: "pubTabIndicator", in: pubTabAnimation)
-                        }
-                    }
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(4)
-        .background(
-            Capsule()
-                .fill(Color(.systemGray6).opacity(0.6))
-        )
-        .padding(.horizontal, DS.space16)
-    }
-    
-    // MARK: - Tabbed Content
+    // MARK: - Posts Section
     @ViewBuilder
-    private func publicTabbedContent() -> some View {
-        switch selectedTab {
-        case .posts:
-            publicPostsList()
-        case .replies:
-            publicRepliesList()
-        case .likes:
-            publicLikesList()
-        }
-    }
-    
-    @ViewBuilder
-    private func publicPostsList() -> some View {
+    private var postsSection: some View {
         if isLoadingPosts && userPosts.isEmpty {
+            // List shimmer
             VStack(spacing: 0) {
                 ForEach(0..<3, id: \.self) { _ in
                     PostSkeletonView()
@@ -511,11 +440,8 @@ struct PublicProfileView: View {
                 }
             }
         } else if userPosts.isEmpty {
-            publicTabEmptyState(
-                icon: "square.and.pencil",
-                title: "No posts yet",
-                subtitle: isOwnProfile ? "Share your first post with the world." : "This user hasn't posted yet."
-            )
+            // Glass empty state
+            emptyPostsCard
         } else {
             LazyVStack(spacing: 0) {
                 ForEach(userPosts) { post in
@@ -542,162 +468,63 @@ struct PublicProfileView: View {
         }
     }
     
-    @ViewBuilder
-    private func publicRepliesList() -> some View {
-        if isLoadingReplies && repliedPosts.isEmpty {
-            VStack(spacing: 0) {
-                ForEach(0..<3, id: \.self) { _ in
-                    PostSkeletonView()
-                    Divider()
-                }
-            }
-        } else if repliedPosts.isEmpty {
-            publicTabEmptyState(
-                icon: "arrowshape.turn.up.left",
-                title: "No replies yet",
-                subtitle: isOwnProfile ? "Posts you reply to will appear here." : "This user hasn't replied to any posts yet."
-            )
-        } else {
-            LazyVStack(spacing: 0) {
-                ForEach(repliedPosts) { post in
-                    PostCard(
-                        post: post,
-                        feedStore: FeedStore.shared,
-                        currentUserId: currentUserId,
-                        onOpenComments: {
-                            selectedPostForComments = post
-                        },
-                        onForward: {
-                            selectedPostForForward = post
-                        },
-                        onHashtagTap: { tag in selectedHashtag = tag }
-                    )
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        selectedPostItem = PublicProfilePostNavigationItem(id: post.id)
-                    }
-                    
-                    Divider()
-                }
-            }
-        }
-    }
-    
-    @ViewBuilder
-    private func publicLikesList() -> some View {
-        if isLoadingLikes && likedPosts.isEmpty {
-            VStack(spacing: 0) {
-                ForEach(0..<3, id: \.self) { _ in
-                    PostSkeletonView()
-                    Divider()
-                }
-            }
-        } else if likedPosts.isEmpty {
-            publicTabEmptyState(
-                icon: "heart",
-                title: "No liked posts",
-                subtitle: isOwnProfile ? "Posts you like will appear here." : "This user hasn't liked any posts yet."
-            )
-        } else {
-            LazyVStack(spacing: 0) {
-                ForEach(likedPosts) { post in
-                    PostCard(
-                        post: post,
-                        feedStore: FeedStore.shared,
-                        currentUserId: currentUserId,
-                        onOpenComments: {
-                            selectedPostForComments = post
-                        },
-                        onForward: {
-                            selectedPostForForward = post
-                        },
-                        onHashtagTap: { tag in selectedHashtag = tag }
-                    )
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        selectedPostItem = PublicProfilePostNavigationItem(id: post.id)
-                    }
-                    
-                    Divider()
-                }
-            }
-        }
-    }
-    
-    private func publicTabEmptyState(icon: String, title: String, subtitle: String) -> some View {
+    // MARK: - Empty Posts Card (Glass)
+    private var emptyPostsCard: some View {
         VStack(spacing: DS.space12) {
-            Image(systemName: icon)
+            Image(systemName: "camera")
                 .font(.system(size: 36))
                 .foregroundStyle(.secondary.opacity(0.5))
             
-            Text(title)
+            Text("No posts yet")
                 .font(.system(size: 17, weight: .semibold))
             
-            Text(subtitle)
+            Text("Be the first to start a conversation.")
                 .font(.system(size: 14))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+            
+            // Contextual CTA
+            if !isOwnProfile {
+                if friendState == .none {
+                    Button {
+                        Haptics.light()
+                        Task { await sendFriendRequest() }
+                    } label: {
+                        Label("Add Friend", systemImage: "person.badge.plus")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(DS.accentBlue)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 10)
+                            .background(Color.blue.opacity(0.12), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    Button {
+                        Haptics.light()
+                        #if DEBUG
+                        print("📩 [Profile] Message tapped → navigating to DM with \(userId)")
+                        #endif
+                        dismiss()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                            DeepLinkRouter.shared.navigate(to: .chat(roomId: userId))
+                        }
+                    } label: {
+                        Label("Send a message", systemImage: "bubble.left.fill")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(DS.accentBlue)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 10)
+                            .background(Color.blue.opacity(0.12), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, DS.space32)
         .padding(.horizontal, DS.space16)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: DS.radiusCard, style: .continuous))
         .shadow(color: DS.shadowColor, radius: DS.shadowRadius, y: DS.shadowY)
-        .padding(.top, DS.space8)
-    }
-    
-    private func loadPublicTabData(_ tab: ProfileTab) async {
-        switch tab {
-        case .posts:
-            if userPosts.isEmpty { await loadPublicPosts() }
-        case .replies:
-            if repliedPosts.isEmpty { await loadPublicRepliedPosts() }
-        case .likes:
-            if likedPosts.isEmpty { await loadPublicLikedPosts() }
-        }
-    }
-    
-    private func loadPublicPosts() async {
-        isLoadingPosts = true
-        do {
-            let posts: [Post] = try await NetworkService.shared.get(path: "/api/posts/user/\(userId)")
-            userPosts = posts.filter { !$0.content.looksEncrypted }
-        } catch {
-            #if DEBUG
-            print("Failed to load posts: \(error)")
-            #endif
-        }
-        isLoadingPosts = false
-    }
-    
-    private func loadPublicLikedPosts() async {
-        isLoadingLikes = true
-        do {
-            let posts: [Post] = try await NetworkService.shared.get(
-                path: "/api/posts/user/\(userId)/likes"
-            )
-            likedPosts = posts.filter { !$0.content.looksEncrypted }
-        } catch {
-            #if DEBUG
-            print("⚠️ Failed to load liked posts: \(error)")
-            #endif
-        }
-        isLoadingLikes = false
-    }
-    
-    private func loadPublicRepliedPosts() async {
-        isLoadingReplies = true
-        do {
-            let posts: [Post] = try await NetworkService.shared.get(
-                path: "/api/posts/user/\(userId)/replies"
-            )
-            repliedPosts = posts.filter { !$0.content.looksEncrypted }
-        } catch {
-            #if DEBUG
-            print("⚠️ Failed to load replied posts: \(error)")
-            #endif
-        }
-        isLoadingReplies = false
     }
     
 
@@ -840,13 +667,13 @@ private struct ProfileHeaderShimmer: View {
                     .frame(width: 80, height: 80)
                 
                 VStack(alignment: .leading, spacing: 8) {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    RoundedRectangle(cornerRadius: 6)
                         .fill(Color.gray.opacity(0.15))
                         .frame(width: 140, height: 20)
-                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    RoundedRectangle(cornerRadius: 4)
                         .fill(Color.gray.opacity(0.12))
                         .frame(width: 100, height: 16)
-                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    RoundedRectangle(cornerRadius: 4)
                         .fill(Color.gray.opacity(0.1))
                         .frame(width: 180, height: 14)
                 }
@@ -859,10 +686,10 @@ private struct ProfileHeaderShimmer: View {
             HStack(spacing: 0) {
                 ForEach(0..<2, id: \.self) { i in
                     VStack(spacing: 4) {
-                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        RoundedRectangle(cornerRadius: 4)
                             .fill(Color.gray.opacity(0.15))
                             .frame(width: 30, height: 20)
-                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        RoundedRectangle(cornerRadius: 4)
                             .fill(Color.gray.opacity(0.1))
                             .frame(width: 50, height: 13)
                     }
@@ -946,7 +773,7 @@ struct StickyProfileHeader: View {
         }
         .padding(.horizontal, 14)
         .frame(height: barHeight)
-        // Liquid Glass material effect (iOS 15+)
+        // Apple Native Liquid Glass Effect (iOS 26+)
         .background(.regularMaterial, in: Capsule())
         .shadow(color: .black.opacity(0.08), radius: 6, x: 0, y: 3)
         .animation(.spring(response: 0.3, dampingFraction: 0.85), value: progress)

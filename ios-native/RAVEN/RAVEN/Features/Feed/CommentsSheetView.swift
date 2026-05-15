@@ -17,20 +17,6 @@ struct CommentsSheetView: View {
     @State private var replyTarget: Comment? = nil
     @State private var voiceSubmitError: String? = nil
     @Environment(\.dismiss) private var dismiss
-
-    // ───────────────────────────────────────────────────────────────────
-    // @mention picker — same pattern as ChatView and CreatePostView.
-    // Was previously absent — comments only got mentions if the user
-    // typed `@username` exactly right. Now: type "@", picker debounces,
-    // tap a result to insert + carry the user_id into the entities array
-    // sent on /api/comments/create.
-    // ───────────────────────────────────────────────────────────────────
-    @State private var mentionTracker = MentionTracker()
-    @State private var mentionCandidates: [MentionCandidate] = []
-    @State private var mentionSearchTask: Task<Void, Never>? = nil
-
-    // 🚩 Report sheet target for tapped comment-row's report action.
-    @State private var commentToReport: Comment? = nil
     
     // Photo comment
     @State private var showImagePicker = false
@@ -160,15 +146,6 @@ struct CommentsSheetView: View {
                 showImagePicker = false
             }
         }
-        // 🚩 Report sheet — fired by the kebab menu's "Report" item.
-        .sheet(item: $commentToReport) { c in
-            ReportView(
-                targetType: .comment,
-                targetId: c.id,
-                targetName: "Comment by @\(c.authorName)",
-                reportedUserId: c.authorId
-            )
-        }
     }
     
     // MARK: - Dynamic Header
@@ -275,15 +252,6 @@ struct CommentsSheetView: View {
         .padding()
     }
     
-    /// 🥇 The id of the "top comment" — highest score among NON-pinned root
-    /// comments, AND must clear a minimum threshold (≥3) so a single
-    /// upvote on a quiet post doesn't trivially earn the trophy. nil if
-    /// no comment qualifies.
-    private var topCommentId: String? {
-        let candidates = comments.filter { $0.isPinned != true && $0.score >= 3 }
-        return candidates.max(by: { $0.score < $1.score })?.id
-    }
-
     // MARK: - Comments List
     private var commentsList: some View {
         ScrollView {
@@ -291,31 +259,12 @@ struct CommentsSheetView: View {
                 ForEach(comments) { comment in
                     CommentRow(
                         comment: comment,
-                        // Pass the post author so the row can decide whether to
-                        // surface the "Pin / Unpin" menu item to the viewer.
-                        postAuthorId: post.authorId,
-                        // 🥇 mark the highest-scoring qualifying comment as "Top"
-                        isTopComment: comment.id == topCommentId,
                         onReply: { target in
                             replyTarget = target
                             Haptics.light()
                         },
                         onVote: { commentId, vote in
                             voteComment(commentId: commentId, vote: vote)
-                        },
-                        onEdit: { commentId, newText in
-                            Task { await editComment(commentId: commentId, newText: newText) }
-                        },
-                        onTogglePin: { commentId, shouldPin in
-                            Task { await togglePin(commentId: commentId, shouldPin: shouldPin) }
-                        },
-                        onDelete: { commentId in
-                            Task { await deleteComment(commentId: commentId) }
-                        },
-                        onReport: { c in
-                            // Reuse the existing report flow already wired
-                            // for posts/users — just present a sheet.
-                            commentToReport = c
                         }
                     )
                     .transition(.opacity.combined(with: .move(edge: .top)))
@@ -390,25 +339,7 @@ struct CommentsSheetView: View {
             }
             
             // Voice preview is now handled by VoiceRecordingBar in the input area
-
-            // 🔔 @mention picker — sits above the composer when a "@…" token
-            // is detected. Tapping a result inserts the mention + appends to
-            // entities. Glassmorphism dropdown matches ChatView styling.
-            if mentionTracker.isShowingPicker && !mentionCandidates.isEmpty {
-                MentionPickerView(
-                    members: mentionCandidates,
-                    searchText: mentionTracker.mentionSearchText,
-                    onSelect: { candidate in
-                        commentText = mentionTracker.insertMention(into: commentText, candidate: candidate)
-                        mentionCandidates = []
-                        Haptics.light()
-                    }
-                )
-                .padding(.horizontal, DS.space16)
-                .padding(.bottom, 6)
-                .transition(.opacity.combined(with: .move(edge: .bottom)))
-            }
-
+            
             // Main composer row
             HStack(spacing: DS.space8) {
                 // Attachment button (photo picker)
@@ -434,15 +365,6 @@ struct CommentsSheetView: View {
                 .textFieldStyle(.plain)
                 .lineLimit(1...4)
                 .padding(.leading, 4)
-                // 🔔 @mention live-picker hook
-                .onChange(of: commentText) { _, newValue in
-                    mentionTracker.processTextChange(newValue)
-                    if mentionTracker.isShowingPicker {
-                        scheduleMentionSearch(query: mentionTracker.mentionSearchText)
-                    } else {
-                        mentionCandidates = []
-                    }
-                }
                 
                 // Right side: Send or Mic
                 if canSend {
@@ -484,42 +406,6 @@ struct CommentsSheetView: View {
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: recordedAudioURL != nil)
     }
     
-    // MARK: - Mention Search
-    /// Debounced user-search for the @mention picker. Same pattern used by
-    /// CreatePostView. Cancels in-flight searches when user keeps typing,
-    /// fires after 200 ms quiet, hits /api/users/search for a query or
-    /// /api/users/friends for an empty query.
-    private func scheduleMentionSearch(query: String) {
-        mentionSearchTask?.cancel()
-        let q = query.trimmingCharacters(in: .whitespaces)
-        mentionSearchTask = Task {
-            try? await Task.sleep(nanoseconds: 200_000_000)
-            if Task.isCancelled { return }
-            do {
-                struct Hit: Decodable {
-                    let id: String
-                    let username: String
-                    let avatarPath: String?
-                    let bio: String?
-                }
-                let path = q.isEmpty
-                    ? "/api/users/friends"
-                    : "/api/users/search?q=\(q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? q)"
-                let hits: [Hit] = try await networkService.get(path: path)
-                if Task.isCancelled { return }
-                await MainActor.run {
-                    mentionCandidates = hits.prefix(8).map {
-                        MentionCandidate(id: $0.id, username: $0.username, displayName: nil, avatarUrl: $0.avatarPath)
-                    }
-                }
-            } catch {
-                #if DEBUG
-                print("⚠️ [CommentMentionPicker] search failed: \(error)")
-                #endif
-            }
-        }
-    }
-
     // MARK: - Load Comments
     private func loadComments() async {
         if let cachedComments = feedStore.getCachedComments(for: realPostId), !cachedComments.isEmpty {
@@ -747,10 +633,7 @@ struct CommentsSheetView: View {
                 let commentType: String
                 let mediaUrl: String?
                 let durationSec: Double?
-                /// Structured @mention entities (server uses these to skip
-                /// the regex extraction). nil if user didn't tag anyone.
-                let entities: [MentionEntity]?
-
+                
                 enum CodingKeys: String, CodingKey {
                     case postId = "post_id"
                     case content
@@ -758,7 +641,6 @@ struct CommentsSheetView: View {
                     case commentType = "comment_type"
                     case mediaUrl = "media_url"
                     case durationSec = "duration_sec"
-                    case entities
                 }
             }
             
@@ -768,12 +650,6 @@ struct CommentsSheetView: View {
                 #endif
             }
             
-            // 🔔 Filter the picker's tracked entities to ONLY those whose
-            // `@username` is still present in the final text — handles the
-            // case where the user typed/picked then deleted the chip.
-            let liveEntities: [MentionEntity] = mentionTracker.entities.filter { ent in
-                textToSubmit.range(of: "@\(ent.username)") != nil
-            }
             let serverComment: Comment = try await networkService.post(
                 path: "/api/comments/create",
                 body: CommentBody(
@@ -782,13 +658,9 @@ struct CommentsSheetView: View {
                     parentCommentId: parentId,
                     commentType: commentType,
                     mediaUrl: mediaUrlToSend,
-                    durationSec: durationSecToSend,
-                    entities: liveEntities.isEmpty ? nil : liveEntities
+                    durationSec: durationSecToSend
                 )
             )
-            // Reset tracker state after successful submit so the picker
-            // doesn't keep stale entities for the NEXT comment.
-            mentionTracker.reset()
             
             if commentType == "voice" {
                 #if DEBUG
@@ -978,98 +850,6 @@ struct CommentsSheetView: View {
         return result.voiceUrl
     }
     
-    // MARK: - ✏️ Edit Comment
-    /// PATCH /api/comments/{id} with new content. On success, replace the
-    /// row in the local tree (preserves replies + ordering); on error,
-    /// surface a brief print + leave UI as-is so the user can retry.
-    private func editComment(commentId: String, newText: String) async {
-        struct EditBody: Encodable { let content: String }
-        do {
-            let updated: Comment = try await networkService.patch(
-                path: "/api/comments/\(commentId)",
-                body: EditBody(content: newText)
-            )
-            await MainActor.run {
-                replaceCommentInTree(commentId: commentId, with: updated)
-                feedStore.invalidateCommentsCache(for: post.id)
-            }
-        } catch {
-            #if DEBUG
-            print("⚠️ [Comments] edit failed: \(error)")
-            #endif
-        }
-    }
-
-    // MARK: - 📌 Pin / Unpin Comment
-    /// POST /api/comments/{id}/pin (or /unpin). On success, refetch the
-    /// list so the pinned comment re-orders to the top.
-    private func togglePin(commentId: String, shouldPin: Bool) async {
-        let path = "/api/comments/\(commentId)/\(shouldPin ? "pin" : "unpin")"
-        do {
-            struct EmptyResp: Decodable {}
-            let _: EmptyResp = try await networkService.post(path: path, body: EmptyBody())
-            await loadComments()  // refetch to apply pinned-first sort
-            feedStore.invalidateCommentsCache(for: post.id)
-            Haptics.success()
-        } catch {
-            #if DEBUG
-            print("⚠️ [Comments] toggle pin failed: \(error)")
-            #endif
-            Haptics.error()
-        }
-    }
-
-    // MARK: - 🗑️ Delete Comment
-    /// DELETE /api/comments/{id}. Server allows comment author OR post author.
-    private func deleteComment(commentId: String) async {
-        do {
-            struct EmptyResp: Decodable {}
-            let _: EmptyResp = try await networkService.delete(path: "/api/comments/\(commentId)")
-            await MainActor.run {
-                removeCommentFromTree(commentId: commentId)
-                feedStore.invalidateCommentsCache(for: post.id)
-            }
-            Haptics.success()
-        } catch {
-            #if DEBUG
-            print("⚠️ [Comments] delete failed: \(error)")
-            #endif
-            Haptics.error()
-        }
-    }
-
-    // MARK: - Tree mutation helpers
-
-    /// Walk the comments tree and swap the matching comment with its new
-    /// (edited) version, preserving replies and position.
-    private func replaceCommentInTree(commentId: String, with newComment: Comment) {
-        func recurse(_ list: inout [Comment]) {
-            for i in list.indices {
-                if list[i].id == commentId {
-                    var merged = newComment
-                    merged.replies = list[i].replies  // preserve children
-                    list[i] = merged
-                    return
-                }
-                recurse(&list[i].replies)
-            }
-        }
-        recurse(&comments)
-    }
-
-    /// Remove a comment from any depth of the tree.
-    private func removeCommentFromTree(commentId: String) {
-        func recurse(_ list: inout [Comment]) {
-            list.removeAll { $0.id == commentId }
-            for i in list.indices {
-                recurse(&list[i].replies)
-            }
-        }
-        recurse(&comments)
-    }
-
-    private struct EmptyBody: Encodable {}
-
     // MARK: - Vote Comment
     private func voteComment(commentId: String, vote: Int) {
         // Optimistic update
@@ -1196,17 +976,17 @@ private struct SkeletonCommentRow: View {
                 .shimmer(offset: shimmerOffset, delay: delay)
             
             VStack(alignment: .leading, spacing: 8) {
-                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                RoundedRectangle(cornerRadius: 4)
                     .fill(Color.gray.opacity(0.2))
                     .frame(width: 100, height: 14)
                     .shimmer(offset: shimmerOffset, delay: delay)
                 
-                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                RoundedRectangle(cornerRadius: 4)
                     .fill(Color.gray.opacity(0.15))
                     .frame(height: 12)
                     .shimmer(offset: shimmerOffset, delay: delay)
                 
-                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                RoundedRectangle(cornerRadius: 4)
                     .fill(Color.gray.opacity(0.15))
                     .frame(width: 180, height: 12)
                     .shimmer(offset: shimmerOffset, delay: delay)

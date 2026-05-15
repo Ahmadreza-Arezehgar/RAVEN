@@ -6,28 +6,8 @@ import Foundation
 class ContentConsumptionTracker: ObservableObject {
     static let shared = ContentConsumptionTracker()
     
-    /// Set of content IDs already sent to server (prevents duplicate
-    /// calls). 🟠 BUG FIX (2026-05-10): bounded LRU. The previous
-    /// version was an unbounded `Set<String>` in a singleton — a
-    /// heavy feed scroller racked up tens of thousands of UUIDs over
-    /// a session, multi-MB Set hashing on every insert. Now we keep
-    /// the most-recent N ids and drop the oldest when full.
+    /// Set of content IDs already sent to server (prevents duplicate calls)
     private var sentToServer: Set<String> = []
-    private var sentToServerOrder: [String] = []
-    private let sentToServerCap = 5_000
-
-    private func recordSent(_ contentId: String) {
-        if sentToServer.contains(contentId) { return }
-        sentToServer.insert(contentId)
-        sentToServerOrder.append(contentId)
-        if sentToServerOrder.count > sentToServerCap {
-            let drop = sentToServerOrder.count - sentToServerCap
-            for id in sentToServerOrder.prefix(drop) {
-                sentToServer.remove(id)
-            }
-            sentToServerOrder.removeFirst(drop)
-        }
-    }
     
     /// Offline queue for when network unavailable
     private var pendingQueue: [(contentId: String, contentType: String, status: String)] = []
@@ -56,7 +36,7 @@ class ContentConsumptionTracker: ObservableObject {
     /// Idempotent - safe to call multiple times.
     func markConsumed(contentId: String, contentType: ContentType, status: ConsumptionStatus) {
         guard !sentToServer.contains(contentId) else { return }
-        recordSent(contentId)
+        sentToServer.insert(contentId)
         
         #if DEBUG
         print("📍 [Consume] \(status.rawValue) \(contentType.rawValue):\(contentId.prefix(8))")
@@ -73,14 +53,9 @@ class ContentConsumptionTracker: ObservableObject {
         
         let duration: TimeInterval = contentType == .story ? 0.7 : 1.2
         
-        // Timer.scheduledTimer fires on the runloop's main mode, but Swift
-        // sees the closure as @Sendable. Hop to MainActor explicitly to
-        // satisfy isolation checks.
         let timer = Timer.scheduledTimer(withTimeInterval: duration, repeats: false) { [weak self] _ in
-            Task { @MainActor in
-                self?.markConsumed(contentId: contentId, contentType: contentType, status: .seen)
-                self?.visibilityTimers.removeValue(forKey: contentId)
-            }
+            self?.markConsumed(contentId: contentId, contentType: contentType, status: .seen)
+            self?.visibilityTimers.removeValue(forKey: contentId)
         }
         
         visibilityTimers[contentId] = timer

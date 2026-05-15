@@ -175,18 +175,7 @@ struct NewChatView: View {
             isMuted: false,
             updatedAt: Date()
         )
-
-        // ⚡ AUDIT FIX: Persist the conversation BEFORE handing it to the chat
-        // view. Previously the row only existed in `tempConversation` state
-        // and was lost when the user backgrounded the app or restarted —
-        // making "new 1:1 chat offline" silently disappear. Persisting here
-        // means a draft / first-message conversation always survives a relaunch
-        // and gets reconciled the next time the inbox loads from DB.
-        Task.detached(priority: .userInitiated) {
-            try? await ConversationRepository.shared.upsert(conversation)
-            await MainActor.run { ConversationStore.shared.addLocally(conversation) }
-        }
-
+        
         onSelect(conversation)
         // BUG FIX: Removed `dismiss()` to prevent a double-dismissal crash.
         // The parent view naturally dismisses this sheet when changing the state variable.

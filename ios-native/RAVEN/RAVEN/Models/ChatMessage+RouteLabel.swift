@@ -47,7 +47,7 @@ extension Post {
     /// Badge label for posts initially sent via mesh (Spec V1 §7.1)
     var uiBadgeLabel: String? {
         if initialSend == "mesh" {
-            return "post via mesh"
+            return "Initial Send by Mesh"
         }
         return nil
     }

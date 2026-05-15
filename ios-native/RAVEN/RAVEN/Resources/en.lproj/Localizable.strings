@@ -76,7 +76,6 @@
 // Account
 "edit_profile" = "Edit Profile";
 "friend_requests" = "Friend Requests";
-"follow_requests" = "Follow Requests";
 "joined" = "Joined";
 "add_bio" = "Add a bio";
 
@@ -121,7 +120,7 @@
 // Privacy Policy
 "privacy_policy.title" = "Privacy Policy";
 "privacy_policy.last_updated" = "Last Updated: February 2026";
-"pp.last_updated" = "May 10, 2026 · v1.6";
+"pp.last_updated" = "February 18, 2026";
 
 // PP Section Titles
 "pp.section.0" = "General & Transparency";
@@ -164,7 +163,7 @@
 "pp.q13" = "Can I use RAVEN without an email?";
 "pp.a13" = "Users can sign up and log in using a verified email address, Apple ID, or Google Account. Phone number-based registration or authentication is not supported. If users choose email-based registration, email verification is mandatory before account activation.";
 "pp.q14" = "How are passwords stored?";
-"pp.a14" = "Today: stretched on the server with Argon2id (time=3, memory=64 MiB, parallelism=4) plus a unique salt per user. We never store plaintext passwords and even our team cannot recover yours. Coming v1.6: OPAQUE PAKE first iteration so the server never receives your password at all — not even hashed. If you use OAuth (Google/Apple), no password is stored.";
+"pp.a14" = "Passwords are hashed using bcrypt with a unique salt per user. We never store plaintext passwords. If you use OAuth (Google/Apple), no password is stored.";
 "pp.q15" = "What data do you get from Google/Apple sign-in?";
 "pp.a15" = "Only your name and email address. We do not receive your contacts, photos, or any other data from the OAuth provider.";
 "pp.q16" = "Is a profile photo required?";
@@ -182,7 +181,7 @@
 
 // PP — C: Messages & Chats (22–31)
 "pp.q22" = "Are messages end-to-end encrypted?";
-"pp.a22" = "Yes — end-to-end. Every 1:1 conversation runs the Signal protocol (X3DH for asynchronous key agreement + Double Ratchet for per-message key rotation), giving you forward secrecy and post-compromise security on internet AND on Bluetooth mesh. Our servers and every relay see only ciphertext we cannot decrypt — even under legal compulsion. Group chats today use per-group AES-256-GCM symmetric keys (rotated when a member is removed); migration to MLS (RFC 9420) is committed for v1.7.";
+"pp.a22" = "Direct messages use transport encryption (TLS). We are actively implementing E2E encryption. Group messages are server-side encrypted at rest.";
 "pp.q23" = "Who can see my messages?";
 "pp.a23" = "Only you and the recipient(s). RAVEN staff cannot read message content. Automated systems do not scan message text.";
 "pp.q24" = "How long are messages stored on the server?";
@@ -254,9 +253,9 @@
 
 // PP — G: Mesh & Offline (54–59 + mesh.privacy)
 "pp.q54" = "What data is exchanged between devices in Mesh mode?";
-"pp.a54" = "Encrypted message payloads (opaque to relays), anonymised sender/recipient hashes (not raw user IDs), timestamps, and TTL counters. No profile data, no contact graph, no GPS in the mesh frame itself. NOTE: radio-layer traffic analysis can still reveal which devices are talking on the airwaves; we mitigate today with anonymised hashes + dedup + randomised re-broadcast jitter, and ship constant-rate cover traffic + decoy envelopes in 2026 H2.";
+"pp.a54" = "Encrypted message payloads, sender/recipient IDs, timestamps, and TTL counters. No personal profile data is shared.";
 "pp.q55" = "Is content encrypted during Mesh transfer?";
-"pp.a55" = "Yes. The same Signal end-to-end protocol that protects internet messages (X3DH + Double Ratchet) protects the mesh path. Relay devices forward bytes they cannot read, modify, or impersonate — every envelope is independently signed (Ed25519) and sealed (AES-256-GCM) by the original sender.";
+"pp.a55" = "Yes. All mesh payloads are encrypted before transmission. Relay devices cannot read the content.";
 "pp.q56" = "What is Bridge mode and what does it do?";
 "pp.a56" = "A Bridge device relays messages between offline users and the server when it regains connectivity. It acts as a courier, not a reader.";
 "pp.q57" = "Can a relay device see my message content?";
@@ -270,9 +269,9 @@
 
 // PP — H: Third Parties & AI (61–63)
 "pp.q61" = "What third-party services does RAVEN use?";
-"pp.a61" = "Apple APNs (push wake-up only — never message content); Apple Sign in / Apple Foundation Models / Apple Translation (all on-device); Google Sign-in (optional, only your name + email); Google Gemini (cloud, only when you explicitly use 'Ask Gemini' on a public post — never on DMs); Google Cloud Run (Belgium, EU — hosts our FastAPI relay; only sees ciphertext); RevenueCat (RAVEN+ subscription receipts via StoreKit); LiveKit (real-time audio mixer for Club rooms — never recorded); SQLCipher (on-device DB encryption library). Not used: Crashlytics, Sentry, Mixpanel, Datadog, Firebase Analytics, Facebook SDK, advertising SDK, fingerprinting library — zero analytics SDKs ship in the app binary today.";
+"pp.a61" = "Apple (push notifications), Google (sign-in, AI features), RevenueCat (subscription management), and our cloud hosting provider.";
 "pp.q62" = "Are my messages or posts sent to AI providers?";
-"pp.a62" = "Conversation summaries and smart replies run entirely ON-DEVICE (Apple Foundation Models, iOS 26+) — nothing leaves your phone. 'Ask Gemini' on a public post is the only feature that sends content to a cloud AI provider — only the specific post you tap on, only when you trigger it. Your private DMs, group messages, and Bluetooth-mesh traffic are NEVER sent to any AI provider, and your messages are NEVER used to train public models.";
+"pp.a62" = "Only when you explicitly use AI features (like 'Ask Gemini' or 'Voice Transcription'). The specific post or audio file is sent securely to Google for processing. Your private DMs are NEVER sent to AI or used to train public models.";
 "pp.q63" = "Does RAVEN sell data to advertisers?";
 "pp.a63" = "No. RAVEN has no advertising partners, no data brokers, and no third-party tracking SDKs.";
 
@@ -281,27 +280,6 @@
 "pp.a64" = "All data is encrypted at rest using AES-256. Database volumes use full-disk encryption. Backups are encrypted with separate keys.";
 "pp.q65" = "How long are logs, IPs, and device metadata retained?";
 "pp.a65" = "Server access logs are retained for 30 days for security monitoring. IP addresses are not stored beyond the active session. Device metadata is retained while your account is active and deleted within 30 days of account deletion.";
-
-// PP — J: Echo, Club, Vault & Discovery (66–74)
-"pp.section.9" = "Echo, Club, Vault & Discovery";
-"pp.q66" = "How is Echo data handled?";
-"pp.a66" = "Echoes (24-hour stories) are stored on our servers for the duration they are active. Once expired, they are permanently deleted within 24 hours. View counts and viewer lists are only visible to the creator.";
-"pp.q67" = "Is Club audio recorded or stored?";
-"pp.a67" = "No. Club (live audio rooms) are fully real-time and ephemeral. Audio is streamed peer-to-peer and is never recorded, stored, or processed on our servers. Once the room ends, no audio data remains.";
-"pp.q68" = "What data is stored in the Vault?";
-"pp.a68" = "The Vault stores your private notes, saved messages, and bookmarked content. All Vault data is encrypted at rest on our servers using AES-256 and is only accessible with your account credentials.";
-"pp.q69" = "How is Vault data encrypted?";
-"pp.a69" = "Vault items are encrypted at rest using AES-256 on the server. In transit, all data uses TLS 1.3. Your Vault cannot be accessed by RAVEN staff or any third party.";
-"pp.q70" = "What data does Discover collect?";
-"pp.a70" = "Discover uses your general location (city-level, never precise GPS) to show nearby users and trending content. Location data is not stored permanently and is refreshed only while the Discover tab is active.";
-"pp.q71" = "Does QR Code scanning collect data?";
-"pp.a71" = "No. QR codes contain only a user identifier for adding friends. Scanning a QR code does not share your location, contacts, or any other personal data.";
-"pp.q72" = "How is identity verification data handled?";
-"pp.a72" = "Government-issued ID and selfie photos submitted for verification are transmitted over TLS, reviewed by our team, and permanently deleted immediately after the review is complete. We do not store, share, or use this data for any other purpose.";
-"pp.q73" = "What data do Voice Rooms collect?";
-"pp.a73" = "Voice Rooms stream audio in real-time and do not record or store any audio data. Room metadata (title, host, participant count) is stored while the room is active and deleted when it ends.";
-"pp.q74" = "How are Stories and video posts stored?";
-"pp.a74" = "Story media (photos/videos) is stored on our servers while the story is active (24 hours). After expiration, media is permanently deleted. Video posts in the feed follow the same storage policy as image posts — encrypted at rest and deleted when you remove the post.";
 
 // Terms of Service
 "terms_of_service.title" = "Terms of Service";
@@ -349,7 +327,7 @@
 
 // FAQ
 "faq.title" = "FAQ";
-"faq.last_updated" = "May 10, 2026 · v1.6";
+"faq.last_updated" = "February 18, 2026";
 
 // FAQ Section Titles
 "faq.section.0" = "Getting Started & Account";
@@ -359,8 +337,6 @@
 "faq.section.4" = "Posts & Feed";
 "faq.section.5" = "RAVEN+ & Subscriptions";
 "faq.section.6" = "Security & Privacy";
-"faq.section.7" = "Echo, Club & Vault";
-"faq.section.8" = "Stories, Discovery & More";
 
 // FAQ — A: Getting Started & Account (1–10)
 "faq.q1" = "What is RAVEN and how is it different?";
@@ -507,50 +483,6 @@
 "faq.a63" = "Account data: while account is active + 30 days after deletion. Messages: until you delete them. Server logs: 30 days. Mesh relay data: 24 hours maximum.";
 "faq.q64" = "How do I request my data be deleted?";
 "faq.a64" = "Go to Settings → Account → Delete Account to remove everything. For a data export before deletion, use Settings → Account → Download My Data.";
-
-// FAQ — G2: v1.6 capabilities (May 2026)
-"faq.q64a" = "What's the Mesh-to-Internet Gateway (Helper Mode)? Can the gateway read my messages?";
-"faq.a64a" = "Helper Mode (opt-in, in Linked Devices settings) lets your online phone act as a cipher-text relay for nearby offline neighbours over Bluetooth. The gateway is cryptographically blind — it sees only a recipient hint, an opaque ciphertext blob, and a per-relay nonce. It cannot read the plaintext, cannot identify the original sender, and cannot see group membership. Token-bucket rate limiting (100 KB burst, 1 KB/s steady per neighbour) prevents abuse. The service deactivates automatically when the phone is hot, low on battery, or fully backgrounded.";
-"faq.q64b" = "What is the 180-day identity-key rotation? Will my contacts still recognise me?";
-"faq.a64b" = "Every 180 days your identity keypair rotates automatically. Each transition is a cross-signed certificate: BOTH the old key signs the new one, AND the new key signs the old one. A peer who only sees your new key can prove provenance back to the old one (and vice versa). The certificate chain is locally verifiable forward and backward — your contacts keep recognising you without re-adding.";
-"faq.q64c" = "Is Sealed Sender shipped? What about OPAQUE PAKE?";
-"faq.a64c" = "Yes — both shipped in v1.6. Sealed Sender encrypts the sender identity to the recipient's identity key, so the relay layer learns only 'a message exists for X' — not 'from Y'. OPAQUE PAKE (RFC 9497, first iteration) means the server never receives your password, not even hashed; even a full DB breach reveals zero usable credentials. Full standards-compliant OPAQUE with the server-side OPRF round lands in v1.7.";
-"faq.q64d" = "Defence-in-depth: how do double encryption and memory hygiene work in v1.6?";
-"faq.a64d" = "Sensitive payloads use a Double-AEAD construction — inner ChaCha20-Poly1305 wrapped in outer AES-256-GCM, with a key-committing HMAC tag. Both ciphers must fall before plaintext leaks. Sensitive byte buffers (chain keys, ratchet roots, in-flight plaintext) live in a 'SecretKey' primitive that is page-locked (mlock) so the OS can't write them to swap, and triple-zeroised on deinit (0x00 / 0xFF / 0x00 — alternation defeats compiler-eliding writes).";
-
-// FAQ — H: Echo, Club & Vault (65–70)
-"faq.q65" = "What is Echo?";
-"faq.a65" = "Echo is RAVEN's stories feature — short-lived posts (photos, videos, or text) that disappear after 24 hours. You can share moments with friends or the public, and see who viewed your Echo.";
-"faq.q66" = "Who can see my Echo?";
-"faq.a66" = "You control visibility when creating an Echo: share with Everyone, Friends Only, or a custom list. Viewers can react but only you see the full view list.";
-"faq.q67" = "What is Club?";
-"faq.a67" = "Club is RAVEN's live audio room feature. You can host or join real-time voice conversations, similar to a podcast or conference call. Audio is live-only and never recorded.";
-"faq.q68" = "How do I host or join a Club room?";
-"faq.a68" = "Navigate to the Club tab in the Mesh section. Tap '+' to create a new room with a title and optional description. Others can browse and join open rooms. Hosts can mute or remove participants.";
-"faq.q69" = "What is the Vault?";
-"faq.a69" = "The Vault is your private, encrypted storage space within RAVEN. Save important messages, notes, and bookmarks that only you can access. All Vault data is encrypted with AES-256.";
-"faq.q70" = "How secure is the Vault?";
-"faq.a70" = "Very secure. Vault data is encrypted at rest using AES-256, transmitted over TLS 1.3, and is only accessible with your account credentials. RAVEN staff cannot access your Vault contents.";
-
-// FAQ — I: Stories, Discovery & More (71–79)
-"faq.q71" = "How do Stories work in RAVEN?";
-"faq.a71" = "Stories are photos or videos that appear at the top of your feed and disappear after 24 hours. You can set who sees them, enable view-once mode, and see who viewed them.";
-"faq.q72" = "What is Discover?";
-"faq.a72" = "Discover helps you find new people and content. Browse trending posts, explore nearby users, and find public groups — all from the Discover tab.";
-"faq.q73" = "How do QR Codes work in RAVEN?";
-"faq.a73" = "Go to Settings → My QR Code to share your profile. Others can scan it to instantly send you a friend request. You can also scan others' codes via the camera icon.";
-"faq.q74" = "What are Voice Rooms?";
-"faq.a74" = "Voice Rooms are live audio spaces where you can talk with friends or communities in real-time. Rooms can be public or private, and hosts have full moderation control.";
-"faq.q75" = "Can I post videos in the Feed?";
-"faq.a75" = "Yes! RAVEN supports video posts up to 2 minutes. Videos are compressed for efficient delivery and play inline in the feed. RAVEN+ subscribers can upload longer videos.";
-"faq.q76" = "How does Identity Verification work?";
-"faq.a76" = "Apply for a verified badge via Settings → Account → Verify Identity. Submit a government-issued ID and a selfie. After review, you receive a verification badge on your profile. Documents are deleted immediately after review.";
-"faq.q77" = "What are Data Mules in mesh networking?";
-"faq.a77" = "Data Mules are devices that physically carry your encrypted messages from one area to another. If your recipient is far away, a moving device (like someone walking between locations) can automatically carry and deliver your message.";
-"faq.q78" = "What are Hashtags and how does trending work?";
-"faq.a78" = "Add hashtags (#) to your posts to make them discoverable. Trending hashtags appear on the Discover page based on post volume in the last 24 hours. Tap a hashtag to see all related posts.";
-"faq.q79" = "How does the media editor work?";
-"faq.a79" = "Before posting, you can edit photos and videos with filters, cropping, text overlays, and stickers. All editing is done locally on your device — no data is sent to our servers until you post.";
 
 // Acknowledgements
 "acknowledgements.title" = "Acknowledgements";

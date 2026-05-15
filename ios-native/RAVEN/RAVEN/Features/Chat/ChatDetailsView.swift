@@ -82,13 +82,7 @@ struct ChatDetailsView: View {
     @State private var showNicknameEditor = false
     @State private var displayName: String = ""
     @State private var appeared = false
-
-    // 🆕 Mute toggle state. Hydrated from the in-memory ConversationStore on
-    // appear (the UserDefaults-backed source of truth) and committed back to
-    // both stores + the server when the user flips it.
-    @State private var isMuted: Bool = false
-    @State private var muteInFlight: Bool = false
-
+    
     @Namespace private var switcherNamespace
     @Environment(\.dismiss) private var dismiss
     
@@ -138,9 +132,6 @@ struct ChatDetailsView: View {
             } else {
                 displayName = peer.displayName
             }
-            // Hydrate mute state from the local conversation cache.
-            isMuted = ConversationStore.shared.conversations
-                .first(where: { $0.roomId == roomId })?.isMuted ?? false
             await loadSharedMedia()
             // Entrance animation
             withAnimation(.spring(response: 0.45, dampingFraction: 0.82)) {
@@ -158,11 +149,7 @@ struct ChatDetailsView: View {
                 path: peer.avatarPath,
                 size: 80,
                 showGlow: true,
-                // Presence isn't fetched on the details screen — caller
-                // shouldn't render a "fake" green dot. The chat view's
-                // header already exposes the live online state next to
-                // the peer name.
-                showOnlineIndicator: false
+                showOnlineIndicator: true
             )
             
             VStack(spacing: DS.space4) {
@@ -175,69 +162,22 @@ struct ChatDetailsView: View {
                     .foregroundStyle(.secondary)
             }
             
-            // Action capsules row — mirror Apple Messages' contact card.
-            HStack(spacing: 8) {
-                // Edit nickname
-                Button {
-                    Haptics.selection()
-                    showNicknameEditor = true
-                } label: {
-                    Label("Nickname", systemImage: "pencil")
-                        .font(.caption)
-                        .fontWeight(.medium)
-                        .foregroundStyle(.primary.opacity(0.75))
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 7)
-                }
-                .background(.ultraThinMaterial, in: Capsule())
-                .overlay(
-                    Capsule().stroke(Color.primary.opacity(0.10), lineWidth: 0.5)
-                )
-
-                // Mute toggle (1:1 chats — server endpoint takes peer_id)
-                Button {
-                    toggleMute()
-                } label: {
-                    Label(isMuted ? "Muted" : "Mute",
-                          systemImage: isMuted ? "bell.slash.fill" : "bell")
-                        .font(.caption)
-                        .fontWeight(.medium)
-                        .foregroundStyle(isMuted ? Color.accentColor : .primary.opacity(0.75))
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 7)
-                        .contentTransition(.symbolEffect(.replace))
-                }
-                .background(
-                    Capsule().fill(isMuted ? Color.accentColor.opacity(0.14) : .clear)
-                )
-                .background(.ultraThinMaterial, in: Capsule())
-                .overlay(
-                    Capsule().stroke(
-                        isMuted ? Color.accentColor.opacity(0.45) : Color.primary.opacity(0.10),
-                        lineWidth: 0.5
-                    )
-                )
-                .disabled(muteInFlight)
-                .animation(.spring(response: 0.30, dampingFraction: 0.78), value: isMuted)
+            // Edit Nickname — capsule outline button
+            Button {
+                Haptics.selection()
+                showNicknameEditor = true
+            } label: {
+                Label("Edit Nickname", systemImage: "pencil")
+                    .font(.caption)
+                    .fontWeight(.medium)
+                    .foregroundStyle(.primary.opacity(0.7))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 7)
             }
+            .background(.ultraThinMaterial, in: Capsule())
         }
         .frame(maxWidth: .infinity)
         .padding(.horizontal, DS.space16)
-    }
-
-    // MARK: - Mute toggle
-
-    private func toggleMute() {
-        Haptics.selection()
-        let next = !isMuted
-        // Optimistic flip — actual local + server sync handled by
-        // ConversationStore.toggleMute (which also routes group vs DM).
-        isMuted = next
-        muteInFlight = true
-        Task {
-            await ConversationStore.shared.toggleMute(roomId: roomId)
-            await MainActor.run { muteInFlight = false }
-        }
     }
     
     // MARK: - Capsule Glass Section Switcher
@@ -424,13 +364,6 @@ struct ChatMediaGridView: View {
                                         .tint(.secondary)
                                 }
                         }
-                        // BUG FIX (2026-05-10): pin AsyncImage identity
-                        // to the URL so cell reuse during scroll
-                        // invalidates the cached phase and triggers a
-                        // fresh load — without this, recycled tiles
-                        // briefly show the previous cell's image until
-                        // the new download settles.
-                        .id(url)
                         .frame(height: 120)
                         .clipped()
                         .clipShape(RoundedRectangle(cornerRadius: DS.radiusInner, style: .continuous))
@@ -593,7 +526,7 @@ struct ChatWaveformView: View {
                     let height = barHeight(for: i, width: geo.size.width)
                     let isActive = Double(i) / 30.0 < progress
                     
-                    RoundedRectangle(cornerRadius: 1, style: .continuous)
+                    RoundedRectangle(cornerRadius: 1)
                         .fill(isActive ? Color.blue : Color.secondary.opacity(0.3))
                         .frame(width: 3, height: height)
                         .animation(.easeInOut(duration: 0.15), value: isPlaying)

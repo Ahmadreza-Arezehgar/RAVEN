@@ -6,7 +6,7 @@ from typing import List, Optional, Literal
 from datetime import datetime, timedelta
 
 from database import get_db
-from models import User, Message, GroupMessage, Group, GroupMember, FriendRequest, Notification
+from models import User, Message, GroupMessage, Group, GroupMember
 from routers.users import get_current_user
 from encryption import encrypt_text, decrypt_text
 from middleware.rate_limit import rate_limiter
@@ -15,69 +15,9 @@ import os
 
 router = APIRouter(prefix="/api/messages", tags=["messages"])
 
-
-# ============================================================================
-# FRIENDSHIP HELPER — checks BOTH Friendship table AND FriendRequest table
-# The app uses two separate tables to represent friendship; we must check both.
-# Bug Root Cause: previously only FriendRequest was checked, causing friends
-# who were added via the Friendship table to be wrongly treated as non-friends.
-# ============================================================================
-def _are_friends(db: Session, user_id_a: str, user_id_b: str) -> bool:
-    """Return True if user_a and user_b are friends in ANY friendship table."""
-    from models import Friendship, FriendRequest
-
-    # 1. Direct Friendship record (bidirectional row pairs)
-    if db.query(Friendship).filter(
-        or_(
-            and_(Friendship.user_id == user_id_a, Friendship.friend_id == user_id_b),
-            and_(Friendship.user_id == user_id_b, Friendship.friend_id == user_id_a),
-        )
-    ).first():
-        return True
-
-    # 2. Accepted FriendRequest (either direction)
-    if db.query(FriendRequest).filter(
-        FriendRequest.status == "accepted",
-        or_(
-            and_(FriendRequest.requester_id == user_id_a, FriendRequest.recipient_id == user_id_b),
-            and_(FriendRequest.requester_id == user_id_b, FriendRequest.recipient_id == user_id_a),
-        )
-    ).first():
-        return True
-
-    return False
-
 # Constants for validation
 MAX_MESSAGE_LENGTH = 10000  # 10KB max message content
 MAX_FILENAME_LENGTH = 255
-
-
-_FERNET_ALPHABET = set(
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_=" + " \r\n\t"
-)
-
-
-def _looks_fernet(s: str) -> bool:
-    """
-    Heuristic — return True if `s` looks like a Fernet token (or several
-    Fernet tokens joined by whitespace).
-
-    Fernet tokens start with `gAAAAA` (the version byte 0x80 + the high
-    five base64 bits of the timestamp), are URL-safe base64, and run
-    ~80+ chars. The bridge endpoint refuses uploads matching this
-    shape because the bridger is supposed to send plaintext and the
-    server applies its own at-rest encryption.
-
-    We tolerate inner whitespace because broken bridges have been
-    observed concatenating two tokens with a newline; without that
-    leniency the second-token-after-newline form slipped through.
-    """
-    if not s:
-        return False
-    stripped = s.strip()
-    if len(stripped) < 80 or not stripped.startswith("gAAAAA"):
-        return False
-    return all(ch in _FERNET_ALPHABET for ch in stripped)
 
 # Request/Response models
 class SendMessageRequest(BaseModel):
@@ -86,7 +26,7 @@ class SendMessageRequest(BaseModel):
     message_id: Optional[str] = None  # Client-generated UUID for idempotency
     audio_url: Optional[str] = None   # Voice message audio URL
     audio_duration_seconds: Optional[int] = None  # Voice message duration
-    message_type: Literal["text", "voice", "image", "file", "video", "video_note", "location", "system", "ephemeral_photo", "post_share", "postShare", "contact_card", "contactCard"] = "text"
+    message_type: Literal["text", "voice", "image", "file", "video", "video_note", "location", "system", "ephemeral_photo", "post_share", "postShare"] = "text"
     # File attachment metadata
     file_name: Optional[str] = Field(None, max_length=MAX_FILENAME_LENGTH)
     file_size: Optional[int] = Field(None, ge=0, le=100*1024*1024)  # Max 100MB
@@ -169,16 +109,6 @@ async def send_message(
     if req.message_id:
         existing = db.query(Message).filter(Message.id == req.message_id).first()
         if existing:
-            # 🛡️ IDOR guard — without this an attacker could probe arbitrary
-            # message IDs and read someone else's message content via the
-            # idempotency-replay path. The idempotency contract is "the
-            # SAME caller retrying the SAME message" — anyone else seeing
-            # this ID is a conflict, not a replay.
-            if existing.sender_id != current_user.id:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="Message ID already used by another sender",
-                )
             print(f"⚠️ Duplicate message {req.message_id}, returning existing")
             sender = db.query(User).filter(User.id == existing.sender_id).first()
             return MessageResponse(
@@ -232,28 +162,29 @@ async def send_message(
             detail="You can't message this user"
         )
     
-    # ✅ FIX: Check friendship using BOTH Friendship table AND FriendRequest table.
-    # Previously only FriendRequest was checked — friends added via the Friendship
-    # table were incorrectly treated as non-friends, triggering a MessageRequest.
-    from models import MessageRequest
-    are_friends = _are_friends(db, current_user.id, req.recipient_id)
-
+    # ✅ Check friendship status — gate non-friend messaging via Message Requests
+    from models import Friendship, MessageRequest
+    are_friends = db.query(Friendship).filter(
+        or_(
+            and_(Friendship.user_id == current_user.id, Friendship.friend_id == req.recipient_id),
+            and_(Friendship.user_id == req.recipient_id, Friendship.friend_id == current_user.id)
+        )
+    ).first() is not None
+    
     if not are_friends:
-        # Non-friends route through the MessageRequest flow regardless
-        # of tier. Anti-spam is enforced by the existing 3-message cap
-        # below + the `declined`/`blocked` status check, so the previous
-        # premium-only gate was redundant *and* broke real flows like
-        # "Reply privately" (a feature where the user explicitly chose
-        # to start a 1:1 with a group member who isn't yet a friend).
-        # Premium remains the right place to relax the 3-cap if/when
-        # we re-introduce a tier perk for higher-volume reach.
-
+        # Non-friends: only RAVEN+ users can send message requests
+        if not getattr(current_user, 'is_premium', False):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only RAVEN+ users can send message requests to non-friends"
+            )
+        
         # Look up or create a MessageRequest row
         msg_request = db.query(MessageRequest).filter(
             MessageRequest.sender_id == current_user.id,
             MessageRequest.receiver_id == req.recipient_id
         ).first()
-
+        
         if not msg_request:
             msg_request = MessageRequest(
                 sender_id=current_user.id,
@@ -263,31 +194,39 @@ async def send_message(
             )
             db.add(msg_request)
             db.flush()
-
+        
         # Enforce status rules
         if msg_request.status in ("declined", "blocked"):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Your message request was declined"
             )
-
+        
         if msg_request.status == "pending" and msg_request.sent_count >= 3:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Message request limit reached (3 messages). Wait for the recipient to accept."
             )
-
+        
         # Increment sent_count for pending requests
         if msg_request.status == "pending":
             msg_request.sent_count += 1
             db.flush()
-
+        
         print(f"📨 [MessageRequest] {current_user.username} → {recipient.username} (status={msg_request.status}, count={msg_request.sent_count})")
-
-    # ✅ FIX: Check "who can message me" privacy using the same unified helper.
-    # Previously duplicated the query — now uses _are_friends which covers both tables.
+    
+    # ✅ Check "who can message me" privacy setting
     if getattr(recipient, 'who_can_message', 'everyone') == 'friends':
-        if not are_friends:
+        from models import FriendRequest
+        is_friends_req = db.query(FriendRequest).filter(
+            FriendRequest.status == "accepted",
+            or_(
+                and_(FriendRequest.requester_id == current_user.id, FriendRequest.recipient_id == req.recipient_id),
+                and_(FriendRequest.requester_id == req.recipient_id, FriendRequest.recipient_id == current_user.id)
+            )
+        ).first()
+        
+        if not is_friends_req and not are_friends:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="This user only accepts messages from friends"
@@ -389,59 +328,6 @@ async def send_message(
             preview_text = "📍 Location"
         elif req.message_type in ("post_share", "postShare"):
             preview_text = "📬 Shared a post"
-        elif req.message_type in ("contact_card", "contactCard"):
-            preview_text = "👤 Shared a contact"
-            # Contact-card share has TWO side effects beyond the normal
-            # send pipeline:
-            #   (1) Privacy enforcement — if the *target* user (the one
-            #       whose card is being shared) has `allow_contact_share`
-            #       turned off, refuse the send entirely.
-            #   (2) Loop-closing notification — the target gets pinged
-            #       so they know their card was shared, who shared it,
-            #       and where (with one-tap into Privacy Settings).
-            try:
-                payload = json.loads(req.content) if req.content else {}
-                target_user_id = payload.get("userId") or payload.get("user_id")
-            except (ValueError, TypeError):
-                target_user_id = None
-
-            if target_user_id and target_user_id != current_user.id:
-                target = db.query(User).filter(User.id == target_user_id).first()
-                if target and not getattr(target, "allow_contact_share", True):
-                    # Refuse the share. Roll back the message we just
-                    # added so neither side sees a half-completed row.
-                    db.rollback()
-                    raise HTTPException(
-                        status_code=403,
-                        detail="This user has disabled contact sharing."
-                    )
-                # Side-effect notification — best effort, don't block the send.
-                if target and getattr(target, "contact_shared_notifications_enabled", True):
-                    contact_shared_notif = Notification(
-                        user_id=target.id,
-                        type="contact_shared",
-                        data=json.dumps({
-                            "sharer_id": current_user.id,
-                            "sharer_username": current_user.username,
-                            "recipient_id": req.recipient_id,
-                            "recipient_username": recipient.username,
-                            "room_id": current_user.id,
-                        }),
-                    )
-                    db.add(contact_shared_notif)
-                    if target.push_token:
-                        from services.apns_service import get_apns_service, APNsService
-                        gate = APNsService.should_send_push(target, "contact_shared")
-                        if gate["allowed"]:
-                            background_tasks.add_task(
-                                _emit_contact_shared_push,
-                                target_token=target.push_token,
-                                target_environment=target.push_environment,
-                                sharer_name=current_user.username or "Someone",
-                                recipient_name=recipient.username or "a chat",
-                                room_id=current_user.id,
-                                sharer_id=current_user.id,
-                            )
         else:
             preview_text = "New message"
         
@@ -452,7 +338,6 @@ async def send_message(
                 "room_id": current_user.id,  # For 1:1, room_id = sender's id (for navigation)
                 "sender_id": current_user.id,
                 "sender_username": current_user.username,
-                "sender_avatar": current_user.avatar_path,
                 "preview": preview_text,
                 "message_type": req.message_type  # text, voice, image, video
             }),
@@ -501,15 +386,13 @@ async def send_message(
             recipient_push_token=recipient.push_token,
             recipient_push_platform=recipient.push_platform,
             recipient_notification_settings={
-                "push_notifications": getattr(recipient, 'push_enabled', True),
-                "push_messages": getattr(recipient, 'message_notifications_enabled', True),
-                "push_show_preview": getattr(recipient, 'message_preview_enabled', True),
+                "push_notifications": getattr(recipient, 'push_notifications', True),
+                "push_messages": getattr(recipient, 'push_messages', True),
+                "push_show_preview": getattr(recipient, 'push_show_preview', True),
             },
             content=req.content,
             message_type=req.message_type,
             preview_text=preview_text,
-            message_id=message.id,
-            client_message_id=getattr(req, 'client_message_id', None),
         )
     else:
         print(f"⏰ Scheduled message created: {current_user.username} → {recipient.username} at {req.scheduled_at_utc}")
@@ -564,37 +447,6 @@ async def send_message(
 
 
 # ============================================================================
-# Background tasks
-# ============================================================================
-
-async def _emit_contact_shared_push(
-    target_token: str,
-    target_environment: Optional[str],
-    sharer_name: str,
-    recipient_name: str,
-    room_id: str,
-    sharer_id: str,
-):
-    """Sends the `contact_shared` push to the user whose card was just
-    shared. Runs on the request's background-tasks queue so the /send
-    response stays fast — same pattern as `_send_push_and_bridge_wake`.
-    """
-    try:
-        from services.apns_service import get_apns_service
-        apns = get_apns_service()
-        await apns.send_contact_shared_notification(
-            device_token=target_token,
-            sharer_name=sharer_name,
-            recipient_name=recipient_name,
-            room_id=room_id,
-            sharer_id=sharer_id,
-            push_environment=target_environment,
-        )
-    except Exception as exc:
-        print(f"⚠️ contact_shared push failed: {exc}")
-
-
-# ============================================================================
 # ⚡ BACKGROUND TASK: Push + Bridge Wake (deferred from /send for performance)
 # ============================================================================
 
@@ -611,8 +463,6 @@ async def _send_push_and_bridge_wake(
     content: str,
     message_type: str,
     preview_text: str,
-    message_id: Optional[str] = None,
-    client_message_id: Optional[str] = None,
 ):
     """Background task: send push notification + bridge wake silently after /send returns."""
     try:
@@ -650,9 +500,7 @@ async def _send_push_and_bridge_wake(
                     message_preview=preview,
                     room_id=sender_id,
                     sender_id=sender_id,
-                    message_type=message_type,
-                    message_id=message_id,
-                    client_message_id=client_message_id,
+                    message_type=message_type
                 )
                 if push_result:
                     print(f"📱 ✅ [BG] Push sent to {recipient_username}")
@@ -665,23 +513,16 @@ async def _send_push_and_bridge_wake(
         
         # 2. Bridge wake: send silent push to recipient's friends
         try:
-            from models import FriendRequest, User as UserModel
+            from models import Friendship, User as UserModel
             from services.apns_service import get_apns_service
             from database import SessionLocal
-            from sqlalchemy import or_, and_
             
             db = SessionLocal()
             try:
                 bridge_friends = db.query(UserModel).join(
-                    FriendRequest,
-                    and_(
-                        FriendRequest.status == "accepted",
-                        or_(
-                            and_(FriendRequest.requester_id == recipient_id, FriendRequest.recipient_id == UserModel.id),
-                            and_(FriendRequest.recipient_id == recipient_id, FriendRequest.requester_id == UserModel.id)
-                        )
-                    )
+                    Friendship, Friendship.friend_id == UserModel.id
                 ).filter(
+                    Friendship.user_id == recipient_id,
                     UserModel.push_token.isnot(None),
                     UserModel.push_platform == "ios",
                     UserModel.id != sender_id
@@ -737,7 +578,6 @@ class BridgeMessageRequest(BaseModel):
     group_member_ids: Optional[List[str]] = None
 
 
-@router.post("/uplink")  # Alias — preferred name from iOS BLEMeshEngine
 @router.post("/bridge")
 async def bridge_message(
     req: BridgeMessageRequest,
@@ -746,41 +586,16 @@ async def bridge_message(
 ):
     """
     Bridge endpoint for mesh-to-server forwarding.
-
+    
     When an online device receives a mesh message destined for another user,
     it can forward it to the server via this endpoint.
-
+    
     Supports both 1:1 and GROUP messages:
     - 1:1: stores in Message table, pushes recipient
     - Group: stores in GroupMessage table, pushes all group members
-
-    Both `/api/messages/uplink` and `/api/messages/bridge` are accepted —
-    the iOS client tries `uplink` first (preferred name), falling back to
-    `bridge`. Without the alias, EVERY mesh-bridge attempt wastes a 405
-    round-trip before the fallback succeeds.
     """
     print(f"🌉 [Bridge] Received message from {req.original_sender_id[:8]} via bridge {req.bridged_from[:8]} (group={req.is_group})")
-
-    # ═══════════════════════════════════════════════════════════════
-    # 🛡️ DATA-INTEGRITY: Reject already-Fernet-encrypted content.
-    # The bridge contract is "send PLAINTEXT, server encrypts at-rest
-    # via encrypt_text". If a buggy bridger forwards ciphertext (e.g.
-    # the raw `msg.content` column instead of the decrypted body), we
-    # used to wrap it again — recipients then saw `gAAAA...` blobs in
-    # their chat because decrypt only strips one Fernet layer.
-    # We refuse the upload here so the caller sees the bug instead of
-    # silently corrupting the message row.
-    # ═══════════════════════════════════════════════════════════════
-    if _looks_fernet(req.content):
-        print(
-            f"🚨 [Bridge] REJECT — content from {req.bridged_from[:8]} looks like "
-            f"a Fernet token (already encrypted). Refusing to double-encrypt."
-        )
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Bridge content must be plaintext, not encrypted ciphertext"
-        )
-
+    
     # ═══════════════════════════════════════════════════════════════
     # 🛡️ SECURITY: Verify bridge device Ed25519 signature
     # ═══════════════════════════════════════════════════════════════
@@ -908,45 +723,6 @@ async def bridge_message(
     db.commit()
     print(f"🔔 [Bridge] In-app notification created for {recipient.username}")
     
-    # ⚡ AUDIT FIX (#5 push reliability for mesh-bridged messages):
-    # If the recipient is offline (no push token, app killed, or token invalid),
-    # the alert push above may never reach them. Send a SILENT background push
-    # to up to 3 of the recipient's online friends so their apps can wake in
-    # the background, drain bridged messages from `/inbox`, and forward to
-    # the recipient via mesh once they're nearby. This is the same fan-out the
-    # /send endpoint already uses; without it, mesh-bridged messages have a
-    # significantly lower delivery rate when the recipient is unreachable.
-    try:
-        from sqlalchemy import or_, and_
-        from services.apns_service import get_apns_service
-        bridge_friends = db.query(User).join(
-            FriendRequest,
-            and_(
-                FriendRequest.status == "accepted",
-                or_(
-                    and_(FriendRequest.requester_id == req.recipient_id, FriendRequest.recipient_id == User.id),
-                    and_(FriendRequest.recipient_id == req.recipient_id, FriendRequest.requester_id == User.id),
-                )
-            )
-        ).filter(
-            User.push_token.isnot(None),
-            User.push_platform == "ios",
-            User.id != req.original_sender_id,
-            User.id != req.recipient_id,
-        ).limit(3).all()
-
-        if bridge_friends:
-            apns = get_apns_service()
-            for bridge_user in bridge_friends:
-                wake_ok = await apns.send_bridge_wake_push(
-                    device_token=bridge_user.push_token,
-                    recipient_id=req.recipient_id,
-                )
-                if wake_ok:
-                    print(f"🌉 [Bridge Wake] Silent push → {bridge_user.username}")
-    except Exception as e:
-        print(f"⚠️ [Bridge Wake] Fan-out failed: {e}")
-
     return {
         "status": "success",
         "message_id": req.message_id,
@@ -1058,10 +834,9 @@ async def _bridge_group_message(
                     display_preview = preview if prefs["show_preview"] else "New message"
                     try:
                         apns = get_apns_service()
-                        push_result = await apns.send_group_message_notification(
+                        push_result = await apns.send_message_notification(
                             device_token=member.push_token,
-                            sender_name=sender_name,
-                            group_name=group_name,
+                            sender_name=f"{sender_name} in {group_name}",
                             message_preview=display_preview,
                             room_id=group_id,
                             sender_id=req.original_sender_id,
@@ -1114,21 +889,12 @@ def get_conversation(
     - Decrypts all message content
     - Marks messages as read
     """
-    # Get messages between current user and other user. Scheduled
-    # messages whose `scheduled_at_utc` is still in the future are
-    # filtered out — the recipient should only see them after the
-    # background worker flips them to "instant" delivery.
-    now = datetime.utcnow()
+    # Get messages between current user and other user
     messages = db.query(Message).filter(
         or_(
             and_(Message.sender_id == current_user.id, Message.recipient_id == other_user_id),
             and_(Message.sender_id == other_user_id, Message.recipient_id == current_user.id)
-        ),
-        or_(
-            Message.send_mode != "scheduled",
-            Message.scheduled_at_utc == None,  # noqa: E711
-            Message.scheduled_at_utc <= now,
-        ),
+        )
     ).order_by(Message.timestamp.asc()).limit(limit).all()
     
     # ⚡ Defer mark-read: collect IDs and do a single bulk UPDATE (non-blocking)
@@ -1311,7 +1077,6 @@ def backfill_voice_urls(
     fixed_count = 0
     try:
         from google.cloud import storage as gcs_storage
-        from routers.uploads import _make_media_url
         client = gcs_storage.Client()
         bucket = client.bucket("raven-media-uploads")
         blobs = list(bucket.list_blobs(prefix="voice/"))
@@ -1321,7 +1086,7 @@ def backfill_voice_urls(
         for blob in blobs:
             gcs_files.append({
                 "name": blob.name,
-                "url": _make_media_url(bucket.name, blob.name),
+                "url": f"https://storage.googleapis.com/raven-media-uploads/{blob.name}",
                 "created": blob.time_created,
                 "size": blob.size
             })
@@ -1629,318 +1394,8 @@ def delete_message(
     db.commit()
     
     print(f"🗑️ Message {message_id[:8]} deleted by {current_user.username}")
-
+    
     return {"success": True, "message_id": message_id}
-
-
-# ============================================================================
-# EDIT MESSAGE
-# Sender-only. Stores ciphertext (we never see plaintext server-side); a NULL
-# `edited_at` means the message was never edited. After updating we push the
-# new content + edited_at over the inbox WebSocket so the recipient's open
-# chat updates without a refresh.
-# ============================================================================
-
-class EditMessageRequest(BaseModel):
-    content: str = Field(..., max_length=MAX_MESSAGE_LENGTH)
-
-
-@router.patch("/{message_id}")
-async def edit_message(
-    message_id: str,
-    req: EditMessageRequest,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    message = db.query(Message).filter(Message.id == message_id).first()
-    if not message:
-        raise HTTPException(status_code=404, detail="Message not found")
-    if message.sender_id != current_user.id:
-        raise HTTPException(status_code=403, detail="You can only edit your own messages")
-    if message.message_type and message.message_type != "text":
-        raise HTTPException(status_code=400, detail="Only text messages can be edited")
-
-    message.content = encrypt_text(req.content)
-    message.edited_at = datetime.utcnow()
-    db.commit()
-    db.refresh(message)
-
-    # Push the edit to the recipient if their inbox WS is open.
-    await ws_manager.notify(message.recipient_id, {
-        "type": "message_edited",
-        "message_id": message.id,
-        "content": req.content,
-        "edited_at": message.edited_at.isoformat() + "Z",
-    })
-
-    return {
-        "id": message.id,
-        "content": req.content,
-        "edited_at": message.edited_at.isoformat() + "Z",
-    }
-
-
-# ============================================================================
-# REACTIONS — toggle per (message, user, emoji). Works for both 1:1 and
-# group messages; the client tells us which via `is_group`.
-# ============================================================================
-
-class ReactionRequest(BaseModel):
-    emoji: str = Field(..., min_length=1, max_length=32)
-    is_group: bool = False
-
-
-def _can_see_message(db: Session, current_user: User, message_id: str, is_group: bool) -> bool:
-    """Permission check: the user must be a participant in the room the
-    message belongs to. Required so reaction state can't leak across rooms."""
-    if is_group:
-        gm = db.query(GroupMessage).filter(GroupMessage.id == message_id).first()
-        if not gm:
-            return False
-        return db.query(GroupMember).filter(
-            GroupMember.group_id == gm.group_id,
-            GroupMember.user_id == current_user.id,
-        ).first() is not None
-    msg = db.query(Message).filter(Message.id == message_id).first()
-    if not msg:
-        return False
-    return current_user.id in (msg.sender_id, msg.recipient_id)
-
-
-def _reaction_peer_ids(db: Session, message_id: str, is_group: bool, actor_id: str) -> List[str]:
-    """Who should receive a reaction-update push besides the actor."""
-    if is_group:
-        gm = db.query(GroupMessage).filter(GroupMessage.id == message_id).first()
-        if not gm:
-            return []
-        rows = db.query(GroupMember.user_id).filter(GroupMember.group_id == gm.group_id).all()
-        return [uid for (uid,) in rows if uid != actor_id]
-    msg = db.query(Message).filter(Message.id == message_id).first()
-    if not msg:
-        return []
-    return [msg.sender_id if msg.sender_id != actor_id else msg.recipient_id]
-
-
-def _serialize_reactions(db: Session, message_id: str) -> list:
-    from models import MessageReaction
-    rows = db.query(MessageReaction).filter(MessageReaction.message_id == message_id).all()
-    return [
-        {
-            "id": r.id,
-            "user_id": r.user_id,
-            "emoji": r.emoji,
-            "created_at": r.created_at.isoformat() + "Z",
-        }
-        for r in rows
-    ]
-
-
-@router.post("/{message_id}/reactions")
-async def toggle_reaction(
-    message_id: str,
-    req: ReactionRequest,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Toggle: if the user has already reacted with this emoji on this message,
-    remove the reaction; otherwise add it."""
-    from models import MessageReaction
-
-    if not _can_see_message(db, current_user, message_id, req.is_group):
-        raise HTTPException(status_code=404, detail="Message not found")
-
-    existing = db.query(MessageReaction).filter(
-        MessageReaction.message_id == message_id,
-        MessageReaction.user_id == current_user.id,
-        MessageReaction.emoji == req.emoji,
-    ).first()
-
-    if existing:
-        db.delete(existing)
-        action = "removed"
-    else:
-        # Cap: each user can have up to 3 distinct reactions per message
-        # (Instagram-style). If the user is already at the cap, evict the
-        # OLDEST reaction so the new emoji takes its place.
-        MAX_REACTIONS_PER_USER = 3
-        user_reactions = db.query(MessageReaction).filter(
-            MessageReaction.message_id == message_id,
-            MessageReaction.user_id == current_user.id,
-        ).order_by(MessageReaction.created_at.asc()).all()
-        if len(user_reactions) >= MAX_REACTIONS_PER_USER:
-            db.delete(user_reactions[0])
-
-        db.add(MessageReaction(
-            message_id=message_id,
-            is_group=req.is_group,
-            user_id=current_user.id,
-            emoji=req.emoji,
-        ))
-        action = "added"
-    db.commit()
-
-    reactions = _serialize_reactions(db, message_id)
-    payload = {
-        "type": "message_reaction",
-        "message_id": message_id,
-        "reactions": reactions,
-        "action": action,
-        "by_user_id": current_user.id,
-        "emoji": req.emoji,
-    }
-    for peer_id in _reaction_peer_ids(db, message_id, req.is_group, current_user.id):
-        await ws_manager.notify(peer_id, payload)
-
-    # Push notification — only when the reaction was just *added* (not
-    # removed) and only to the message's original sender. We skip if the
-    # reactor IS the sender (don't notify yourself for reacting to your
-    # own message). Best-effort: a push failure must not prevent the
-    # reaction from being recorded.
-    if action == "added":
-        try:
-            from models import Message as _Msg, GroupMessage as _GMsg
-            target_user: Optional[User] = None
-            if req.is_group:
-                gm = db.query(_GMsg).filter(_GMsg.id == message_id).first()
-                if gm and gm.sender_id and gm.sender_id != current_user.id:
-                    target_user = db.query(User).filter(User.id == gm.sender_id).first()
-                room_id_for_push = gm.group_id if gm else ""
-            else:
-                m = db.query(_Msg).filter(_Msg.id == message_id).first()
-                if m and m.sender_id and m.sender_id != current_user.id:
-                    target_user = db.query(User).filter(User.id == m.sender_id).first()
-                room_id_for_push = current_user.id  # 1:1 inbox key on iOS
-
-            if target_user:
-                # Persist for in-app notifications list.
-                import json as _json
-                db.add(Notification(
-                    user_id=target_user.id,
-                    type="reaction",
-                    data=_json.dumps({
-                        "reactor_id": current_user.id,
-                        "reactor_username": current_user.username,
-                        "emoji": req.emoji,
-                        "message_id": message_id,
-                        "room_id": room_id_for_push,
-                    })
-                ))
-                db.commit()
-                if target_user.push_token:
-                    from services.apns_service import get_apns_service, APNsService
-                    gate = APNsService.should_send_push(target_user, "reaction")
-                    if gate["allowed"]:
-                        apns = get_apns_service()
-                        await apns.send_reaction_notification(
-                            device_token=target_user.push_token,
-                            reactor_name=current_user.username or "Someone",
-                            emoji=req.emoji,
-                            room_id=room_id_for_push,
-                            message_id=message_id,
-                            push_environment=target_user.push_environment,
-                        )
-        except Exception as exc:
-            print(f"⚠️ reaction push failed (non-fatal): {exc}")
-
-    return {"action": action, "reactions": reactions}
-
-
-@router.get("/{message_id}/reactions")
-def list_reactions(
-    message_id: str,
-    is_group: bool = False,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    if not _can_see_message(db, current_user, message_id, is_group):
-        raise HTTPException(status_code=404, detail="Message not found")
-    return {"reactions": _serialize_reactions(db, message_id)}
-
-
-# ============================================================================
-# IN-THREAD SEARCH
-# Returns messages in a 1:1 room whose plaintext content contains the query.
-# Filtering happens server-side AFTER decrypting (we store ciphertext) so
-# matches still work for users across deployments.
-# ============================================================================
-
-@router.get("/search")
-def search_messages(
-    peer_id: str,
-    query: str,
-    limit: int = 50,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    if not query or len(query.strip()) < 1:
-        return {"matches": []}
-    if limit < 1 or limit > 200:
-        limit = 50
-
-    # Pull recent messages between the two users (cap at a few hundred to
-    # bound the decrypt cost). Client paginates if it wants older matches.
-    messages = db.query(Message).filter(
-        or_(
-            and_(Message.sender_id == current_user.id, Message.recipient_id == peer_id),
-            and_(Message.sender_id == peer_id, Message.recipient_id == current_user.id),
-        ),
-        Message.message_type == "text",
-    ).order_by(Message.timestamp.desc()).limit(500).all()
-
-    needle = query.strip().lower()
-    matches = []
-    for m in messages:
-        try:
-            text = decrypt_text(m.content) if m.content else ""
-        except Exception:
-            continue
-        if needle in text.lower():
-            matches.append({
-                "id": m.id,
-                "sender_id": m.sender_id,
-                "content": text,
-                "timestamp": m.timestamp.isoformat() + "Z",
-                "edited_at": m.edited_at.isoformat() + "Z" if m.edited_at else None,
-            })
-            if len(matches) >= limit:
-                break
-    return {"matches": matches}
-
-
-# ============================================================================
-# TYPING INDICATOR — fire-and-forget pass-through to the peer's open WS.
-# We deliberately don't persist anything: typing is ephemeral and a missed
-# event is harmless. Rate limiting handled client-side (debounce ~3s).
-# ============================================================================
-
-class TypingRequest(BaseModel):
-    peer_id: str
-    is_typing: bool
-    is_group: bool = False
-
-
-@router.post("/typing")
-async def typing_indicator(
-    req: TypingRequest,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    payload = {
-        "type": "typing",
-        "is_typing": req.is_typing,
-        "by_user_id": current_user.id,
-        "by_username": current_user.username,
-        "room_id": req.peer_id,  # for groups this is group_id, for DMs it's the actor's id
-        "is_group": req.is_group,
-    }
-    if req.is_group:
-        rows = db.query(GroupMember.user_id).filter(GroupMember.group_id == req.peer_id).all()
-        for (uid,) in rows:
-            if uid != current_user.id:
-                await ws_manager.notify(uid, payload)
-    else:
-        await ws_manager.notify(req.peer_id, payload)
-    return {"ok": True}
 
 
 # ============================================================================
@@ -1961,49 +1416,17 @@ def mute_conversation(
     """
     Mute or unmute a conversation with a specific peer.
     This is a user-specific preference - doesn't affect the peer.
-
+    
     Note: The mute status is stored by the client (iOS/Android).
     This endpoint is a simple acknowledgement for potential future sync.
     """
     status = "muted" if req.muted else "unmuted"
     print(f"🔕 Conversation with {req.peer_id[:8]} {status} by {current_user.username}")
-
+    
     # For now, mute is stored client-side only
     # Future: could add muted column to RoomVisibility or a new UserPreference table
-
+    
     return {"success": True, "muted": req.muted}
-
-
-# ============================================================================
-# ARCHIVE / UNARCHIVE CONVERSATION ENDPOINT (Telegram-style)
-# ============================================================================
-#
-# Archive is a per-user inbox-visibility preference. The peer continues to
-# see the chat normally. Like mute, the source of truth for archive is the
-# *client* — this endpoint just acknowledges the request so future cross-
-# device sync can hook in here without an iOS/server contract change.
-#
-
-class ArchiveConversationRequest(BaseModel):
-    peer_id: str
-    archived: bool
-
-
-@router.post("/conversations/archive")
-def archive_conversation(
-    req: ArchiveConversationRequest,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Archive or unarchive a conversation for the current user only.
-
-    Stored client-side today; this endpoint exists so a future
-    cross-device sync (when the user signs in on a new phone) can be
-    bolted on without bumping the API contract.
-    """
-    state = "archived" if req.archived else "unarchived"
-    print(f"📥 Conversation with {req.peer_id[:8]} {state} by {current_user.username}")
-    return {"success": True, "archived": req.archived}
 
 
 # ============================================================================
@@ -2042,32 +1465,10 @@ def delete_conversation(
         Message.recipient_id == req.peer_id
     ).delete(synchronize_session=False)
     
-    # ════════════════════════════════════════════════════════════════════
-    # GHOST CONVERSATION FIX: Mark room as hidden in RoomVisibility.
-    # This prevents get_conversations from re-surfacing this chat until
-    # a genuinely new message arrives from this peer.
-    # ════════════════════════════════════════════════════════════════════
-    from models import RoomVisibility
-    
-    visibility = db.query(RoomVisibility).filter(
-        RoomVisibility.user_id == current_user.id,
-        RoomVisibility.room_id == req.peer_id
-    ).first()
-    
-    if visibility:
-        visibility.hidden = True
-    else:
-        visibility = RoomVisibility(
-            user_id=current_user.id,
-            room_id=req.peer_id,
-            hidden=True
-        )
-        db.add(visibility)
-    
     db.commit()
     
     total = received_count + sent_count
-    print(f"🗑️ Deleted {total} messages in conversation with {req.peer_id[:8]} for {current_user.username} (room hidden)")
+    print(f"🗑️ Deleted {total} messages in conversation with {req.peer_id[:8]} for {current_user.username}")
     
     return {"success": True, "deleted_count": total}
 
@@ -2179,7 +1580,7 @@ def get_conversations(
         peer = peers.get(peer_id)
         if not peer:
             continue
-        
+            
         # Get the most recent message between current user and this peer
         last_msg = db.query(Message).filter(
             or_(
@@ -2188,11 +1589,8 @@ def get_conversations(
             )
         ).order_by(Message.timestamp.desc()).first()
         
-        # ════════════════════════════════════════════════════════════════════
-        # GHOST CONVERSATION FIX: Skip peers where user has hidden this room.
-        # The hidden flag is set by delete_conversation and cleared when
-        # a new message arrives (handled below).
-        # ════════════════════════════════════════════════════════════════════
+        # Count unread messages using RoomVisibility.last_read_at (persistent across reinstalls)
+        # Messages from peer, sent after my last_read_at for this room
         from models import RoomVisibility
         
         visibility = db.query(RoomVisibility).filter(
@@ -2200,19 +1598,6 @@ def get_conversations(
             RoomVisibility.room_id == peer_id
         ).first()
         
-        if visibility and visibility.hidden:
-            # Room is hidden — but check if there's a genuinely new message
-            # (e.g. peer sent something AFTER we deleted the chat)
-            if last_msg and last_msg.sender_id != current_user.id:
-                # New incoming message → unhide and show conversation
-                visibility.hidden = False
-                db.commit()
-                print(f"🔄 [Conversations] Unhiding room {peer_id[:8]} — new message from peer")
-            else:
-                # No new incoming messages — skip this conversation
-                continue
-        
-        # Count unread messages using RoomVisibility.last_read_at (persistent across reinstalls)
         last_read_at = visibility.last_read_at if visibility else None
         
         if last_read_at:
@@ -2241,9 +1626,7 @@ def get_conversations(
                 deliveryAuthority=None
             )
         
-        # ✅ FIX: Look up message request AND suppress if users are already friends.
-        # A stale MessageRequest row (created before friendship was established) would
-        # cause iOS to wrongly show the Accept/Decline banner to friends.
+        # ✅ Look up message request between current user and this peer
         from models import MessageRequest
         msg_req = db.query(MessageRequest).filter(
             or_(
@@ -2251,18 +1634,11 @@ def get_conversations(
                 and_(MessageRequest.sender_id == peer_id, MessageRequest.receiver_id == current_user.id)
             )
         ).first()
-
-        # If they are friends, never surface a message request (even a stale pending one)
-        if msg_req and _are_friends(db, current_user.id, peer_id):
-            req_status = None
-            is_req_sender = None
-            pending_count = None
-            req_id = None
-        else:
-            req_status = msg_req.status if msg_req else None
-            is_req_sender = (msg_req.sender_id == current_user.id) if msg_req else None
-            pending_count = msg_req.sent_count if msg_req else None
-            req_id = msg_req.id if msg_req else None
+        
+        req_status = msg_req.status if msg_req else None
+        is_req_sender = (msg_req.sender_id == current_user.id) if msg_req else None
+        pending_count = msg_req.sent_count if msg_req else None
+        req_id = msg_req.id if msg_req else None
         
         conversations.append(ConversationResponse(
             roomId=peer_id,  # For 1:1 chats, roomId = peer's user ID
@@ -2508,35 +1884,6 @@ def get_stop_list(
 
 class BridgeDownlinkRequest(BaseModel):
     peer_user_ids: List[str] = Field(..., max_length=10)  # Max 10 peers at once
-
-
-class SmartBridgeDownlinkRequest(BaseModel):
-    """Smart bridge-downlink — same delivery contract as the legacy
-    `/bridge-downlink` plus additional routing context (geohash + bridge id).
-    For now we just delegate to the legacy implementation using the
-    `immediate_peers` field; the geohash + bridge_user_id fields are
-    accepted (and logged) so the iOS client doesn't 404 every poll, with
-    real geo-routing left for a follow-up server change."""
-    immediate_peers: List[str] = Field(default_factory=list, max_length=10)
-    current_geohash: Optional[str] = None
-    bridge_user_id: Optional[str] = None
-
-
-@router.post("/smart-bridge-downlink")
-async def smart_bridge_downlink(
-    req: SmartBridgeDownlinkRequest,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Smart Bridge Downlink — alias for /bridge-downlink that accepts the
-    extended routing context the iOS client already sends. Without this
-    endpoint every iOS poll 404s, hits the legacy endpoint as a fallback,
-    and wastes a network round-trip — that 404→fallback path was the
-    leading cause of A→C bridge-delivery failures (combined with a buggy
-    in-process dedup on the iOS side, fixed in the same change).
-    """
-    legacy_req = BridgeDownlinkRequest(peer_user_ids=req.immediate_peers)
-    return await bridge_downlink(legacy_req, current_user=current_user, db=db)
 
 
 @router.post("/bridge-downlink")
@@ -2915,386 +2262,3 @@ def get_message_transcript(
         "language": msg.transcript_language,
         "text": msg.transcript_text
     }
-
-
-# ============================================================================
-# PINNED MESSAGES — pin/unpin + per-conversation list. Works for both 1:1
-# and group threads via the existing `is_group` switch in `_can_see_message`.
-# Either party in a DM, or any group member, can pin/unpin.
-# ============================================================================
-
-class PinRequest(BaseModel):
-    is_group: bool = False
-    pinned: bool = True  # True = pin, False = unpin
-
-
-class PinnedMessageResponse(BaseModel):
-    id: str
-    sender_id: str
-    sender_username: Optional[str] = None
-    sender_name: Optional[str] = None
-    content: Optional[str] = None
-    message_type: str = "text"
-    audio_url: Optional[str] = None
-    audio_duration_seconds: Optional[int] = None
-    timestamp: datetime
-    pinned_at: datetime
-    pinned_by_user_id: str
-
-    class Config:
-        from_attributes = True
-
-
-def _pin_peer_ids(db: Session, message_id: str, is_group: bool, actor_id: str) -> List[str]:
-    """Same fan-out shape as reactions — peers (DM) or all members (group)
-    minus the actor."""
-    return _reaction_peer_ids(db, message_id, is_group, actor_id)
-
-
-def _decrypt_display_name(user) -> Optional[str]:
-    """User.first_name / last_name are stored Fernet-encrypted. Returns
-    the trimmed full name, or None if both fields are empty/undecodable."""
-    if user is None:
-        return None
-    parts: List[str] = []
-    for raw in (user.first_name, user.last_name):
-        if not raw:
-            continue
-        try:
-            v = decrypt_text(raw)
-        except Exception:
-            continue
-        if v and v != "[DECRYPT_FAILED]":
-            parts.append(v)
-    name = " ".join(parts).strip()
-    return name or None
-
-
-def _serialize_pinned(db: Session, msg) -> PinnedMessageResponse:
-    """Build a PinnedMessageResponse from either a Message or GroupMessage row."""
-    sender = db.query(User).filter(User.id == msg.sender_id).first()
-    try:
-        content = decrypt_text(msg.content) if msg.content else None
-    except Exception:
-        content = None
-    return PinnedMessageResponse(
-        id=msg.id,
-        sender_id=msg.sender_id,
-        sender_username=sender.username if sender else None,
-        sender_name=_decrypt_display_name(sender),
-        content=content,
-        message_type=msg.message_type or "text",
-        audio_url=msg.audio_url,
-        audio_duration_seconds=msg.audio_duration_seconds,
-        timestamp=msg.timestamp,
-        pinned_at=msg.pinned_at,
-        pinned_by_user_id=msg.pinned_by_user_id or msg.sender_id,
-    )
-
-
-@router.post("/{message_id}/pin")
-async def toggle_pin(
-    message_id: str,
-    req: PinRequest,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """Pin or unpin a message. Idempotent: pinning an already-pinned message
-    is a no-op (but still pushes the event so newly-connected clients pick
-    up the change). Either party in a DM / any group member can pin."""
-    if not _can_see_message(db, current_user, message_id, req.is_group):
-        raise HTTPException(status_code=404, detail="Message not found")
-
-    if req.is_group:
-        msg = db.query(GroupMessage).filter(GroupMessage.id == message_id).first()
-    else:
-        msg = db.query(Message).filter(Message.id == message_id).first()
-    if not msg:
-        raise HTTPException(status_code=404, detail="Message not found")
-
-    if req.pinned:
-        if msg.pinned_at is None:
-            msg.pinned_at = datetime.utcnow()
-            msg.pinned_by_user_id = current_user.id
-            action = "pinned"
-        else:
-            action = "noop"
-    else:
-        if msg.pinned_at is not None:
-            msg.pinned_at = None
-            msg.pinned_by_user_id = None
-            action = "unpinned"
-        else:
-            action = "noop"
-    db.commit()
-
-    # Push to peers regardless — the client is the source of truth for its
-    # current pinned state, so reconciling via the WS event is harmless.
-    payload = {
-        "type": "message_pinned",
-        "message_id": message_id,
-        "is_group": req.is_group,
-        "pinned": req.pinned,
-        "pinned_at": msg.pinned_at.isoformat() + "Z" if msg.pinned_at else None,
-        "pinned_by_user_id": msg.pinned_by_user_id,
-        "by_user_id": current_user.id,
-    }
-    peer_ids = _pin_peer_ids(db, message_id, req.is_group, current_user.id)
-    for peer_id in peer_ids:
-        await ws_manager.notify(peer_id, payload)
-
-    # Create persistent notifications only on the actual pin action — noop
-    # and unpin shouldn't spam the bell. Group thread → all members; DM →
-    # the peer. The pinned-message preview is a short snippet so the
-    # notifications panel can render it without an extra round trip.
-    if action == "pinned":
-        import json as _json
-        try:
-            preview = decrypt_text(msg.content) if msg.content else ""
-        except Exception:
-            preview = ""
-        type_glyph = {
-            "voice": "🎙 Voice message",
-            "image": "🖼 Photo",
-            "file":  "📎 File",
-            "location": "📍 Location",
-            "poll":  "📊 Poll",
-        }.get((msg.message_type or "text").lower())
-        if type_glyph:
-            preview = type_glyph
-        if preview and len(preview) > 80:
-            preview = preview[:77] + "…"
-
-        # Group context — name + group_id let the iOS NotificationsListView
-        # title format as "X pinned in <group>: <preview>".
-        group_id_for_data = None
-        group_name_for_data = None
-        room_id_for_data = current_user.id  # 1:1 default — peer-side nav
-        if req.is_group:
-            gm = db.query(GroupMessage).filter(GroupMessage.id == message_id).first()
-            if gm:
-                group_id_for_data = gm.group_id
-                room_id_for_data = gm.group_id
-                grp = db.query(Group).filter(Group.id == gm.group_id).first()
-                if grp and grp.name:
-                    group_name_for_data = grp.name
-
-        for peer_id in peer_ids:
-            notif = Notification(
-                user_id=peer_id,
-                type="pinned_message",
-                data=_json.dumps({
-                    "actor_id": current_user.id,
-                    "actor_username": current_user.username,
-                    "actor_avatar": current_user.avatar_path,
-                    "room_id": room_id_for_data,
-                    "is_group": req.is_group,
-                    "group_id": group_id_for_data,
-                    "group_name": group_name_for_data,
-                    "message_id": message_id,
-                    "preview": preview,
-                }),
-                is_read=False,
-            )
-            db.add(notif)
-        db.commit()
-
-    return {
-        "action": action,
-        "pinned": msg.pinned_at is not None,
-        "pinned_at": msg.pinned_at.isoformat() + "Z" if msg.pinned_at else None,
-        "pinned_by_user_id": msg.pinned_by_user_id,
-    }
-
-
-@router.get("/conversation/{peer_id}/pinned", response_model=List[PinnedMessageResponse])
-def list_pinned_dm(
-    peer_id: str,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """List pinned messages in a 1:1 DM with `peer_id`. Most recently pinned
-    first (so the pinned bar shows the freshest pin on top)."""
-    rows = (
-        db.query(Message)
-        .filter(
-            Message.pinned_at.isnot(None),
-            (
-                ((Message.sender_id == current_user.id) & (Message.recipient_id == peer_id))
-                | ((Message.sender_id == peer_id) & (Message.recipient_id == current_user.id))
-            ),
-        )
-        .order_by(Message.pinned_at.desc())
-        .limit(50)
-        .all()
-    )
-    return [_serialize_pinned(db, m) for m in rows]
-
-
-@router.get("/group/{group_id}/pinned", response_model=List[PinnedMessageResponse])
-def list_pinned_group(
-    group_id: str,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """List pinned messages in a group. Caller must be a member."""
-    is_member = db.query(GroupMember).filter(
-        GroupMember.group_id == group_id,
-        GroupMember.user_id == current_user.id,
-    ).first()
-    if not is_member:
-        raise HTTPException(status_code=403, detail="Not a member of this group")
-
-    rows = (
-        db.query(GroupMessage)
-        .filter(
-            GroupMessage.group_id == group_id,
-            GroupMessage.pinned_at.isnot(None),
-        )
-        .order_by(GroupMessage.pinned_at.desc())
-        .limit(50)
-        .all()
-    )
-    return [_serialize_pinned(db, m) for m in rows]
-
-
-# ============================================================================
-# SAVED MESSAGES — per-user bookmark of any visible message (1:1 or group).
-# Stored in a dedicated table keyed by (user_id, message_id, is_group); the
-# user's "Saved" sheet aggregates them across all their conversations.
-# ============================================================================
-
-class SaveMessageRequest(BaseModel):
-    is_group: bool = False
-
-
-class SavedMessageResponse(BaseModel):
-    id: str  # the saved-bookmark row id (so the client can DELETE by it)
-    message_id: str
-    is_group: bool
-    saved_at: datetime
-    # Snapshot of the message at save time for the "Saved" list. The
-    # source row may be edited or deleted later; the snapshot preserves
-    # what the user actually saved.
-    sender_username: Optional[str] = None
-    sender_name: Optional[str] = None
-    content: Optional[str] = None
-    message_type: str = "text"
-    audio_url: Optional[str] = None
-    audio_duration_seconds: Optional[int] = None
-    timestamp: datetime
-    # For deep-linking back to the original thread.
-    peer_user_id: Optional[str] = None  # 1:1: the OTHER user from caller's POV
-    group_id: Optional[str] = None      # group: id of the group
-
-
-@router.post("/{message_id}/save")
-def save_message(
-    message_id: str,
-    req: SaveMessageRequest,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """Bookmark a message. No-op if already saved."""
-    from models import SavedMessage  # imported lazily to avoid cycle on cold paths
-
-    if not _can_see_message(db, current_user, message_id, req.is_group):
-        raise HTTPException(status_code=404, detail="Message not found")
-
-    existing = db.query(SavedMessage).filter(
-        SavedMessage.user_id == current_user.id,
-        SavedMessage.message_id == message_id,
-        SavedMessage.is_group == req.is_group,
-    ).first()
-    if existing:
-        return {"action": "noop", "id": existing.id}
-
-    row = SavedMessage(
-        user_id=current_user.id,
-        message_id=message_id,
-        is_group=req.is_group,
-    )
-    db.add(row)
-    db.commit()
-    return {"action": "saved", "id": row.id}
-
-
-@router.delete("/{message_id}/save")
-def unsave_message(
-    message_id: str,
-    is_group: bool = False,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """Remove a bookmark. No-op if not saved."""
-    from models import SavedMessage
-
-    row = db.query(SavedMessage).filter(
-        SavedMessage.user_id == current_user.id,
-        SavedMessage.message_id == message_id,
-        SavedMessage.is_group == is_group,
-    ).first()
-    if not row:
-        return {"action": "noop"}
-    db.delete(row)
-    db.commit()
-    return {"action": "removed"}
-
-
-@router.get("/saved", response_model=List[SavedMessageResponse])
-def list_saved_messages(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """All messages the caller has saved, newest-bookmark-first.
-    Drops bookmarks whose underlying message has been deleted (server-side
-    cleanup so the client doesn't have to)."""
-    from models import SavedMessage
-
-    rows = (
-        db.query(SavedMessage)
-        .filter(SavedMessage.user_id == current_user.id)
-        .order_by(SavedMessage.saved_at.desc())
-        .limit(200)
-        .all()
-    )
-    out: List[SavedMessageResponse] = []
-    stale: List[str] = []
-    for r in rows:
-        if r.is_group:
-            msg = db.query(GroupMessage).filter(GroupMessage.id == r.message_id).first()
-        else:
-            msg = db.query(Message).filter(Message.id == r.message_id).first()
-        if not msg:
-            stale.append(r.id)
-            continue
-        sender = db.query(User).filter(User.id == msg.sender_id).first()
-        try:
-            content = decrypt_text(msg.content) if msg.content else None
-        except Exception:
-            content = None
-        peer_user_id = None
-        group_id = None
-        if r.is_group:
-            group_id = msg.group_id
-        else:
-            peer_user_id = msg.recipient_id if msg.sender_id == current_user.id else msg.sender_id
-        out.append(SavedMessageResponse(
-            id=r.id,
-            message_id=r.message_id,
-            is_group=r.is_group,
-            saved_at=r.saved_at,
-            sender_username=sender.username if sender else None,
-            sender_name=_decrypt_display_name(sender),
-            content=content,
-            message_type=msg.message_type or "text",
-            audio_url=msg.audio_url,
-            audio_duration_seconds=msg.audio_duration_seconds,
-            timestamp=msg.timestamp,
-            peer_user_id=peer_user_id,
-            group_id=group_id,
-        ))
-    if stale:
-        db.query(SavedMessage).filter(SavedMessage.id.in_(stale)).delete(synchronize_session=False)
-        db.commit()
-    return out

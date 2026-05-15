@@ -119,43 +119,24 @@ actor MediaCacheService {
                 return
             }
             
-            // BUG FIX (2026-05-10): combine "remove existing + move tempURL"
-            // into one atomic `replaceItemAt` call. The previous
-            // remove-then-move pattern had a TOCTOU window: between the
-            // `fileExists` check and the `moveItem`, the actor could
-            // suspend (no — but defensively we make this atomic anyway
-            // to prevent any future callers from inadvertently racing).
-            // `replaceItemAt` is the POSIX `rename(2)` atomic primitive,
-            // matching how `MediaCacheService` is documented as
-            // "atomically materialise the bytes".
+            // Move to permanent location
             if FileManager.default.fileExists(atPath: localURL.path) {
-                _ = try FileManager.default.replaceItemAt(localURL, withItemAt: tempURL)
-            } else {
-                try FileManager.default.moveItem(at: tempURL, to: localURL)
+                try FileManager.default.removeItem(at: localURL)
             }
-
+            try FileManager.default.moveItem(at: tempURL, to: localURL)
+            
             // Update local_path in DB
             try await messageRepo.updateLocalPath(
                 clientMessageId: message.id,
                 localPath: localURL.path
             )
-
-            // BUG FIX (2026-05-10): post the notification via a
-            // non-awaiting `DispatchQueue.main.async` rather than
-            // `await MainActor.run`. The await suspended the actor
-            // BEFORE the `defer { inFlight.remove }` had a chance to
-            // run; while suspended on main, a queued cacheMedia call
-            // for the same id would correctly bail (defer hadn't
-            // fired) but a call right after the function returned
-            // could race the `fileExists` check before the next
-            // request arrived. Decoupling the notification from
-            // actor isolation closes that window cleanly.
-            let messageId = message.id
-            DispatchQueue.main.async {
+            
+            // Signal UI that download is complete (live update without leaving chat)
+            await MainActor.run {
                 NotificationCenter.default.post(
                     name: NSNotification.Name("MediaDownloadCompleted"),
                     object: nil,
-                    userInfo: ["messageId": messageId]
+                    userInfo: ["messageId": message.id]
                 )
             }
             
@@ -165,35 +146,12 @@ actor MediaCacheService {
             #endif
             
         } catch {
-            // 🟠 BUG FIX (2026-05-10) + RE-AUDIT FIX (2026-05-10):
-            // on disk-full, evict the LRU and ACTUALLY retry once
-            // (the previous version left a comment claiming "retry"
-            // but never re-attempted). If the retry succeeds, fall
-            // through silently. If it fails, record the failure so
-            // the chat row can show a "tap to retry" affordance.
-            if (error as NSError).code == NSFileWriteOutOfSpaceError {
-                #if DEBUG
-                print("💾 [MediaCache] Disk full for \(message.id.prefix(8)) — evicting and retrying once")
-                #endif
-                await evictIfNeeded()
-                // Allow the in-flight gate to release before re-entry,
-                // then re-call cacheMedia for the same message.
-                inFlight.remove(message.id)
-                await cacheMedia(for: message)
-                return
-            }
             #if DEBUG
             print("❌ [MediaCache] Download failed for \(message.id.prefix(8)): \(error.localizedDescription)")
             #endif
-            // Surface the failure so the chat row can render a
-            // "tap to retry" affordance instead of an infinite spinner.
-            try? await messageRepo.markMediaDownloadFailed(
-                clientMessageId: message.id,
-                reason: error.localizedDescription
-            )
         }
     }
-
+    
     // MARK: - Cache Eviction
     
     /// Delete oldest cached files when total size exceeds the budget

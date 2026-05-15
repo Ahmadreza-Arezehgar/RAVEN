@@ -1,13 +1,13 @@
 
-from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
-from sqlalchemy import func, or_, and_
-from pydantic import BaseModel, Field, ConfigDict
+from sqlalchemy import func, or_
+from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
 
 from database import get_db
-from models import User, Post, PostLike, PostBookmark, Repost, Comment, PostView, ContentConsumption, MeshViewReceipt
+from models import User, Post, PostLike, Repost, Comment, PostView, ContentConsumption, MeshViewReceipt
 from routers.users import get_current_user
 from encryption import encrypt_text, decrypt_text
 from middleware.rate_limit import rate_limiter
@@ -19,44 +19,6 @@ import json
 # Server salt for hashing viewer identity (privacy-first)
 # In production, use environment variable
 SERVER_SALT = os.environ.get('VIEW_SALT', 'raven_view_salt_2026_secure')
-
-# Inline video-jump command parser. Mirrors the iOS regex in
-# `Views/Components/HashtagText.swift::VideoTimestampParser` so a token like
-# `v0:21` resolves to the same seconds offset on both sides. We extract on
-# create-post so feed payloads carry the chapter list and clients don't have
-# to re-scan the body per render.
-import re as _re_chapters
-_VIDEO_CHAPTER_RE = _re_chapters.compile(
-    r'(?<![A-Za-z0-9])v(?:(\d{1,2}):)?(\d{1,2}):(\d{1,2})\b'
-)
-
-
-def extract_video_chapters(text: str) -> list:
-    """Return a list of {seconds, label, token} dicts in source order.
-    Defensive against malformed minutes/seconds (>=60). Caller serialises
-    with json.dumps; we don't store the body's actual character ranges
-    because the iOS side recomputes them on render anyway."""
-    if not text:
-        return []
-    out = []
-    seen = set()
-    for m in _VIDEO_CHAPTER_RE.finditer(text):
-        hours = int(m.group(1) or 0)
-        mins = int(m.group(2))
-        secs = int(m.group(3))
-        if mins >= 60 or secs >= 60:
-            continue
-        total = hours * 3600 + mins * 60 + secs
-        if total in seen:
-            continue
-        seen.add(total)
-        out.append({
-            "seconds": total,
-            "token": m.group(0),
-            "label": m.group(0)[1:],
-        })
-    return out
-
 
 router = APIRouter(prefix="/api/posts", tags=["posts"])
 
@@ -70,40 +32,10 @@ def build_full_url(request: Request, path: str) -> str:
     return f"{base_url}{path}"
 
 # Request/Response models
-class MediaItemInput(BaseModel):
-    """A single media item (image or video) with type info and optional thumbnail."""
-    url: str
-    media_type: str = "image"  # "image" or "video"
-    thumbnail_url: Optional[str] = None  # Required for videos (preview image)
-
-
-class MentionEntityInput(BaseModel):
-    """Structured @mention entity from the iOS picker.
-
-    Optional `entities` on `CreatePostRequest` lets the picker bypass the
-    fragile regex extraction (which breaks on usernames containing `.` /
-    `-`). When entities are provided, server processes them PREFERENTIALLY
-    and skips the regex path.
-
-    Accepts BOTH camelCase and snake_case keys — iOS NetworkService runs
-    `.convertToSnakeCase` on its encoder so the JSON arrives as
-    `{"user_id":"...","range_start":0,"range_length":10,...}`. Same fix as
-    `routers/comments.py:MentionEntityPayload`.
-    """
-    model_config = ConfigDict(populate_by_name=True)
-
-    type: str = "mention"
-    userId: str = Field(alias="user_id")
-    username: str
-    rangeStart: int = Field(alias="range_start")
-    rangeLength: int = Field(alias="range_length")
-
-
 class CreatePostRequest(BaseModel):
     content: str
     image_url: Optional[str] = None  # Legacy single image (backward compat)
-    image_urls: Optional[List[str]] = None  # Legacy multi-image (backward compat)
-    media_items: Optional[List[MediaItemInput]] = None  # NEW: Mixed media with type info (images + videos)
+    image_urls: Optional[List[str]] = None  # Multi-image support (max 4)
     is_local: bool = True
     visibility: str = "public"  # public, friends, local
     latitude: Optional[float] = None
@@ -120,17 +52,6 @@ class CreatePostRequest(BaseModel):
     voice_url: Optional[str] = None  # CDN URL for uploaded voice audio
     voice_duration: Optional[int] = None  # Duration in seconds
     waveform: Optional[List[float]] = None  # Waveform data for visualization
-    # Raven Shot: opt-in for social map display
-    show_on_raven_shot: Optional[bool] = False  # True = display post on Raven Shot map
-    # Human-readable location name (e.g. "Starbucks, Madrid")
-    location_name: Optional[str] = None
-    # Optional structured @mentions from the iOS composer's MentionPicker.
-    # When supplied, the server uses these directly (correct for any
-    # username, including those with dots/hyphens) and skips the
-    # backwards-compat regex extraction.
-    entities: Optional[List[MentionEntityInput]] = None
-    # User tagging (tag people in post/photos)
-    tagged_users: Optional[List[str]] = None  # List of user IDs to tag
     # Tracing
     client_request_id: Optional[str] = None  # End-to-end tracing UUID from client
 
@@ -143,12 +64,11 @@ class TopCommentResponse(BaseModel):
     likes: int
 
 class PostMediaResponse(BaseModel):
-    """Media item for multi-media posts (images + videos)."""
+    """Media item for multi-image posts."""
     id: str
     url: str
     order_index: int
-    media_type: Optional[str] = "image"  # "image" or "video"
-    thumbnail_url: Optional[str] = None  # Video thumbnail CDN URL (null for images)
+    media_type: Optional[str] = "image"
     top_comments: Optional[List[TopCommentResponse]] = None
 
 class PostResponse(BaseModel):
@@ -168,7 +88,6 @@ class PostResponse(BaseModel):
     is_local: bool
     is_liked: bool  # Whether current user liked this post
     is_reposted: bool  # Whether current user reposted this
-    is_bookmarked: bool = False  # Whether current user bookmarked this post
     visibility: str = "public"  # public, friends, local
     distance_m: Optional[int] = None  # Rounded distance for privacy (local feed only)
     post_type: Optional[str] = None   # "text", "image", "room", "voice", "voice_chain"
@@ -187,19 +106,7 @@ class PostResponse(BaseModel):
     # Contact avatar preview fields (up to 20 user IDs for client-side intersection)
     like_preview_user_ids: Optional[List[str]] = None
     comment_preview_user_ids: Optional[List[str]] = None
-    # Raven Shot fields
-    show_on_raven_shot: bool = False  # Opt-in for social map display
-    latitude: Optional[float] = None  # For map rendering (geo-fuzzed)
-    longitude: Optional[float] = None  # For map rendering (geo-fuzzed)
-    # Location name
-    location_name: Optional[str] = None  # Human-readable location (e.g. "Starbucks, Madrid")
-    # Tagged users
-    tagged_users: Optional[List[dict]] = None  # [{id, username, avatar_path}]
-    # Inline video-jump commands parsed from the body at create-time.
-    # Each entry is `{seconds: int, label: str, token: str}` — the iOS
-    # feed renders one chapter marker per entry on the scrub bar.
-    video_chapters: Optional[List[dict]] = None
-
+    
     class Config:
         from_attributes = True
 
@@ -238,20 +145,13 @@ def get_post_stats(db: Session, post_id: str, current_user_id: str) -> dict:
         Repost.original_post_id == post_id,
         Repost.user_id == current_user_id
     ).first() is not None
-
-    # Check if current user bookmarked
-    is_bookmarked = db.query(PostBookmark).filter(
-        PostBookmark.post_id == post_id,
-        PostBookmark.user_id == current_user_id
-    ).first() is not None
-
+    
     return {
         "likes": likes,
         "comments": comments,
         "reposts": reposts,
         "is_liked": is_liked,
-        "is_reposted": is_reposted,
-        "is_bookmarked": is_bookmarked
+        "is_reposted": is_reposted
     }
 
 
@@ -293,53 +193,26 @@ def get_batch_post_stats(db: Session, post_ids: list, current_user_id: str) -> d
         Repost.original_post_id.in_(post_ids),
         Repost.user_id == current_user_id
     ).all())
-
-    # 5b. Which posts has current user bookmarked?
-    bookmarked_ids = set(row[0] for row in db.query(PostBookmark.post_id).filter(
-        PostBookmark.post_id.in_(post_ids),
-        PostBookmark.user_id == current_user_id
-    ).all())
     
     # 6. Preview liker IDs (max 20 per post, most recent first)
-    # ⚡ PERF FIX: Single batch query with ROW_NUMBER window function
-    # instead of N per-post queries. For 50 posts: 1 query instead of 50.
+    liker_preview_rows = db.query(PostLike.post_id, PostLike.user_id).filter(
+        PostLike.post_id.in_(post_ids)
+    ).order_by(PostLike.timestamp.desc()).all()
     liker_map = {}
-    try:
-        from sqlalchemy import text
-        liker_sql = text("""
-            SELECT post_id, user_id FROM (
-                SELECT post_id, user_id, 
-                       ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY timestamp DESC) as rn
-                FROM post_likes
-                WHERE post_id = ANY(:pids)
-            ) ranked WHERE rn <= 20
-        """)
-        liker_rows = db.execute(liker_sql, {"pids": post_ids}).fetchall()
-        for row in liker_rows:
-            liker_map.setdefault(row[0], []).append(row[1])
-    except Exception:
-        # Fallback for SQLite (no window functions in older versions)
-        pass
+    for pid, uid in liker_preview_rows:
+        liker_map.setdefault(pid, [])
+        if len(liker_map[pid]) < 20:
+            liker_map[pid].append(uid)
     
-    # 7. Preview commenter IDs (max 20 unique per post, most recent first)
-    # ⚡ PERF FIX: Single batch query with DISTINCT ON (PostgreSQL)
+    # 7. Preview commenter IDs (max 20 per post, most recent first)
+    commenter_preview_rows = db.query(Comment.post_id, Comment.author_id).filter(
+        Comment.post_id.in_(post_ids)
+    ).order_by(Comment.timestamp.desc()).all()
     commenter_map = {}
-    try:
-        commenter_sql = text("""
-            SELECT post_id, author_id FROM (
-                SELECT post_id, author_id,
-                       ROW_NUMBER() OVER (PARTITION BY post_id, author_id ORDER BY timestamp DESC) as dup_rn,
-                       ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY timestamp DESC) as rn
-                FROM comments
-                WHERE post_id = ANY(:pids)
-            ) ranked WHERE dup_rn = 1 AND rn <= 20
-        """)
-        commenter_rows = db.execute(commenter_sql, {"pids": post_ids}).fetchall()
-        for row in commenter_rows:
-            commenter_map.setdefault(row[0], []).append(row[1])
-    except Exception:
-        # Fallback for SQLite
-        pass
+    for pid, uid in commenter_preview_rows:
+        commenter_map.setdefault(pid, [])
+        if len(commenter_map[pid]) < 20 and uid not in commenter_map[pid]:
+            commenter_map[pid].append(uid)
     
     # Build result map
     result = {}
@@ -350,7 +223,6 @@ def get_batch_post_stats(db: Session, post_ids: list, current_user_id: str) -> d
             "reposts": reposts_map.get(pid, 0),
             "is_liked": pid in liked_ids,
             "is_reposted": pid in reposted_ids,
-            "is_bookmarked": pid in bookmarked_ids,
             "like_preview_user_ids": liker_map.get(pid, []),
             "comment_preview_user_ids": commenter_map.get(pid, []),
         }
@@ -368,7 +240,6 @@ def get_voice_and_collab_fields(post, db=None, author=None) -> dict:
         "origin_chain_id": getattr(post, 'origin_chain_id', None),
         "is_verified": (author.is_verified or False) if author else False,
         "is_premium": (author.is_premium or False) if author else False,
-        "video_chapters": None,
     }
     # Parse waveform JSON
     raw_waveform = getattr(post, 'waveform', None)
@@ -389,50 +260,7 @@ def get_voice_and_collab_fields(post, db=None, author=None) -> dict:
                 fields["co_author_usernames"] = [user_map.get(uid, "Unknown") for uid in co_author_ids]
         except Exception:
             pass
-    # Pre-parsed video chapters (populated at create-time so the feed avoids
-    # re-running the regex per render). Quietly drop malformed entries.
-    raw_chapters = getattr(post, 'video_chapters', None)
-    if raw_chapters:
-        try:
-            decoded = json.loads(raw_chapters)
-            if isinstance(decoded, list):
-                fields["video_chapters"] = [c for c in decoded if isinstance(c, dict)]
-        except Exception:
-            pass
     return fields
-
-
-def get_batch_post_media(request: Request, db: Session, post_ids: List[str]) -> dict:
-    """Batch-load PostMedia for multiple posts in a single query.
-    
-    Returns: dict mapping post_id -> List[PostMediaResponse] (only for posts that have media).
-    """
-    if not post_ids:
-        return {}
-    
-    from models import PostMedia
-    
-    media_rows = db.query(PostMedia).filter(
-        PostMedia.post_id.in_(post_ids)
-    ).order_by(PostMedia.post_id, PostMedia.order_index).all()
-    
-    if not media_rows:
-        return {}
-    
-    media_map = {}
-    for m in media_rows:
-        if m.post_id not in media_map:
-            media_map[m.post_id] = []
-        media_map[m.post_id].append(PostMediaResponse(
-            id=m.id,
-            url=build_full_url(request, m.url),
-            order_index=m.order_index,
-            media_type=m.media_type or 'image',
-            thumbnail_url=build_full_url(request, m.thumbnail_url) if getattr(m, 'thumbnail_url', None) else None,
-            top_comments=None
-        ))
-    
-    return media_map
 
 
 def get_post_media_with_comments(
@@ -519,7 +347,6 @@ def get_post_media_with_comments(
             url=build_full_url(request, media.url),
             order_index=media.order_index,
             media_type=media.media_type,
-            thumbnail_url=build_full_url(request, media.thumbnail_url) if getattr(media, 'thumbnail_url', None) else None,
             top_comments=top_comments
         ))
     
@@ -552,7 +379,7 @@ def search_posts(
         HiddenContent.user_id == current_user.id, HiddenContent.object_type == "post"
     ).all()]
     
-    search_query = db.query(Post).filter(Post.visibility.in_(['public', 'local', None]), or_(Post.is_hidden == False, Post.is_hidden == None))
+    search_query = db.query(Post).filter(Post.visibility.in_(['public', 'local', None]), Post.is_hidden != True)
     if blocked_ids:
         search_query = search_query.filter(~Post.author_id.in_(blocked_ids))
     if hidden_post_ids:
@@ -589,7 +416,6 @@ def search_posts(
                 post_type=post.post_type,
                 room_id=post.room_id,
             mesh_origin=post.mesh_origin or False,
-            location_name=getattr(post, 'location_name', None),
                 **get_voice_and_collab_fields(post, db, author=author)
             ))
             
@@ -654,7 +480,7 @@ def consume_content(
 
 
 @router.post("/create", response_model=PostResponse)
-async def create_post(
+def create_post(
     request: Request,
     req: CreatePostRequest,
     current_user: User = Depends(get_current_user),
@@ -750,9 +576,7 @@ async def create_post(
         'radius_m': req.radius_m,
         'latitude': lat,
         'longitude': lng,
-        'geohash': geohash_val,
-        'show_on_raven_shot': bool(req.show_on_raven_shot) if req.show_on_raven_shot else False,
-        'location_name': req.location_name[:200] if req.location_name else None  # Max 200 chars
+        'geohash': geohash_val
     }
     
     # Voice post handling
@@ -784,14 +608,7 @@ async def create_post(
         hashtags = list(set(tag.lower() for tag in re.findall(r'#(\w+)', req.content)))
     if hashtags:
         post_data['hashtags'] = json_mod.dumps(hashtags[:20])  # Max 20 hashtags
-
-    # Inline video-jump commands (`v0:21`, `v1:23`…). Parsed once here and
-    # cached on the row so the feed doesn't have to re-scan every render —
-    # capped at 32 markers per post to keep payloads bounded.
-    chapters = extract_video_chapters(req.content)
-    if chapters:
-        post_data['video_chapters'] = json_mod.dumps(chapters[:32])
-
+    
     post = Post(**post_data)
     
     db.add(post)
@@ -804,50 +621,15 @@ async def create_post(
     cache.invalidate("feed:local:*")
     cache.invalidate("feed:friends:*")
     
-    # Create PostMedia records for multi-media posts (images + videos)
+    # Create PostMedia records for multi-image posts
     media_responses = []
-    from models import PostMedia
-    import uuid as uuid_mod
-    max_media = 10 if current_user.is_premium else 4  # RAVEN+: 10, Free: 4
-    
-    # PRIMARY: Use media_items if present (new iOS client sends this for mixed media)
-    if req.media_items and len(req.media_items) > 0:
-        print(f"🔍 DEBUG create_post: req.media_items = {[m.dict() for m in req.media_items]}")
-        for idx, item in enumerate(req.media_items[:max_media]):
-            media_id = str(uuid_mod.uuid4())
-            media = PostMedia(
-                id=media_id,
-                post_id=post.id,
-                url=item.url,
-                order_index=idx,
-                media_type=item.media_type or 'image',
-                thumbnail_url=item.thumbnail_url
-            )
-            db.add(media)
-            media_responses.append(PostMediaResponse(
-                id=media_id,
-                url=build_full_url(request, item.url),
-                order_index=idx,
-                media_type=item.media_type or 'image',
-                thumbnail_url=build_full_url(request, item.thumbnail_url) if item.thumbnail_url else None,
-                top_comments=None
-            ))
-        db.commit()
-        print(f"🎬 Created {len(media_responses)} PostMedia records (mixed) for post {post.id[:8]}")
-        
-        # Set post_type based on media content (video takes priority)
-        has_video = any(item.media_type == "video" for item in req.media_items[:max_media])
-        if has_video and not post.post_type:
-            post.post_type = "video"
-        elif not post.post_type:
-            post.post_type = "image"
-        db.commit()
-    
-    # FALLBACK: Use image_urls for backward compatibility (legacy clients)
-    elif req.image_urls and len(req.image_urls) > 0:
-        print(f"🔍 DEBUG create_post: req.image_urls = {req.image_urls}")
+    print(f"🔍 DEBUG create_post: req.image_urls = {req.image_urls}")  # Debug log
+    if req.image_urls and len(req.image_urls) > 0:
+        from models import PostMedia
+        import uuid as uuid_mod
+        max_media = 10 if current_user.is_premium else 4  # RAVEN+: 10, Free: 4
         for idx, url in enumerate(req.image_urls[:max_media]):
-            media_id = str(uuid_mod.uuid4())
+            media_id = str(uuid_mod.uuid4())  # Generate ID explicitly (SQLAlchemy default doesn't run until commit)
             media = PostMedia(
                 id=media_id,
                 post_id=post.id,
@@ -861,50 +643,30 @@ async def create_post(
                 url=build_full_url(request, url),
                 order_index=idx,
                 media_type='image',
-                thumbnail_url=None,
                 top_comments=None
             ))
         db.commit()
-        print(f"🖼️ Created {len(media_responses)} PostMedia records (legacy) for post {post.id[:8]}")
+        print(f"🖼️ Created {len(media_responses)} PostMedia records for post {post.id[:8]}")
     
     content_preview = req.content[:50] if req.content else "(image only)"
     print(f"📝 Post created by {current_user.username}: {content_preview}... [visibility={req.visibility}]")
     
     # 🔔 Notify post subscribers (push + in-app)
-    # Uses both legacy PostSubscription AND new UserNotificationSubscription (bell feature)
-    from models import PostSubscription, Notification, UserNotificationSubscription
-    
-    # Collect subscriber IDs from both sources (deduplicated)
-    legacy_subs = db.query(PostSubscription).filter(
+    from models import PostSubscription, Notification
+    subscribers = db.query(PostSubscription).filter(
         PostSubscription.target_id == current_user.id,
         PostSubscription.enabled == True
     ).all()
     
-    bell_subs = db.query(UserNotificationSubscription).filter(
-        UserNotificationSubscription.target_id == current_user.id,
-        UserNotificationSubscription.notify_posts == True
-    ).all()
-    
-    # Deduplicate subscriber IDs
-    notified_ids = set()
-    all_subscriber_ids = []
-    for sub in legacy_subs:
-        if sub.subscriber_id not in notified_ids:
-            notified_ids.add(sub.subscriber_id)
-            all_subscriber_ids.append(sub.subscriber_id)
-    for sub in bell_subs:
-        if sub.subscriber_id not in notified_ids:
-            notified_ids.add(sub.subscriber_id)
-            all_subscriber_ids.append(sub.subscriber_id)
-    
-    if all_subscriber_ids:
+    if subscribers:
         from services.apns_service import get_apns_service, APNsService
+        import asyncio
         apns = get_apns_service()
         
         author_name = APNsService.build_push_display_name(current_user)
         post_preview = req.content[:100] if req.content else "(image)"
         
-        for subscriber_id in all_subscriber_ids:
+        for sub in subscribers:
             # Create in-app notification
             notif_data = json.dumps({
                 "postId": post.id,
@@ -913,7 +675,7 @@ async def create_post(
                 "postPreview": post_preview
             })
             notification = Notification(
-                user_id=subscriber_id,
+                user_id=sub.subscriber_id,
                 type="new_post",
                 data=notif_data,
                 is_read=False
@@ -921,144 +683,23 @@ async def create_post(
             db.add(notification)
             
             # Send push to subscriber (with preference check)
-            subscriber_user = db.query(User).filter(User.id == subscriber_id).first()
+            subscriber_user = db.query(User).filter(User.id == sub.subscriber_id).first()
             if subscriber_user and subscriber_user.push_token and subscriber_user.push_platform == "ios":
                 prefs = APNsService.should_send_push(subscriber_user, "new_post")
                 if prefs["allowed"]:
-                    try:
-                        push_result = await apns.send_new_post_notification(
-                            device_token=subscriber_user.push_token,
-                            author_name=author_name,
-                            post_preview=post_preview,
-                            post_id=post.id,
-                            author_id=current_user.id
-                        )
-                        print(f"🔔 [PUSH] event=new_post sender={current_user.id[:8]} "
-                              f"receiver={subscriber_id[:8]} status={'sent' if push_result else 'failed'}")
-                    except Exception as e:
-                        print(f"🔔 [PUSH] event=new_post sender={current_user.id[:8]} "
-                              f"receiver={subscriber_id[:8]} status=error reason={e}")
+                    asyncio.ensure_future(apns.send_new_post_notification(
+                        device_token=subscriber_user.push_token,
+                        author_name=author_name,
+                        post_preview=post_preview,
+                        post_id=post.id,
+                        author_id=current_user.id
+                    ))
                 else:
-                    print(f"🔔 [PUSH] event=new_post receiver={subscriber_id[:8]} status=skipped reason=disabled")
+                    print(f"📱 ⏭️ New post push skipped for {subscriber_user.username} (disabled)")
         
         db.commit()
-        print(f"🔔 Notified {len(all_subscriber_ids)} post subscribers for @{current_user.username}")
+        print(f"🔔 Notified {len(subscribers)} post subscribers for @{current_user.username}")
     
-    
-    # 🔔 Process @mentions in post content (Tag users).
-    #
-    # Two paths:
-    #   1. PREFERRED — `req.entities` (structured, from iOS MentionPicker).
-    #      Correct for any username (incl. dots/hyphens). Carries the user_id
-    #      directly so we don't need a regex+lookup.
-    #   2. FALLBACK — regex extraction from `req.content`. Used by older
-    #      clients and mesh-bridged posts. Breaks on `@john.doe` style names.
-    if req.entities:
-        # Entity path: extract username list (lowercased for the SAME
-        # downstream block of code as regex). The downstream block re-queries
-        # by username for batch resolution; entities also carry the id but
-        # the existing downstream code is keyed on username — keep it simple.
-        seen = set()
-        mention_usernames = []
-        for ent in req.entities:
-            if ent.type != "mention":
-                continue
-            uname = (ent.username or "").lower()
-            if uname and uname not in seen:
-                seen.add(uname)
-                mention_usernames.append(uname)
-            if len(mention_usernames) >= 10:
-                break
-    elif req.content:
-        import re as re_mod
-        mention_usernames = list(set(
-            m.lower() for m in re_mod.findall(r'@(\w+)', req.content)
-        ))[:10]  # Max 10 mentions per post
-    else:
-        mention_usernames = []
-
-    if mention_usernames:
-        # NOTE: `if mention_usernames` was previously implied by the outer
-        # `if req.content`. Keep behavior identical; just add an indent shim.
-        if True:
-            from models import Mention
-            from routers.blocks import get_blocked_user_ids
-            
-            # Batch-resolve usernames to users
-            mentioned_users = db.query(User).filter(
-                func.lower(User.username).in_(mention_usernames)
-            ).all()
-            
-            if mentioned_users:
-                blocked_ids = set(get_blocked_user_ids(db, actual_author_id))
-                
-                if 'apns' not in dir() or 'APNsService' not in dir():
-                    from services.apns_service import get_apns_service, APNsService
-                    import asyncio
-                    apns = get_apns_service()
-                
-                author_name = APNsService.build_push_display_name(current_user)
-                post_preview = req.content[:100] if req.content else "(post)"
-                mention_count = 0
-                
-                for mentioned_user in mentioned_users:
-                    # Skip self-mentions
-                    if mentioned_user.id == actual_author_id:
-                        continue
-                    # Skip blocked users
-                    if mentioned_user.id in blocked_ids:
-                        continue
-                    
-                    mention_count += 1
-                    
-                    # Create Mention record
-                    mention_record = Mention(
-                        type="post",
-                        source_id=post.id,
-                        post_id=post.id,
-                        mentioned_user_id=mentioned_user.id,
-                        mentioned_by_user_id=actual_author_id,
-                        snippet=post_preview,
-                        deep_link=f"raven://post/{post.id}",
-                        is_read=False
-                    )
-                    db.add(mention_record)
-                    
-                    # Create in-app Notification
-                    if 'Notification' not in dir():
-                        from models import Notification
-                    notif_data = json.dumps({
-                        "postId": post.id,
-                        "authorId": actual_author_id,
-                        "authorUsername": current_user.username,
-                        "postPreview": post_preview,
-                        "mentionType": "post"
-                    })
-                    notification = Notification(
-                        user_id=mentioned_user.id,
-                        type="mention",
-                        data=notif_data,
-                        is_read=False
-                    )
-                    db.add(notification)
-                    
-                    # Send push notification
-                    if mentioned_user.push_token and mentioned_user.push_platform == "ios":
-                        prefs = APNsService.should_send_push(mentioned_user, "mention")
-                        if prefs["allowed"]:
-                            asyncio.ensure_future(apns.send_mention_notification(
-                                device_token=mentioned_user.push_token,
-                                mentioner_name=author_name,
-                                mention_type="post",
-                                snippet=post_preview,
-                                deep_link=f"raven://post/{post.id}",
-                                post_id=post.id,
-                                source_id=post.id
-                            ))
-                
-                if mention_count > 0:
-                    db.commit()
-                    print(f"📢 [Mentions] Tagged {mention_count} users in post {post.id[:8]} by @{current_user.username}")
     
     # For mesh gateway uploads, resolve the actual author (may differ from current_user)
     if actual_author_id != current_user.id:
@@ -1069,7 +710,7 @@ async def create_post(
         resp_username = current_user.username
         resp_avatar = build_full_url(request, current_user.avatar_path)
     
-    response = PostResponse(
+    return PostResponse(
         id=post.id,
         author_id=post.author_id,
         author_username=resp_username,
@@ -1090,97 +731,15 @@ async def create_post(
         post_type=post.post_type,
         room_id=post.room_id,
         mesh_origin=post.mesh_origin or False,
-        show_on_raven_shot=post.show_on_raven_shot or False,
-        latitude=post.latitude,
-        longitude=post.longitude,
-        location_name=post.location_name,
         **get_voice_and_collab_fields(post, db, author=current_user)
     )
-    
-    # 🏷️ Process user tags (tag people in post)
-    tag_responses = []
-    if req.tagged_users:
-        from models import PostTag
-        from routers.blocks import get_blocked_user_ids
-        import asyncio
-        
-        blocked_ids = set(get_blocked_user_ids(db, actual_author_id))
-        tagged_user_ids = list(set(req.tagged_users[:20]))  # Max 20 tags, deduplicated
-        
-        # Batch-resolve user IDs
-        tagged_user_objs = db.query(User).filter(User.id.in_(tagged_user_ids)).all()
-        
-        if 'apns' not in dir() or 'APNsService' not in dir():
-            from services.apns_service import get_apns_service, APNsService
-            apns = get_apns_service()
-        author_name = APNsService.build_push_display_name(current_user)
-        
-        for tagged_user in tagged_user_objs:
-            # Skip self-tags and blocked users
-            if tagged_user.id == actual_author_id:
-                continue
-            if tagged_user.id in blocked_ids:
-                continue
-            
-            # Create PostTag record
-            tag_record = PostTag(
-                post_id=post.id,
-                tagged_user_id=tagged_user.id,
-                tagged_by_user_id=actual_author_id
-            )
-            db.add(tag_record)
-            
-            tag_responses.append({
-                "id": tagged_user.id,
-                "username": tagged_user.username,
-                "avatar_path": build_full_url(request, tagged_user.avatar_path) if tagged_user.avatar_path else None
-            })
-            
-            # Create in-app Notification
-            notif_data = json.dumps({
-                "postId": post.id,
-                "authorId": actual_author_id,
-                "authorUsername": current_user.username,
-                "tagType": "post"
-            })
-            notification = Notification(
-                user_id=tagged_user.id,
-                type="tag",
-                data=notif_data,
-                is_read=False
-            )
-            db.add(notification)
-            
-            # Send push notification
-            if tagged_user.push_token and tagged_user.push_platform == "ios":
-                prefs = APNsService.should_send_push(tagged_user, "mention")
-                if prefs["allowed"]:
-                    asyncio.ensure_future(apns.send_mention_notification(
-                        device_token=tagged_user.push_token,
-                        mentioner_name=author_name,
-                        mention_type="photo_tag",
-                        snippet="tagged you in a post",
-                        deep_link=f"raven://post/{post.id}",
-                        post_id=post.id,
-                        source_id=post.id
-                    ))
-        
-        if tag_responses:
-            db.commit()
-            print(f"🏷️ [Tags] Tagged {len(tag_responses)} users in post {post.id[:8]} by @{current_user.username}")
-    
-    # Update response with tags and location_name
-    response.tagged_users = tag_responses if tag_responses else None
-    response.location_name = post.location_name
-    
-    return response
 
 @router.get("/feed", response_model=List[PostResponse])
 def get_feed(
     request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-    limit: int = 20,
+    limit: int = 50,
     offset: int = 0,
     cursor: Optional[str] = None
 ):
@@ -1205,7 +764,7 @@ def get_feed(
     ).all()]
     
     query = db.query(Post).filter(
-        or_(Post.is_hidden == False, Post.is_hidden == None),
+        Post.is_hidden != True,
         or_(Post.visibility == 'public', Post.visibility == None)
     ).order_by(Post.timestamp.desc())
     if blocked_ids:
@@ -1225,21 +784,11 @@ def get_feed(
     
     posts = query.limit(limit).all()
     
-    import time as _time
-    _t0 = _time.monotonic()
-    
     # Batch-load authors and stats (eliminates N+1)
     post_ids = [p.id for p in posts]
     author_ids = list(set(p.author_id for p in posts))
     authors_map = {u.id: u for u in db.query(User).filter(User.id.in_(author_ids)).all()} if author_ids else {}
-    
-    _t1 = _time.monotonic()
     stats_map = get_batch_post_stats(db, post_ids, current_user.id)
-    _t2 = _time.monotonic()
-    media_map = get_batch_post_media(request, db, post_ids)
-    _t3 = _time.monotonic()
-    
-    print(f"⚡ [Feed] {len(posts)} posts: authors={(_t1-_t0)*1000:.0f}ms stats={(_t2-_t1)*1000:.0f}ms media={(_t3-_t2)*1000:.0f}ms total={(_t3-_t0)*1000:.0f}ms")
     
     result = []
     for post in posts:
@@ -1265,32 +814,15 @@ def get_feed(
             post_type=post.post_type,
             room_id=post.room_id,
             mesh_origin=post.mesh_origin or False,
-            location_name=getattr(post, 'location_name', None),
-            media=media_map.get(post.id),
             like_preview_user_ids=stats.get("like_preview_user_ids", []),
             comment_preview_user_ids=stats.get("comment_preview_user_ids", []),
-            show_on_raven_shot=post.show_on_raven_shot or False,
-            latitude=post.latitude,
-            longitude=post.longitude,
-            **get_voice_and_collab_fields(post, db, author=author)
+                **get_voice_and_collab_fields(post, db, author=author)
         ))
     
     # Cache result
-    serialized = [r.dict() for r in result]
-    cache.set(cache_key, serialized, ttl=TTL_FEED)
+    cache.set(cache_key, [r.dict() for r in result], ttl=TTL_FEED)
     
-    # ⚡ PERF: ETag support — if content hasn't changed, return 304 (no body)
-    etag_src = f"{len(result)}:{result[0].timestamp.isoformat() if result else 'empty'}"
-    etag = f'"feed-{hashlib.md5(etag_src.encode()).hexdigest()[:16]}"'
-    client_etag = request.headers.get("if-none-match")
-    if client_etag and client_etag == etag:
-        return Response(status_code=304, headers={"ETag": etag})
-    
-    return Response(
-        content=json.dumps(serialized, default=str),
-        media_type="application/json",
-        headers={"ETag": etag}
-    )
+    return result
 
 
 # ==================== LOCAL FEED (Interest-Based Algorithm) ====================
@@ -1302,7 +834,7 @@ def get_local_feed(
     radius_m: int = 5000,  # Default 5km radius
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-    limit: int = 20,
+    limit: int = 50,
     offset: int = 0,
     cursor: Optional[str] = None
 ):
@@ -1414,7 +946,7 @@ def get_local_feed(
             Post.geohash == None  # Include posts without location (deprioritized via max distance)
         ),
         or_(Post.visibility == 'public', Post.visibility == None),
-        or_(Post.is_hidden == False, Post.is_hidden == None),
+        Post.is_hidden != True,
         Post.timestamp > seven_days_ago
     )
     # Exclude blocked users
@@ -1424,25 +956,17 @@ def get_local_feed(
     if hidden_post_ids:
         query = query.filter(~Post.id.in_(hidden_post_ids))
     
-    # Cursor-based pagination (preferred) — avoids slow OFFSET scans.
-    # Cursor uses a WHERE clause (filter), so it can be applied here.
+    # Cursor-based pagination (preferred) — avoids slow OFFSET scans
     if cursor:
         try:
             cursor_dt = datetime.fromisoformat(cursor)
             query = query.filter(Post.timestamp < cursor_dt)
         except ValueError:
             pass
-
-    # ⚠️ SQLAlchemy enforces this order: order_by() MUST come before
-    # offset()/limit(). Previously this code applied .offset() first
-    # (legacy fallback path) and then chained .order_by().limit() — which
-    # raised `Query.order_by() being called on a Query which already has
-    # LIMIT or OFFSET applied`, returning a 500 to every cursorless caller.
-    query = query.order_by(Post.timestamp.desc())
-    if not cursor and offset:
+    else:
         query = query.offset(offset)
-
-    posts = query.limit(limit * 3).all()  # Fetch extra for scoring
+    
+    posts = query.order_by(Post.timestamp.desc()).limit(limit * 3).all()  # Fetch extra for scoring
     total_fetched = len(posts)  # Track actual DB rows consumed for pagination
     
     # Debug: log voice post counts for feed diagnostics
@@ -1455,7 +979,6 @@ def get_local_feed(
     author_ids = list(set(p.author_id for p in posts))
     authors_map = {u.id: u for u in db.query(User).filter(User.id.in_(author_ids)).all()} if author_ids else {}
     stats_map = get_batch_post_stats(db, post_ids, current_user.id)
-    media_map = get_batch_post_media(request, db, post_ids)
     
     # Score and filter posts
     scored_posts = []
@@ -1507,8 +1030,6 @@ def get_local_feed(
                 post_type=post.post_type,
                 room_id=post.room_id,
             mesh_origin=post.mesh_origin or False,
-            location_name=getattr(post, 'location_name', None),
-                media=media_map.get(post.id),
                 like_preview_user_ids=stats.get("like_preview_user_ids", []),
                 comment_preview_user_ids=stats.get("comment_preview_user_ids", []),
                 **get_voice_and_collab_fields(post, db, author=author)
@@ -1538,144 +1059,124 @@ def get_friends_feed(
     request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-    limit: int = 20,
+    limit: int = 50,
     offset: int = 0,
     cursor: Optional[str] = None
 ):
     """
     Get FRIENDS feed - posts from accepted friends.
-    - Shows ALL posts from friends (public + friends-only)
+    - Shows ONLY friends-visibility posts (not public)
     - Only from users who are accepted friends (mutual)
     - Ordered by timestamp DESC
     """
-    import traceback
-    try:
-        from models import FriendRequest
-        
-        # Get list of accepted friend user IDs
-        sent_friends = db.query(FriendRequest.recipient_id).filter(
-            FriendRequest.requester_id == current_user.id,
-            FriendRequest.status == "accepted"
-        ).all()
-        
-        received_friends = db.query(FriendRequest.requester_id).filter(
-            FriendRequest.recipient_id == current_user.id,
-            FriendRequest.status == "accepted"
-        ).all()
-        
-        friend_ids = set([f[0] for f in sent_friends] + [f[0] for f in received_friends])
-        
-        # Include user's own posts in the friends feed
-        friend_ids.add(current_user.id)
-        
-        if not friend_ids:
-            return PaginatedFeedResponse(items=[], hasMore=False, nextOffset=0)
-        
-        # Query posts from friends and self (excluding blocked/hidden)
-        from routers.blocks import get_blocked_user_ids
-        from models import HiddenContent
-        
-        blocked_ids = get_blocked_user_ids(db, current_user.id)
-        friend_ids -= set(blocked_ids)  # Remove blocked from friends
-        
-        hidden_post_ids = [h.object_id for h in db.query(HiddenContent.object_id).filter(
-            HiddenContent.user_id == current_user.id,
-            HiddenContent.object_type == "post"
-        ).all()]
-        
-        # Cache check
-        cache_key = f"feed:friends:{current_user.id}:{cursor or offset}:{limit}"
-        cached = cache.get(cache_key)
-        if cached is not None:
-            return PaginatedFeedResponse(**cached)
-        
-        # ✅ FIX: Show ALL posts from friends (public + friends-only), not just friends-visibility
-        query = db.query(Post).filter(
-            Post.author_id.in_(friend_ids),
-            or_(Post.is_hidden == False, Post.is_hidden == None),
-            or_(Post.visibility == 'friends', Post.visibility == 'public', Post.visibility == None)
-        )
-        if hidden_post_ids:
-            query = query.filter(~Post.id.in_(hidden_post_ids))
-        
-        # ✅ FIX: Apply order_by BEFORE offset/limit (SQLAlchemy requirement)
-        query = query.order_by(Post.timestamp.desc())
-        
-        # Cursor-based pagination (preferred)
-        if cursor:
-            try:
-                cursor_dt = datetime.fromisoformat(cursor)
-                query = query.filter(Post.timestamp < cursor_dt)
-            except ValueError:
-                pass
-        else:
-            query = query.offset(offset)
-        
-        posts = query.limit(limit).all()
+    from models import FriendRequest
+    
+    # Get list of accepted friend user IDs
+    sent_friends = db.query(FriendRequest.recipient_id).filter(
+        FriendRequest.requester_id == current_user.id,
+        FriendRequest.status == "accepted"
+    ).all()
+    
+    received_friends = db.query(FriendRequest.requester_id).filter(
+        FriendRequest.recipient_id == current_user.id,
+        FriendRequest.status == "accepted"
+    ).all()
+    
+    friend_ids = set([f[0] for f in sent_friends] + [f[0] for f in received_friends])
+    
+    # Include user's own posts in the friends feed
+    friend_ids.add(current_user.id)
+    
+    # NOTE: Single-use content exclusion DISABLED
+    # Posts now remain visible even after being viewed
+    # To re-enable single-use content, uncomment the consumed_ids filter below
+    # 
+    # consumed_ids = db.query(ContentConsumption.content_id).filter(
+    #     ContentConsumption.user_id == current_user.id,
+    #     ContentConsumption.content_type == 'post'
+    # ).subquery()
+    
+    # Query posts from friends and self (excluding blocked/hidden)
+    from routers.blocks import get_blocked_user_ids
+    from models import HiddenContent
+    
+    blocked_ids = get_blocked_user_ids(db, current_user.id)
+    friend_ids -= set(blocked_ids)  # Remove blocked from friends
+    
+    hidden_post_ids = [h.object_id for h in db.query(HiddenContent.object_id).filter(
+        HiddenContent.user_id == current_user.id,
+        HiddenContent.object_type == "post"
+    ).all()]
+    
+    # Cache check
+    cache_key = f"feed:friends:{current_user.id}:{cursor or offset}:{limit}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return PaginatedFeedResponse(**cached)
+    
+    query = db.query(Post).filter(
+        Post.author_id.in_(friend_ids),
+        Post.is_hidden != True,
+        Post.visibility == 'friends'
+    )
+    if hidden_post_ids:
+        query = query.filter(~Post.id.in_(hidden_post_ids))
+    
+    # Cursor-based pagination (preferred)
+    if cursor:
+        try:
+            cursor_dt = datetime.fromisoformat(cursor)
+            query = query.filter(Post.timestamp < cursor_dt)
+        except ValueError:
+            pass
+    else:
+        query = query.offset(offset)
+    
+    posts = query.order_by(Post.timestamp.desc()).limit(limit).all()
 
-        # Batch-load authors and stats (eliminates N+1)
-        post_ids = [p.id for p in posts]
-        author_ids = list(set(p.author_id for p in posts))
-        authors_map = {u.id: u for u in db.query(User).filter(User.id.in_(author_ids)).all()} if author_ids else {}
-        stats_map = get_batch_post_stats(db, post_ids, current_user.id)
-        media_map = get_batch_post_media(request, db, post_ids)
+    # Batch-load authors and stats (eliminates N+1)
+    post_ids = [p.id for p in posts]
+    author_ids = list(set(p.author_id for p in posts))
+    authors_map = {u.id: u for u in db.query(User).filter(User.id.in_(author_ids)).all()} if author_ids else {}
+    stats_map = get_batch_post_stats(db, post_ids, current_user.id)
+    
+    result = []
+    for post in posts:
+        author = authors_map.get(post.author_id)
+        stats = stats_map.get(post.id, {"likes": 0, "comments": 0, "reposts": 0, "is_liked": False, "is_reposted": False})
         
-        result = []
-        for post in posts:
-            author = authors_map.get(post.author_id)
-            stats = stats_map.get(post.id, {"likes": 0, "comments": 0, "reposts": 0, "is_liked": False, "is_reposted": False})
-            
-            result.append(PostResponse(
-                id=post.id,
-                author_id=post.author_id,
-                author_username=author.username if author else "Unknown",
-                author_avatar=build_full_url(request, author.avatar_path) if author else None,
-                content=decrypt_text(post.content),
-                image_url=build_full_url(request, post.image_url),
-                timestamp=post.timestamp,
-                edited_at=post.edited_at,
-                likes=stats["likes"],
-                comments=stats["comments"],
-                reposts=stats["reposts"],
-                view_count=post.view_count or 0,
-                is_local=post.is_local,
-                is_liked=stats["is_liked"],
-                is_reposted=stats["is_reposted"],
-                visibility=post.visibility or "public",
-                post_type=post.post_type,
-                room_id=post.room_id,
-                mesh_origin=post.mesh_origin or False,
-            location_name=getattr(post, 'location_name', None),
-                media=media_map.get(post.id),
-                like_preview_user_ids=stats.get("like_preview_user_ids", []),
-                comment_preview_user_ids=stats.get("comment_preview_user_ids", []),
-                    **get_voice_and_collab_fields(post, db, author=author)
-            ))
-        
-        has_more = len(result) == limit  # If we got exactly limit posts, there are likely more
-        next_offset = offset + len(result)
-        
-        print(f"👥 Friends feed for {current_user.username}: {len(result)} posts from {len(friend_ids)} friends (offset={offset}, hasMore={has_more})")
-        response_data = PaginatedFeedResponse(items=result, hasMore=has_more, nextOffset=next_offset)
-        serialized = response_data.dict()
-        cache.set(cache_key, serialized, ttl=TTL_FEED)
-        
-        # ⚡ PERF: ETag support
-        etag_src = f"{len(result)}:{result[0].timestamp.isoformat() if result else 'empty'}"
-        etag = f'"friends-{hashlib.md5(etag_src.encode()).hexdigest()[:16]}"'
-        client_etag = request.headers.get("if-none-match")
-        if client_etag and client_etag == etag:
-            return Response(status_code=304, headers={"ETag": etag})
-        
-        return Response(
-            content=json.dumps(serialized, default=str),
-            media_type="application/json",
-            headers={"ETag": etag}
-        )
-    except Exception as e:
-        print(f"❌❌❌ FRIENDS FEED CRASH: {type(e).__name__}: {e}")
-        print(traceback.format_exc())
-        raise
+        result.append(PostResponse(
+            id=post.id,
+            author_id=post.author_id,
+            author_username=author.username if author else "Unknown",
+            author_avatar=build_full_url(request, author.avatar_path) if author else None,
+            content=decrypt_text(post.content),
+            image_url=build_full_url(request, post.image_url),
+            timestamp=post.timestamp,
+            edited_at=post.edited_at,
+            likes=stats["likes"],
+            comments=stats["comments"],
+            reposts=stats["reposts"],
+            view_count=post.view_count or 0,
+            is_local=post.is_local,
+            is_liked=stats["is_liked"],
+            is_reposted=stats["is_reposted"],
+            visibility=post.visibility or "public",
+            post_type=post.post_type,
+            room_id=post.room_id,
+            mesh_origin=post.mesh_origin or False,
+            like_preview_user_ids=stats.get("like_preview_user_ids", []),
+            comment_preview_user_ids=stats.get("comment_preview_user_ids", []),
+                **get_voice_and_collab_fields(post, db, author=author)
+        ))
+    
+    has_more = len(result) == limit  # If we got exactly limit posts, there are likely more
+    next_offset = offset + len(result)
+    
+    print(f"👥 Friends feed for {current_user.username}: {len(result)} posts from {len(friend_ids)} friends (offset={offset}, hasMore={has_more})")
+    response = PaginatedFeedResponse(items=result, hasMore=has_more, nextOffset=next_offset)
+    cache.set(cache_key, response.dict(), ttl=TTL_FEED)
+    return response
 
 
 @router.post("/{post_id}/like")
@@ -1723,7 +1224,6 @@ async def toggle_like_post(
                     "post_id": post_id,
                     "liker_id": current_user.id,
                     "liker_username": current_user.username,
-                    "liker_avatar": current_user.avatar_path,
                 }),
                 timestamp=datetime.utcnow(),
                 is_read=False
@@ -1830,137 +1330,6 @@ def repost_post(
     }
 
 
-# ─────────────────────────────────────────────────────────────────
-# Bookmarks
-# ─────────────────────────────────────────────────────────────────
-#
-# Toggle endpoint mirrors the Like flow: idempotent flip stored in
-# `post_bookmarks`. Separate DELETE endpoint exists so a client can
-# unambiguously *remove* the bookmark even if its local state has
-# drifted from the server (no need to read-then-toggle).
-
-@router.post("/{post_id}/bookmark")
-def toggle_bookmark(
-    post_id: str,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Toggle bookmark on a post (one bookmark per user per post)."""
-    post = db.query(Post).filter(Post.id == post_id).first()
-    if not post:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Post not found"
-        )
-
-    existing = db.query(PostBookmark).filter(
-        PostBookmark.post_id == post_id,
-        PostBookmark.user_id == current_user.id
-    ).first()
-
-    if existing:
-        db.delete(existing)
-        action = "removed"
-        is_bookmarked = False
-    else:
-        new_bm = PostBookmark(
-            post_id=post_id,
-            user_id=current_user.id,
-            timestamp=datetime.utcnow()
-        )
-        db.add(new_bm)
-        action = "added"
-        is_bookmarked = True
-
-    db.commit()
-    print(f"🔖 Bookmark {action} by {current_user.username} for post {post_id[:8]}")
-
-    return {
-        "status": "success",
-        "action": action,
-        "is_bookmarked": is_bookmarked
-    }
-
-
-@router.delete("/{post_id}/bookmark")
-def delete_bookmark(
-    post_id: str,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Idempotent unbookmark — succeeds even if no bookmark exists."""
-    db.query(PostBookmark).filter(
-        PostBookmark.post_id == post_id,
-        PostBookmark.user_id == current_user.id
-    ).delete(synchronize_session=False)
-    db.commit()
-    return {"status": "success", "is_bookmarked": False}
-
-
-@router.get("/me/bookmarks", response_model=List[PostResponse])
-def list_my_bookmarks(
-    limit: int = 50,
-    offset: int = 0,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """List the current user's bookmarked posts, most-recently-saved
-    first. Returns full PostResponse objects so the client can render
-    a Bookmarks tab without follow-up requests."""
-    bm_rows = (
-        db.query(PostBookmark)
-        .filter(PostBookmark.user_id == current_user.id)
-        .order_by(PostBookmark.timestamp.desc())
-        .limit(limit)
-        .offset(offset)
-        .all()
-    )
-    if not bm_rows:
-        return []
-
-    post_ids = [r.post_id for r in bm_rows]
-    posts = db.query(Post).filter(Post.id.in_(post_ids)).all()
-    posts_by_id = {p.id: p for p in posts}
-
-    stats = get_batch_post_stats(db, post_ids, current_user.id)
-
-    # Preserve bookmark-order (most recent first) instead of DB order.
-    out: List[PostResponse] = []
-    for pid in post_ids:
-        post = posts_by_id.get(pid)
-        if post is None:
-            continue
-        s = stats.get(pid, {})
-        author = db.query(User).filter(User.id == post.author_id).first()
-        voice_collab = get_voice_and_collab_fields(post, db=db, author=author)
-        out.append(PostResponse(
-            id=post.id,
-            author_id=post.author_id,
-            author_username=author.username if author else "unknown",
-            author_avatar=author.avatar_path if author else None,
-            content=post.content or "",
-            image_url=post.image_url,
-            timestamp=post.timestamp,
-            edited_at=getattr(post, 'edited_at', None),
-            likes=s.get("likes", 0),
-            comments=s.get("comments", 0),
-            reposts=s.get("reposts", 0),
-            view_count=getattr(post, 'view_count', 0),
-            is_local=getattr(post, 'is_local', False),
-            is_liked=s.get("is_liked", False),
-            is_reposted=s.get("is_reposted", False),
-            is_bookmarked=True,
-            visibility=getattr(post, 'visibility', 'public') or 'public',
-            post_type=getattr(post, 'post_type', None),
-            room_id=getattr(post, 'room_id', None),
-            mesh_origin=False,
-            is_verified=bool(author and getattr(author, 'is_verified', False)),
-            is_premium=bool(author and getattr(author, 'is_premium', False)),
-            **voice_collab,
-        ))
-    return out
-
-
 @router.post("/{post_id}/view")
 def record_view(
     post_id: str,
@@ -2048,15 +1417,10 @@ def get_user_posts(
     """Get all posts by a specific user."""
     posts = db.query(Post).filter(
         Post.author_id == user_id,
-        or_(Post.is_hidden == False, Post.is_hidden == None)
+        Post.is_hidden != True
     ).order_by(Post.timestamp.desc()).limit(limit).all()
     
-    print(f"📋 [UserPosts] user={user_id[:8]}: found {len(posts)} posts (limit={limit})")
-    
     author = db.query(User).filter(User.id == user_id).first()
-    
-    # Batch fetch media
-    media_map = get_batch_post_media(request, db, [p.id for p in posts])
     
     result = []
     for post in posts:
@@ -2069,7 +1433,6 @@ def get_user_posts(
             author_avatar=build_full_url(request, author.avatar_path) if author else None,
             content=decrypt_text(post.content),
             image_url=build_full_url(request, post.image_url),
-            media=media_map.get(post.id),
             timestamp=post.timestamp,
             edited_at=post.edited_at,
             likes=stats["likes"],
@@ -2079,213 +1442,12 @@ def get_user_posts(
             is_local=post.is_local,
             is_liked=stats["is_liked"],
             is_reposted=stats["is_reposted"],
-            visibility=post.visibility or "public",
             post_type=post.post_type,
             room_id=post.room_id,
             mesh_origin=post.mesh_origin or False,
-            location_name=getattr(post, 'location_name', None),
-            like_preview_user_ids=stats.get("like_preview_user_ids"),
-            comment_preview_user_ids=stats.get("comment_preview_user_ids"),
                 **get_voice_and_collab_fields(post, db, author=author)
         ))
     
-    return result
-
-
-@router.get("/user/{user_id}/likes", response_model=List[PostResponse])
-def get_user_liked_posts(
-    request: Request,
-    user_id: str,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-    limit: int = 50,
-    offset: int = 0
-):
-    """Get posts liked by a specific user.
-    
-    Privacy: respects user.show_liked_posts setting.
-    Only the profile owner can see their liked posts if the setting is off.
-    """
-    from models import PostLike
-    
-    target_user = db.query(User).filter(User.id == user_id).first()
-    if not target_user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    # Privacy check: if show_liked_posts is off and requester is NOT the profile owner
-    if not getattr(target_user, 'show_liked_posts', True) and current_user.id != user_id:
-        return []
-    
-    # Private profile check
-    if target_user.is_private and current_user.id != user_id:
-        from models import FriendRequest
-        is_friend = db.query(FriendRequest).filter(
-            FriendRequest.status == "accepted",
-            or_(
-                (FriendRequest.requester_id == current_user.id) & (FriendRequest.recipient_id == user_id),
-                (FriendRequest.requester_id == user_id) & (FriendRequest.recipient_id == current_user.id)
-            )
-        ).first() is not None
-        if not is_friend:
-            return []
-    
-    # Get post IDs liked by user, most recent first
-    liked_post_ids = [row[0] for row in db.query(PostLike.post_id).filter(
-        PostLike.user_id == user_id
-    ).order_by(PostLike.timestamp.desc()).offset(offset).limit(limit).all()]
-    
-    print(f"❤️ [Profile Likes] {user_id[:8]}: found {len(liked_post_ids)} liked post IDs")
-    
-    if not liked_post_ids:
-        return []
-    
-    # Fetch posts (handle NULL is_hidden correctly)
-    posts = db.query(Post).filter(
-        Post.id.in_(liked_post_ids),
-        or_(Post.is_hidden == False, Post.is_hidden == None)
-    ).all()
-    
-    # Maintain liked order
-    post_map = {p.id: p for p in posts}
-    ordered_posts = [post_map[pid] for pid in liked_post_ids if pid in post_map]
-    
-    # Batch stats
-    stats_map = get_batch_post_stats(db, [p.id for p in ordered_posts], current_user.id)
-    media_map = get_batch_post_media(request, db, [p.id for p in ordered_posts])
-    
-    result = []
-    for post in ordered_posts:
-        author = db.query(User).filter(User.id == post.author_id).first()
-        stats = stats_map.get(post.id, {"likes": 0, "comments": 0, "reposts": 0, "is_liked": False, "is_reposted": False})
-        
-        result.append(PostResponse(
-            id=post.id,
-            author_id=post.author_id,
-            author_username=author.username if author else "Unknown",
-            author_avatar=build_full_url(request, author.avatar_path) if author else None,
-            content=decrypt_text(post.content),
-            image_url=build_full_url(request, post.image_url),
-            media=media_map.get(post.id),
-            timestamp=post.timestamp,
-            edited_at=post.edited_at,
-            likes=stats["likes"],
-            comments=stats["comments"],
-            reposts=stats["reposts"],
-            view_count=post.view_count or 0,
-            is_local=post.is_local,
-            is_liked=stats["is_liked"],
-            is_reposted=stats["is_reposted"],
-            visibility=post.visibility or "public",
-            post_type=post.post_type,
-            room_id=post.room_id,
-            mesh_origin=post.mesh_origin or False,
-            location_name=getattr(post, 'location_name', None),
-            like_preview_user_ids=stats.get("like_preview_user_ids"),
-            comment_preview_user_ids=stats.get("comment_preview_user_ids"),
-            **get_voice_and_collab_fields(post, db, author=author)
-        ))
-    
-    print(f"❤️ [Profile Likes] {user_id[:8]}: {len(result)} liked posts")
-    return result
-
-
-@router.get("/user/{user_id}/replies", response_model=List[PostResponse])
-def get_user_replies(
-    request: Request,
-    user_id: str,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-    limit: int = 50,
-    offset: int = 0
-):
-    """Get posts that a user has replied to (commented on).
-    
-    Returns the parent posts (not the comments themselves).
-    Privacy: respects user.show_replies setting.
-    """
-    from models import Comment
-    
-    target_user = db.query(User).filter(User.id == user_id).first()
-    if not target_user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    # Privacy check: if show_replies is off and requester is NOT the profile owner
-    if not getattr(target_user, 'show_replies', True) and current_user.id != user_id:
-        return []
-    
-    # Private profile check
-    if target_user.is_private and current_user.id != user_id:
-        from models import FriendRequest
-        is_friend = db.query(FriendRequest).filter(
-            FriendRequest.status == "accepted",
-            or_(
-                (FriendRequest.requester_id == current_user.id) & (FriendRequest.recipient_id == user_id),
-                (FriendRequest.requester_id == user_id) & (FriendRequest.recipient_id == current_user.id)
-            )
-        ).first() is not None
-        if not is_friend:
-            return []
-    
-    # Get distinct post IDs the user has commented on, most recent first
-    commented_post_ids = [row[0] for row in db.query(Comment.post_id).filter(
-        Comment.author_id == user_id,
-        or_(Comment.is_hidden == False, Comment.is_hidden == None)
-    ).group_by(Comment.post_id).order_by(
-        func.max(Comment.timestamp).desc()
-    ).offset(offset).limit(limit).all()]
-    
-    print(f"💬 [Profile Replies] {user_id[:8]}: found {len(commented_post_ids)} commented post IDs")
-    
-    if not commented_post_ids:
-        return []
-    
-    # Fetch posts (handle NULL is_hidden correctly)
-    posts = db.query(Post).filter(
-        Post.id.in_(commented_post_ids),
-        or_(Post.is_hidden == False, Post.is_hidden == None)
-    ).all()
-    
-    # Maintain order
-    post_map = {p.id: p for p in posts}
-    ordered_posts = [post_map[pid] for pid in commented_post_ids if pid in post_map]
-    
-    # Batch stats
-    stats_map = get_batch_post_stats(db, [p.id for p in ordered_posts], current_user.id)
-    media_map = get_batch_post_media(request, db, [p.id for p in ordered_posts])
-    
-    result = []
-    for post in ordered_posts:
-        author = db.query(User).filter(User.id == post.author_id).first()
-        stats = stats_map.get(post.id, {"likes": 0, "comments": 0, "reposts": 0, "is_liked": False, "is_reposted": False})
-        
-        result.append(PostResponse(
-            id=post.id,
-            author_id=post.author_id,
-            author_username=author.username if author else "Unknown",
-            author_avatar=build_full_url(request, author.avatar_path) if author else None,
-            content=decrypt_text(post.content),
-            image_url=build_full_url(request, post.image_url),
-            media=media_map.get(post.id),
-            timestamp=post.timestamp,
-            edited_at=post.edited_at,
-            likes=stats["likes"],
-            comments=stats["comments"],
-            reposts=stats["reposts"],
-            view_count=post.view_count or 0,
-            is_local=post.is_local,
-            is_liked=stats["is_liked"],
-            is_reposted=stats["is_reposted"],
-            visibility=post.visibility or "public",
-            post_type=post.post_type,
-            room_id=post.room_id,
-            mesh_origin=post.mesh_origin or False,
-            location_name=getattr(post, 'location_name', None),
-            like_preview_user_ids=stats.get("like_preview_user_ids"),
-            comment_preview_user_ids=stats.get("comment_preview_user_ids"),
-            **get_voice_and_collab_fields(post, db, author=author)
-        ))
-    
-    print(f"💬 [Profile Replies] {user_id[:8]}: {len(result)} replied-to posts")
     return result
 
 
@@ -2678,120 +1840,3 @@ def get_post_transcript(
         "language": post.transcript_language,
         "text": post.transcript_text
     }
-
-
-# ==================== RAVEN SHOT (Social Map Feed) ====================
-
-@router.get("/raven-shot/feed", response_model=List[PostResponse])
-def get_raven_shot_feed(
-    request: Request,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-    limit: int = 100,
-    latitude: Optional[float] = None,
-    longitude: Optional[float] = None
-):
-    """Get posts opted-in to Raven Shot (social map display).
-    
-    Returns posts where:
-    - show_on_raven_shot == True
-    - latitude/longitude are present
-    - Visibility is public OR author is a friend
-    - Not from blocked/hidden users
-    """
-    from routers.blocks import get_blocked_user_ids
-    from models import HiddenContent, FriendRequest
-    
-    blocked_ids = get_blocked_user_ids(db, current_user.id)
-    hidden_post_ids = [h.object_id for h in db.query(HiddenContent.object_id).filter(
-        HiddenContent.user_id == current_user.id, HiddenContent.object_type == "post"
-    ).all()]
-    
-    # Get friend IDs for visibility filtering
-    sent_friends = db.query(FriendRequest.recipient_id).filter(
-        FriendRequest.requester_id == current_user.id,
-        FriendRequest.status == "accepted"
-    ).all()
-    received_friends = db.query(FriendRequest.requester_id).filter(
-        FriendRequest.recipient_id == current_user.id,
-        FriendRequest.status == "accepted"
-    ).all()
-    friend_ids = set([f[0] for f in sent_friends] + [f[0] for f in received_friends])
-    
-    # Base query: posts with location that opted-in to Raven Shot
-    query = db.query(Post).filter(
-        Post.show_on_raven_shot == True,
-        Post.latitude.isnot(None),
-        Post.longitude.isnot(None),
-        or_(Post.is_hidden == False, Post.is_hidden == None)
-    )
-    
-    # Exclude blocked users
-    if blocked_ids:
-        query = query.filter(~Post.author_id.in_(blocked_ids))
-    
-    # Exclude hidden posts
-    if hidden_post_ids:
-        query = query.filter(~Post.id.in_(hidden_post_ids))
-    
-    # Visibility filter: public OR friends-only from actual friends OR own posts
-    query = query.filter(
-        or_(
-            Post.visibility == 'public',
-            Post.visibility == 'local',
-            Post.visibility.is_(None),
-            and_(Post.visibility == 'friends', Post.author_id.in_(friend_ids)),
-            Post.author_id == current_user.id  # Always show own posts
-        )
-    )
-    
-    # Order by newest first, limit results
-    posts = query.order_by(Post.timestamp.desc()).limit(limit).all()
-    
-    if not posts:
-        return []
-    
-    # Batch load stats
-    post_ids = [p.id for p in posts]
-    batch_stats = get_batch_post_stats(db, post_ids, current_user.id)
-    batch_media = get_batch_post_media(request, db, post_ids)
-    
-    result = []
-    for post in posts:
-        author = db.query(User).filter(User.id == post.author_id).first()
-        stats = batch_stats.get(post.id, {
-            "likes": 0, "comments": 0, "reposts": 0,
-            "is_liked": False, "is_reposted": False,
-            "like_preview_user_ids": [], "comment_preview_user_ids": []
-        })
-        
-        result.append(PostResponse(
-            id=post.id,
-            author_id=post.author_id,
-            author_username=author.username if author else "Unknown",
-            author_avatar=build_full_url(request, author.avatar_path) if author else None,
-            content=decrypt_text(post.content),
-            image_url=build_full_url(request, post.image_url),
-            media=batch_media.get(post.id),
-            timestamp=post.timestamp,
-            edited_at=post.edited_at,
-            likes=stats["likes"],
-            comments=stats["comments"],
-            reposts=stats["reposts"],
-            view_count=post.view_count or 0,
-            is_local=post.is_local,
-            is_liked=stats["is_liked"],
-            is_reposted=stats["is_reposted"],
-            visibility=post.visibility or "public",
-            post_type=post.post_type,
-            room_id=post.room_id,
-            mesh_origin=post.mesh_origin or False,
-            location_name=getattr(post, 'location_name', None),
-            show_on_raven_shot=True,
-            latitude=post.latitude,
-            longitude=post.longitude,
-            **get_voice_and_collab_fields(post, db, author=author)
-        ))
-    
-    print(f"📍 [RavenShot] Returning {len(result)} posts for map")
-    return result

@@ -23,48 +23,10 @@ from database import get_db
 from models import User, AudioRoom, AudioRoomParticipant, AudioRoomRequest, AudioRoomAsset, Post
 from routers.users import get_current_user
 from encryption import decrypt_text
-from ws_manager import ws_manager  # singleton — needed for real-time fan-out
-from services.livekit_service import get_livekit_control  # SFU server-side controls
 import secrets
 import string
 
 router = APIRouter(prefix="/api/rooms", tags=["audio-rooms"])
-
-
-# ──────────────────────────────────────────────────────────────────────────
-# REAL-TIME FAN-OUT
-#
-# Every room state-change endpoint (join / leave / raise-hand / role / mute /
-# kick / end / mute-all) uses this helper to push an instant event to every
-# CURRENT participant via the existing /ws/inbox WebSocket. iOS subscribes
-# once, pivots on `event.type == "room_event"`, and refreshes its room state
-# without waiting up to 5 s for the next poll.
-#
-# Hidden ("ghost") participants are excluded from broadcasts about themselves
-# but DO receive other participants' events (so their UI stays fresh).
-# ──────────────────────────────────────────────────────────────────────────
-async def _broadcast_room_event(
-    db: Session,
-    room_id: str,
-    payload: dict,
-    *,
-    exclude_user_id: Optional[str] = None,
-):
-    """Push a `room_event` envelope to every current participant of a room."""
-    try:
-        rows = db.query(AudioRoomParticipant.user_id).filter(
-            AudioRoomParticipant.room_id == room_id,
-            AudioRoomParticipant.left_at.is_(None),
-        ).all()
-        recipients = [r[0] for r in rows if r[0] != exclude_user_id]
-        if not recipients:
-            return
-        for uid in recipients:
-            await ws_manager.notify(uid, payload)
-    except Exception as e:
-        # Best-effort — don't fail the host action just because WS fan-out
-        # didn't reach someone. Polling fallback still catches them.
-        print(f"⚠️ [Rooms] WS fan-out failed for room {room_id[:8]}: {e}")
 
 # ==================== ANONYMOUS NAMES ====================
 
@@ -188,7 +150,7 @@ class RoomDetailResponse(BaseModel):
 # ==================== ROOM CRUD ====================
 
 @router.post("", response_model=RoomResponse)
-async def create_room(
+def create_room(
     req: CreateRoomRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -259,60 +221,6 @@ async def create_room(
     db.refresh(room)
     
     print(f"🎙️ Audio room created: '{room.title}' by {current_user.username} (slug: {share_slug})")
-    
-    # 🔔 Notify bell subscribers (audio room notifications)
-    from models import UserNotificationSubscription, Notification
-    bell_subs = db.query(UserNotificationSubscription).filter(
-        UserNotificationSubscription.target_id == current_user.id,
-        UserNotificationSubscription.notify_audio_rooms == True
-    ).all()
-    
-    if bell_subs:
-        from services.apns_service import get_apns_service, APNsService
-        import json
-        apns = get_apns_service()
-        host_name = get_user_display_name(current_user)
-        
-        for sub in bell_subs:
-            # Create in-app notification
-            notif_data = json.dumps({
-                "roomId": room.id,
-                "hostId": current_user.id,
-                "hostUsername": current_user.username,
-                "roomTitle": room.title
-            })
-            notification = Notification(
-                user_id=sub.subscriber_id,
-                type="audio_room",
-                data=notif_data,
-                is_read=False
-            )
-            db.add(notification)
-            
-            # Send push
-            subscriber_user = db.query(User).filter(User.id == sub.subscriber_id).first()
-            if subscriber_user and subscriber_user.push_token and subscriber_user.push_platform == "ios":
-                prefs = APNsService.should_send_push(subscriber_user, "audio_room")
-                if prefs["allowed"]:
-                    try:
-                        push_result = await apns.send_audio_room_notification(
-                            device_token=subscriber_user.push_token,
-                            host_name=host_name,
-                            room_title=room.title,
-                            room_id=room.id,
-                            host_id=current_user.id,
-                            badge=APNsService.get_unread_badge_count(db, sub.subscriber_id)
-                        )
-                        print(f"🔔 [PUSH] event=audio_room sender={current_user.id[:8]} "
-                              f"receiver={sub.subscriber_id[:8]} status={'sent' if push_result else 'failed'}")
-                    except Exception as e:
-                        print(f"🔔 [PUSH] event=audio_room sender={current_user.id[:8]} "
-                              f"receiver={sub.subscriber_id[:8]} status=error reason={e}")
-                else:
-                    print(f"🔔 [PUSH] event=audio_room receiver={sub.subscriber_id[:8]} status=skipped reason=disabled")
-        
-        db.commit()
-        print(f"🔔 Notified {len(bell_subs)} audio room subscribers for @{current_user.username}")
     
     return RoomResponse(
         id=room.id,
@@ -694,26 +602,21 @@ def get_room(
 # ==================== JOIN/LEAVE ====================
 
 @router.post("/{room_id}/join", response_model=ParticipantResponse)
-async def join_room(
+def join_room(
     room_id: str,
     req: JoinRoomRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Join an audio room."""
-
+    
     room = db.query(AudioRoom).filter(AudioRoom.id == room_id).first()
     if not room:
         raise HTTPException(status_code=404, detail="Room not found")
-
+    
     if not room.is_live:
         raise HTTPException(status_code=400, detail="Room has ended")
-
-    # 🔒 Enforce is_locked — was settable via /settings but never checked
-    # at the join boundary, so "lock room" was a no-op host control.
-    if getattr(room, "is_locked", False) and room.host_user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Room is locked by the host")
-
+    
     if room.participant_count >= room.max_participants:
         raise HTTPException(status_code=400, detail="Room is full")
     
@@ -761,24 +664,9 @@ async def join_room(
     db.refresh(participant)
     
     print(f"👤 {current_user.username} joined room '{room.title}' ({display_mode})")
-
-    # ⚡ REAL-TIME WS FAN-OUT — was a TODO, now wired.
-    # Push a "room_event" envelope to every other current participant.
-    # Clients subscribed via /ws/inbox already (for messages) reuse the
-    # same channel and pivot on `type == "room_event"` to refresh the
-    # room state instantly instead of waiting up to 5 s for the poll.
-    if display_mode != "hidden":
-        await _broadcast_room_event(db, room_id, {
-            "type": "room_event",
-            "event": "join",
-            "room_id": room_id,
-            "user_id": current_user.id,
-            "display_name": (participant.anon_display_name if display_mode == "anonymous"
-                             else get_user_display_name(current_user)),
-            "role": participant.role,
-            "is_muted": participant.is_muted,
-        }, exclude_user_id=current_user.id)
-
+    
+    # TODO: Broadcast WebSocket event
+    
     if participant.display_mode == "anonymous":
         display_name = participant.anon_display_name
         avatar_url = f"/avatars/anonymous/{participant.anon_avatar_index}.png"
@@ -801,109 +689,91 @@ async def join_room(
 
 
 @router.post("/{room_id}/leave")
-async def leave_room(
+def leave_room(
     room_id: str,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Leave an audio room."""
-
+    
     participant = db.query(AudioRoomParticipant).filter(
         AudioRoomParticipant.room_id == room_id,
         AudioRoomParticipant.user_id == current_user.id,
         AudioRoomParticipant.left_at.is_(None)
     ).first()
-
+    
     if not participant:
         raise HTTPException(status_code=404, detail="Not in room")
-
+    
     room = db.query(AudioRoom).filter(AudioRoom.id == room_id).first()
-
+    
     participant.left_at = datetime.utcnow()
-
+    
     # Bug 13 fix: only decrement count for visible participants (not ghost/hidden)
     if participant.display_mode != "hidden":
         room.participant_count = max(0, room.participant_count - 1)
-
+    
     # Auto-close room if empty OR if host leaves
-    room_ended = False
     if room.participant_count == 0 or participant.role == "host":
         room.is_live = False
         room.ended_at = datetime.utcnow()
-        room_ended = True
-
+        
         # Bug 9 fix: mark ALL remaining participants as left when room closes
         db.query(AudioRoomParticipant).filter(
             AudioRoomParticipant.room_id == room_id,
             AudioRoomParticipant.left_at.is_(None)
         ).update({"left_at": datetime.utcnow()})
-
+        
         # Hide the auto-created room post from feeds
         room_post = db.query(Post).filter(Post.room_id == room_id).first()
         if room_post:
             room_post.is_hidden = True
         print(f"🔴 Room '{room.title}' ended (empty or host left)")
-
+    
     db.commit()
-
+    
     print(f"👋 {current_user.username} left room '{room.title}'")
-
-    # ⚡ Real-time fan-out + LiveKit cleanup
-    if room_ended:
-        # Tell every other participant the room is dead RIGHT NOW.
-        await _broadcast_room_event(db, room_id, {
-            "type": "room_event",
-            "event": "ended",
-            "room_id": room_id,
-        })
-        # Disconnect everyone from the SFU. Without this, clients keep
-        # streaming audio into a phantom room until they poll and notice.
-        await get_livekit_control().delete_room(room_id)
-    elif participant.display_mode != "hidden":
-        await _broadcast_room_event(db, room_id, {
-            "type": "room_event",
-            "event": "leave",
-            "room_id": room_id,
-            "user_id": current_user.id,
-        }, exclude_user_id=current_user.id)
-
-    return {"success": True, "room_ended": room_ended}
+    
+    # TODO: Broadcast WebSocket event
+    
+    return {"success": True}
 
 
 # ==================== RAISE HAND ====================
 
 @router.post("/{room_id}/raise-hand")
-async def raise_hand(
+def raise_hand(
     room_id: str,
     req: RaiseHandRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Raise or lower hand to request speaking."""
-
+    
     participant = db.query(AudioRoomParticipant).filter(
         AudioRoomParticipant.room_id == room_id,
         AudioRoomParticipant.user_id == current_user.id,
         AudioRoomParticipant.left_at.is_(None)
     ).first()
-
+    
     if not participant:
         raise HTTPException(status_code=404, detail="Not in room")
-
+    
     room = db.query(AudioRoom).filter(AudioRoom.id == room_id).first()
-
+    
     if not room.allow_raise_hand:
         raise HTTPException(status_code=400, detail="Raise hand not allowed in this room")
-
+    
     participant.is_hand_raised = req.raised
-
+    
     if req.raised:
+        # Create request record for host to see
         existing_request = db.query(AudioRoomRequest).filter(
             AudioRoomRequest.room_id == room_id,
             AudioRoomRequest.user_id == current_user.id,
             AudioRoomRequest.status == "pending"
         ).first()
-
+        
         if not existing_request:
             request = AudioRoomRequest(
                 room_id=room_id,
@@ -912,27 +782,19 @@ async def raise_hand(
             )
             db.add(request)
     else:
+        # Cancel pending request
         db.query(AudioRoomRequest).filter(
             AudioRoomRequest.room_id == room_id,
             AudioRoomRequest.user_id == current_user.id,
             AudioRoomRequest.status == "pending"
         ).update({"status": "cancelled"})
-
+    
     db.commit()
-
+    
     print(f"✋ {current_user.username} {'raised' if req.raised else 'lowered'} hand in room '{room.title}'")
-
-    # ⚡ Push to host(s) so the raise-hand badge appears instantly instead
-    # of waiting up to 5 s for the next /requests poll.
-    await _broadcast_room_event(db, room_id, {
-        "type": "room_event",
-        "event": "hand_raised" if req.raised else "hand_lowered",
-        "room_id": room_id,
-        "user_id": current_user.id,
-        "display_name": (participant.anon_display_name if participant.display_mode == "anonymous"
-                         else get_user_display_name(current_user)),
-    })
-
+    
+    # TODO: Broadcast WebSocket event
+    
     return {"success": True, "hand_raised": req.raised}
 
 
@@ -989,7 +851,7 @@ def get_requests(
 
 
 @router.post("/{room_id}/requests/{user_id}/accept")
-async def accept_request(
+def accept_request(
     room_id: str,
     user_id: str,
     current_user: User = Depends(get_current_user),
@@ -1034,27 +896,18 @@ async def accept_request(
         participant.role = "speaker"
         participant.is_hand_raised = False
         participant.is_muted = False
-
+    
     db.commit()
-
+    
     print(f"✅ Request accepted: {user_id} promoted to speaker")
-
-    # ⚡ Push role-change to everyone — the promoted user gets it too so
-    # iOS can flip the publish permission without a 5-s poll lag.
-    await _broadcast_room_event(db, room_id, {
-        "type": "room_event",
-        "event": "role_changed",
-        "room_id": room_id,
-        "user_id": user_id,
-        "new_role": "speaker",
-        "is_muted": False,
-    })
-
+    
+    # TODO: Broadcast WebSocket event
+    
     return {"success": True}
 
 
 @router.post("/{room_id}/requests/{user_id}/decline")
-async def decline_request(
+def decline_request(
     room_id: str,
     user_id: str,
     current_user: User = Depends(get_current_user),
@@ -1090,25 +943,16 @@ async def decline_request(
     ).update({"is_hand_raised": False})
     
     db.commit()
-
+    
     print(f"❌ Request declined: {user_id}")
-
-    # Tell the requester their hand was lowered (UX clarity)
-    await _broadcast_room_event(db, room_id, {
-        "type": "room_event",
-        "event": "hand_lowered",
-        "room_id": room_id,
-        "user_id": user_id,
-        "by_host": True,
-    })
-
+    
     return {"success": True}
 
 
 # ==================== HOST CONTROLS ====================
 
 @router.post("/{room_id}/role/{user_id}")
-async def change_role(
+def change_role(
     room_id: str,
     user_id: str,
     req: ChangeRoleRequest,
@@ -1116,49 +960,34 @@ async def change_role(
     db: Session = Depends(get_db)
 ):
     """Change a participant's role (host only)."""
-
+    
+    # Check if current user is host
     host_participant = db.query(AudioRoomParticipant).filter(
         AudioRoomParticipant.room_id == room_id,
         AudioRoomParticipant.user_id == current_user.id,
         AudioRoomParticipant.role == "host"
     ).first()
-
+    
     if not host_participant:
         raise HTTPException(status_code=403, detail="Only host can change roles")
-
+    
     if req.role not in ["speaker", "listener", "cohost"]:
         raise HTTPException(status_code=400, detail="Invalid role")
-
+    
     participant = db.query(AudioRoomParticipant).filter(
         AudioRoomParticipant.room_id == room_id,
         AudioRoomParticipant.user_id == user_id,
         AudioRoomParticipant.left_at.is_(None)
     ).first()
-
+    
     if not participant:
         raise HTTPException(status_code=404, detail="Participant not found")
-
+    
     participant.role = req.role
     if req.role == "listener":
         participant.is_muted = True
-        # Force-mute on the SFU when demoting to listener
-        await get_livekit_control().mute_participant(room_id, user_id, muted=True)
-
+    
     db.commit()
-
-    # ⚡ Real-time fan-out — instant role change everywhere.
-    # Note: clients also need a fresh LiveKit JWT when role changes
-    # (publish permission is encoded in the token), so the iOS handler
-    # of this event will re-fetch via /api/livekit/token.
-    await _broadcast_room_event(db, room_id, {
-        "type": "room_event",
-        "event": "role_changed",
-        "room_id": room_id,
-        "user_id": user_id,
-        "new_role": req.role,
-        "is_muted": participant.is_muted,
-        "needs_token_refresh": True,  # publish grant changed
-    })
     
     print(f"🔄 Role changed: {user_id} → {req.role}")
     
@@ -1170,239 +999,158 @@ class MuteRequest(BaseModel):
 
 
 @router.post("/{room_id}/mute/{user_id}")
-async def mute_participant(
+def mute_participant(
     room_id: str,
     user_id: str,
     req: MuteRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Mute/unmute a participant (host only, or self).
-
-    Server now actually enforces the mute on the LiveKit SFU — previously
-    the DB row flipped but the user's mic kept broadcasting until their
-    own client polled and noticed.
-    """
-
+    """Mute/unmute a participant (host only, or self)."""
+    
     is_self = user_id == current_user.id
-
+    
     if not is_self:
+        # Check if current user is host or cohost
         host_participant = db.query(AudioRoomParticipant).filter(
             AudioRoomParticipant.room_id == room_id,
             AudioRoomParticipant.user_id == current_user.id,
             AudioRoomParticipant.role.in_(["host", "cohost"])
         ).first()
-
+        
         if not host_participant:
             raise HTTPException(status_code=403, detail="Only host/cohost can mute others")
-
+    
     participant = db.query(AudioRoomParticipant).filter(
         AudioRoomParticipant.room_id == room_id,
         AudioRoomParticipant.user_id == user_id,
         AudioRoomParticipant.left_at.is_(None)
     ).first()
-
+    
     if not participant:
         raise HTTPException(status_code=404, detail="Participant not found")
-
+    
     participant.is_muted = req.muted
     db.commit()
-
+    
     print(f"🔇 {user_id} {'muted' if req.muted else 'unmuted'}")
-
-    # 🛡️ Force-mute on the SFU when the host (not self) silences someone.
-    # Self-mute doesn't need this — the muting client already toggles its
-    # own mic via LiveKit's local API.
-    if not is_self and req.muted:
-        await get_livekit_control().mute_participant(room_id, user_id, muted=True)
-
-    # ⚡ Real-time notify
-    await _broadcast_room_event(db, room_id, {
-        "type": "room_event",
-        "event": "muted" if req.muted else "unmuted",
-        "room_id": room_id,
-        "user_id": user_id,
-        "by": current_user.id,
-    })
-
+    
     return {"success": True, "is_muted": req.muted}
 
 
 @router.post("/{room_id}/kick/{user_id}")
-async def kick_participant(
+def kick_participant(
     room_id: str,
     user_id: str,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Kick a participant from room (host only).
-
-    Server now actually disconnects the kicked user from the LiveKit SFU
-    instead of just flipping `left_at` — their mic dies immediately.
-    """
-
+    """Kick a participant from room (host only)."""
+    
+    # Check if current user is host or cohost
     host_participant = db.query(AudioRoomParticipant).filter(
         AudioRoomParticipant.room_id == room_id,
         AudioRoomParticipant.user_id == current_user.id,
         AudioRoomParticipant.role.in_(["host", "cohost"])
     ).first()
-
+    
     if not host_participant:
         raise HTTPException(status_code=403, detail="Only host/cohost can kick")
-
+    
     # Can't kick the host
     if user_id == db.query(AudioRoom).filter(AudioRoom.id == room_id).first().host_user_id:
         raise HTTPException(status_code=400, detail="Cannot kick the host")
-
+    
     participant = db.query(AudioRoomParticipant).filter(
         AudioRoomParticipant.room_id == room_id,
         AudioRoomParticipant.user_id == user_id,
         AudioRoomParticipant.left_at.is_(None)
     ).first()
-
+    
     if not participant:
         raise HTTPException(status_code=404, detail="Participant not found")
-
-    # 🛡️ Cohost cannot kick another cohost — only the host can demote/kick a cohost.
-    # Without this, two cohosts could initiate a kick war.
-    if (
-        host_participant.role == "cohost"
-        and participant.role == "cohost"
-        and current_user.id != user_id
-    ):
-        raise HTTPException(status_code=403, detail="Cohosts cannot kick other cohosts; only the host can")
-
+    
     participant.left_at = datetime.utcnow()
-
+    
     room = db.query(AudioRoom).filter(AudioRoom.id == room_id).first()
     room.participant_count = max(0, room.participant_count - 1)
-
+    
     db.commit()
-
+    
     print(f"👢 {user_id} kicked from room")
-
-    # Disconnect from the SFU — instant, not on next poll
-    await get_livekit_control().remove_participant(room_id, user_id)
-
-    # Notify everyone
-    await _broadcast_room_event(db, room_id, {
-        "type": "room_event",
-        "event": "kicked",
-        "room_id": room_id,
-        "user_id": user_id,
-        "by": current_user.id,
-    })
-
+    
     return {"success": True}
 
 
 @router.post("/{room_id}/end")
-async def end_room(
+def end_room(
     room_id: str,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """End the room (host only).
-
-    Now actually deletes the LiveKit SFU room — every client gets disconnected
-    instantly, instead of streaming audio into a phantom room until they poll.
-    """
-
+    """End the room (host only)."""
+    
     room = db.query(AudioRoom).filter(AudioRoom.id == room_id).first()
     if not room:
         raise HTTPException(status_code=404, detail="Room not found")
-
+    
     if room.host_user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Only host can end room")
-
+    
     room.is_live = False
     room.ended_at = datetime.utcnow()
-
+    
     # Mark all participants as left
     db.query(AudioRoomParticipant).filter(
         AudioRoomParticipant.room_id == room_id,
         AudioRoomParticipant.left_at.is_(None)
     ).update({"left_at": datetime.utcnow()})
-
+    
     # Hide the auto-created room post from feeds
     room_post = db.query(Post).filter(Post.room_id == room_id).first()
     if room_post:
         room_post.is_hidden = True
-
+    
     db.commit()
-
+    
     print(f"🔴 Room '{room.title}' ended by host")
-
-    # Notify everyone the room is dead — BEFORE deleting the SFU room so
-    # the recipient list is still in our DB (delete_room itself is best-
-    # effort). Order: notify (uses DB), then SFU teardown.
-    await _broadcast_room_event(db, room_id, {
-        "type": "room_event",
-        "event": "ended",
-        "room_id": room_id,
-        "by": current_user.id,
-    })
-    await get_livekit_control().delete_room(room_id)
-
+    
     return {"success": True}
 
 
 # ==================== MUTE ALL / SETTINGS ====================
 
 @router.post("/{room_id}/mute-all")
-async def mute_all_speakers(
+def mute_all_speakers(
     room_id: str,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Mute all speakers in the room (host/cohost only).
-
-    Now also force-mutes them on the LiveKit SFU.
-    """
-
+    """Mute all speakers in the room (host/cohost only)."""
+    
+    # Check if current user is host or cohost
     host_participant = db.query(AudioRoomParticipant).filter(
         AudioRoomParticipant.room_id == room_id,
         AudioRoomParticipant.user_id == current_user.id,
         AudioRoomParticipant.role.in_(["host", "cohost"]),
         AudioRoomParticipant.left_at.is_(None)
     ).first()
-
+    
     if not host_participant:
         raise HTTPException(status_code=403, detail="Only host/cohost can mute all")
-
-    # Snapshot the targets BEFORE the bulk update so we can call LiveKit
-    # for each one (the .update() returns the count, not the rows).
-    targets = db.query(AudioRoomParticipant).filter(
+    
+    # Mute all speakers (excluding host)
+    count = db.query(AudioRoomParticipant).filter(
         AudioRoomParticipant.room_id == room_id,
         AudioRoomParticipant.left_at.is_(None),
         AudioRoomParticipant.role.in_(["speaker", "cohost"]),
         AudioRoomParticipant.user_id != current_user.id,
         AudioRoomParticipant.is_muted == False
-    ).all()
-    target_ids = [p.user_id for p in targets]
-
-    count = db.query(AudioRoomParticipant).filter(
-        AudioRoomParticipant.id.in_([p.id for p in targets])
-    ).update({"is_muted": True}, synchronize_session=False) if target_ids else 0
-
+    ).update({"is_muted": True})
+    
     db.commit()
-
+    
     print(f"🔇 Muted {count} speakers in room {room_id[:8]}")
-
-    # 🛡️ SFU enforcement — without this, "Mute all" was theatre.
-    lk = get_livekit_control()
-    for uid in target_ids:
-        await lk.mute_participant(room_id, uid, muted=True)
-
-    # ⚡ Real-time fan-out
-    await _broadcast_room_event(db, room_id, {
-        "type": "room_event",
-        "event": "mute_all",
-        "room_id": room_id,
-        "muted_user_ids": target_ids,
-        "by": current_user.id,
-    })
-
     return {"success": True, "muted_count": count}
 
 

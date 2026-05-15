@@ -58,9 +58,6 @@ final class CrashGuard {
     private var breadcrumbs: [Breadcrumb] = []
     private let queue = DispatchQueue(label: "com.raven.crashguard", qos: .utility)
     private let sessionId = UUID().uuidString
-    /// Public read-only accessor for the sessionId — used by DiagnosticsService
-    /// to correlate MetricKit reports back to in-app breadcrumbs.
-    var sessionIdString: String { sessionId }
     private var memoryWarningObserver: NSObjectProtocol?
     
     private init() {}
