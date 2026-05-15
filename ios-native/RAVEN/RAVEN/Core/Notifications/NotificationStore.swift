@@ -88,12 +88,34 @@ final class NotificationStore {
     }
     
     // MARK: - Periodic Sync Timer
+
+    /// 🔋 BUG FIX (2026-05-10): the previous version was a fire-and-
+    /// forget `Task { while true { … } }` with NO `[weak self]`, NO
+    /// `Task.isCancelled` check, and NO stored handle to cancel.
+    /// Result: a singleton that retained itself forever, and calling
+    /// `startPeriodicSync` twice spawned a second loop that ran in
+    /// parallel with the first — doubling the sync rate every call.
+    /// New: cancel any prior loop, store the new handle so logout /
+    /// `stopPeriodicSync()` can tear it down, and check
+    /// `Task.isCancelled` so the loop exits cleanly when its handle
+    /// is cancelled.
+    private var syncTask: Task<Void, Never>?
+
     func startPeriodicSync() {
-        Task {
-            while true {
-                try? await Task.sleep(nanoseconds: UInt64(syncInterval * 1_000_000_000))
-                await sync()
+        syncTask?.cancel()
+        syncTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: UInt64(self.syncInterval * 1_000_000_000))
+                if Task.isCancelled { break }
+                await self.sync()
             }
         }
+    }
+
+    /// Stop the periodic sync loop (called from logout / app teardown).
+    func stopPeriodicSync() {
+        syncTask?.cancel()
+        syncTask = nil
     }
 }

@@ -9,9 +9,10 @@ import Foundation
 
 /// Trust state for friend devices
 enum TrustState: String, Codable {
-    case pending   // Pairing initiated but not verified
-    case trusted   // Verified and trusted for mesh messaging
-    case revoked   // Explicitly untrusted (key change or manual revoke)
+    case pending     // Pairing initiated but not verified
+    case unverified  // First-seen via TOFU; awaits user Safety-Number confirmation (2026-05-10).
+    case trusted     // Verified and trusted for mesh messaging
+    case revoked     // Explicitly untrusted (key change or manual revoke)
 }
 
 /// Represents a friend's device with cryptographic identity

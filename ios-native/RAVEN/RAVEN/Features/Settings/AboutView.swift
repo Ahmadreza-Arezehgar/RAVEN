@@ -19,8 +19,8 @@ struct AboutView: View {
                         .background(.ultraThinMaterial)
                         .clipShape(RoundedRectangle(cornerRadius: 24))
                         .overlay(
-                            RoundedRectangle(cornerRadius: 24)
-                                .stroke(Color.white.opacity(0.22), lineWidth: 0.8)
+                            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                                .stroke(Color.primary.opacity(0.12), lineWidth: 0.8)
                         )
                         .accessibilityLabel("RAVEN app icon")
                     
@@ -218,8 +218,8 @@ struct TOSSectionView: View {
             .background(.ultraThinMaterial)
             .clipShape(RoundedRectangle(cornerRadius: 12))
             .overlay(
-                RoundedRectangle(cornerRadius: 12)
-                    .stroke(Color.white.opacity(0.15), lineWidth: 0.5)
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Color.primary.opacity(0.10), lineWidth: 0.5)
             )
         }
         .buttonStyle(.plain)

@@ -26,6 +26,13 @@ class DeepLinkRouter {
         case inbox
         case audioRoom(slug: String)  // raven://room/{slug} - audio room deep link
         case post(postId: String)     // FIX: Navigate to post from like/comment notifications
+        /// Privacy pane inside Settings. Used by `contact_shared`
+        /// notifications so the user can re-confirm or flip the
+        /// `allow_contact_share` toggle in one tap.
+        case privacySettings
+        /// The signed-in user's own profile. Used by `profile_view` and
+        /// related notifications where we don't have a peer id to show.
+        case myProfile
     }
     
     // MARK: - Navigate (alias for route)
@@ -188,6 +195,16 @@ struct DeepLinkHandler: ViewModifier {
         case .post(let postId):
             #if DEBUG
             print("[DeepLink] Navigate to post: \(postId)")
+            #endif
+
+        case .privacySettings:
+            #if DEBUG
+            print("[DeepLink] Navigate to privacy settings")
+            #endif
+
+        case .myProfile:
+            #if DEBUG
+            print("[DeepLink] Navigate to own profile")
             #endif
         }
     }

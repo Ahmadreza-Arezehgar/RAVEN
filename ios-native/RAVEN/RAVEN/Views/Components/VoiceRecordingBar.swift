@@ -396,7 +396,9 @@ struct VoiceRecordingBar: View {
     // MARK: - Recording Logic
 
     func startRecording() {
-        AVAudioSession.sharedInstance().requestRecordPermission { granted in
+        // iOS 17+ surface; AVAudioSession's requestRecordPermission was deprecated
+        // in favour of AVAudioApplication.
+        AVAudioApplication.requestRecordPermission { granted in
             guard granted else {
                 #if DEBUG
                 print("🎤 Microphone permission denied")

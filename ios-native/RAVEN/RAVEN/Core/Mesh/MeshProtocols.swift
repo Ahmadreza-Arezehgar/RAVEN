@@ -47,6 +47,12 @@ protocol MeshTransportProtocol: AnyObject {
     
     /// Gossip a ServerReceipt to nearby peers (proves message is on server)
     func gossipReceipt(_ receipt: ServerReceipt) async
+    
+    /// Send bulk data via best available transport (MPC for large payloads, BLE for small)
+    func sendBulkData(_ data: Data, to peerDeviceId: String) async throws
+    
+    /// Send an envelope to a specific peer using the optimal transport
+    func sendViaBestTransport(_ envelope: MeshEnvelope, to peerDeviceId: String) async
 }
 
 // MARK: - Network Status Providing

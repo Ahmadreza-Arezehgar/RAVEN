@@ -26,7 +26,12 @@ struct Conversation: Identifiable, Codable, Hashable {
     var isRequestSender: Bool?
     var pendingSentCount: Int?
     var requestId: String?
-    
+
+    // Telegram-style archive (Migration 35) — when true, this row is
+    // hidden from the main inbox and surfaced only inside the
+    // "Archived" folder pill at the top of the list.
+    var isArchived: Bool
+
     var id: String { roomId }
     
     // Hash/Equatable
@@ -48,7 +53,8 @@ struct Conversation: Identifiable, Codable, Hashable {
         lhs.requestStatus == rhs.requestStatus &&
         lhs.isRequestSender == rhs.isRequestSender &&
         lhs.pendingSentCount == rhs.pendingSentCount &&
-        lhs.requestId == rhs.requestId
+        lhs.requestId == rhs.requestId &&
+        lhs.isArchived == rhs.isArchived
     }
     
     func hash(into hasher: inout Hasher) {
@@ -69,6 +75,7 @@ struct Conversation: Identifiable, Codable, Hashable {
         hasher.combine(isRequestSender)
         hasher.combine(pendingSentCount)
         hasher.combine(requestId)
+        hasher.combine(isArchived)
     }
     
     // CodingKeys - Server uses camelCase for most fields
@@ -92,6 +99,7 @@ struct Conversation: Identifiable, Codable, Hashable {
         case isRequestSender  // Server sends "isRequestSender" (camelCase)
         case pendingSentCount // Server sends "pendingSentCount" (camelCase)
         case requestId        // Server sends "requestId" (camelCase)
+        case isArchived       // Server sends "is_archived" -> decoder converts to "isArchived"
     }
     
     // Custom init to handle optional isGroup from server
@@ -115,6 +123,7 @@ struct Conversation: Identifiable, Codable, Hashable {
         isRequestSender = try container.decodeIfPresent(Bool.self, forKey: .isRequestSender)
         pendingSentCount = try container.decodeIfPresent(Int.self, forKey: .pendingSentCount)
         requestId = try container.decodeIfPresent(String.self, forKey: .requestId)
+        isArchived = try container.decodeIfPresent(Bool.self, forKey: .isArchived) ?? false
     }
     
     // Manual init for local creation
@@ -123,7 +132,8 @@ struct Conversation: Identifiable, Codable, Hashable {
          isGroup: Bool = false, groupName: String? = nil, groupAvatarUrl: String? = nil,
          isChannel: Bool = false, channelUsername: String? = nil, channelType: String? = nil,
          requestStatus: String? = nil, isRequestSender: Bool? = nil,
-         pendingSentCount: Int? = nil, requestId: String? = nil) {
+         pendingSentCount: Int? = nil, requestId: String? = nil,
+         isArchived: Bool = false) {
         self.roomId = roomId
         self.peer = peer
         self.lastMessage = lastMessage
@@ -141,6 +151,7 @@ struct Conversation: Identifiable, Codable, Hashable {
         self.isRequestSender = isRequestSender
         self.pendingSentCount = pendingSentCount
         self.requestId = requestId
+        self.isArchived = isArchived
     }
     
     /// Display name: group name for groups, peer name for 1:1, channel name
@@ -237,6 +248,11 @@ struct Conversation: Identifiable, Codable, Hashable {
             case .text:
                 if let c = content {
                     if c.looksEncrypted { return "Message" }
+                    // Mistyped contact-card stored as text — recognise the
+                    // JSON shape so the inbox row doesn't leak the raw blob.
+                    if ContactSharePayload.looksLikeContactCard(c) {
+                        return "👤 Shared a contact"
+                    }
                     return c
                 }
                 return ""
@@ -256,6 +272,10 @@ struct Conversation: Identifiable, Codable, Hashable {
                 return "📍 Location"
             case .postShare:
                 return "📬 Shared a post"
+            case .contactCard:
+                return "👤 Shared a contact"
+            case .poll:
+                return "📊 Poll"
             case .system:
                 return "📢 Notification"
             }

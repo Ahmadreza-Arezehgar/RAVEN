@@ -6,20 +6,86 @@ import PhotosUI
 // MARK: - Attachment Service (Upload Pipeline)
 actor AttachmentService {
     static let shared = AttachmentService()
-    
+
     /// Posted after a new local message is inserted so ChatView can immediately reload.
     static let messageInserted = Notification.Name("AttachmentService.messageInserted")
-    
+
     private let messageRepo = MessageRepository.shared
     private let fileManager = FileManager.default
     private var baseURL: String { AppConfig.apiBaseURL }
-    
+
+    /// Dedicated session for uploads. The shared NetworkService session uses an
+    /// 8-second request timeout (tuned for small JSON calls), which kills file
+    /// uploads on slow cellular or older iOS devices that fall back to HTTP/2
+    /// after a flaky HTTP/3 negotiation. This session waits for connectivity,
+    /// allows expensive/constrained networks, and gives uploads up to 60s to
+    /// start streaming bytes — `timeoutIntervalForResource` is left at the
+    /// default so a long upload still completes.
+    nonisolated static let uploadSession: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 60
+        config.waitsForConnectivity = true
+        config.allowsCellularAccess = true
+        config.allowsExpensiveNetworkAccess = true
+        config.allowsConstrainedNetworkAccess = true
+        return URLSession(configuration: config)
+    }()
+
     // Local storage directory
     private var attachmentsDirectory: URL {
         let docs = fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let dir = docs.appendingPathComponent("attachments")
         try? fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
+    }
+
+    // MARK: - Retryable upload
+
+    /// Errors that warrant a retry. These are the transient cases we see on
+    /// devices that haven't been updated in a while — older iOS HTTP/3 stacks
+    /// drop connections to Cloud Run, captive portals strip TLS, and cellular
+    /// radios go to sleep mid-request. Without retry the user just sees
+    /// "server is down" and has to redo the whole flow.
+    private static let retryableURLErrorCodes: Set<URLError.Code> = [
+        .timedOut,
+        .cannotConnectToHost,
+        .cannotFindHost,
+        .networkConnectionLost,
+        .notConnectedToInternet,
+        .dnsLookupFailed,
+        .secureConnectionFailed,
+        .resourceUnavailable
+    ]
+
+    /// Performs a multipart file upload with up to 3 attempts and exponential
+    /// backoff (1s, 2s) between them. 5xx responses and transient `URLError`s
+    /// are retried; 4xx is surfaced immediately so we don't loop on a real
+    /// authorization or validation problem.
+    fileprivate static func uploadWithRetry(
+        request: URLRequest,
+        fromFile fileURL: URL,
+        attempts: Int = 3
+    ) async throws -> (Data, HTTPURLResponse) {
+        var lastError: Error?
+        for attempt in 0..<attempts {
+            do {
+                let (data, response) = try await uploadSession.upload(for: request, fromFile: fileURL)
+                guard let http = response as? HTTPURLResponse else {
+                    throw AttachmentError.uploadFailed
+                }
+                if (500...599).contains(http.statusCode), attempt < attempts - 1 {
+                    try await Task.sleep(nanoseconds: UInt64(1 << attempt) * 1_000_000_000)
+                    continue
+                }
+                return (data, http)
+            } catch {
+                lastError = error
+                let retryable = (error as? URLError).map { retryableURLErrorCodes.contains($0.code) } ?? false
+                guard retryable, attempt < attempts - 1 else { throw error }
+                try await Task.sleep(nanoseconds: UInt64(1 << attempt) * 1_000_000_000)
+            }
+        }
+        throw lastError ?? AttachmentError.uploadFailed
     }
     
     // MARK: - Send Image
@@ -437,6 +503,30 @@ actor AttachmentService {
     
     // MARK: - Upload Image (POST /api/uploads/image)
     
+    // MARK: - Public: Avatar Upload
+
+    /// Compress + upload an avatar image to `/api/uploads/image` with the same
+    /// retry/timeout hardening as chat attachments. Returns the CDN URL the
+    /// caller should send to `/api/users/profile-picture`. Used by EditProfileView
+    /// so the avatar flow no longer fails outright the first time the radio
+    /// hiccups on an older iOS device.
+    func uploadAvatarImage(_ image: UIImage) async throws -> String {
+        let data: Data = try await Task.detached(priority: .userInitiated) {
+            let safeImage = image.downscaled(maxDimension: 1024)
+            guard let d = safeImage.jpegData(compressionQuality: 0.8) else {
+                throw AttachmentError.compressionFailed
+            }
+            return d
+        }.value
+
+        let localPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString + ".jpg")
+        try data.write(to: localPath)
+        defer { try? FileManager.default.removeItem(at: localPath) }
+
+        return try await uploadImage(localPath: localPath, clientId: UUID().uuidString)
+    }
+
     private func uploadImage(localPath: URL, clientId: String) async throws -> String {
         let boundary = UUID().uuidString
         
@@ -458,12 +548,8 @@ actor AttachmentService {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
         
-        let (responseData, response) = try await URLSession.shared.upload(for: request, fromFile: tempFile)
-        
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw AttachmentError.uploadFailed
-        }
-        
+        let (responseData, httpResponse) = try await Self.uploadWithRetry(request: request, fromFile: tempFile)
+
         if !(200...299).contains(httpResponse.statusCode) {
             let errorBody = String(data: responseData, encoding: .utf8) ?? "Unknown error"
             #if DEBUG
@@ -471,11 +557,11 @@ actor AttachmentService {
             #endif
             throw AttachmentError.uploadFailed
         }
-        
+
         let result = try JSONDecoder().decode(ChatImageUploadResponse.self, from: responseData)
         return result.imageUrl
     }
-    
+
     // MARK: - Upload Document (POST /api/uploads/file)
     
     private func uploadDocument(localPath: URL, originalFilename: String) async throws -> String {
@@ -500,21 +586,20 @@ actor AttachmentService {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
         
-        let (responseData, response) = try await URLSession.shared.upload(for: request, fromFile: tempFile)
-        
-        guard let httpResponse = response as? HTTPURLResponse,
-              (200...299).contains(httpResponse.statusCode) else {
+        let (responseData, httpResponse) = try await Self.uploadWithRetry(request: request, fromFile: tempFile)
+
+        guard (200...299).contains(httpResponse.statusCode) else {
             let errorBody = String(data: responseData, encoding: .utf8) ?? "Unknown error"
             #if DEBUG
             print("❌ File upload failed: \(errorBody)")
             #endif
             throw AttachmentError.uploadFailed
         }
-        
+
         let result = try JSONDecoder().decode(FileUploadResponse.self, from: responseData)
         return result.fileUrl
     }
-    
+
     // MARK: - Upload Voice (POST /api/uploads/voice)
     
     private func uploadVoice(localPath: URL, originalFilename: String) async throws -> String {
@@ -539,17 +624,16 @@ actor AttachmentService {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
         
-        let (responseData, response) = try await URLSession.shared.upload(for: request, fromFile: tempFile)
-        
-        guard let httpResponse = response as? HTTPURLResponse,
-              (200...299).contains(httpResponse.statusCode) else {
+        let (responseData, httpResponse) = try await Self.uploadWithRetry(request: request, fromFile: tempFile)
+
+        guard (200...299).contains(httpResponse.statusCode) else {
             let errorBody = String(data: responseData, encoding: .utf8) ?? "Unknown error"
             #if DEBUG
             print("❌ Voice upload failed: \(errorBody)")
             #endif
             throw AttachmentError.uploadFailed
         }
-        
+
         let result = try JSONDecoder().decode(VoiceUploadResponse.self, from: responseData)
         return result.voiceUrl
     }
@@ -709,11 +793,11 @@ struct ChatImageUploadResponse: Decodable {
 }
 
 struct FileUploadResponse: Decodable {
-    let fileUrl: String
-    let filename: String
-    let uniqueFilename: String
-    let size: Int
-    let mimeType: String
+    var fileUrl: String
+    var filename: String
+    var uniqueFilename: String
+    var size: Int
+    var mimeType: String
     
     enum CodingKeys: String, CodingKey {
         case fileUrl = "file_url"
@@ -721,6 +805,15 @@ struct FileUploadResponse: Decodable {
         case uniqueFilename = "unique_filename"
         case size
         case mimeType = "mime_type"
+    }
+    
+    /// Memberwise init for programmatic construction (e.g. signed URL uploads)
+    init(fileUrl: String, filename: String = "", uniqueFilename: String = "", size: Int = 0, mimeType: String = "video/mp4") {
+        self.fileUrl = fileUrl
+        self.filename = filename
+        self.uniqueFilename = uniqueFilename
+        self.size = size
+        self.mimeType = mimeType
     }
     
     init(from decoder: Decoder) throws {

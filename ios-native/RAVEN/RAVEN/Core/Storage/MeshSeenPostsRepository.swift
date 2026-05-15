@@ -111,8 +111,12 @@ actor MeshSeenPostsRepository {
             if let row = results.first, let count = row["cnt"] as? Int64 {
                 return Int(count)
             }
-        } catch {}
-        
+        } catch {
+            #if DEBUG
+            print("⚠️ [MeshSeenPosts] count() failed: \(error)")
+            #endif
+        }
+
         return 0
     }
 }

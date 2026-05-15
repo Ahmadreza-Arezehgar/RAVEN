@@ -37,10 +37,20 @@ actor MeshCryptoService {
     private var peerMessageCounts: [String: (count: Int, resetTime: Date)] = [:]
     
     // MARK: - Nonce Tracking (Replay Prevention)
-    
-    private var usedNonces: Set<Data> = []
+
+    /// Per-nonce LRU map (nonce → expiry timestamp). 🔐 BUG FIX
+    /// (2026-05-10): the previous implementation used a plain
+    /// `Set<Data>` and only flushed by `removeAll()` when it exceeded
+    /// 100k entries — opening a wide replay window for any attacker
+    /// who could flood ≥100k nonces in one session. Now we evict
+    /// per-entry by expiry and only fall back to LRU trimming when
+    /// the cap is hit, never zeroing the whole set.
+    private var usedNonces: [Data: Date] = [:]
+    private var nonceInsertionOrder: [Data] = []
     private var nonceCleanupTime: Date = Date()
     private static let nonceLifetime: TimeInterval = 86400 * 7 // 7 days
+    private static let nonceMaxEntries = 100_000
+    private static let nonceCleanupBatchSize = 5_000
     
     // MARK: - Public API: Encryption
     
@@ -99,12 +109,15 @@ actor MeshCryptoService {
         let authenticNonce = sealedBox.nonce.withUnsafeBytes { Data($0) }
         
         // 3. Replay prevention using authentic nonce (NOT the untrusted JSON field)
-        if usedNonces.contains(authenticNonce) {
+        if usedNonces[authenticNonce] != nil {
             throw MeshCryptoError.replayAttackDetected
         }
-        
-        // Mark nonce as used
-        usedNonces.insert(authenticNonce)
+
+        // Mark nonce as used (with per-entry expiry — replaces the
+        // bulk `removeAll()` flush that opened a replay window).
+        let expiry = Date().addingTimeInterval(Self.nonceLifetime)
+        usedNonces[authenticNonce] = expiry
+        nonceInsertionOrder.append(authenticNonce)
         cleanupOldNonces()
         
         // Decode envelope
@@ -198,27 +211,46 @@ actor MeshCryptoService {
                     #endif
                     return false
                 }
-                // Bug 3 fix: SECURITY — verify originalSignerPublicKey belongs to claimed senderId
-                // With TOFU: if we have no trusted devices for this sender, auto-trust the first key.
+                // 🔐 BUG FIX (2026-05-10): TOFU for FIRST contact must
+                // not silently elevate a stranger's relay-supplied key
+                // to `.trusted`. Previously the first-seen key for an
+                // unknown sender was upserted as `.trusted` with
+                // `verifiedAt = now`, opening the door to a mesh MITM:
+                // any attacker on the path could insert their own key
+                // and become the user's "trusted" identity for that
+                // contact. Now we record the key as `.unverified` so
+                // sensitive operations (sealed-sender accept,
+                // identity-rotation accept, etc.) require explicit
+                // user verification via SafetyNumbers / QR before
+                // upgrading to `.trusted`.
                 let origTrusted = await FriendDeviceRepository.shared.getTrustedDevices(forUser: senderId)
-                
+
                 if origTrusted.isEmpty {
-                    // TOFU for relay — auto-trust first-seen key from relayed message
+                    // TOFU for relay — record first-seen key UNVERIFIED.
+                    // RE-AUDIT FIX (2026-05-10): only insert if we
+                    // don't ALREADY have an unverified row for this
+                    // (sender, fingerprint). Without this guard, every
+                    // subsequent message from the same TOFU sender
+                    // re-created the row with a fresh `addedAt` —
+                    // DB churn + lost first-seen timestamp.
                     if let pubKeyData = Data(base64Encoded: origPubKey) {
                         let fingerprint = String(origPubKey.prefix(16))
-                        let device = FriendDevice(
-                            friendUserId: senderId,
-                            fingerprint: fingerprint,
-                            publicKey: pubKeyData,
-                            trustState: .trusted,
-                            verifiedAt: Date(),
-                            addedAt: Date(),
-                            deviceName: "mesh-tofu-relay-\(senderId.prefix(8))"
-                        )
-                        try? await FriendDeviceRepository.shared.upsert(device)
-                        #if DEBUG
-                        print("🔑 [MeshCrypto] TOFU: Auto-trusted relayed sender \(senderId.prefix(8))")
-                        #endif
+                        let existing = await FriendDeviceRepository.shared.getAnyDevice(forUser: senderId, fingerprint: fingerprint)
+                        if existing == nil {
+                            let device = FriendDevice(
+                                friendUserId: senderId,
+                                fingerprint: fingerprint,
+                                publicKey: pubKeyData,
+                                trustState: .unverified,
+                                verifiedAt: nil,
+                                addedAt: Date(),
+                                deviceName: "mesh-tofu-relay-\(senderId.prefix(8))"
+                            )
+                            try? await FriendDeviceRepository.shared.upsert(device)
+                            #if DEBUG
+                            print("🟡 [MeshCrypto] TOFU: recorded relayed sender \(senderId.prefix(8)) as UNVERIFIED — user must confirm via Safety Number")
+                            #endif
+                        }
                     }
                 } else {
                     // Sender has known trusted devices — key must match one of them
@@ -237,16 +269,28 @@ actor MeshCryptoService {
                 return true
             }
             
-            // CREATIVE FIX FOR MESH BRIDGE & IMPERSONATION ATTEMPT:
-            // If the message is explicitly bridged from the server, it lacks the original Ed25519 signature
-            // because the server doesn't store them. The bridge node (which has internet) acts as the authority.
-            // We already verified the bridge node's cryptographic signature in Step 1.
-            // We accept it to allow offline users to receive server messages via mesh.
+            // 🔐 BUG FIX (2026-05-10): the previous version accepted
+            // any relayed message with `payload.envelope.isBridged ==
+            // true` after only verifying the bridge node's outer
+            // signature. But `isBridged` is excluded from the signed
+            // canonical data (see `signingData()` comment) — a malicious
+            // relay could flip ONE byte (`isBridged=true`) on any
+            // forwarded message and bypass the inner-signature check
+            // entirely. Full sender spoofing for any peer the bridge
+            // is trusted by.
+            //
+            // The honest fix: REQUIRE an inner Ed25519 signature
+            // regardless of `isBridged`. Server-bridge envelopes that
+            // genuinely lack one must instead carry a server-issued
+            // attestation (Ed25519 signature by a known server key)
+            // bound to the original ciphertext — or be rejected.
+            // Until that attestation flow is wired, refuse the bypass
+            // and force the sender path to include the original sig.
             if payload.envelope.isBridged == true {
                 #if DEBUG
-                print("✅ [MeshCrypto] Server-Bridged message accepted. Trusting bridge node's signature.")
+                print("🚨 [MeshCrypto] REJECTED: bridged message arrived without an original sender signature — bridge attestation required (see TODO server-bridge-attestation).")
                 #endif
-                return true
+                return false
             }
             
             // SECURITY: Reject relayed messages without original signature - prevents spoofing
@@ -267,32 +311,43 @@ actor MeshCryptoService {
             return false
         }
         
+        // 🔐 RE-AUDIT FIX (2026-05-10): the relay-path TOFU was
+        // already downgraded to `.unverified` (line ~226). The
+        // direct (hop=0, non-bridged) first-contact path was missed
+        // — and silently auto-trusted any first-seen key. Now both
+        // paths converge: first contact records `.unverified`,
+        // requires explicit user verification (Safety Number / QR)
+        // before reaching `.trusted`. The signature itself still
+        // passes (the message is delivered) but downstream sensitive
+        // ops can short-circuit on the trust state.
         #if DEBUG
-        print("🔑 [MeshCrypto] TOFU: Auto-trusting first-seen key for sender \(senderId.prefix(8))")
+        print("🟡 [MeshCrypto] TOFU: first-seen direct sender \(senderId.prefix(8)) — recording UNVERIFIED")
         #endif
-        
+
         let fingerprint = String(signerKey.prefix(16))
+        // Dedup: skip the upsert if we already have any device row
+        // for this (sender, fingerprint) — see relay-path note.
+        if let _ = await FriendDeviceRepository.shared.getAnyDevice(forUser: senderId, fingerprint: fingerprint) {
+            return true
+        }
         let device = FriendDevice(
             friendUserId: senderId,
             fingerprint: fingerprint,
             publicKey: publicKey,
-            trustState: .trusted,
-            verifiedAt: Date(),
+            trustState: .unverified,
+            verifiedAt: nil,
             addedAt: Date(),
             deviceName: "mesh-tofu-\(senderId.prefix(8))"
         )
-        
+
         do {
             try await FriendDeviceRepository.shared.upsert(device)
-            #if DEBUG
-            print("🔑 [MeshCrypto] TOFU: Key registered as trusted for \(senderId.prefix(8))")
-            #endif
         } catch {
             #if DEBUG
             print("⚠️ [MeshCrypto] TOFU: Failed to persist key: \(error) — still accepting message")
             #endif
         }
-        
+
         return true
     }
     
@@ -358,21 +413,47 @@ actor MeshCryptoService {
     
     private func cleanupOldNonces() {
         let now = Date()
-        
-        // Only cleanup once per hour
-        guard now.timeIntervalSince(nonceCleanupTime) > 3600 else { return }
-        
-        // Remove nonces older than lifetime
-        // Note: In production, nonces should be stored with timestamps
-        // For now, we clear all if set gets too large
-        if usedNonces.count > 100000 {
-            usedNonces.removeAll()
+
+        // Only cleanup once per hour for time-based eviction. The
+        // size-cap path runs every insert because the cap matters
+        // when an attacker is actively flooding.
+        let runTimeBased = now.timeIntervalSince(nonceCleanupTime) > 3600
+        if runTimeBased {
+            // RE-AUDIT FIX (2026-05-10): expire from the FRONT of the
+            // insertion-order array (oldest first). Because nonces
+            // are inserted with a uniform 7-day lifetime, the
+            // expiry order matches insertion order — we can stop
+            // as soon as we hit a non-expired entry instead of
+            // scanning all 100k entries every cleanup pass.
+            // Worst-case is now O(k) where k = expired-this-pass,
+            // not O(n).
+            var dropCount = 0
+            while dropCount < nonceInsertionOrder.count {
+                let oldest = nonceInsertionOrder[dropCount]
+                guard let expiry = usedNonces[oldest], expiry <= now else { break }
+                usedNonces.removeValue(forKey: oldest)
+                dropCount += 1
+            }
+            if dropCount > 0 {
+                nonceInsertionOrder.removeFirst(dropCount)
+            }
+            nonceCleanupTime = now
+        }
+
+        // Size-cap path — runs every insert. If we're past the cap,
+        // drop the OLDEST batch (LRU), never the whole set. Replaces
+        // the previous `removeAll()` panic-flush that opened a wide
+        // replay window for any attacker who could spam ≥100k nonces.
+        while usedNonces.count > Self.nonceMaxEntries {
+            let drop = min(Self.nonceCleanupBatchSize, nonceInsertionOrder.count)
+            for nonce in nonceInsertionOrder.prefix(drop) {
+                usedNonces.removeValue(forKey: nonce)
+            }
+            nonceInsertionOrder.removeFirst(drop)
             #if DEBUG
-            print("🔄 [MeshCrypto] Cleared nonce cache (size limit)")
+            print("🔄 [MeshCrypto] LRU-evicted \(drop) oldest nonces (cap=\(Self.nonceMaxEntries))")
             #endif
         }
-        
-        nonceCleanupTime = now
     }
 }
 
@@ -423,6 +504,9 @@ struct SecureMeshEnvelope: Codable {
     // Group flag (Bug 2 fix)
     var isGroup: Bool?
     
+    // Geo fence (Feature 3)
+    var geoFence: GeoFence?
+    
     // Short CodingKeys for ~50% BLE payload reduction
     enum CodingKeys: String, CodingKey {
         case clientMessageId = "id"
@@ -453,6 +537,7 @@ struct SecureMeshEnvelope: Codable {
         case replyToSenderName = "rtsn"
         case isBridged = "ib"
         case isGroup = "ig"
+        case geoFence = "gf"
     }
     
     /// Generate data for signing — covers IMMUTABLE fields only
@@ -512,6 +597,16 @@ struct SecureMeshEnvelope: Codable {
         //    needsForwarding, ttlSeconds, isBridged
         // These values change at every relay hop, invalidating the
         // original sender's signature!
+        
+        // ✅ INCLUDED: geoFence (immutable, set by sender)
+        if let gf = geoFence {
+            data.append(delimiter)
+            data.append(String(gf.h3Cell).data(using: .utf8) ?? Data())
+            data.append(delimiter)
+            data.append(String(gf.radiusInCells).data(using: .utf8) ?? Data())
+            data.append(delimiter)
+            data.append(String(gf.deliverOnlyInside).data(using: .utf8) ?? Data())
+        }
         
         return data
     }
@@ -625,7 +720,8 @@ extension MeshEnvelope {
             replyToTextPreview: replyToTextPreview,
             replyToSenderName: replyToSenderName,
             isBridged: isBridged,
-            isGroup: isGroup
+            isGroup: isGroup,
+            geoFence: geoFence
         )
     }
 }
@@ -659,7 +755,8 @@ extension SecureMeshEnvelope {
             replyToTextPreview: replyToTextPreview,
             replyToSenderName: replyToSenderName,
             isBridged: isBridged,
-            isGroup: isGroup
+            isGroup: isGroup,
+            geoFence: geoFence
         )
     }
 }

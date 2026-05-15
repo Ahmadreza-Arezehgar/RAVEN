@@ -31,11 +31,36 @@ struct MeshPostEnvelope: Codable, Identifiable {
     let createdAt: TimeInterval     // Unix timestamp
     let scope: String               // "local" | "friends" | "public"
     let text: String
+
+    // MARK: - RavenShot opt-in (mesh-only social map)
+    /// When set, the post is rendered as a pin on every nearby device's
+    /// RavenShot map even with no internet. Carries the author's lat/lng
+    /// so the receiving device can place the pin without consulting the
+    /// server. The same fields exist on the regular `Post` model so the
+    /// online-bridge path persists them identically.
+    var showOnRavenShot: Bool = false
+    var latitude: Double? = nil
+    var longitude: Double? = nil
     
     // MARK: - DTN Controls
-    
-    var ttlHops: Int = PremiumLimits.meshHopLimit
-    var ttlSeconds: Int = PremiumLimits.meshTTLSeconds
+    //
+    // Posts intentionally do NOT use PremiumLimits.meshHopLimit /
+    // .meshTTLSeconds — those gate text messages by tier (free vs premium)
+    // and keep the message hot-path light. Posts spread feed-wide and
+    // benefit from broad propagation regardless of sender tier. Loop
+    // protection still relies on the seenPosts dedup cache + routePath
+    // check in MeshPostService.relayIfNeeded; ttlHops/ttlSeconds here are
+    // just an upper bound so stale envelopes eventually decay.
+
+    /// Practical max hop count for post relay (~unlimited in real BLE
+    /// topologies; routePath de-dupes the same device).
+    static let postTTLHops: Int = 64
+    /// Practical max age for a mesh post envelope (1 week). Past this the
+    /// envelope is considered stale and dropped.
+    static let postTTLSeconds: Int = 7 * 24 * 60 * 60
+
+    var ttlHops: Int = MeshPostEnvelope.postTTLHops
+    var ttlSeconds: Int = MeshPostEnvelope.postTTLSeconds
     var hopCount: Int = 0           // Current hop number
     var routePath: [String] = []    // Device IDs that handled this post
     let originDeviceId: String      // Device that created the post
@@ -64,6 +89,9 @@ struct MeshPostEnvelope: Codable, Identifiable {
         case initialSend = "is"
         case signature = "sig"
         case signerPublicKey = "spk"
+        case showOnRavenShot = "rs"
+        case latitude = "lat"
+        case longitude = "lng"
     }
 }
 
@@ -166,7 +194,7 @@ extension MeshPostEnvelope {
     
     /// Convert to a Post model for local display/storage
     func toPost() -> Post {
-        return Post(
+        var post = Post(
             id: postId,
             authorId: authorId,
             authorUsername: authorUsername,
@@ -189,6 +217,12 @@ extension MeshPostEnvelope {
             source: .nearby,
             initialSend: initialSend
         )
+        // Mesh-only RavenShot — propagate the author's coordinates so the
+        // receiver can render the pin on the social map even with no internet.
+        post.latitude = latitude
+        post.longitude = longitude
+        post.showOnRavenShot = showOnRavenShot
+        return post
     }
 }
 
@@ -220,6 +254,11 @@ extension Post {
             createdAt: timestamp.timeIntervalSince1970,
             scope: visibility ?? "public",
             text: content,
+            // 🌐 Mesh-only RavenShot: carry the opt-in flag + coords so
+            // peers can pin the post on their map even with no internet.
+            showOnRavenShot: showOnRavenShot ?? false,
+            latitude: latitude,
+            longitude: longitude,
             originDeviceId: originDeviceId,
             initialSend: initialSend ?? "mesh"
         )

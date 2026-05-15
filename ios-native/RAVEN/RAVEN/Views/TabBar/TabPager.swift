@@ -1,5 +1,18 @@
 import SwiftUI
 
+// MARK: - Nested Swipe Coordinator
+/// Shared state so a nested horizontal pager (e.g. MeshFeaturesContainerView)
+/// can claim a horizontal drag and prevent the root TabPager from also
+/// switching tabs in response to the same gesture.
+@MainActor
+@Observable
+final class NestedSwipeCoordinator {
+    static let shared = NestedSwipeCoordinator()
+    private init() {}
+    /// Set by an inner pager while it is actively interpreting a horizontal drag.
+    var isHandlingSwipe: Bool = false
+}
+
 // MARK: - Tab Pager (Horizontal Swipe Between Tabs)
 /// A proper pager that hosts multiple tab views and allows swiping between them
 struct TabPager<FeedContent: View, DiscoverContent: View, MessagesContent: View, AccountContent: View>: View {
@@ -10,6 +23,8 @@ struct TabPager<FeedContent: View, DiscoverContent: View, MessagesContent: View,
     let discoverView: DiscoverContent
     let messagesView: MessagesContent
     let accountView: AccountContent
+    
+    @GestureState private var dragOffset: CGFloat = 0
     
     init(
         tab: Binding<AppTab>,
@@ -26,28 +41,107 @@ struct TabPager<FeedContent: View, DiscoverContent: View, MessagesContent: View,
     }
     
     var body: some View {
-        TabView(selection: $tab) {
-            feedView
-                .toolbar(.hidden, for: .tabBar)
-                .tag(AppTab.home)
+        GeometryReader { geo in
+            let screenWidth = geo.size.width
             
-            messagesView
-                .toolbar(.hidden, for: .tabBar)
-                .tag(AppTab.messages)
-            
-            discoverView
-                .toolbar(.hidden, for: .tabBar)
-                .tag(AppTab.discover)
-            
-            accountView
-                .toolbar(.hidden, for: .tabBar)
-                .tag(AppTab.account)
+            HStack(spacing: 0) {
+                feedView
+                    .frame(width: screenWidth, height: geo.size.height)
+                    .tag(AppTab.home)
+                
+                messagesView
+                    .frame(width: screenWidth, height: geo.size.height)
+                    .tag(AppTab.messages)
+                
+                discoverView
+                    .frame(width: screenWidth, height: geo.size.height)
+                    .tag(AppTab.discover)
+                
+                accountView
+                    .frame(width: screenWidth, height: geo.size.height)
+                    .tag(AppTab.account)
+            }
+            .offset(x: -CGFloat(tab.rawValue) * screenWidth + dragOffset)
+            .animation(.interpolatingSpring(stiffness: 320, damping: 32), value: tab)
+            // ───────────────────────────────────────────────────────────
+            // 🛡️ Tab-swipe rules (deliberate-only)
+            //
+            // Goal: a casual finger flick inside a chat / discover detail /
+            // post body should NOT switch tabs. Switching tabs is a system-
+            // level action; users should only invoke it intentionally.
+            //
+            // Rules:
+            //   1. `minimumDistance: 30pt` — must drag at least 30pt before
+            //      the gesture even starts being interpreted (was 12).
+            //   2. **Predominantly horizontal**: |dx| > |dy| × 1.6 (was 1.2).
+            //   3. **Edge-anchored**: drag must START within 60pt of the
+            //      left or right screen edge. Mid-screen drags are ignored
+            //      entirely. This is the iOS-native pattern (Settings,
+            //      Mail) — page swipe lives at the edges, content gestures
+            //      live in the middle.
+            //   4. **Bail when a deeper view is active**: if `isDetailViewActive`
+            //      is true (chat, post detail, etc.) OR `currentChatRoomId`
+            //      is set, the user is in a pushed view and any swipe is
+            //      meant for THAT view (back-swipe, swipe-to-reply), not
+            //      for switching tabs.
+            //   5. **Higher commit threshold**: 30% of screen width OR
+            //      flick velocity > 400 pt/s (was 22% / 250).
+            //   6. Existing nested-pager guard still applies.
+            // ───────────────────────────────────────────────────────────
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 30)
+                    .updating($dragOffset) { value, state, _ in
+                        if NestedSwipeCoordinator.shared.isHandlingSwipe { return }
+                        // Bail in deeper navigation contexts (chat open,
+                        // post detail open, settings sheet up, etc.)
+                        if FeedStateManager.shared.isDetailViewActive { return }
+                        if DeepLinkRouter.shared.currentChatRoomId != nil { return }
+                        // Must be predominantly horizontal (1.6× ratio)
+                        guard abs(value.translation.width) > abs(value.translation.height) * 1.6 else { return }
+                        // Edge-anchored: only honour drags that START at an edge
+                        let isLeftEdge = value.startLocation.x < 60
+                        let isRightEdge = value.startLocation.x > screenWidth - 60
+                        guard isLeftEdge || isRightEdge else { return }
+                        // Reserve the left edge of Home for the RavenShot open gesture
+                        if tab == .home && isLeftEdge && value.translation.width > 0 { return }
+                        // Rubber-band at edges, 1:1 finger tracking elsewhere
+                        let tabIndex = CGFloat(tab.rawValue)
+                        if (tabIndex == 0 && value.translation.width > 0) ||
+                           (tabIndex == CGFloat(AppTab.allCases.count - 1) && value.translation.width < 0) {
+                            state = value.translation.width * 0.3 // Rubber-band
+                        } else {
+                            state = value.translation.width // 1:1 finger tracking
+                        }
+                    }
+                    .onEnded { value in
+                        if NestedSwipeCoordinator.shared.isHandlingSwipe { return }
+                        if FeedStateManager.shared.isDetailViewActive { return }
+                        if DeepLinkRouter.shared.currentChatRoomId != nil { return }
+                        guard abs(value.translation.width) > abs(value.translation.height) * 1.6 else { return }
+                        let isLeftEdge = value.startLocation.x < 60
+                        let isRightEdge = value.startLocation.x > screenWidth - 60
+                        guard isLeftEdge || isRightEdge else { return }
+                        if tab == .home && isLeftEdge && value.translation.width > 0 { return }
+
+                        // Commit on 30% of screen OR a real flick (>400 pt/s)
+                        let threshold = screenWidth * 0.30
+                        let velocity = value.predictedEndTranslation.width - value.translation.width
+
+                        if value.translation.width < -threshold || velocity < -400 {
+                            if let next = AppTab(rawValue: tab.rawValue + 1) {
+                                Haptics.light()
+                                tab = next
+                            }
+                        } else if value.translation.width > threshold || velocity > 400 {
+                            if let prev = AppTab(rawValue: tab.rawValue - 1) {
+                                Haptics.light()
+                                tab = prev
+                            }
+                        }
+                    }
+            )
         }
-        // Swiping between root tabs containing NavigationStacks causes
-        // UIKit layout crashes (NSInternalInconsistencyException) when keyboards
-        // and large titles are involved. Standard iOS behavior is non-swipeable root tabs.
         .toolbar(.hidden, for: .tabBar)
-        .toolbarVisibility(.hidden, for: .tabBar)
     }
 }
 

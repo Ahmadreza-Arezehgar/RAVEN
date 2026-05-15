@@ -20,7 +20,7 @@ import re
 from database import get_db
 from models import User, Post, UserInterest, SeenPost, UserEvent
 from routers.users import get_current_user
-from routers.posts import PostResponse, get_post_stats, build_full_url, get_voice_and_collab_fields
+from routers.posts import PostResponse, get_post_stats, get_batch_post_stats, get_batch_post_media, build_full_url, get_voice_and_collab_fields
 from encryption import decrypt_text
 from cache import cache, TTL_FEED
 
@@ -104,11 +104,22 @@ def compute_post_score(
 ) -> float:
     """
     Compute recommendation score for a post using weighted factors.
-    
-    Formula: 
+
+    Formula:
     score = w_lang * LangMatch + w_tags * TagSim + w_author * AuthorAffinity
           + w_media * MediaMatch + w_trend * TrendScore + w_fresh * Freshness
           - w_seen * SeenPenalty - w_repeat * AuthorFatigue - w_neg * NegativeSignals
+
+    PERFORMANCE NOTE (2026-05-14):
+    The negative-signals block formerly issued THREE per-post queries:
+    Block, UserNegativeFeedback(author), UserNegativeFeedback(tag) for
+    each tag. With ~500 candidates and ~3 tags average that meant
+    ~2,500 sequential round-trips per `/api/feed/recommended` request,
+    blowing past Cloud Run's 60-second response-deadline (504 timeout)
+    for fresh users with cold caches. Callers now precompute three
+    sets (`blocked_ids`, `negative_authors`, `negative_tags`) ONCE and
+    pass them in via `session_state`. Per-post work drops to in-memory
+    set membership.
     """
     from models import UserNegativeFeedback, Block, UserEvent
     
@@ -187,33 +198,28 @@ def compute_post_score(
     # ========================
     # 9. Negative Signals (blocks, hides, reports)
     # ========================
+    # PERFORMANCE FIX (2026-05-14): negative-signal lookups are now
+    # in-memory set membership against precomputed structures the
+    # caller injects through `session_state`. The previous version
+    # made 1 + 1 + N (per-tag) DB queries PER POST, which exploded
+    # to ~2,500 round-trips for a typical 500-candidate batch and
+    # produced 504s on cold caches. See `_load_negative_sets()`.
     negative_score = 0.0
-    
+    blocked_ids = session_state.get('blocked_ids', frozenset())
+    negative_authors = session_state.get('negative_authors', frozenset())
+    negative_tags = session_state.get('negative_tags', frozenset())
+
     # Check if author is blocked
-    is_blocked = db.query(Block).filter(
-        Block.blocker_id == user_id,
-        Block.blocked_id == post.author_id
-    ).first()
-    if is_blocked:
+    if post.author_id in blocked_ids:
         return -1000.0  # Completely filter out
-    
+
     # Check for negative feedback on this author
-    author_feedback = db.query(UserNegativeFeedback).filter(
-        UserNegativeFeedback.user_id == user_id,
-        UserNegativeFeedback.target_type == 'author',
-        UserNegativeFeedback.target_id == post.author_id
-    ).first()
-    if author_feedback:
+    if post.author_id in negative_authors:
         negative_score += 5.0  # Heavy penalty for hidden authors
-    
+
     # Check for negative feedback on post tags
     for tag in post_tags:
-        tag_feedback = db.query(UserNegativeFeedback).filter(
-            UserNegativeFeedback.user_id == user_id,
-            UserNegativeFeedback.target_type == 'tag',
-            UserNegativeFeedback.target_id == tag
-        ).first()
-        if tag_feedback:
+        if tag in negative_tags:
             negative_score += 1.0  # Smaller penalty per tag
     
     # ========================
@@ -286,22 +292,45 @@ def get_recommended_feed(
     
     # Get user's interest profile
     user_profile = get_user_interest_profile(db, current_user.id)
-    
+
     # Get recently seen posts to exclude
     seen_post_ids = get_recently_seen_post_ids(db, current_user.id)
-    
+
     # Candidate posts: all public posts, scored by algorithm (no time cutoff)
     candidate_posts = db.query(Post).filter(
         or_(Post.visibility == 'public', Post.visibility == None)
     ).order_by(Post.timestamp.desc()).limit(500).all()  # Larger candidate pool
-    
+
     # Filter out recently seen posts
     candidates = [p for p in candidate_posts if p.id not in seen_post_ids]
-    
+
+    # PERFORMANCE FIX (2026-05-14): precompute negative-signal sets
+    # in three SELECT statements so per-post scoring becomes O(1)
+    # set lookup. Previously each post triggered up to 1+1+N DB
+    # round-trips inside `compute_post_score`, which exploded to
+    # ~2,500 queries for a 500-candidate batch and produced 504
+    # gateway timeouts on cold caches (reproducible for fresh users
+    # without prior interactions).
+    from models import Block, UserNegativeFeedback
+    blocked_ids = {
+        b.blocked_id for b in db.query(Block.blocked_id)
+        .filter(Block.blocker_id == current_user.id).all()
+    }
+    neg_rows = db.query(UserNegativeFeedback.target_type, UserNegativeFeedback.target_id) \
+        .filter(UserNegativeFeedback.user_id == current_user.id).all()
+    negative_authors = {r.target_id for r in neg_rows if r.target_type == 'author'}
+    negative_tags = {r.target_id for r in neg_rows if r.target_type == 'tag'}
+
     # Session state for tracking author fatigue during scoring
-    session_state = {'user_lang': lang, 'author_counts': {}}
+    session_state = {
+        'user_lang': lang,
+        'author_counts': {},
+        'blocked_ids': frozenset(blocked_ids),
+        'negative_authors': frozenset(negative_authors),
+        'negative_tags': frozenset(negative_tags),
+    }
     scored_posts = []
-    
+
     for post in candidates:
         content = decrypt_text(post.content) if post.content else ""
         score = compute_post_score(post, content, user_profile, db, current_user.id, session_state)
@@ -349,11 +378,18 @@ def get_recommended_feed(
     # Apply offset and limit
     result_posts = final_posts[offset:offset + limit]
     
+    # Batch-load authors, stats, and media (eliminates N+1 queries)
+    result_post_ids = [p[0].id for p in result_posts]
+    result_author_ids = list(set(p[0].author_id for p in result_posts))
+    authors_map = {u.id: u for u in db.query(User).filter(User.id.in_(result_author_ids)).all()} if result_author_ids else {}
+    stats_map = get_batch_post_stats(db, result_post_ids, current_user.id)
+    media_map = get_batch_post_media(request, db, result_post_ids)
+    
     # Build response
     result = []
     for post, score, content in result_posts:
-        author = db.query(User).filter(User.id == post.author_id).first()
-        stats = get_post_stats(db, post.id, current_user.id)
+        author = authors_map.get(post.author_id)
+        stats = stats_map.get(post.id, {"likes": 0, "comments": 0, "reposts": 0, "is_liked": False, "is_reposted": False})
         
         result.append(PostResponse(
             id=post.id,
@@ -362,6 +398,7 @@ def get_recommended_feed(
             author_avatar=build_full_url(request, author.avatar_path) if author else None,
             content=content,
             image_url=build_full_url(request, post.image_url),
+            media=media_map.get(post.id),
             timestamp=post.timestamp,
             edited_at=post.edited_at,
             likes=stats["likes"],
@@ -375,6 +412,8 @@ def get_recommended_feed(
             post_type=post.post_type,
             room_id=post.room_id,
             mesh_origin=post.mesh_origin or False,
+            like_preview_user_ids=stats.get("like_preview_user_ids", []),
+            comment_preview_user_ids=stats.get("comment_preview_user_ids", []),
             **get_voice_and_collab_fields(post, db)
         ))
     
@@ -465,10 +504,17 @@ def get_local_for_you_feed(
     scored_posts.sort(key=lambda x: x[1], reverse=True)
     
     # Build response
+    paged_posts = scored_posts[offset:offset + limit]
+    paged_post_ids = [p[0].id for p in paged_posts]
+    paged_author_ids = list(set(p[0].author_id for p in paged_posts))
+    authors_map = {u.id: u for u in db.query(User).filter(User.id.in_(paged_author_ids)).all()} if paged_author_ids else {}
+    stats_map = get_batch_post_stats(db, paged_post_ids, current_user.id)
+    media_map = get_batch_post_media(request, db, paged_post_ids)
+    
     result = []
-    for post, score, content, distance in scored_posts[offset:offset + limit]:
-        author = db.query(User).filter(User.id == post.author_id).first()
-        stats = get_post_stats(db, post.id, current_user.id)
+    for post, score, content, distance in paged_posts:
+        author = authors_map.get(post.author_id)
+        stats = stats_map.get(post.id, {"likes": 0, "comments": 0, "reposts": 0, "is_liked": False, "is_reposted": False})
         
         result.append(PostResponse(
             id=post.id,
@@ -477,6 +523,7 @@ def get_local_for_you_feed(
             author_avatar=build_full_url(request, author.avatar_path) if author else None,
             content=content,
             image_url=build_full_url(request, post.image_url),
+            media=media_map.get(post.id),
             timestamp=post.timestamp,
             edited_at=post.edited_at,
             likes=stats["likes"],
@@ -491,6 +538,8 @@ def get_local_for_you_feed(
             post_type=post.post_type,
             room_id=post.room_id,
             mesh_origin=post.mesh_origin or False,
+            like_preview_user_ids=stats.get("like_preview_user_ids", []),
+            comment_preview_user_ids=stats.get("comment_preview_user_ids", []),
             **get_voice_and_collab_fields(post, db)
         ))
     

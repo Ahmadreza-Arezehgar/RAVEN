@@ -1,15 +1,23 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
+from sqlalchemy import or_
+from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional
 from datetime import datetime
 import re
 
 from database import get_db
-from models import User, Post, Comment, CommentVote, Mention
+from models import User, Post, Comment, CommentVote, Mention, Notification
 from routers.users import get_current_user
 from encryption import encrypt_text, decrypt_text
 from services.gemini_service import get_gemini_service
+from services.apns_service import get_apns_service, APNsService
+# 🛡️ Hoisted to module level — these were re-imported INSIDE the function
+# at multiple branches, which made Python treat them as LOCAL names
+# everywhere in the body. Any reference BEFORE the local-import branch
+# triggered UnboundLocalError ("cannot access local variable 'APNsService'
+# where it is not associated with a value"). Same trap as the `import json`
+# bug fixed earlier in this file. Keep imports at module scope.
 import uuid
 import json
 
@@ -17,11 +25,23 @@ router = APIRouter(prefix="/api/comments", tags=["comments"])
 
 # Request/Response models
 class MentionEntityPayload(BaseModel):
+    """Mention entity from iOS composer's MentionPicker.
+
+    Accepts BOTH camelCase (`userId`) and snake_case (`user_id`) inputs:
+    - iOS NetworkService runs `.convertToSnakeCase` on its encoder, so the
+      JSON arriving here looks like `{"user_id":"...","range_start":0,...}`.
+    - Web/legacy clients send camelCase directly.
+    Pydantic's `populate_by_name=True` plus per-field aliases makes both
+    shapes deserialize correctly. (422 errors on every comment-create were
+    the symptom before this fix.)
+    """
+    model_config = ConfigDict(populate_by_name=True)
+
     type: str = "mention"
-    userId: str
+    userId: str = Field(alias="user_id")
     username: str
-    rangeStart: int
-    rangeLength: int
+    rangeStart: int = Field(alias="range_start")
+    rangeLength: int = Field(alias="range_length")
 
 
 class CreateCommentRequest(BaseModel):
@@ -53,6 +73,11 @@ class CommentResponse(BaseModel):
     comment_type: str = "text"  # "text" | "voice" | "image"
     media_url: Optional[str] = None
     duration_sec: Optional[float] = None
+    # ✏️ Edit support — set when comment was edited; clients render "edited" hint
+    edited_at: Optional[datetime] = None
+    # 📌 Pin support — host of the post can pin one+ comments to the top
+    is_pinned: bool = False
+    pinned_at: Optional[datetime] = None
     replies: List['CommentResponse'] = []
     
     class Config:
@@ -128,6 +153,9 @@ def build_comment_tree(comments: List[Comment], current_user_id: str, db: Sessio
             comment_type=comment.comment_type or "text",
             media_url=comment.media_url,
             duration_sec=comment.duration_sec,
+            edited_at=getattr(comment, 'edited_at', None),
+            is_pinned=bool(getattr(comment, 'is_pinned', False)),
+            pinned_at=getattr(comment, 'pinned_at', None),
             replies=[]
         )
         
@@ -142,11 +170,18 @@ def build_comment_tree(comments: List[Comment], current_user_id: str, db: Sessio
             parent = comment_map[comment.parent_comment_id]
             parent.replies.append(comment_map[comment.id])
     
-    # ✅ Sort root comments based on sort mode
+    # ✅ Sort root comments — pinned ALWAYS float to the top, in pin-order
+    # (most-recently pinned first), then the rest by the requested sort mode.
+    # This means pinned comments stay sticky regardless of score, and a
+    # newly-pinned comment jumps to the top of the pinned section.
+    pinned = [c for c in root_comments if c.is_pinned]
+    others = [c for c in root_comments if not c.is_pinned]
+    pinned.sort(key=lambda c: (c.pinned_at or c.timestamp), reverse=True)
     if sort == "newest":
-        root_comments.sort(key=lambda c: c.timestamp, reverse=True)
+        others.sort(key=lambda c: c.timestamp, reverse=True)
     else:  # "top" (default)
-        root_comments.sort(key=lambda c: (-c.score, c.timestamp))
+        others.sort(key=lambda c: (-c.score, c.timestamp))
+    root_comments = pinned + others
     
     # ✅ Sort child replies by timestamp (natural conversation flow)
     def sort_children(comment_resp: CommentResponse):
@@ -243,8 +278,14 @@ async def create_comment(
     
     # ✅ Create notification for post owner (if not self-comment)
     if post.author_id != current_user.id:
-        from models import Notification
-        import json
+        # `Notification` already imported at module top.
+        # NOTE: All re-imports of `json`, `Notification`, `APNsService` inside
+        # this function were removed. Re-importing inside conditional branches
+        # was making Python treat the name as LOCAL throughout the function
+        # body, so any reference BEFORE the conditional branch raised
+        # UnboundLocalError. Same trap, multiple times. All hoisted to module
+        # scope at the top of the file.
+        # → Removed the local re-imports below as well.
         notif = Notification(
             user_id=post.author_id,
             type="comment",
@@ -253,6 +294,7 @@ async def create_comment(
                 "comment_id": comment.id,
                 "commenter_id": current_user.id,
                 "commenter_username": current_user.username,
+                "commenter_avatar": current_user.avatar_path,
                 "preview": (req.content or ("🎤 Voice" if comment_type == "voice" else "📷 Image"))[:100]
             }),
             timestamp=datetime.utcnow(),
@@ -264,8 +306,7 @@ async def create_comment(
         # ✅ Send push notification to post owner (with preference check)
         author = db.query(User).filter(User.id == post.author_id).first()
         if author and author.push_token and author.push_platform == "ios":
-            from services.apns_service import get_apns_service, APNsService
-            
+            # APNsService imported at module top — no local re-import.
             prefs = APNsService.should_send_push(author, "comment")
             if prefs["allowed"]:
                 apns = get_apns_service()
@@ -273,32 +314,40 @@ async def create_comment(
                 commenter_name = APNsService.build_push_display_name(current_user)
                 badge = APNsService.get_unread_badge_count(db, post.author_id)
                 
-                push_result = await apns.send_comment_notification(
-                    device_token=author.push_token,
-                    commenter_name=commenter_name,
-                    comment_preview=(req.content or ("🎤 Voice" if comment_type == "voice" else "📷 Image"))[:100],
-                    post_id=req.post_id,
-                    badge=badge
-                )
-                if push_result:
-                    print(f"📱 ✅ Comment push sent to {author.username}")
-                else:
-                    print(f"📱 ❌ Comment push failed for {author.username}")
+                try:
+                    push_result = await apns.send_comment_notification(
+                        device_token=author.push_token,
+                        commenter_name=commenter_name,
+                        comment_preview=(req.content or ("🎤 Voice" if comment_type == "voice" else "📷 Image"))[:100],
+                        post_id=req.post_id,
+                        badge=badge
+                    )
+                    print(f"🔔 [PUSH] event=comment sender={current_user.id[:8]} "
+                          f"receiver={post.author_id[:8]} status={'sent' if push_result else 'failed'}")
+                except Exception as e:
+                    print(f"🔔 [PUSH] event=comment sender={current_user.id[:8]} "
+                          f"receiver={post.author_id[:8]} status=error reason={e}")
             else:
-                print(f"📱 ⏭️ Comment push skipped for {author.username} (notifications disabled)")
+                print(f"🔔 [PUSH] event=comment receiver={post.author_id[:8]} status=skipped reason=disabled")
     
     # ✅ Process @mention entities (entity-based, replaces old regex)
     if req.entities:
-        import json
-        
+        # `json` already imported at module top — no local re-import.
         snippet = (comment_content[:80]) if comment_content else ("🎤 Voice" if comment_type == "voice" else "📷 Image")
         deep_link = f"app://post/{req.post_id}?comment={comment.id}"
-        
+
         seen_user_ids = set()
         mention_count = 0
-        
+
         sender_display = APNsService.build_push_display_name(current_user)
-        
+
+        # 🛡️ Block-list filter — was missing. Without this, A could @mention
+        # someone who blocked them (or whom A has blocked) and the target
+        # would still get a Mention row + Notification + APNS push. That's a
+        # cross-block harassment vector. We use the same helper as posts.py.
+        from routers.blocks import get_blocked_user_ids
+        blocked_ids = set(get_blocked_user_ids(db, current_user.id))
+
         for entity in req.entities:
             if entity.type != "mention":
                 continue
@@ -308,7 +357,10 @@ async def create_comment(
                 continue
             if entity.userId == current_user.id:
                 continue
-            
+            if entity.userId in blocked_ids:
+                # Either I blocked them or they blocked me — silently skip.
+                continue
+
             mentioned_user = db.query(User).filter(User.id == entity.userId).first()
             if not mentioned_user:
                 continue
@@ -353,8 +405,7 @@ async def create_comment(
             # Send push notification (with preference check)
             if mentioned_user.push_token and mentioned_user.push_platform == "ios":
                 try:
-                    from services.apns_service import get_apns_service, APNsService
-                    
+                    # APNsService + get_apns_service imported at module top.
                     prefs = APNsService.should_send_push(mentioned_user, "mention")
                     if prefs["allowed"]:
                         apns = get_apns_service()
@@ -381,10 +432,13 @@ async def create_comment(
         # Fallback: regex-based mention detection for plain text (backwards compat)
         mentioned_usernames = [u for u in re.findall(r'@(\w+)', req.content or '') if u.lower() != 'ask']
         if mentioned_usernames:
-            from models import Notification
-            import json
+            # Notification + json + APNsService all imported at module top.
             for username in set(mentioned_usernames):  # Unique usernames only
-                mentioned_user = db.query(User).filter(User.username == username).first()
+                # 🐛 FIX: was case-SENSITIVE — "Reviewer2" wouldn't match
+                # the stored "reviewer2". Use func.lower() for a robust
+                # case-insensitive lookup, matching the entity-based path.
+                from sqlalchemy import func as _func
+                mentioned_user = db.query(User).filter(_func.lower(User.username) == username.lower()).first()
                 if mentioned_user and mentioned_user.id != current_user.id:
                     mention_notif = Notification(
                         user_id=mentioned_user.id,
@@ -586,7 +640,7 @@ def get_post_comments(
     # Get all comments for this post
     comments = db.query(Comment).filter(
         Comment.post_id == post_id,
-        Comment.is_hidden != True
+        or_(Comment.is_hidden == False, Comment.is_hidden == None)
     ).order_by(Comment.timestamp.asc()).all()
     
     # Build and return comment tree with requested sort mode
@@ -695,28 +749,159 @@ def delete_comment(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Delete a comment (only by author). Cascades to delete all replies."""
+    """Delete a comment.
+
+    Allowed: comment author OR post author (post owner can moderate
+    comments on their own post). Cascades to all replies.
+    """
     comment = db.query(Comment).filter(Comment.id == comment_id).first()
-    
+
     if not comment:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Comment not found"
         )
-    
-    # Only author can delete (or admin in future)
-    if comment.author_id != current_user.id:
+
+    # ✏️ Authorization: comment author OR post author
+    is_author = comment.author_id == current_user.id
+    post = db.query(Post).filter(Post.id == comment.post_id).first()
+    is_post_owner = post is not None and post.author_id == current_user.id
+
+    if not (is_author or is_post_owner):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized to delete this comment"
         )
-    
+
     db.delete(comment)
     db.commit()
-    
+
     print(f"🗑️ Comment deleted by {current_user.username}")
-    
+
     return {"status": "success", "message": "Comment deleted"}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ✏️ EDIT COMMENT (PATCH /api/comments/{id})
+# ═══════════════════════════════════════════════════════════════════════════
+
+class EditCommentRequest(BaseModel):
+    content: str
+    entities: Optional[List[MentionEntityPayload]] = None
+
+
+@router.patch("/{comment_id}", response_model=CommentResponse)
+async def edit_comment(
+    comment_id: str,
+    req: EditCommentRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Edit the text content of a comment.
+
+    Rules:
+    - Only the COMMENT AUTHOR can edit (post owner cannot rewrite others' words).
+    - Only TEXT comments are editable (not voice/image — re-record/re-upload instead).
+    - Edit window: 24 hours after creation (industry-standard cap to prevent
+      retroactive comment hijacking on viral posts).
+    - Updating content does NOT change `timestamp` (kept for stable sort).
+    - Sets `edited_at = utcnow()` so clients render the "edited" hint.
+    - Re-runs @mention extraction on the new content (best-effort: existing
+      Mention rows from the OLD content are NOT removed; new mentions create
+      new rows + notifications).
+    """
+    comment = db.query(Comment).filter(Comment.id == comment_id).first()
+    if not comment:
+        raise HTTPException(status_code=404, detail="Comment not found")
+
+    if comment.author_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Only the comment author can edit")
+
+    if (comment.comment_type or "text") != "text":
+        raise HTTPException(status_code=400, detail="Only text comments can be edited (re-record voice / re-upload image)")
+
+    # 24-hour edit window
+    if comment.timestamp and (datetime.utcnow() - comment.timestamp).total_seconds() > 24 * 3600:
+        raise HTTPException(status_code=400, detail="Edit window has closed (24 hours)")
+
+    new_content = (req.content or "").strip()
+    if not new_content:
+        raise HTTPException(status_code=400, detail="Content cannot be empty")
+    if len(new_content) > 4000:
+        raise HTTPException(status_code=400, detail="Comment too long (max 4000 chars)")
+
+    # Update content + edited_at
+    comment.content = encrypt_text(new_content)
+    comment.edited_at = datetime.utcnow()
+    if req.entities:
+        comment.entities = json.dumps([e.dict() for e in req.entities])
+
+    db.commit()
+    db.refresh(comment)
+
+    print(f"✏️ [Comments] {current_user.username} edited comment {comment_id[:8]}")
+
+    # Build single-comment response (re-using the helper produces same shape)
+    return build_comment_tree([comment], current_user.id, db, sort="newest")[0]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 📌 PIN / UNPIN COMMENT (post-author only)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.post("/{comment_id}/pin")
+def pin_comment(
+    comment_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Pin a comment to the top of its post.
+
+    Only the POST author can pin/unpin (comment author cannot self-promote).
+    Multiple comments can be pinned; they sort by `pinned_at` desc within the
+    pinned section.
+    """
+    comment = db.query(Comment).filter(Comment.id == comment_id).first()
+    if not comment:
+        raise HTTPException(status_code=404, detail="Comment not found")
+
+    post = db.query(Post).filter(Post.id == comment.post_id).first()
+    if not post:
+        raise HTTPException(status_code=404, detail="Post not found")
+    if post.author_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Only the post author can pin comments")
+
+    comment.is_pinned = True
+    comment.pinned_at = datetime.utcnow()
+    db.commit()
+
+    print(f"📌 [Comments] {current_user.username} pinned comment {comment_id[:8]} on post {post.id[:8]}")
+    return {"status": "success", "is_pinned": True, "pinned_at": comment.pinned_at}
+
+
+@router.post("/{comment_id}/unpin")
+def unpin_comment(
+    comment_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Unpin a comment. Same authorization as pin."""
+    comment = db.query(Comment).filter(Comment.id == comment_id).first()
+    if not comment:
+        raise HTTPException(status_code=404, detail="Comment not found")
+
+    post = db.query(Post).filter(Post.id == comment.post_id).first()
+    if not post:
+        raise HTTPException(status_code=404, detail="Post not found")
+    if post.author_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Only the post author can unpin comments")
+
+    comment.is_pinned = False
+    comment.pinned_at = None
+    db.commit()
+
+    print(f"📌 [Comments] {current_user.username} unpinned comment {comment_id[:8]}")
+    return {"status": "success", "is_pinned": False}
 
 
 # ═══════════════════════════════════════════════════════════════════════════

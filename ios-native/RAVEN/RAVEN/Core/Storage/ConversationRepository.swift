@@ -21,10 +21,18 @@ actor ConversationRepository {
     }
     
     /// Returns normalized roomId for a message
-    /// - Group/Channel message: uses message.roomId (confirmed via groups or conversations table)
+    /// - Group/Channel message: uses message.roomId (confirmed via groups or conversations table,
+    ///   OR via explicit `isGroupHint` from the caller — needed to avoid a race where a
+    ///   mesh-delivered group message arrives BEFORE the group syncs from the server,
+    ///   which would otherwise mis-route the message to a 1:1 conversation under peerId.)
     /// - 1:1 message: uses peerId (sender or recipient based on direction)
-    private func roomIdForMessage(_ message: ChatMessage, peerId: String) async -> String {
+    private func roomIdForMessage(_ message: ChatMessage, peerId: String, isGroupHint: Bool? = nil) async -> String {
         if let roomId = message.roomId, !roomId.isEmpty {
+            // ⚡ BUG FIX 1: If caller explicitly tells us this is a group, trust the
+            // hint and skip the DB lookup. Prevents mesh-first race where the group
+            // row hasn't been synced yet but the message must land under groupId.
+            if isGroupHint == true { return roomId }
+
             let isGroup = (try? await db.exists(
                 "SELECT 1 FROM groups WHERE id = ? LIMIT 1", params: [roomId]
             )) ?? false
@@ -107,6 +115,35 @@ actor ConversationRepository {
         // - 1:1: use peer.userId (prevents duplicates from server roomId variations)
         let normalizedRoomId = roomIdFor(conversation)
         
+        // ════════════════════════════════════════════════════════════════════════
+        // GHOST CONVERSATION GUARD: Skip upsert if user soft-deleted this chat
+        // and server data doesn't contain a newer message.
+        // ════════════════════════════════════════════════════════════════════════
+        if let existingRows = try? await db.query(
+            "SELECT deleted_at FROM conversations WHERE room_id = ? LIMIT 1",
+            params: [normalizedRoomId]
+        ), let existingRow = existingRows.first,
+           let deletedAtStr = existingRow["deleted_at"] as? String,
+           let deletedAt = SharedDateFormatters.parseISO8601(deletedAtStr) {
+            // Check if server conversation has a message newer than deletion
+            if let serverMsgTime = conversation.lastMessage?.timestamp, serverMsgTime > deletedAt {
+                // New message after deletion — resurrect
+                #if DEBUG
+                print("🔄 [ConvRepo] Resurrecting conversation \(normalizedRoomId.prefix(8)) via upsert — server has newer message")
+                #endif
+                try await db.execute(
+                    "UPDATE conversations SET deleted_at = NULL WHERE room_id = ?",
+                    params: [normalizedRoomId]
+                )
+            } else {
+                // No new messages — keep it deleted
+                #if DEBUG
+                print("🚫 [ConvRepo] upsert SKIPPED — conversation \(normalizedRoomId.prefix(8)) is soft-deleted")
+                #endif
+                return
+            }
+        }
+        
         let params: [Any] = [
             normalizedRoomId,
             conversation.peer.userId,
@@ -147,7 +184,25 @@ actor ConversationRepository {
     
     // MARK: - Apply Message to Conversation
     
-    func applyMessage(_ message: ChatMessage, currentUserId: String) async throws {
+    // MARK: - Re-key room_id (offline group reconciliation)
+
+    /// Move a conversation from one room_id to another. Used when a locally-
+    /// created group's server-assigned ID arrives via `syncPendingGroups`
+    /// and the old `local_<UUID>` row must be re-pointed at the canonical
+    /// server ID. Caller is responsible for re-keying messages too.
+    func remapRoomId(from oldRoomId: String, to newRoomId: String) async throws {
+        guard oldRoomId != newRoomId else { return }
+        try await db.execute(
+            "UPDATE conversations SET room_id = ? WHERE room_id = ?",
+            params: [newRoomId, oldRoomId]
+        )
+    }
+
+    /// - Parameter isGroup: Optional hint that this message belongs to a group.
+    ///   Pass `true` from the mesh handler when `envelope.isGroup == true` or the
+    ///   recipientId resolves to a known group. Avoids the mesh-first race that
+    ///   otherwise mis-routes group messages under peerId until the groups table syncs.
+    func applyMessage(_ message: ChatMessage, currentUserId: String, isGroup: Bool? = nil) async throws {
         // Generate preview text
         let preview = previewText(for: message)
         
@@ -254,8 +309,35 @@ actor ConversationRepository {
         // CRITICAL: roomId depends on message type
         // - Group: uses message.roomId (preserves group identity)
         // - 1:1: uses peerId (prevents duplicates)
-        let roomId = await roomIdForMessage(message, peerId: peerId)
+        let roomId = await roomIdForMessage(message, peerId: peerId, isGroupHint: isGroup)
         let isGroupMessage = roomId != peerId
+        
+        // ════════════════════════════════════════════════════════════════════════
+        // GHOST CONVERSATION GUARD: Skip UPSERT if user soft-deleted this chat.
+        // Only resurrect if this message is genuinely NEW (timestamp > deleted_at).
+        // ════════════════════════════════════════════════════════════════════════
+        if let existingRows = try? await db.query(
+            "SELECT deleted_at FROM conversations WHERE room_id = ? LIMIT 1",
+            params: [roomId]
+        ), let existingRow = existingRows.first,
+           let deletedAtStr = existingRow["deleted_at"] as? String,
+           let deletedAt = SharedDateFormatters.parseISO8601(deletedAtStr) {
+            // Conversation was soft-deleted — only resurrect for genuinely new messages
+            if message.timestamp <= deletedAt {
+                #if DEBUG
+                print("🚫 [ConvRepo] applyMessage SKIPPED — conversation \(roomId.prefix(8)) was deleted at \(deletedAtStr), message is older")
+                #endif
+                return
+            }
+            // Message is newer than deletion — clear deleted_at to resurrect
+            #if DEBUG
+            print("🔄 [ConvRepo] Resurrecting conversation \(roomId.prefix(8)) — new message after deletion")
+            #endif
+            try await db.execute(
+                "UPDATE conversations SET deleted_at = NULL WHERE room_id = ?",
+                params: [roomId]
+            )
+        }
         
         #if DEBUG
         print("🟢 [APPLY MESSAGE] room_id:\(roomId.prefix(8)) peer_id:\(peerId.prefix(8)) isOutgoing:\(isOutgoing) isGroup:\(isGroupMessage)")
@@ -364,70 +446,137 @@ actor ConversationRepository {
     }
     
     // MARK: - Get All Sorted
-    
+
+    /// Active inbox: excludes soft-deleted AND archived rows. The
+    /// archive bucket has its own fetcher below.
     func getAllSorted() async throws -> [Conversation] {
         let sql = """
-            SELECT * FROM conversations 
+            SELECT * FROM conversations
+            WHERE deleted_at IS NULL AND COALESCE(is_archived, 0) = 0
             ORDER BY is_pinned DESC, last_message_timestamp DESC
         """
-        
+
         let rows = try await db.query(sql)
         return rows.compactMap { row in
             parseConversation(from: row)
         }
     }
-    
+
+    /// Archive bucket — only conversations with `is_archived = 1`,
+    /// most-recently-archived first. Powers `ArchivedConversationsView`.
+    func getArchivedSorted() async throws -> [Conversation] {
+        let sql = """
+            SELECT * FROM conversations
+            WHERE deleted_at IS NULL AND COALESCE(is_archived, 0) = 1
+            ORDER BY archived_at DESC, last_message_timestamp DESC
+        """
+        let rows = try await db.query(sql)
+        return rows.compactMap { row in
+            parseConversation(from: row)
+        }
+    }
+
+    /// Cheap "are there any archived chats?" probe used by the inbox
+    /// header to decide whether to render the archive folder pill.
+    func archivedCount() async throws -> Int {
+        let rows = try await db.query(
+            "SELECT COUNT(*) AS c FROM conversations WHERE deleted_at IS NULL AND COALESCE(is_archived, 0) = 1",
+            params: []
+        )
+        return (rows.first?["c"] as? Int64).map(Int.init) ?? 0
+    }
+
     // MARK: - Actions
-    
+
     func markAsRead(roomId: String) async throws {
         try await db.execute(
             "UPDATE conversations SET unread_count = 0 WHERE room_id = ?",
             params: [roomId]
         )
     }
-    
+
     func togglePin(roomId: String) async throws {
         try await db.execute(
             "UPDATE conversations SET is_pinned = CASE WHEN COALESCE(is_pinned, 0) = 1 THEN 0 ELSE 1 END WHERE room_id = ?",
             params: [roomId]
         )
     }
-    
+
     func toggleMute(roomId: String) async throws {
         try await db.execute(
             "UPDATE conversations SET is_muted = CASE WHEN COALESCE(is_muted, 0) = 1 THEN 0 ELSE 1 END WHERE room_id = ?",
             params: [roomId]
         )
     }
+
+    /// Archive a conversation (hide from main inbox into the
+    /// "Archived" folder). Idempotent.
+    func archive(roomId: String) async throws {
+        try await db.execute(
+            """
+            UPDATE conversations
+            SET is_archived = 1,
+                archived_at = ?,
+                is_pinned = 0          -- archiving implicitly unpins
+            WHERE room_id = ?
+            """,
+            params: [Date().timeIntervalSince1970, roomId]
+        )
+    }
+
+    /// Pull a conversation back out of the archive into the main inbox.
+    func unarchive(roomId: String) async throws {
+        try await db.execute(
+            """
+            UPDATE conversations
+            SET is_archived = 0,
+                archived_at = NULL
+            WHERE room_id = ?
+            """,
+            params: [roomId]
+        )
+    }
     
     func delete(roomId: String) async throws {
-        // Delete conversation
-        try await db.execute(
-            "DELETE FROM conversations WHERE room_id = ?",
-            params: [roomId]
-        )
-        
-        // Clean up delivery jobs BEFORE deleting messages (subquery needs messages table)
-        try await db.execute(
-            "DELETE FROM delivery_jobs WHERE message_id IN (SELECT client_message_id FROM messages WHERE room_id = ?)",
-            params: [roomId]
-        )
-        
-        // Clean up pending outbox entries to prevent zombie messages on reconnect
-        // outbox uses client_message_id as PK, so join via messages table
-        try await db.execute(
-            "DELETE FROM outbox WHERE client_message_id IN (SELECT client_message_id FROM messages WHERE room_id = ?)",
-            params: [roomId]
-        )
-        
-        // Delete messages last (after dependent tables are cleaned up)
-        try await db.execute(
-            "DELETE FROM messages WHERE room_id = ?",
-            params: [roomId]
-        )
+        // ════════════════════════════════════════════════════════════════════════
+        // SOFT-DELETE: Set deleted_at instead of removing the row.
+        // This prevents background polling (applyMessage UPSERT) from re-creating
+        // the conversation as a ghost entry with just the peer's avatar.
+        // The deleted_at timestamp is compared against incoming message timestamps;
+        // only genuinely NEW messages (sent after deletion) will resurrect the chat.
+        // ════════════════════════════════════════════════════════════════════════
+        // BUG FIX (2026-05-10): wrap all four statements in a single
+        // SQLite transaction. The previous version ran them
+        // sequentially without `executeInTransaction`; an app
+        // crash/kill mid-flow left orphan rows (outbox cleared but
+        // messages remained, or vice versa) so the next launch saw
+        // inconsistent state and OutboxManager re-pushed the
+        // already-deleted messages. Atomic transaction = all-or-nothing.
+        let now = SharedDateFormatters.formatISO8601(Date())
+        try await db.executeInTransaction { tx in
+            try tx.execute(
+                "UPDATE conversations SET deleted_at = ? WHERE room_id = ?",
+                params: [now, roomId]
+            )
+            // Clean up delivery jobs BEFORE deleting messages (subquery needs messages table)
+            try tx.execute(
+                "DELETE FROM delivery_jobs WHERE message_id IN (SELECT client_message_id FROM messages WHERE room_id = ?)",
+                params: [roomId]
+            )
+            // Clean up pending outbox entries to prevent zombie messages on reconnect
+            try tx.execute(
+                "DELETE FROM outbox WHERE client_message_id IN (SELECT client_message_id FROM messages WHERE room_id = ?)",
+                params: [roomId]
+            )
+            // Delete messages last (after dependent tables are cleaned up)
+            try tx.execute(
+                "DELETE FROM messages WHERE room_id = ?",
+                params: [roomId]
+            )
+        }
         
         #if DEBUG
-        print("🗑️ [ConversationRepo] Deleted conversation, messages, outbox, and delivery_jobs for: \(roomId.prefix(8))")
+        print("🗑️ [ConversationRepo] Soft-deleted conversation, cleaned messages/outbox/delivery_jobs for: \(roomId.prefix(8))")
         #endif
     }
     
@@ -655,6 +804,9 @@ actor ConversationRepository {
         case .text:
             if let t = message.text {
                 if t.looksEncrypted { return "Message" }
+                if ContactSharePayload.looksLikeContactCard(t) {
+                    return "👤 Shared a contact"
+                }
                 return t
             }
             return ""
@@ -674,6 +826,10 @@ actor ConversationRepository {
             return "📍 Location"
         case .postShare:
             return "📬 Shared a post"
+        case .contactCard:
+            return "👤 Shared a contact"
+        case .poll:
+            return "📊 Poll"
         case .system:
             return "📢 Notification"
         }
@@ -732,7 +888,8 @@ actor ConversationRepository {
             requestStatus: row["request_status"] as? String,
             isRequestSender: (row["is_request_sender"] as? Int64).map { $0 == 1 },
             pendingSentCount: (row["pending_sent_count"] as? Int64).map { Int($0) },
-            requestId: row["request_id"] as? String
+            requestId: row["request_id"] as? String,
+            isArchived: (row["is_archived"] as? Int64 ?? 0) == 1
         )
     }
 }

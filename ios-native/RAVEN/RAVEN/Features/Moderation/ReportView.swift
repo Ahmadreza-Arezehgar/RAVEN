@@ -110,7 +110,7 @@ struct ReportView: View {
                             .background(.ultraThinMaterial)
                             .clipShape(RoundedRectangle(cornerRadius: 12))
                             .overlay(
-                                RoundedRectangle(cornerRadius: 12)
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
                                     .stroke(Color.white.opacity(0.15), lineWidth: 0.5)
                             )
                     }
@@ -312,7 +312,7 @@ struct ReportReasonRow: View {
             .background(.ultraThinMaterial)
             .clipShape(RoundedRectangle(cornerRadius: 12))
             .overlay(
-                RoundedRectangle(cornerRadius: 12)
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .stroke(isSelected ? Color.red.opacity(0.5) : Color.white.opacity(0.15), lineWidth: isSelected ? 1.5 : 0.5)
             )
         }

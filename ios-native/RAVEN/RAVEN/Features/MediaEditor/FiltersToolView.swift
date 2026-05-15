@@ -20,8 +20,13 @@ struct FiltersToolView: View {
                 .padding(.horizontal, 16)
             }
             
-            // Intensity slider (only when a filter is selected)
-            if viewModel.recipe.filterName != nil && !viewModel.recipe.filterName!.isEmpty {
+            // Intensity slider (only when a filter is selected).
+            // BUG FIX (2026-05-10): use `if let name` instead of
+            // `optional != nil && optional!.isEmpty`. The previous
+            // form had a force-unwrap that could crash if a parallel
+            // tap on the "no filter" thumbnail (line ~72) niled
+            // `filterName` between the LHS and RHS evaluation of `&&`.
+            if let name = viewModel.recipe.filterName, !name.isEmpty {
                 VStack(spacing: 4) {
                     HStack {
                         Text("Intensity")

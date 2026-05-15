@@ -10,6 +10,25 @@ struct NotificationsSettingsView: View {
     @AppStorage("soundsEnabled") private var soundsEnabled = true
     @AppStorage("vibrationEnabled") private var vibrationEnabled = true
     @AppStorage("messagePreview") private var messagePreview = true
+    @AppStorage("newPostNotifications") private var newPostNotifications = true
+    @AppStorage("audioRoomNotifications") private var audioRoomNotifications = true
+    @AppStorage("mentionNotifications") private var mentionNotifications = true
+    // ── Added 2026-05-14 ──────────────────────────────────────────────
+    /// `security_alert` push (new-device login etc). Default ON — these
+    /// are infrequent and high-signal; opting out should be deliberate.
+    @AppStorage("securityAlertNotifications") private var securityAlertNotifications = true
+    /// `live_location_started` / `live_location_ended` pings.
+    @AppStorage("liveLocationNotifications") private var liveLocationNotifications = true
+    /// Emoji-reaction notifications. Default ON; matches Telegram default.
+    @AppStorage("reactionNotifications") private var reactionNotifications = true
+    /// Tells the user when their profile is shared as a contact card.
+    /// Default ON — closes the loop on the `allow_contact_share` toggle.
+    @AppStorage("contactSharedNotifications") private var contactSharedNotifications = true
+    /// Someone opened your public profile (non-friends only).
+    /// Default OFF — stalker-friendly UX risk; let users opt in.
+    @AppStorage("profileViewNotifications") private var profileViewNotifications = false
+    /// Screenshot of your profile / a chat you participate in.
+    @AppStorage("screenshotNotifications") private var screenshotNotifications = true
     
     @State private var systemNotificationsEnabled = true
     @State private var isSyncing = false
@@ -90,6 +109,112 @@ struct NotificationsSettingsView: View {
                     }
                 }
                 
+                // Social Notifications
+                SettingsSection(title: "Social") {
+                    SettingsToggleRow(
+                        title: "New Posts",
+                        subtitle: "From users you've subscribed to (bell)",
+                        icon: "square.and.pencil",
+                        iconColor: .cyan,
+                        isOn: $newPostNotifications
+                    )
+                    .onChange(of: newPostNotifications) { _, _ in
+                        syncPreferencesToServer()
+                    }
+                    
+                    SettingsToggleRow(
+                        title: "Audio Rooms",
+                        subtitle: "When subscribed users start rooms",
+                        icon: "waveform",
+                        iconColor: .purple,
+                        isOn: $audioRoomNotifications
+                    )
+                    .onChange(of: audioRoomNotifications) { _, _ in
+                        syncPreferencesToServer()
+                    }
+                    
+                    SettingsToggleRow(
+                        title: "Mentions",
+                        subtitle: "When someone @mentions you",
+                        icon: "at",
+                        iconColor: .teal,
+                        isOn: $mentionNotifications
+                    )
+                    .onChange(of: mentionNotifications) { _, _ in
+                        syncPreferencesToServer()
+                    }
+
+                    SettingsToggleRow(
+                        title: "Reactions",
+                        subtitle: "When someone reacts to your message",
+                        icon: "face.smiling.inverse",
+                        iconColor: .pink,
+                        isOn: $reactionNotifications
+                    )
+                    .onChange(of: reactionNotifications) { _, _ in
+                        syncPreferencesToServer()
+                    }
+
+                    SettingsToggleRow(
+                        title: "Live Location",
+                        subtitle: "When a friend starts or stops sharing live location",
+                        icon: "location.fill.viewfinder",
+                        iconColor: .cyan,
+                        isOn: $liveLocationNotifications
+                    )
+                    .onChange(of: liveLocationNotifications) { _, _ in
+                        syncPreferencesToServer()
+                    }
+                }
+
+                // Privacy & Safety — these all relate to who's seeing
+                // YOU, and the section heading helps users find them.
+                SettingsSection(title: "Privacy & Safety") {
+                    SettingsToggleRow(
+                        title: "Security Alerts",
+                        subtitle: "New device sign-in, password change, etc",
+                        icon: "exclamationmark.shield.fill",
+                        iconColor: .red,
+                        isOn: $securityAlertNotifications
+                    )
+                    .onChange(of: securityAlertNotifications) { _, _ in
+                        syncPreferencesToServer()
+                    }
+
+                    SettingsToggleRow(
+                        title: "Contact Shared",
+                        subtitle: "When someone shares your profile as a contact card",
+                        icon: "person.crop.rectangle.stack.fill",
+                        iconColor: .orange,
+                        isOn: $contactSharedNotifications
+                    )
+                    .onChange(of: contactSharedNotifications) { _, _ in
+                        syncPreferencesToServer()
+                    }
+
+                    SettingsToggleRow(
+                        title: "Profile Views",
+                        subtitle: "When non-friends open your profile (off by default)",
+                        icon: "eye.fill",
+                        iconColor: .blue,
+                        isOn: $profileViewNotifications
+                    )
+                    .onChange(of: profileViewNotifications) { _, _ in
+                        syncPreferencesToServer()
+                    }
+
+                    SettingsToggleRow(
+                        title: "Screenshot Alerts",
+                        subtitle: "When someone screenshots your profile or a chat",
+                        icon: "camera.viewfinder",
+                        iconColor: .red,
+                        isOn: $screenshotNotifications
+                    )
+                    .onChange(of: screenshotNotifications) { _, _ in
+                        syncPreferencesToServer()
+                    }
+                }
+
                 // Sound & Vibration
                 SettingsSection(title: "Alerts") {
                     SettingsToggleRow(
@@ -184,7 +309,16 @@ struct NotificationsSettingsView: View {
                 friendRequestsEnabled: friendRequestNotifications,
                 likesCommentsEnabled: likesCommentsNotifications,
                 soundsEnabled: soundsEnabled,
-                messagePreview: messagePreview
+                messagePreview: messagePreview,
+                newPostNotifications: newPostNotifications,
+                audioRoomNotifications: audioRoomNotifications,
+                mentionNotifications: mentionNotifications,
+                securityAlertNotifications: securityAlertNotifications,
+                liveLocationNotifications: liveLocationNotifications,
+                reactionNotifications: reactionNotifications,
+                contactSharedNotifications: contactSharedNotifications,
+                profileViewNotifications: profileViewNotifications,
+                screenshotNotifications: screenshotNotifications
             )
             
             do {
@@ -212,7 +346,16 @@ private struct NotificationPreferencesPayload: Encodable {
     let likesCommentsEnabled: Bool
     let soundsEnabled: Bool
     let messagePreview: Bool
-    
+    let newPostNotifications: Bool
+    let audioRoomNotifications: Bool
+    let mentionNotifications: Bool
+    let securityAlertNotifications: Bool
+    let liveLocationNotifications: Bool
+    let reactionNotifications: Bool
+    let contactSharedNotifications: Bool
+    let profileViewNotifications: Bool
+    let screenshotNotifications: Bool
+
     enum CodingKeys: String, CodingKey {
         case pushEnabled = "push_enabled"
         case messagesEnabled = "messages_enabled"
@@ -220,6 +363,15 @@ private struct NotificationPreferencesPayload: Encodable {
         case likesCommentsEnabled = "likes_comments_enabled"
         case soundsEnabled = "sounds_enabled"
         case messagePreview = "message_preview"
+        case newPostNotifications = "new_post_notifications"
+        case audioRoomNotifications = "audio_room_notifications"
+        case mentionNotifications = "mention_notifications"
+        case securityAlertNotifications = "security_alert_notifications"
+        case liveLocationNotifications = "live_location_notifications"
+        case reactionNotifications = "reaction_notifications"
+        case contactSharedNotifications = "contact_shared_notifications"
+        case profileViewNotifications = "profile_view_notifications"
+        case screenshotNotifications = "screenshot_notifications"
     }
 }
 
@@ -243,8 +395,8 @@ struct SettingsSection<Content: View>: View {
             .background(.ultraThinMaterial)
             .clipShape(RoundedRectangle(cornerRadius: 16))
             .overlay(
-                RoundedRectangle(cornerRadius: 16)
-                    .stroke(Color.white.opacity(0.18), lineWidth: 0.6)
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(Color.primary.opacity(0.10), lineWidth: 0.6)
             )
         }
     }

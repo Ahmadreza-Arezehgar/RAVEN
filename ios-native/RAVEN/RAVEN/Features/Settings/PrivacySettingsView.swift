@@ -6,6 +6,14 @@ struct PrivacySettingsView: View {
     @AppStorage("whoCanMessage") private var whoCanMessage = "everyone"
     @AppStorage("whoCanSeeProfile") private var whoCanSeeProfile = "public"
     @AppStorage("readReceipts") private var readReceipts = true
+    @AppStorage("showLikedPosts") private var showLikedPosts = true
+    @AppStorage("showReplies") private var showReplies = true
+    /// Whether other users may share my profile as a contact card into
+    /// their chats. Default true — explicit opt-out, not opt-in. Server is
+    /// the enforcement boundary; this row syncs the preference and the
+    /// `sendContactShare` endpoint refuses the share if the *target* user
+    /// has it off.
+    @AppStorage("allowContactShare") private var allowContactShare = true
     
     @State private var isSyncing = false
     @State private var syncTask: Task<Void, Never>?
@@ -64,7 +72,7 @@ struct PrivacySettingsView: View {
                     .onChange(of: whoCanMessage) { oldValue, _ in
                         syncToServer(oldWhoCanMessage: oldValue)
                     }
-                    
+
                     SettingsPickerRow(
                         title: "Who can see my profile",
                         icon: "person.circle.fill",
@@ -77,6 +85,42 @@ struct PrivacySettingsView: View {
                     )
                     .onChange(of: whoCanSeeProfile) { oldValue, _ in
                         syncToServer(oldWhoCanSeeProfile: oldValue)
+                    }
+
+                    SettingsToggleRow(
+                        title: "Allow others to share my contact",
+                        subtitle: "Let other RAVEN users send your profile as a contact card in their chats",
+                        icon: "person.crop.rectangle.stack.fill",
+                        iconColor: .orange,
+                        isOn: $allowContactShare
+                    )
+                    .onChange(of: allowContactShare) { oldValue, _ in
+                        syncToServer(oldAllowContactShare: oldValue)
+                    }
+                }
+                
+                // Profile Tabs Visibility
+                SettingsSection(title: "Profile Tabs") {
+                    SettingsToggleRow(
+                        title: "Show Liked Posts",
+                        subtitle: "Others can see posts you've liked",
+                        icon: "heart.fill",
+                        iconColor: .pink,
+                        isOn: $showLikedPosts
+                    )
+                    .onChange(of: showLikedPosts) { oldValue, _ in
+                        syncToServer(oldShowLikedPosts: oldValue)
+                    }
+                    
+                    SettingsToggleRow(
+                        title: "Show Replies",
+                        subtitle: "Others can see posts you've replied to",
+                        icon: "arrowshape.turn.up.left.fill",
+                        iconColor: .blue,
+                        isOn: $showReplies
+                    )
+                    .onChange(of: showReplies) { oldValue, _ in
+                        syncToServer(oldShowReplies: oldValue)
                     }
                 }
                 
@@ -128,38 +172,53 @@ struct PrivacySettingsView: View {
     /// Sync privacy settings to server (debounced)
     /// ✅ Bug 7 fix: Accept the specific old value that changed so rollback restores
     /// the actual previous state, not the already-toggled current state.
+    /// ✅ isRollingBack guard prevents rollback from re-triggering onChange → syncToServer loop.
+    @State private var isRollingBack = false
+    
     private func syncToServer(
         oldOnlineStatus: Bool? = nil,
         oldReadReceipts: Bool? = nil,
         oldWhoCanMessage: String? = nil,
-        oldWhoCanSeeProfile: String? = nil
+        oldWhoCanSeeProfile: String? = nil,
+        oldShowLikedPosts: Bool? = nil,
+        oldShowReplies: Bool? = nil,
+        oldAllowContactShare: Bool? = nil
     ) {
+        // Guard: If we're rolling back from a failed sync, don't re-trigger
+        guard !isRollingBack else { return }
+
         // Cancel any pending sync to coalesce rapid changes
         syncTask?.cancel()
-        
+
         // Snapshot: use the explicit old value for whichever field changed;
         // for the other fields the current value IS the old value (unchanged).
         let rollbackOnlineStatus = oldOnlineStatus ?? showOnlineStatus
         let rollbackReadReceipts = oldReadReceipts ?? readReceipts
         let rollbackWhoCanMessage = oldWhoCanMessage ?? whoCanMessage
         let rollbackWhoCanSeeProfile = oldWhoCanSeeProfile ?? whoCanSeeProfile
-        
+        let rollbackShowLikedPosts = oldShowLikedPosts ?? showLikedPosts
+        let rollbackShowReplies = oldShowReplies ?? showReplies
+        let rollbackAllowContactShare = oldAllowContactShare ?? allowContactShare
+
         syncTask = Task {
-            // Debounce: wait 300ms for more changes
-            try? await Task.sleep(nanoseconds: 300_000_000)
+            // Debounce: wait 500ms for more changes
+            try? await Task.sleep(nanoseconds: 500_000_000)
             guard !Task.isCancelled else { return }
-            
+
             isSyncing = true
             defer { isSyncing = false }
-            
+
             let payload = PrivacySettingsPayload(
                 showOnlineStatus: showOnlineStatus,
                 // Prevent Ghost Mode smuggling: force true if subscription expired
                 readReceipts: SubscriptionService.shared.isPremium ? readReceipts : true,
                 whoCanMessage: whoCanMessage,
-                whoCanSeeProfile: whoCanSeeProfile
+                whoCanSeeProfile: whoCanSeeProfile,
+                showLikedPosts: showLikedPosts,
+                showReplies: showReplies,
+                allowContactShare: allowContactShare
             )
-            
+
             do {
                 let _: PrivacyEmptyResponse = try await NetworkService.shared.patch(
                     path: "/api/users/privacy",
@@ -173,12 +232,22 @@ struct PrivacySettingsView: View {
                 print("⚠️ Failed to sync privacy settings: \(error)")
                 #endif
                 // Rollback to old values so UI matches server state
+                // Set isRollingBack to prevent onChange from re-triggering sync
                 await MainActor.run {
+                    isRollingBack = true
                     showOnlineStatus = rollbackOnlineStatus
                     readReceipts = rollbackReadReceipts
                     whoCanMessage = rollbackWhoCanMessage
                     whoCanSeeProfile = rollbackWhoCanSeeProfile
+                    showLikedPosts = rollbackShowLikedPosts
+                    showReplies = rollbackShowReplies
+                    allowContactShare = rollbackAllowContactShare
                     showSyncError = true
+                    // Re-enable sync after a brief delay to let onChange settle
+                    Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
+                        isRollingBack = false
+                    }
                 }
             }
         }
@@ -191,12 +260,18 @@ private struct PrivacySettingsPayload: Encodable {
     let readReceipts: Bool
     let whoCanMessage: String
     let whoCanSeeProfile: String
-    
+    let showLikedPosts: Bool
+    let showReplies: Bool
+    let allowContactShare: Bool
+
     enum CodingKeys: String, CodingKey {
         case showOnlineStatus = "show_online_status"
         case readReceipts = "read_receipts"
         case whoCanMessage = "who_can_message"
         case whoCanSeeProfile = "who_can_see_profile"
+        case showLikedPosts = "show_liked_posts"
+        case showReplies = "show_replies"
+        case allowContactShare = "allow_contact_share"
     }
 }
 
@@ -262,15 +337,17 @@ struct SettingsPickerRow: View {
 // MARK: - Blocked User Model
 struct BlockedUser: Identifiable, Codable {
     let id: String
-    let username: String
-    let avatarUrl: String?
-    let blockedAt: Date?
+    let blockedId: String
+    let blockedUsername: String?
+    let blockedAvatar: String?
+    let createdAt: String?  // ISO 8601 string from server
     
-    enum CodingKeys: String, CodingKey {
-        case id
-        case username
-        case avatarUrl = "avatar_url"
-        case blockedAt = "blocked_at"
+    // Computed properties for UI compatibility
+    var username: String { blockedUsername ?? "Unknown" }
+    var avatarUrl: String? { blockedAvatar }
+    var blockedAt: Date? {
+        guard let str = createdAt else { return nil }
+        return SharedDateFormatters.parseISO8601(str)
     }
 }
 
@@ -343,7 +420,7 @@ struct BlockedUsersView: View {
         errorMessage = nil
         
         do {
-            blockedUsers = try await NetworkService.shared.get(path: "/api/users/blocked")
+            blockedUsers = try await NetworkService.shared.get(path: "/api/blocks/")
             #if DEBUG
             print("📥 Fetched \(blockedUsers.count) blocked users")
             #endif
@@ -359,7 +436,7 @@ struct BlockedUsersView: View {
     
     private func unblockUser(_ user: BlockedUser) async {
         do {
-            try await BlockService.shared.unblockUser(userId: user.id)
+            try await BlockService.shared.unblockUser(userId: user.blockedId)
             
             // Remove from local list
             await MainActor.run {

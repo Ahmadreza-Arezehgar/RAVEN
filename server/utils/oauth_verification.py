@@ -26,7 +26,11 @@ GOOGLE_ISSUER = "https://accounts.google.com"
 GOOGLE_TOKENINFO_URL = "https://oauth2.googleapis.com/tokeninfo"
 
 # ⚠️ IMPORTANT: Set these to your actual values
-APP_BUNDLE_ID = "app.raven.ios"  # iOS bundle ID (must match Xcode project)
+# Both the iOS / Mac Catalyst build (app.raven.ios) and the App Store macOS
+# build (app.raven.macos) hit the same /api/auth/oauth/apple endpoint, so
+# Apple identity tokens may carry either audience. Either is valid.
+APP_BUNDLE_IDS = ["app.raven.ios", "app.raven.macos"]
+APP_BUNDLE_ID = APP_BUNDLE_IDS[0]  # back-compat for any caller that still reads the singular
 GOOGLE_CLIENT_ID = None  # Set via environment variable
 
 
@@ -140,36 +144,53 @@ def _get_apple_signing_key(token: str) -> Optional[str]:
         return None
 
 
-def verify_apple_token(identity_token: str, expected_audience: Optional[str] = None) -> Optional[Dict]:
+def verify_apple_token(identity_token: str, expected_audience=None) -> Optional[Dict]:
     """
     Verify Apple identity token with FULL security checks.
-    
+
+    `expected_audience` may be a single bundle id, a list of acceptable bundle
+    ids, or None (in which case it falls back to APP_BUNDLE_IDS so both the
+    iOS and macOS builds are accepted).
+
     Security checks:
     - ✅ JWT signature verification (using Apple's public keys)
     - ✅ Issuer validation (must be https://appleid.apple.com)
-    - ✅ Audience validation (must match app bundle ID)
+    - ✅ Audience validation (must match one of the accepted app bundle IDs)
     - ✅ Expiry validation
     - ✅ Required claims enforcement
-    
-    Returns dict with:
-        - sub: Apple user ID (stable, unique per user per app)
-        - email: User email (may be privaterelay if user hid email)
-        - is_private_email: Whether email is Apple's private relay
     """
-    audience = expected_audience or APP_BUNDLE_ID
-    
+    if expected_audience is None:
+        accepted_audiences = list(APP_BUNDLE_IDS)
+    elif isinstance(expected_audience, str):
+        accepted_audiences = [expected_audience]
+    else:
+        accepted_audiences = list(expected_audience)
+
     try:
         # Step 1: Get the signing key
         public_key = _get_apple_signing_key(identity_token)
         if not public_key:
             return None
-        
-        # Step 2: Verify and decode with FULL validation
+
+        # Step 2: Pre-check the token's `aud` claim against our allow-list. We
+        # peek at the unverified payload only to pick the right audience for
+        # jwt.decode (which accepts a single string). The signature, expiry,
+        # and final aud match are still enforced by jwt.decode below.
+        unverified = jwt.get_unverified_claims(identity_token)
+        token_aud = unverified.get("aud")
+        if isinstance(token_aud, list):
+            match = next((a for a in token_aud if a in accepted_audiences), None)
+        else:
+            match = token_aud if token_aud in accepted_audiences else None
+        if match is None:
+            print(f"❌ Apple token: aud {token_aud!r} not in accepted {accepted_audiences}")
+            return None
+
         decoded = jwt.decode(
             identity_token,
             public_key,
             algorithms=["RS256"],
-            audience=audience,      # ✅ Audience check
+            audience=match,         # ✅ Audience check
             issuer=APPLE_ISSUER,    # ✅ Issuer check
             options={
                 "verify_signature": True,   # ✅ CRITICAL: Verify signature
@@ -201,7 +222,7 @@ def verify_apple_token(identity_token: str, expected_audience: Optional[str] = N
     except JWTError as e:
         error_msg = str(e).lower()
         if 'audience' in error_msg:
-            print(f"❌ Apple token: invalid audience (expected {audience})")
+            print(f"❌ Apple token: invalid audience (accepted {accepted_audiences})")
         elif 'issuer' in error_msg:
             print(f"❌ Apple token: invalid issuer (expected {APPLE_ISSUER})")
         else:

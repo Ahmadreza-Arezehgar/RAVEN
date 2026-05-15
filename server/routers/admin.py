@@ -10,12 +10,26 @@ import os
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
-# Secret key for admin operations - set via environment variable
-ADMIN_SECRET = os.getenv("ADMIN_SECRET", "RAVEN_ADMIN_2026")
+# Secret key for admin operations — MUST be set via environment variable.
+# We deliberately do NOT provide a default. A guessable default makes the
+# /api/admin/reset-database endpoint a one-curl data-destruction button if
+# the env var is forgotten on a deploy.
+ADMIN_SECRET = os.getenv("ADMIN_SECRET")
 
 
 def verify_admin_secret(x_admin_secret: str = Header(...)):
-    """Verify the admin secret header."""
+    """Verify the admin secret header. Refuses to authorize if no secret
+    is configured server-side — prevents accidental open access."""
+    if not ADMIN_SECRET:
+        # Log loudly so this gets noticed in Cloud Run logs immediately.
+        print(
+            "🚨 [Admin] ADMIN_SECRET env var is NOT SET — refusing all admin requests. "
+            "Set this in Cloud Run secret manager."
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Admin endpoints disabled: ADMIN_SECRET not configured on server",
+        )
     if x_admin_secret != ADMIN_SECRET:
         raise HTTPException(status_code=403, detail="Invalid admin secret")
     return True
@@ -987,17 +1001,26 @@ def setup_reviewer_accounts(
     import hashlib
     import uuid
 
+    # Password comes from env var, never hardcoded — see _setup_admin_user notes.
+    reviewer_password = os.getenv("REVIEWER_PASSWORD")
+    if not reviewer_password:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "REVIEWER_PASSWORD env var not configured on this server. "
+                "Set it in Cloud Run secret manager before calling this endpoint."
+            ),
+        )
+
     reviewer_accounts = [
         {
             "username": "reviewer1",
-            "password": "REDACTED-ROTATE-ME",
             "first_name": "Apple",
             "last_name": "Reviewer",
             "email": "apple-reviewer-1@raven-messenger.com",
         },
         {
             "username": "reviewer2",
-            "password": "REDACTED-ROTATE-ME",
             "first_name": "App",
             "last_name": "Reviewer",
             "email": "apple-reviewer-2@raven-messenger.com",
@@ -1008,7 +1031,7 @@ def setup_reviewer_accounts(
     reviewer_ids = []
 
     for acct in reviewer_accounts:
-        hashed_pw = hash_password(acct["password"])
+        hashed_pw = hash_password(reviewer_password)
         email_hash = hashlib.sha256(acct["email"].lower().encode()).hexdigest()
 
         # 1. Check if username already exists
@@ -1092,8 +1115,246 @@ def setup_reviewer_accounts(
         "accounts": results,
         "friendship": friendship_status,
         "login_instructions": {
-            "account_1": {"username": "reviewer1", "password": "REDACTED-ROTATE-ME"},
-            "account_2": {"username": "reviewer2", "password": "REDACTED-ROTATE-ME"},
+            # Passwords intentionally NOT echoed in the response — caller already
+            # knows the value (they set REVIEWER_PASSWORD). Returning them here
+            # would surface the secret in admin tool logs / browser history.
+            "account_1": {"username": "reviewer1", "password": "<see REVIEWER_PASSWORD env var>"},
+            "account_2": {"username": "reviewer2", "password": "<see REVIEWER_PASSWORD env var>"},
         }
     }
+
+
+# ==================== TEST PUSH (diagnostic) ====================
+
+@router.post("/test-push")
+async def admin_test_push(
+    request: dict,
+    db: Session = Depends(get_db),
+    _: bool = Depends(verify_admin_secret)
+):
+    """
+    Send a test push to a specific user and return full APNs diagnostic info.
+    Body: {"username": "Ahmadreza"}
+    """
+    from services.apns_service import get_apns_service
+    from models import User
+    import json as json_mod
+    
+    username = request.get("username")
+    if not username:
+        raise HTTPException(400, "username required")
+    
+    user = db.query(User).filter(User.username == username).first()
+    if not user:
+        raise HTTPException(404, f"User '{username}' not found")
+    
+    if not user.push_token:
+        return {"error": "User has no push token registered", "username": username}
+    
+    apns = get_apns_service()
+    token = apns._get_token()
+    if not token:
+        return {"error": "APNs JWT token generation failed"}
+    
+    payload = {
+        "aps": {
+            "alert": {
+                "title": "🔔 RAVEN Test Push",
+                "body": "If you see this, push notifications are working!"
+            },
+            "sound": "default"
+        },
+        "type": "test"
+    }
+    payload_json = json_mod.dumps(payload)
+    
+    results = {}
+    
+    # Try BOTH environments and report what happens
+    for env_name, host in [
+        ("production", apns.production_host),
+        ("sandbox", apns.sandbox_host)
+    ]:
+        url = f"{host}/3/device/{user.push_token}"
+        status_code, response_body, error = await apns._curl_send(
+            url, token, payload_json, priority=10
+        )
+        
+        reason = None
+        if response_body:
+            try:
+                reason = json_mod.loads(response_body).get("reason")
+            except Exception:
+                reason = response_body
+        
+        results[env_name] = {
+            "host": host,
+            "status_code": status_code,
+            "reason": reason,
+            "curl_error": error,
+            "success": status_code == 200
+        }
+    
+    return {
+        "username": username,
+        "push_token_prefix": user.push_token[:20] + "...",
+        "push_platform": user.push_platform,
+        "push_environment": getattr(user, 'push_environment', None),
+        "bundle_id": apns.bundle_id,
+        "server_use_sandbox": apns.use_sandbox,
+        "results": results,
+        "diagnosis": _diagnose_push(results)
+    }
+
+
+def _diagnose_push(results: dict) -> str:
+    """Return a human-readable diagnosis based on APNs responses."""
+    prod = results.get("production", {})
+    sand = results.get("sandbox", {})
+    
+    if prod.get("success") and sand.get("success"):
+        return "✅ Both environments accepted the push. Token is valid in both."
+    elif prod.get("success"):
+        return "✅ PRODUCTION push accepted. This is an App Store/TestFlight token."
+    elif sand.get("success"):
+        return "✅ SANDBOX push accepted. This is an Xcode debug build token. Push will ONLY arrive on Xcode-installed apps, NOT App Store builds."
+    elif prod.get("reason") == "BadDeviceToken" and sand.get("reason") == "BadDeviceToken":
+        return "❌ Token is INVALID in both environments. User needs to re-register by reopening the app."
+    elif prod.get("reason") == "Unregistered" or sand.get("reason") == "Unregistered":
+        return "❌ Token is UNREGISTERED. The app was uninstalled or the token expired."
+    elif prod.get("reason") == "BadEnvironmentKeyInToken":
+        return "⚠️ Production rejected with BadEnvironmentKeyInToken. Try sandbox — if sandbox works, this is an Xcode token."
+    else:
+        return f"⚠️ Unexpected: prod={prod.get('reason')}, sandbox={sand.get('reason')}"
+
+
+# ==================== BROADCAST PUSH NOTIFICATIONS ====================
+
+
+class BroadcastPushRequest(PydanticBaseModel):
+    title: str = "🚀 RAVEN Updated!"
+    body: str = "A new version of RAVEN is available! Update now to enjoy the latest features and improvements."
+    data: dict = {}
+
+
+@router.post("/broadcast-push")
+async def admin_broadcast_push(
+    request: BroadcastPushRequest,
+    db: Session = Depends(get_db),
+    _: bool = Depends(verify_admin_secret)
+):
+    """
+    📢 Send a push notification to ALL users who have a push token registered.
+    Also creates an in-app notification record for every user.
+
+    Protected by X-Admin-Secret header.
+
+    Default message announces a new version, but title/body can be customized.
+    """
+    from services.apns_service import get_apns_service
+    from models import User, Notification
+    from sqlalchemy import text
+    from datetime import datetime
+    import uuid as uuid_mod
+    import asyncio
+    import json
+
+    apns = get_apns_service()
+    if not apns.is_configured:
+        raise HTTPException(status_code=503, detail="APNs is not configured on this server")
+
+    # 1. Get ALL users (for in-app notification)
+    all_users = db.query(User).all()
+    total_users = len(all_users)
+
+    # 2. Create in-app notification for every user
+    now = datetime.utcnow()
+    in_app_count = 0
+    for user in all_users:
+        notif = Notification(
+            id=str(uuid_mod.uuid4()),
+            user_id=user.id,
+            type="app_update",
+            data=json.dumps({
+                "title": request.title,
+                "body": request.body,
+                **request.data
+            }),
+            is_read=False,
+            timestamp=now
+        )
+        db.add(notif)
+        in_app_count += 1
+
+    db.commit()
+    print(f"📢 [Broadcast] Created {in_app_count} in-app notifications")
+
+    # 3. Send push to users with tokens
+    users_with_tokens = [u for u in all_users if u.push_token]
+    total_with_tokens = len(users_with_tokens)
+
+    push_success = 0
+    push_failed = 0
+    push_errors = []
+
+    # Merge custom data with type identifier
+    push_data = {"type": "app_update", **request.data}
+
+    # Send pushes concurrently in batches of 10 to avoid overwhelming APNs
+    batch_size = 10
+    for i in range(0, total_with_tokens, batch_size):
+        batch = users_with_tokens[i:i + batch_size]
+        tasks = []
+        for user in batch:
+            tasks.append(
+                apns.send_push(
+                    device_token=user.push_token,
+                    title=request.title,
+                    body=request.body,
+                    data=push_data,
+                    category="APP_UPDATE",
+                    priority=5  # Normal priority (not time-sensitive)
+                )
+            )
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for user, result in zip(batch, results):
+            if isinstance(result, Exception):
+                push_failed += 1
+                push_errors.append({
+                    "username": user.username,
+                    "error": str(result)
+                })
+            elif result:
+                push_success += 1
+            else:
+                push_failed += 1
+                push_errors.append({
+                    "username": user.username,
+                    "error": "send_push returned False"
+                })
+
+    summary = {
+        "status": "success",
+        "broadcast": {
+            "title": request.title,
+            "body": request.body,
+        },
+        "in_app_notifications": in_app_count,
+        "push_notifications": {
+            "total_users": total_users,
+            "users_with_push_token": total_with_tokens,
+            "sent_successfully": push_success,
+            "failed": push_failed,
+        },
+    }
+
+    if push_errors:
+        summary["push_errors"] = push_errors[:20]  # Cap error list
+
+    print(f"📢 [Broadcast] Push sent: {push_success}/{total_with_tokens} succeeded, "
+          f"{push_failed} failed, {in_app_count} in-app created")
+
+    return summary
 

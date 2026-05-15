@@ -56,15 +56,16 @@ def _get_excluded_ids(db: Session, user_id: str) -> set:
     excluded = {user_id}
 
     # Existing friends
-    friendships = db.query(models.Friendship).filter(
+    friendships = db.query(models.FriendRequest).filter(
+        models.FriendRequest.status == "accepted",
         or_(
-            models.Friendship.user_id == user_id,
-            models.Friendship.friend_id == user_id
+            models.FriendRequest.requester_id == user_id,
+            models.FriendRequest.recipient_id == user_id
         )
     ).all()
     for f in friendships:
-        excluded.add(f.user_id)
-        excluded.add(f.friend_id)
+        excluded.add(f.requester_id)
+        excluded.add(f.recipient_id)
 
     # Blocks
     blocks = db.query(models.Block).filter(
@@ -95,14 +96,15 @@ def _get_excluded_ids(db: Session, user_id: str) -> set:
 def _get_my_friends(db: Session, user_id: str) -> set:
     """Get the set of user IDs who are friends with user_id."""
     my_friends = set()
-    friendships = db.query(models.Friendship).filter(
+    friendships = db.query(models.FriendRequest).filter(
+        models.FriendRequest.status == "accepted",
         or_(
-            models.Friendship.user_id == user_id,
-            models.Friendship.friend_id == user_id
+            models.FriendRequest.requester_id == user_id,
+            models.FriendRequest.recipient_id == user_id
         )
     ).all()
     for f in friendships:
-        other = f.friend_id if f.user_id == user_id else f.user_id
+        other = f.recipient_id if f.requester_id == user_id else f.requester_id
         my_friends.add(other)
     return my_friends
 
@@ -137,14 +139,15 @@ def _get_contact_suggestions(
     for u in contact_candidates:
         # Count mutual friends
         their_friends = set()
-        their_friendships = db.query(models.Friendship).filter(
+        their_friendships = db.query(models.FriendRequest).filter(
+            models.FriendRequest.status == "accepted",
             or_(
-                models.Friendship.user_id == u.id,
-                models.Friendship.friend_id == u.id
+                models.FriendRequest.requester_id == u.id,
+                models.FriendRequest.recipient_id == u.id
             )
         ).all()
         for f in their_friendships:
-            other = f.friend_id if f.user_id == u.id else f.user_id
+            other = f.recipient_id if f.requester_id == u.id else f.requester_id
             their_friends.add(other)
 
         mutual_count = len(my_friends & their_friends)
@@ -232,15 +235,16 @@ def _get_algorithmic_suggestions(
 
     # 4a: Friends of friends
     if my_friends:
-        fof_friendships = db.query(models.Friendship).filter(
+        fof_friendships = db.query(models.FriendRequest).filter(
+            models.FriendRequest.status == "accepted",
             or_(
-                models.Friendship.user_id.in_(my_friends),
-                models.Friendship.friend_id.in_(my_friends)
+                models.FriendRequest.requester_id.in_(my_friends),
+                models.FriendRequest.recipient_id.in_(my_friends)
             )
         ).all()
 
         for f in fof_friendships:
-            for candidate_id in (f.user_id, f.friend_id):
+            for candidate_id in (f.requester_id, f.recipient_id):
                 if candidate_id in all_excluded or candidate_id in my_friends:
                     continue
                 if candidate_id not in candidates:
@@ -249,7 +253,7 @@ def _get_algorithmic_suggestions(
                         "same_geo": False, "shared_interests": 0,
                         "source_type": "mutual"
                     }
-                connector = f.user_id if f.friend_id == candidate_id else f.friend_id
+                connector = f.requester_id if f.recipient_id == candidate_id else f.recipient_id
                 if connector in my_friends:
                     candidates[candidate_id]["mutual_friends"] += 1
 

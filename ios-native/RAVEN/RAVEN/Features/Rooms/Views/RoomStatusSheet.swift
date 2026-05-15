@@ -64,7 +64,7 @@ struct RoomStatusSheet: View {
                                 }
                                 .padding()
                             }
-                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                         }
                     }
                     .padding()
@@ -137,7 +137,7 @@ struct RoomStatusSheet: View {
         }
         .frame(maxWidth: .infinity)
         .padding()
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
     
     // MARK: - Connection Quality
@@ -152,7 +152,7 @@ struct RoomStatusSheet: View {
                 // Quality indicator
                 HStack(spacing: 4) {
                     ForEach(0..<4) { i in
-                        RoundedRectangle(cornerRadius: 2)
+                        RoundedRectangle(cornerRadius: 2, style: .continuous)
                             .fill(qualityColor(for: i))
                             .frame(width: 6, height: 8 + CGFloat(i * 4))
                     }
@@ -179,7 +179,7 @@ struct RoomStatusSheet: View {
             }
         }
         .padding()
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
     
     private var connectionQualityText: String {
@@ -237,7 +237,7 @@ struct RoomStatusSheet: View {
                     updateRoomSetting("allow_anonymous", newValue)
                 }
             }
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
     }
     
@@ -278,7 +278,7 @@ struct RoomStatusSheet: View {
                     .padding()
                 }
             }
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
     }
     

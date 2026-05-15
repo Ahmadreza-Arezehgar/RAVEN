@@ -85,10 +85,11 @@ def _get_gcs_bucket():
 
 
 def _upload_to_gcs(bucket, content: bytes, gcs_path: str, content_type: str) -> str:
-    """Upload bytes to GCS and return the public URL."""
+    """Upload bytes to GCS and return the public/CDN URL."""
+    from routers.uploads import _make_media_url
     blob = bucket.blob(gcs_path)
     blob.upload_from_string(content, content_type=content_type)
-    public_url = f"https://storage.googleapis.com/{bucket.name}/{gcs_path}"
+    public_url = _make_media_url(bucket.name, gcs_path)
     print(f"☁️ Snap uploaded to GCS: {gcs_path}")
     return public_url
 

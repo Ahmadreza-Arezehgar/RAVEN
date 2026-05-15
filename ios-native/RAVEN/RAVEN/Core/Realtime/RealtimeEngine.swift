@@ -3,8 +3,13 @@ import UIKit
 
 // MARK: - Realtime Engine (Central Hub)
 // Primary transport: WebSocket (wss://). Fallback: HTTP polling at 30s.
+//
+// Marked `@unchecked Sendable` so the polling timer's @Sendable callback can
+// hold a weak reference. All state mutations happen via `@MainActor`-tagged
+// methods (`startPolling`, `stopPolling`, `poll`), so the thread-safety
+// contract is "main only" — the timer fires on the main runloop.
 @Observable
-class RealtimeEngine {
+class RealtimeEngine: @unchecked Sendable {
     static let shared = RealtimeEngine()
     
     enum ConnectionState: String {
@@ -77,12 +82,19 @@ class RealtimeEngine {
         print("[RealtimeEngine] Entering foreground")
         #endif
         CrashGuard.shared.log(.network, "RealtimeEngine: entering foreground")
-        
-        // Don't sync if not fully authenticated
+
+        // Don't sync if not fully authenticated.
+        // `setupLifecycleObservers` registers this with `queue: .main`,
+        // so the closure is guaranteed to fire on the main thread —
+        // `assumeIsolated` lets the compiler honour the AuthService
+        // MainActor isolation without forcing an `async` rewrite.
         let auth = AuthService.shared
-        guard auth.isAuthenticated,
-              auth.isEmailVerified || auth.currentUser?.authMethod != .password,
-              auth.currentUser?.username != nil else {
+        let isReady = MainActor.assumeIsolated {
+            auth.isAuthenticated &&
+            (auth.isEmailVerified || auth.currentUser?.authMethod != .password) &&
+            auth.currentUser?.username != nil
+        }
+        guard isReady else {
             #if DEBUG
             print("⚠️ [RealtimeEngine] Skipping foreground sync - user not fully verified")
             #endif
@@ -118,9 +130,12 @@ class RealtimeEngine {
     
     func start() {
         guard connectionState == .disconnected else { return }
-        
+
         let auth = AuthService.shared
-        guard auth.isAuthenticated else { return }
+        // AuthService is MainActor-isolated; `start()` is invoked from
+        // the auth bootstrap path on main — assumeIsolated to avoid an
+        // async cascade through every caller of start().
+        guard MainActor.assumeIsolated({ auth.isAuthenticated }) else { return }
         
         connectionState = .connecting
         _ = OutboxManager.shared
@@ -212,13 +227,46 @@ class RealtimeEngine {
             // 🟢 Use dedicated session with cellular flags (NOT URLSession.shared which fails on cellular)
             self.webSocketTask = Self.wsSession.webSocketTask(with: wsURL)
             self.webSocketTask?.resume()
-            
+
+            // BUG FIX (2026-05-14, supersedes 2026-05-10): the previous
+            // fix reset `wsReconnectAttempts` straight after `.resume()`
+            // — but `.resume()` is asynchronous and returns BEFORE the
+            // WS handshake actually succeeds. If the handshake then
+            // failed (server 401, immediate POSIX 57, etc.) we'd enter
+            // the disconnect path with the counter at 0 and reconnect
+            // 2 seconds later. Repeat → infinite 2-second reconnect
+            // loop that never trips `maxWsReconnectAttempts`. Worse,
+            // every loop slammed the server with a fresh handshake.
+            //
+            // The fix: do NOT reset here. The counter is now reset
+            // ONLY when a payload actually arrives (see
+            // `processWebSocketData`, ~line 383) AND in the first
+            // sendPing success below — both are real proof the
+            // handshake completed end-to-end. The "stuck on payload
+            // decode" worry from the original comment is covered by
+            // the ping-success reset, which happens within ~30 s of
+            // a real handshake regardless of message traffic.
+
             // Start receiving messages
             self.receiveWebSocketMessage()
-            
+
             // Start ping/pong heartbeat to detect silent connection drops
             // (Cloud Run and similar LBs drop idle TCP after ~10-15 min)
             self.startPingTimer()
+
+            // Immediate one-shot ping to confirm handshake succeeded.
+            // On success → reset reconnect counter (real proof the WS
+            // is alive). On failure → handleWebSocketDisconnect runs
+            // through the ping timer's own failure path.
+            self.webSocketTask?.sendPing { [weak self] error in
+                guard let self = self, error == nil else { return }
+                Task { @MainActor in
+                    self.wsReconnectAttempts = 0
+                    #if DEBUG
+                    print("[RealtimeEngine] ✅ WS handshake confirmed (initial ping ack) — backoff reset")
+                    #endif
+                }
+            }
         }
     }
     
@@ -231,11 +279,31 @@ class RealtimeEngine {
             guard let self = self else { return }
             self.wsPingTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
                 guard let self = self else { return }
-                self.webSocketTask?.sendPing { error in
+                // BUG FIX (2026-05-10): capture the current
+                // webSocketTask into a local *before* sending the ping,
+                // and confirm it's still the active task in the ping
+                // completion handler before triggering disconnect
+                // handling. The previous version read `self.webSocketTask`
+                // at ping-fire time, then read it again in the
+                // completion handler — `disconnectWebSocket` running on
+                // main between those reads would nil the property and
+                // the ping completion (URLSession background queue)
+                // would call `handleWebSocketDisconnect` AGAIN, spawning
+                // a parallel reconnect timer alongside the one
+                // `disconnectWebSocket` already kicked. Identity check
+                // mirrors the pattern in `receiveWebSocketMessage`
+                // (line ~277).
+                guard let task = self.webSocketTask else { return }
+                task.sendPing { [weak self] error in
                     if let error = error {
                         #if DEBUG
                         print("❌ [RealtimeEngine] WebSocket ping failed: \(error.localizedDescription)")
                         #endif
+                        // Only act if WE are still the live task. If
+                        // disconnectWebSocket already ran, it's already
+                        // handling reconnect — don't double-trigger.
+                        guard let self = self,
+                              self.webSocketTask === task else { return }
                         self.handleWebSocketDisconnect()
                     }
                 }
@@ -339,14 +407,21 @@ class RealtimeEngine {
                         #if DEBUG
                         print("[RealtimeEngine] ✅ WebSocket connected — polling stopped")
                         #endif
+                        // Drain any bridge envelopes the server queued for us
+                        // while we were offline. The Mac native edition does
+                        // the same on connect; iOS used to skip this step,
+                        // which is why bridged messages never appeared even
+                        // after the upload chain was fixed.
+                        Task { await MeshBridgeReceiver.shared.drainPendingBridges() }
                     }
                 }
                 
                 Task {
                     await ConversationStore.shared.handleIncomingMessages(messages)
-                    // Update timestamp for incremental polling fallback
-                    if let latest = messages.first {
-                        self.lastInboxTimestamp = PerformanceConstants.iso8601.string(from: latest.timestamp)
+                    // Update timestamp for incremental polling fallback.
+                    // Use MAX timestamp (not `.first`) — see fix in `pollInbox`.
+                    if let latest = messages.map(\.timestamp).max() {
+                        self.lastInboxTimestamp = PerformanceConstants.iso8601.string(from: latest)
                     }
                 }
             }
@@ -363,6 +438,122 @@ class RealtimeEngine {
                     throw DecodingError.dataCorruptedError(in: container, debugDescription: "Cannot parse date: \(dateString)")
                 }
                 
+                // 🆕 Audio-room realtime events (join/leave/raise-hand/role/
+                // mute/kick/end). Server fans out via the same /ws/inbox
+                // channel; we sniff the `type` field and route. Subscribers
+                // (LiveRoomView, RoomListView) listen for "RoomEventReceived".
+                if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let typeStr = json["type"] as? String,
+                   typeStr == "room_event" {
+                    Task { @MainActor in
+                        NotificationCenter.default.post(
+                            name: NSNotification.Name("RoomEventReceived"),
+                            object: nil,
+                            userInfo: json
+                        )
+                    }
+                    #if DEBUG
+                    print("🎙️ [RealtimeEngine] Room event: \(json["event"] ?? "?") room=\((json["room_id"] as? String)?.prefix(8) ?? "?")")
+                    #endif
+                    return
+                }
+
+                // Chat sidecar events (fan out via NotificationCenter so
+                // the open ChatView / MessageStore / reaction store can
+                // react without each one parsing the WS frame). All three
+                // share the same /ws/inbox channel.
+                if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let typeStr = json["type"] as? String {
+                    switch typeStr {
+                    case "message_edited":
+                        Task { @MainActor in
+                            var info: [String: Any] = [:]
+                            info["messageId"] = json["message_id"] as? String ?? ""
+                            info["content"] = json["content"] as? String ?? ""
+                            if let ts = json["edited_at"] as? String,
+                               let date = PerformanceConstants.iso8601Fractional.date(from: ts)
+                                    ?? PerformanceConstants.iso8601.date(from: ts) {
+                                info["editedAt"] = date
+                            }
+                            NotificationCenter.default.post(
+                                name: Notification.Name("MessageEditedRemote"),
+                                object: nil,
+                                userInfo: info
+                            )
+                        }
+                        return
+
+                    case "message_reaction":
+                        Task { @MainActor in
+                            NotificationCenter.default.post(
+                                name: Notification.Name("MessageReactionUpdated"),
+                                object: nil,
+                                userInfo: [
+                                    "messageId": json["message_id"] as? String ?? "",
+                                    "reactions": json["reactions"] as? [[String: Any]] ?? [],
+                                ]
+                            )
+                        }
+                        return
+
+                    case "typing":
+                        Task { @MainActor in
+                            NotificationCenter.default.post(
+                                name: Notification.Name("ChatTypingUpdated"),
+                                object: nil,
+                                userInfo: [
+                                    "roomId": json["room_id"] as? String ?? "",
+                                    "byUserId": json["by_user_id"] as? String ?? "",
+                                    "byUsername": json["by_username"] as? String ?? "",
+                                    "isTyping": json["is_typing"] as? Bool ?? false,
+                                    "isGroup": json["is_group"] as? Bool ?? false,
+                                ]
+                            )
+                        }
+                        return
+
+                    case "message_pinned":
+                        Task { @MainActor in
+                            var info: [String: Any] = [:]
+                            info["messageId"] = json["message_id"] as? String ?? ""
+                            info["isGroup"] = json["is_group"] as? Bool ?? false
+                            info["pinned"] = json["pinned"] as? Bool ?? false
+                            info["pinnedByUserId"] = json["pinned_by_user_id"] as? String ?? ""
+                            if let ts = json["pinned_at"] as? String,
+                               let date = PerformanceConstants.iso8601Fractional.date(from: ts)
+                                    ?? PerformanceConstants.iso8601.date(from: ts) {
+                                info["pinnedAt"] = date
+                            }
+                            NotificationCenter.default.post(
+                                name: Notification.Name("MessagePinnedUpdated"),
+                                object: nil,
+                                userInfo: info
+                            )
+                        }
+                        return
+
+                    case "bridge_envelope", "bridge.envelope":
+                        // Server pushes a bridge envelope inline (the
+                        // 1:1 fan-out from `/api/mesh/bridge-envelope`).
+                        // Hand to MeshBridgeReceiver, which dedups and
+                        // runs the local decrypt + verify.
+                        if let envB64 = json["envelope_b64"] as? String,
+                           let key = json["idempotency_key"] as? String {
+                            Task { @MainActor in
+                                await MeshBridgeReceiver.shared.ingest(
+                                    envelopeB64: envB64,
+                                    idempotencyKey: key,
+                                    bridgedAt: Date()
+                                )
+                            }
+                        }
+                        return
+
+                    default:
+                        break
+                    }
+                }
+
                 let event = try decoder.decode(MessageSeenEvent.self, from: data)
                 if event.type == "message_seen" {
                     Task {
@@ -397,13 +588,27 @@ class RealtimeEngine {
     
     private func handleWebSocketDisconnect() {
         guard webSocketTask != nil else { return } // Prevent double-execution
-        
+
         isWebSocketConnected = false
         webSocketTask = nil
-        CrashGuard.shared.log(.network, "WS disconnected", metadata: [
-            "reconnectAttempt": "\(wsReconnectAttempts)"
-        ])
-        
+
+        // BUG FIX (2026-05-14): only log to CrashGuard on noteworthy
+        // disconnects, not every single one. The previous version
+        // wrote a CrashGuard entry on EVERY drop — with the broken
+        // reconnect-counter (Bug 1) producing an infinite 2-second
+        // reconnect loop, this saturated iOS's os_log buffer and
+        // produced the "Logging Error: Failed to receive N log
+        // messages" diagnostic. Log on the first attempt (so we have
+        // a breadcrumb) and on the final attempt (so the polling
+        // fallback is recorded), but stay quiet for the middle
+        // attempts which are routine retry traffic.
+        let attempt = wsReconnectAttempts
+        if attempt == 0 || attempt >= maxWsReconnectAttempts - 1 {
+            CrashGuard.shared.log(.network, "WS disconnected", metadata: [
+                "reconnectAttempt": "\(attempt)"
+            ])
+        }
+
         // ⚡ FIX: All UI state checks moved into a single @MainActor task.
         // Previously used DispatchQueue.main.sync which deadlocks when called
         // from URLSessionWebSocketTask's background thread (0x8badf00d crash).
@@ -411,7 +616,7 @@ class RealtimeEngine {
             if self.connectionState == .websocket {
                 self.connectionState = .polling
             }
-            
+
             // Don't attempt reconnect if app is in background — iOS will throttle and timeout
             guard UIApplication.shared.applicationState == .active else {
                 #if DEBUG
@@ -420,7 +625,7 @@ class RealtimeEngine {
                 self.startPolling(interval: self.foregroundInterval)
                 return
             }
-            
+
             // Reconnect with exponential backoff
             guard self.wsReconnectAttempts < self.maxWsReconnectAttempts else {
                 #if DEBUG
@@ -431,7 +636,10 @@ class RealtimeEngine {
             }
             
             self.wsReconnectAttempts += 1
-            let delay = min(Double(1 << self.wsReconnectAttempts), 30)  // 2s, 4s, 8s... max 30s
+            // Cap the shift count so `1 << n` can't UB on `n >= 63`.
+            // 2^5 = 32s already exceeds the 30s ceiling below.
+            let safeShift = min(self.wsReconnectAttempts, 5)
+            let delay = min(Double(1 << safeShift), 30)  // 2s, 4s, 8s... max 30s
             #if DEBUG
             print("[RealtimeEngine] 🔄 WebSocket reconnect attempt \(self.wsReconnectAttempts) in \(delay)s")
             #endif
@@ -553,9 +761,15 @@ class RealtimeEngine {
                 queryItems: queryItems.isEmpty ? nil : queryItems
             )
             
-            // Update timestamp for next poll from latest message
-            if let latestMessage = messages.first {
-                lastInboxTimestamp = PerformanceConstants.iso8601.string(from: latestMessage.timestamp)
+            // BUG FIX (2026-05-10): use the genuine MAX timestamp, not
+            // `messages.first`. The previous code assumed the server
+            // returned newest-first; if the server ever returned
+            // oldest-first or paginated mid-window, the cursor either
+            // re-fetched the same page indefinitely OR silently skipped
+            // messages between page boundary and now. `max(by:)` is
+            // order-independent.
+            if let latest = messages.map(\.timestamp).max() {
+                lastInboxTimestamp = PerformanceConstants.iso8601.string(from: latest)
             }
             
             // Handle new messages
@@ -653,7 +867,13 @@ class RealtimeEngine {
         }
         
         if let destination = destination {
-            if AuthService.shared.isAuthenticated && AuthService.shared.isEmailVerified {
+            // AuthService is @MainActor; `handlePushTap` is invoked from
+            // UNUserNotificationCenter delegate callbacks which iOS
+            // dispatches on main, so assumeIsolated is safe.
+            let isReady = MainActor.assumeIsolated {
+                AuthService.shared.isAuthenticated && AuthService.shared.isEmailVerified
+            }
+            if isReady {
                 Task { @MainActor in
                     DeepLinkRouter.shared.navigate(to: destination)
                 }
@@ -676,7 +896,22 @@ class RealtimeEngine {
                 // Don't show toast if user is already in this chat
                 guard !DeepLinkRouter.shared.isInChat(roomId: roomId) else { return }
                 let senderId = payload["sender_id"] as? String ?? ""
+                let messageId = (payload["message_id"] as? String)
+                    ?? (payload["client_message_id"] as? String)
+                    ?? (payload["id"] as? String)
                 Task { @MainActor in
+                    // 🔴 Bug fix (2026-05-09): WS may deliver the same
+                    // message that APNs or mesh already surfaced.
+                    // Centralised dedup via NotificationDedupCache.
+                    if let mid = messageId, !mid.isEmpty {
+                        let firstToShow = await NotificationDedupCache.shared.claim(messageId: mid)
+                        guard firstToShow else {
+                            #if DEBUG
+                            print("📵 [Notif] Skipping WS in-app toast for \(mid.prefix(8)) — already shown")
+                            #endif
+                            return
+                        }
+                    }
                     let toast = ToastItem.message(
                         senderName: senderName,
                         preview: preview,

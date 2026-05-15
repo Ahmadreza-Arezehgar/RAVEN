@@ -23,47 +23,60 @@ struct MediaEditorView: View {
     }
     
     var body: some View {
+        // Layout approach: split the topBar so the safe-area spacer
+        // above is a SEPARATE Color view (not padding on the topBar
+        // itself). This prevents SwiftUI from including the 60pt
+        // spacer inside the topBar's hit-test region — earlier
+        // attempts where `.padding(.top, 60)` was applied directly to
+        // the topBar caused the buttons' hit area to include the
+        // empty space above, pushing the actual hit target above the
+        // visible buttons.
         ZStack {
-            // Full black background
             Color(hex: "1C1C1E")
                 .ignoresSafeArea()
-            
-            // MARK: Image Preview + Overlays (fills available space)
-            imagePreviewWithOverlays
-        }
-        // MARK: Top Bar — inside safe area
-        .safeAreaInset(edge: .top, spacing: 0) {
-            topBar
-                .padding(.bottom, 4)
+
+            VStack(spacing: 0) {
+                // Dynamic Island clearance — pure background, no
+                // hit-testable content.
+                Color(hex: "1C1C1E").opacity(0.85)
+                    .background(.ultraThinMaterial)
+                    .frame(height: 60)
+                    .allowsHitTesting(false)
+
+                topBar
+                    .padding(.bottom, 4)
+                    .background(
+                        Color(hex: "1C1C1E").opacity(0.85)
+                            .background(.ultraThinMaterial)
+                    )
+
+                imagePreviewWithOverlays
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                VStack(spacing: 8) {
+                    activeToolPanel
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                    toolDock
+                }
+                .padding(.bottom, 24)
                 .background(
                     Color(hex: "1C1C1E").opacity(0.85)
                         .background(.ultraThinMaterial)
-                        .ignoresSafeArea(edges: .top)
                 )
-        }
-        // MARK: Bottom Tools — inside safe area
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            VStack(spacing: 8) {
-                activeToolPanel
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                
-                toolDock
             }
-            .padding(.bottom, 4)
-            .background(
-                Color(hex: "1C1C1E").opacity(0.85)
-                    .background(.ultraThinMaterial)
-                    .ignoresSafeArea(edges: .bottom)
-            )
         }
         .onAppear { viewModel.setup() }
-        .statusBarHidden()
+        // Note: status bar is intentionally NOT hidden — `.statusBarHidden()`
+        // collapses the top safe-area inset on Dynamic Island devices, which
+        // pushed the Send pill up against the camera cutout.
         .preferredColorScheme(.dark)
         .sheet(isPresented: $showExportSheet) {
             ExportSettingsSheet { quality, stripLocation in
                 exportAndSend(quality: quality, stripLocation: stripLocation)
             }
-            .presentationDetents([.height(280)])
+            // 280 pt clipped the Send button — title + 3 quality rows +
+            // privacy toggle + send pill needs ~420 pt to stay tappable.
+            .presentationDetents([.height(440)])
             .presentationDragIndicator(.visible)
             .presentationCornerRadius(24)
             .presentationBackground(.ultraThinMaterial)
@@ -74,7 +87,10 @@ struct MediaEditorView: View {
     
     private var topBar: some View {
         HStack(spacing: 16) {
-            // Close
+            // Close — 44pt hit target per iOS HIG. Visible circle stays
+            // 36pt (matches the undo/redo capsule height) but the tappable
+            // area extends to 44pt so the button doesn't miss-fire when
+            // the user's thumb lands near the edge of the visible circle.
             Button {
                 onCancel()
                 // ✅ Do NOT call dismiss() here — parent sets showMediaEditor = false
@@ -83,10 +99,10 @@ struct MediaEditorView: View {
                 Image(systemName: "xmark")
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(Color(hex: "E5E5EA"))
-                    .frame(width: 36, height: 36)
+                    .frame(width: 44, height: 44)
                     .background(.ultraThinMaterial, in: Circle())
             }
-            
+
             Spacer()
             
             // Undo / Redo
@@ -125,7 +141,9 @@ struct MediaEditorView: View {
             
             Spacer()
             
-            // Done → Export Sheet
+            // Done → Export Sheet. Padding raised so the visible capsule
+            // hits the 44pt iOS HIG minimum without needing extra hit
+            // shapes (which broke clicks via `.fullScreenCover`).
             Button {
                 showExportSheet = true
             } label: {
@@ -142,8 +160,8 @@ struct MediaEditorView: View {
                         .font(.system(size: 14, weight: .semibold))
                 }
                 .foregroundStyle(.white)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 8)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
                 .background(
                     Capsule().fill(
                         LinearGradient(
@@ -156,7 +174,6 @@ struct MediaEditorView: View {
             }
             .disabled(viewModel.isExporting || !viewModel.isReady)
             .opacity((viewModel.isExporting || !viewModel.isReady) ? 0.5 : 1.0)
-            .contentShape(Capsule())
         }
         .padding(.horizontal, 16)
         .padding(.top, 8)

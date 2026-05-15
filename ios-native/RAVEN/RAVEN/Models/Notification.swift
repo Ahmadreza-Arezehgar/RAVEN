@@ -10,7 +10,33 @@ enum NotificationType: String, Codable {
     case mention
     case presence
     case deadDrop = "dead_drop"
-    case security
+    case security                       // legacy generic security event
+    // ── Added 2026-05-14 ──────────────────────────────────────────────
+    /// `security_alert` — new-device login, password change, biometric
+    /// disabled, etc. Carries a short human description in the data.
+    case securityAlert = "security_alert"
+    /// `live_location_started` — a friend just turned on live location
+    /// sharing in a 1:1 / group thread.
+    case liveLocationStarted = "live_location_started"
+    /// `live_location_ended` — sharing finished or expired.
+    case liveLocationEnded = "live_location_ended"
+    /// `reaction` — someone reacted to your message with an emoji.
+    case reaction
+    /// `contact_shared` — your profile was shared as a contact card in
+    /// another chat. Closes the privacy loop on the
+    /// `allow_contact_share` toggle.
+    case contactShared = "contact_shared"
+    /// `profile_view` — someone opened your public profile. Sent only
+    /// when the viewer isn't already a friend (otherwise this would be
+    /// noisy and pointless).
+    case profileView = "profile_view"
+    /// `screenshot_profile` — someone took a screenshot while viewing
+    /// your profile. Best-effort signal — iOS only fires the system
+    /// notification while the app is foreground.
+    case screenshotProfile = "screenshot_profile"
+    /// `screenshot_chat` — same as above, but inside a 1:1 / group
+    /// thread you participate in.
+    case screenshotChat = "screenshot_chat"
 }
 
 // MARK: - Notification Model

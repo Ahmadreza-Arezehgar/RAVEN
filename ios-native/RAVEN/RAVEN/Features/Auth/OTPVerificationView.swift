@@ -3,6 +3,7 @@ import SwiftUI
 // MARK: - OTP Verification View
 struct OTPVerificationView: View {
     let email: String
+    var purpose: String = "verify_email"
     let onVerified: () -> Void
     
     @State private var code = ""
@@ -16,7 +17,13 @@ struct OTPVerificationView: View {
     @State private var displaySeconds: Int = 300
     @State private var displayResendCooldown: Int = 0
     
-    @State private var authService = AuthService.shared
+    // BUG FIX (2026-05-10): `@State` on an `@Observable` singleton is
+    // the wrong wrapper — SwiftUI treats it as value-only storage and
+    // suppresses Observation tracking on certain iOS versions, so a
+    // logout-during-OTP race could leave this screen visible with
+    // stale auth state. Plain `let` lets the Observation runtime track
+    // property reads in `body` automatically.
+    private let authService = AuthService.shared
     @State private var showChangeEmail = false
     @State private var showLogoutConfirm = false
     
@@ -173,7 +180,7 @@ struct OTPVerificationView: View {
             ChangeEmailSheet(currentEmail: email) { newEmail in
                 // Resend to new email
                 Task {
-                    _ = try? await authService.sendVerificationCode(email: newEmail)
+                    _ = try? await authService.sendVerificationCode(email: newEmail, purpose: purpose)
                 }
             }
         }
@@ -197,7 +204,7 @@ struct OTPVerificationView: View {
         
         Task {
             do {
-                try await authService.verifyCode(email: email, code: code)
+                try await authService.verifyCode(email: email, code: code, purpose: purpose)
                 
                 await MainActor.run {
                     isLoading = false
@@ -243,8 +250,8 @@ struct OTPVerificationView: View {
         
         Task {
             do {
-                _ = try await authService.sendVerificationCode(email: email)
-                
+                _ = try await authService.sendVerificationCode(email: email, purpose: purpose)
+
                 await MainActor.run {
                     isLoading = false
                     expirationDate = Date().addingTimeInterval(300)

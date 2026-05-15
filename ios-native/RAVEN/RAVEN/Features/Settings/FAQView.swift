@@ -27,7 +27,7 @@ struct FAQView: View {
     private var lastUpdated: String { "faq.last_updated".localized }
     
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // MARK: - Content (61 Q&A, 7 sections)
+    // MARK: - Content (79 Q&A, 9 sections)
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     
     private var sections: [FAQSection] {
@@ -129,6 +129,36 @@ struct FAQView: View {
                 FAQItem(id: next(), question: "faq.q62".localized, answer: "faq.a62".localized),
                 FAQItem(id: next(), question: "faq.q63".localized, answer: "faq.a63".localized),
                 FAQItem(id: next(), question: "faq.q64".localized, answer: "faq.a64".localized),
+                // v1.6 capabilities (May 2026) — Helper Mode gateway,
+                // identity rotation, Sealed Sender + OPAQUE shipped,
+                // Double-AEAD + memory hygiene.
+                FAQItem(id: next(), question: "faq.q64a".localized, answer: "faq.a64a".localized),
+                FAQItem(id: next(), question: "faq.q64b".localized, answer: "faq.a64b".localized),
+                FAQItem(id: next(), question: "faq.q64c".localized, answer: "faq.a64c".localized),
+                FAQItem(id: next(), question: "faq.q64d".localized, answer: "faq.a64d".localized),
+            ]),
+            
+            // H — Echo, Club & Vault (6)
+            FAQSection(id: 7, title: "faq.section.7".localized, icon: "waveform.circle", items: [
+                FAQItem(id: next(), question: "faq.q65".localized, answer: "faq.a65".localized),
+                FAQItem(id: next(), question: "faq.q66".localized, answer: "faq.a66".localized),
+                FAQItem(id: next(), question: "faq.q67".localized, answer: "faq.a67".localized),
+                FAQItem(id: next(), question: "faq.q68".localized, answer: "faq.a68".localized),
+                FAQItem(id: next(), question: "faq.q69".localized, answer: "faq.a69".localized),
+                FAQItem(id: next(), question: "faq.q70".localized, answer: "faq.a70".localized),
+            ]),
+            
+            // I — Stories, Discovery & More (9)
+            FAQSection(id: 8, title: "faq.section.8".localized, icon: "sparkles", items: [
+                FAQItem(id: next(), question: "faq.q71".localized, answer: "faq.a71".localized),
+                FAQItem(id: next(), question: "faq.q72".localized, answer: "faq.a72".localized),
+                FAQItem(id: next(), question: "faq.q73".localized, answer: "faq.a73".localized),
+                FAQItem(id: next(), question: "faq.q74".localized, answer: "faq.a74".localized),
+                FAQItem(id: next(), question: "faq.q75".localized, answer: "faq.a75".localized),
+                FAQItem(id: next(), question: "faq.q76".localized, answer: "faq.a76".localized),
+                FAQItem(id: next(), question: "faq.q77".localized, answer: "faq.a77".localized),
+                FAQItem(id: next(), question: "faq.q78".localized, answer: "faq.a78".localized),
+                FAQItem(id: next(), question: "faq.q79".localized, answer: "faq.a79".localized),
             ]),
         ]
     }

@@ -89,9 +89,19 @@ def get_livekit_token(
     print(f"   Can subscribe: {can_subscribe}")
     
     # Generate LiveKit JWT token
-    # LiveKit uses a specific claims format
+    #
+    # 🕐 TTL = 6 HOURS.
+    #
+    # The OLD value (1 hour) created a hard cliff: any room running >60 min
+    # had clients silently fail to reconnect after WiFi/cell hiccups because
+    # the cached token had expired. iOS LiveKit doesn't auto-refresh the token.
+    #
+    # 6h covers the realistic upper bound for an audio room session. For
+    # marathon rooms, iOS calls back to /api/livekit/token on the
+    # `room_event.needs_token_refresh` WebSocket signal (fired e.g. on role
+    # change) and on `connectionState == .reconnecting`.
     now = int(time.time())
-    exp = now + 3600  # 1 hour validity
+    exp = now + 6 * 3600  # 6 hours
     
     # Use a consistent room name format
     livekit_room_name = f"audio-room-{request.room_id}"
@@ -106,6 +116,10 @@ def get_livekit_token(
         "canPublishSources": ["microphone"] if can_publish else [],
     }
     
+    # 🛡️ JWT metadata is CLIENT-READABLE — every other LiveKit participant
+    # can decode it. Don't leak `displayMode` (would let everyone see who
+    # joined as ghost / hidden). Only expose `role` which is already public
+    # via the room participant list anyway.
     claims = {
         "iss": LIVEKIT_API_KEY,
         "sub": current_user.id,
@@ -114,7 +128,7 @@ def get_livekit_token(
         "nbf": now,
         "iat": now,
         "video": video_grants,
-        "metadata": f'{{"role":"{participant.role}","displayMode":"{participant.display_mode}"}}'
+        "metadata": f'{{"role":"{participant.role}"}}'
     }
     
     print(f"✅ [LiveKit Token] Generating JWT...")

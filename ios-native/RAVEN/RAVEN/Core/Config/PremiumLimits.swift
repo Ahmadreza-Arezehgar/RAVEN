@@ -33,9 +33,9 @@ struct PremiumLimits {
     // ═══════════════════════════════════════════════════════════════════
     
     /// Maximum file upload size in bytes.
-    /// Free: 25 MB, RAVEN+: 2 GB
+    /// Free: 100 MB, RAVEN+: 2 GB
     static var maxFileUploadBytes: Int {
-        isPremium ? 2_147_483_648 : 26_214_400
+        isPremium ? 2_147_483_648 : 104_857_600
     }
     
     /// Image compression quality for posts.

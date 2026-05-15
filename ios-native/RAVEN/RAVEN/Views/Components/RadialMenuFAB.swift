@@ -1,30 +1,30 @@
 import SwiftUI
 
 // MARK: - Radial Menu FAB (Floating Action Button with Expandable Options)
-/// Floating button that expands into a radial menu with New Post and Audio Room options.
-/// Uses Apple Liquid Glass design with authentic iOS 26+ droplet animations.
-/// Long press opens Story Camera Portal instantly.
+/// Floating button that expands into a radial menu with New Post, Audio Room, Club, and Echo options.
+/// Uses Apple Liquid Glass design with spring droplet animations.
 struct RadialMenuFAB: View {
     /// Whether the menu is currently expanded
     @State private var isExpanded = false
     
-    // ❌ DISABLED: Story Camera feature removed
-    // @State private var showStoryCamera = false
-    
     /// Actions
     let onNewPost: () -> Void
     let onAudioRoom: () -> Void
+    let onClub: () -> Void
+    let onEcho: () -> Void
     
-    // Apple Liquid Glass spring animation (authentic iOS 26+ feel)
+    // Liquid Glass spring animation
     private let dropletSpring = Animation.spring(
         response: 0.5,
         dampingFraction: 0.7,
         blendDuration: 0.25
     )
     
-    // Staggered animation delays
+    // Staggered animation delays for 4 items
     private let stagger1: Double = 0.0
-    private let stagger2: Double = 0.08
+    private let stagger2: Double = 0.06
+    private let stagger3: Double = 0.12
+    private let stagger4: Double = 0.18
     
     // Layout constants
     private let fabSize: CGFloat = 56
@@ -70,7 +70,7 @@ struct RadialMenuFAB: View {
                         )
                     )
                     
-                    // Option 2: Audio Room (appears second with stagger)
+                    // Option 2: Audio Room
                     RadialMenuItem(
                         icon: "waveform.circle.fill",
                         label: "Audio Room",
@@ -91,10 +91,53 @@ struct RadialMenuFAB: View {
                                 .animation(.easeOut(duration: 0.15))
                         )
                     )
+                    
+                    // Option 3: Club (mesh group tracking)
+                    RadialMenuItem(
+                        icon: "person.3.fill",
+                        label: "Club",
+                        color: .orange
+                    ) {
+                        closeMenu()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                            onClub()
+                        }
+                    }
+                    .transition(
+                        .asymmetric(
+                            insertion: .scale(scale: 0.1, anchor: .bottomTrailing)
+                                .combined(with: .opacity)
+                                .animation(dropletSpring.delay(stagger3)),
+                            removal: .scale(scale: 0.1, anchor: .bottomTrailing)
+                                .combined(with: .opacity)
+                                .animation(.easeOut(duration: 0.12))
+                        )
+                    )
+                    
+                    // Option 4: Echo (anonymous broadcast)
+                    RadialMenuItem(
+                        icon: "waveform",
+                        label: "Echo",
+                        color: .indigo
+                    ) {
+                        closeMenu()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                            onEcho()
+                        }
+                    }
+                    .transition(
+                        .asymmetric(
+                            insertion: .scale(scale: 0.1, anchor: .bottomTrailing)
+                                .combined(with: .opacity)
+                                .animation(dropletSpring.delay(stagger4)),
+                            removal: .scale(scale: 0.1, anchor: .bottomTrailing)
+                                .combined(with: .opacity)
+                                .animation(.easeOut(duration: 0.1))
+                        )
+                    )
                 }
                 
                 // Main FAB button (+ morphs to ×)
-                // Tap = Toggle menu, Long Press = Story Camera
                 Button {
                     Haptics.light()
                     withAnimation(dropletSpring) {
@@ -113,7 +156,6 @@ struct RadialMenuFAB: View {
                 .buttonStyle(RadialMenuButtonStyle())
                 .accessibilityLabel(isExpanded ? "Close menu" : "Create")
                 .accessibilityHint("Double tap to open the create menu")
-                // ❌ DISABLED: Story Camera long-press removed
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
             .padding(.trailing, fabTrailingPadding)
@@ -156,6 +198,8 @@ struct RadialMenuItem: View {
                 Text(label)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 10)
                     .background {
@@ -216,7 +260,9 @@ struct RadialMenuItem: View {
         
         RadialMenuFAB(
             onNewPost: { print("New Post tapped") },
-            onAudioRoom: { print("Audio Room tapped") }
+            onAudioRoom: { print("Audio Room tapped") },
+            onClub: { print("Club tapped") },
+            onEcho: { print("Echo tapped") }
         )
     }
 }

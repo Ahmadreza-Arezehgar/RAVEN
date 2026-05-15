@@ -10,6 +10,9 @@ struct ScanQRCodeView: View {
     @State private var scannedUserId: String?
     @State private var scannedUser: User?
     @State private var isSendingRequest = false
+    /// Set when the scanned QR is a `desktop_login` payload (macOS / Web
+    /// app showing its login QR). Drives the approval sheet.
+    @State private var desktopLoginPayload: DesktopLoginPayload?
     
     var body: some View {
         NavigationStack {
@@ -23,7 +26,7 @@ struct ScanQRCodeView: View {
                     Spacer()
                     
                     // Scan Frame
-                    RoundedRectangle(cornerRadius: 20)
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
                         .stroke(Color.white, lineWidth: 3)
                         .frame(width: 250, height: 250)
                         .overlay(
@@ -59,7 +62,7 @@ struct ScanQRCodeView: View {
                         )
                     
                     Spacer()
-                    
+
                     // Hint
                     Text("Point camera at a RAVEN QR code")
                         .font(.system(size: 16, weight: .medium))
@@ -68,7 +71,34 @@ struct ScanQRCodeView: View {
                         .padding(.vertical, 12)
                         .background(.ultraThinMaterial)
                         .clipShape(Capsule())
-                        .padding(.bottom, 60)
+                        .padding(.bottom, 12)
+
+                    // 🧪 DEBUG-only: paste the QR payload from clipboard.
+                    // The iOS Simulator's camera can't actually scan a QR
+                    // off the screen — it shows a synthesised 3D scene.
+                    // This button lets us live-test the desktop-login
+                    // path on a simulator by pasting the payload that
+                    // was copied from the macOS QR sheet's "Copy code"
+                    // action. Hidden in RELEASE builds.
+                    #if DEBUG
+                    Button {
+                        if let raw = UIPasteboard.general.string,
+                           !raw.isEmpty {
+                            handleScannedCode(raw)
+                        }
+                    } label: {
+                        Label("Paste login code (DEBUG)", systemImage: "doc.on.clipboard")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 10)
+                            .background(.ultraThinMaterial)
+                            .clipShape(Capsule())
+                    }
+                    .padding(.bottom, 60)
+                    #else
+                    Spacer().frame(height: 60)
+                    #endif
                 }
             }
             .navigationTitle("Scan QR Code")
@@ -96,6 +126,18 @@ struct ScanQRCodeView: View {
                 )
                 .presentationDetents([.height(300)])
             }
+            // Desktop QR-login approval — presented when the scanner
+            // reads a base64 `desktop_login` payload from the macOS /
+            // Web client. Half-sheet so the user can still see the
+            // scanner background.
+            .sheet(item: $desktopLoginPayload) { payload in
+                DesktopLoginApprovalView(payload: payload) {
+                    desktopLoginPayload = nil
+                    dismiss()
+                }
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+            }
             .onDisappear {
                 scanner.stopScanning()
             }
@@ -104,23 +146,35 @@ struct ScanQRCodeView: View {
     
     // MARK: - Handle Scanned Code
     private func handleScannedCode(_ code: String) {
-        // Parse: raven://friend?user_id=UUID
-        guard code.hasPrefix("raven://friend?user_id=") else {
-            // Invalid QR
-            Haptics.error()
+        // Two QR types are accepted in this scanner:
+        //
+        //   1. `raven://friend?user_id=UUID` — the legacy in-app
+        //      friend-add flow. Fetches the target user and shows
+        //      the friend-request confirmation sheet.
+        //
+        //   2. A base64-encoded `desktop_login` JSON payload emitted
+        //      by the macOS / Web client when the user clicks "Log in
+        //      with QR code". Approving it links the desktop to this
+        //      account via `Features/QRCode/DesktopLoginApprovalView`.
+        //      This is the iOS half of the WhatsApp-Web pattern.
+
+        if code.hasPrefix("raven://friend?user_id=") {
+            let userId = String(code.dropFirst("raven://friend?user_id=".count))
+            scannedUserId = userId
+            Haptics.success()
+            scanner.stopScanning()
+            Task { await fetchUserInfo(userId: userId) }
             return
         }
-        
-        let userId = String(code.dropFirst("raven://friend?user_id=".count))
-        scannedUserId = userId
-        
-        Haptics.success()
-        scanner.stopScanning()
-        
-        // Fetch user info
-        Task {
-            await fetchUserInfo(userId: userId)
+
+        if let payload = DesktopLoginPayload.decode(from: code) {
+            Haptics.success()
+            scanner.stopScanning()
+            desktopLoginPayload = payload
+            return
         }
+
+        Haptics.error()
     }
     
     // MARK: - Fetch User Info
@@ -390,7 +444,11 @@ struct QRScannerCameraView: UIViewRepresentable {
         
         let previewLayer = AVCaptureVideoPreviewLayer(session: captureSession)
         previewLayer.videoGravity = .resizeAspectFill
-        previewLayer.connection?.videoOrientation = .portrait
+        // 90° = portrait. Replaces the iOS 17-deprecated `videoOrientation`.
+        if let connection = previewLayer.connection,
+           connection.isVideoRotationAngleSupported(90) {
+            connection.videoRotationAngle = 90
+        }
         previewLayer.frame = view.bounds
         view.layer.addSublayer(previewLayer)
         

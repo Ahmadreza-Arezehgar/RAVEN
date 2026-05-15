@@ -113,6 +113,20 @@ actor NotificationsService {
     // Published unread count for Bell badge
     @MainActor static var unreadCount: Int = 0
     
+    /// Until this date, polls will NOT overwrite `pipeline.unreadCount`.
+    /// Set by `markAllAsRead()` to a 15-second window, which is plenty
+    /// of time for the server to commit + the next 1–3 poll cycles to
+    /// see consistent data.
+    ///
+    /// 🔴 Bug fix (2026-05-09): the previous implementation was a
+    /// `Bool` that suppressed exactly ONE poll cycle. If the server
+    /// took longer than a single cycle to commit the mark-all-read
+    /// (or if a notification arrived between the POST and the next
+    /// poll), the poll would revert `pipeline.unreadCount` back to a
+    /// non-zero value — the user-reported "I open Notifications, the
+    /// number doesn't go down" bug. A time window solves both cases.
+    private var suppressUntil: Date?
+    
     private init() {}
     
     // MARK: - Poll Notifications
@@ -147,11 +161,32 @@ actor NotificationsService {
                 return !n.isRead
             }.count
             
-            await MainActor.run {
-                NotificationPipeline.shared.unreadCount = unread
+            // 🔴 Don't revert unreadCount while a mark-all-read is
+            // still propagating server-side. Time-based window so
+            // multiple poll cycles are covered, not just the first.
+            if let until = suppressUntil, until > Date() {
                 #if DEBUG
-                print("🔔 [NotificationsService] unreadCount updated to: \(unread)")
+                print("🔔 [NotificationsService] Poll suppressed — mark-all-read window active for \(Int(until.timeIntervalSinceNow))s more")
                 #endif
+            } else {
+                // Window expired — clear marker.
+                if suppressUntil != nil { suppressUntil = nil }
+
+                // Even outside the suppress window, never bounce the
+                // badge UP if we have a recent local "all caught up"
+                // signal. The cap rule mirrors the chat-scroll fix:
+                // local cache is the upper bound until the server
+                // catches up. If every cached notification is
+                // marked read, the local upper bound is 0 — so the
+                // badge cannot revert to a non-zero number.
+                let localUpperBound = cachedNotifications.contains(where: { !$0.isRead }) ? unread : 0
+
+                await MainActor.run {
+                    NotificationPipeline.shared.unreadCount = localUpperBound
+                    #if DEBUG
+                    print("🔔 [NotificationsService] unreadCount updated to: \(localUpperBound) (raw=\(unread))")
+                    #endif
+                }
             }
             
             // On first poll, just store IDs without showing toasts
@@ -313,7 +348,7 @@ actor NotificationsService {
             )
             
         case "added_to_group":
-            guard let groupId = notification.data.groupId,
+            guard notification.data.groupId != nil,
                   var groupName = notification.data.groupName else {
                 #if DEBUG
                 print("  [createToast] added_to_group missing required fields")
@@ -469,6 +504,17 @@ actor NotificationsService {
     
     /// Mark all notifications as read
     func markAllAsRead() async throws {
+        // Suppress polls from reverting the badge for 15s — long
+        // enough for the server to commit + ≥2 poll cycles to see
+        // consistent data.
+        suppressUntil = Date().addingTimeInterval(15)
         await PendingReadService.shared.enqueue(type: "notification", targetId: nil, isAll: true)
+    }
+
+    /// Open a fresh suppression window from any caller (e.g. when the
+    /// view-side `markAllAsRead` runs through `LocalNotificationService`
+    /// and bypasses this actor's POST). Same 15s window.
+    func extendSuppressionWindow() {
+        suppressUntil = Date().addingTimeInterval(15)
     }
 }

@@ -56,7 +56,7 @@ struct InviteShareSheet: View {
                     Spacer()
                 }
                 .padding()
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 
                 // Actions
                 VStack(spacing: 12) {
@@ -92,7 +92,7 @@ struct InviteShareSheet: View {
                         }
                         .frame(maxWidth: .infinity)
                         .padding()
-                        .background(.blue.opacity(0.15), in: RoundedRectangle(cornerRadius: 12))
+                        .background(.blue.opacity(0.15), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                         .foregroundStyle(.blue)
                     }
                     
@@ -105,7 +105,7 @@ struct InviteShareSheet: View {
                             }
                             .frame(maxWidth: .infinity)
                             .padding()
-                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                         }
                         .buttonStyle(.plain)
                         .foregroundStyle(.primary)

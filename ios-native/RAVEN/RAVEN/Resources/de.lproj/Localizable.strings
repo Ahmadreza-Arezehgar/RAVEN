@@ -76,6 +76,7 @@
 // Account
 "edit_profile" = "Profil bearbeiten";
 "friend_requests" = "Freundschaftsanfragen";
+"follow_requests" = "Folgeanfragen";
 "joined" = "Beigetreten";
 "add_bio" = "Bio hinzufügen";
 

@@ -45,8 +45,15 @@ struct AuthGateView: View {
                 let isVerified = isOAuthUser || authService.isEmailVerified
                 
                 if isVerified {
-                    // Full access - show main app with swipe tabs
+                    // 🍏 Platform-specific shell:
+                    //   • iOS  → MainShellView (swipe TabView)
+                    //   • Mac  → RavenMacShell (NavigationSplitView with
+                    //            Liquid Glass sidebar, Mac-26 conventions)
+                    #if targetEnvironment(macCatalyst)
+                    RavenMacShell()
+                    #else
                     MainShellView()
+                    #endif
                 } else {
                     // Email user with unverified email - show OTP
                     NavigationStack {

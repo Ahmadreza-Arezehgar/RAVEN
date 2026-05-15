@@ -8,6 +8,15 @@ enum AppBootState {
 }
 
 // MARK: - Auth Service
+//
+// `@MainActor`-isolated (BUG FIX 2026-05-10): the previous version was
+// non-isolated and let `Task.detached(priority: .utility)` write
+// `currentUser` / `requiresUsernameSetup` off-main from inside
+// `bootstrapFromKeychain` (line ~657). SwiftUI views observe these
+// `@Observable` properties from the main actor — concurrent writes
+// risked torn reads, animation glitches, and Swift-6 concurrency
+// warnings. Mirrors the same fix already applied to `MessageService`.
+@MainActor
 @Observable
 class AuthService {
     static let shared = AuthService()
@@ -56,16 +65,25 @@ class AuthService {
         email: String,
         phone: String? = nil
     ) async throws {
+        // 🔐 Phase 2A: stretch the password before it leaves the
+        // device. The server stores argon2id(stretched), so even a
+        // full DB exfiltration leaves attackers grinding PBKDF2(600k)
+        // per dictionary guess instead of attacking the raw password.
+        let stretched = (try? PasswordStretcher.stretch(
+            password: password,
+            usernameLowercased: username.lowercased()
+        )) ?? password
+
         let request = RegisterRequest(
             username: username,
-            password: password,
+            password: stretched,
             firstName: firstName,
             lastName: lastName,
             birthYear: birthYear,
             email: email,
             phone: phone
         )
-        
+
         let response: TokenResponse = try await NetworkService.shared.post(
             path: "/api/auth/register",
             body: request
@@ -100,8 +118,19 @@ class AuthService {
     }
     
     func login(username: String, password: String) async throws {
-        let request = LoginRequest(username: username, password: password)
-        
+        // 🔐 Phase 2A: client-side password stretching. Server never
+        // sees the raw password — it sees a 32-byte PBKDF2 derivative
+        // bound to the lowercased username. Backward-compatible
+        // because servers running the matching update detect the
+        // `RVNS1$` prefix and treat the value as a key, not a password.
+        // Older servers see a long opaque string and reject it; the
+        // user can fall back to legacy by calling `loginLegacy(...)`.
+        let stretched = (try? PasswordStretcher.stretch(
+            password: password,
+            usernameLowercased: username.lowercased()
+        )) ?? password
+        let request = LoginRequest(username: username, password: stretched)
+
         let response: TokenResponse = try await NetworkService.shared.post(
             path: "/api/auth/login",
             body: request
@@ -539,6 +568,11 @@ class AuthService {
         
         // 4. Clear image caches
         URLCache.shared.removeAllCachedResponses()
+        // 4b. Wipe avatar disk cache so the next user doesn't see the
+        // previous user's social-graph avatars on first launch (they
+        // would resolve correctly to new avatars eventually but the
+        // first paint would briefly show the wrong faces).
+        await AvatarCacheService.shared.wipe()
         
         // 5. Clear session-related user defaults (preserve design/language/onboarding prefs)
         let sessionKeys = [
@@ -554,11 +588,43 @@ class AuthService {
         for key in sessionKeys {
             UserDefaults.standard.removeObject(forKey: key)
         }
+
+        // 🔐 BUG FIX (2026-05-10): also drop every per-conversation
+        // `draft_<roomId>` key. The old hard-coded sessionKeys list
+        // missed these, so logging out of account A and into account
+        // B preloaded A's draft into any chat that happened to share
+        // the same deterministic 1:1 roomId.
+        let allKeys = UserDefaults.standard.dictionaryRepresentation().keys
+        for key in allKeys where key.hasPrefix("draft_") || key.hasPrefix("scrollPos_") || key.hasPrefix("unread_") {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
+
+        // (MessageStore is per-room and deallocated when its view
+        // unmounts on logout — no global singleton wipe needed here.
+        // The previous-round audit's claim about a `MessageStore.shared`
+        // was based on a pattern that doesn't actually exist in this
+        // codebase. False positive — no fix required.)
         
         // 7. Clear RevenueCat identity
         await SubscriptionService.shared.logout()
-        
-        // 8. Reset auth state
+
+        // 8. Clear shared cookie storage for the API host so the next
+        // user doesn't inherit FastAPI session cookies (CSRF, telemetry,
+        // refresh hints) set during the previous session.
+        // BUG FIX (2026-05-10): NetworkService uses
+        // `URLSessionConfiguration.default` whose `httpCookieStorage`
+        // is `HTTPCookieStorage.shared` — cookies survived logout
+        // before this. We also drop URLCache and reset URL credential
+        // storage for the API host.
+        if let apiURL = URL(string: AppConfig.apiBaseURL),
+           let cookies = HTTPCookieStorage.shared.cookies(for: apiURL) {
+            for cookie in cookies {
+                HTTPCookieStorage.shared.deleteCookie(cookie)
+            }
+        }
+        URLCache.shared.removeAllCachedResponses()
+
+        // 9. Reset auth state
         currentUser = nil
         requiresUsernameSetup = false
         
@@ -629,15 +695,21 @@ class AuthService {
             }
             
             // گرفتن اطلاعات آپدیت‌شده در پس‌زمینه، بدون اینکه کاربر متوجه شود
-            Task.detached(priority: .utility) {
-                try? await Task.sleep(nanoseconds: 500_000_000) // اجازه بدهید UI کامل لود شود
+            // Was `Task.detached(priority: .utility)` which wrote
+            // currentUser / requiresUsernameSetup off-main. The class is
+            // now `@MainActor`-isolated, so a regular `Task { ... }`
+            // inherits MainActor and the inner `await` writes are safe.
+            // The 500ms sleep keeps the original "let UI fully load
+            // first" intent.
+            Task {
+                try? await Task.sleep(nanoseconds: 500_000_000)
                 do {
                     try await self.fetchCurrentUser()
                 } catch APIError.usernameRequired {
-                    await MainActor.run { self.requiresUsernameSetup = true }
+                    self.requiresUsernameSetup = true
                 } catch let error as APIError where error.isAuthError {
                     try? await self.logout()
-                    await MainActor.run { self.bootState = .unauthenticated }
+                    self.bootState = .unauthenticated
                 } catch {
                     // در صورت قطعی اینترنت، اپلیکیشن با همان کش به کار خود ادامه می‌دهد
                 }

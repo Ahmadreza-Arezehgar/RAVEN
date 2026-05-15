@@ -130,36 +130,19 @@ async def block_user(
     # ===== SIDE-EFFECTS =====
     cleanup_actions = []
     
-    # 1. Remove friendship (both directions)
-    try:
-        from models import Friendship
-        friendships = db.query(Friendship).filter(
-            or_(
-                and_(Friendship.user_id == current_user.id, Friendship.friend_id == block.blocked_id),
-                and_(Friendship.user_id == block.blocked_id, Friendship.friend_id == current_user.id)
-            )
-        ).all()
-        for f in friendships:
-            db.delete(f)
-        if friendships:
-            cleanup_actions.append("friendship_removed")
-    except Exception:
-        pass  # Friendship table might not exist
-    
-    # 2. Cancel pending friend requests (both directions)
+    # 1. Remove friendship and friend requests (both directions)
     try:
         from models import FriendRequest
         requests = db.query(FriendRequest).filter(
             or_(
-                and_(FriendRequest.sender_id == current_user.id, FriendRequest.receiver_id == block.blocked_id),
-                and_(FriendRequest.sender_id == block.blocked_id, FriendRequest.receiver_id == current_user.id)
-            ),
-            FriendRequest.status == "pending"
+                and_(FriendRequest.requester_id == current_user.id, FriendRequest.recipient_id == block.blocked_id),
+                and_(FriendRequest.requester_id == block.blocked_id, FriendRequest.recipient_id == current_user.id)
+            )
         ).all()
         for r in requests:
-            r.status = "cancelled"
+            db.delete(r)  # Delete all requests (pending or accepted) to sever the friendship completely
         if requests:
-            cleanup_actions.append("friend_requests_cancelled")
+            cleanup_actions.append("friend_requests_removed")
     except Exception:
         pass
     
@@ -246,8 +229,11 @@ async def unblock_user(
     if user_hidden:
         db.delete(user_hidden)
     
-    # Remove hidden posts from this user
-    blocked_posts = db.query(Post).filter(Post.user_id == blocked_id).all()
+    # 🐛 FIX: was `Post.user_id` — that column doesn't exist on Post.
+    # The Post model uses `author_id` (see models.py). This crashed
+    # every unblock call with `AttributeError: type object 'Post' has
+    # no attribute 'user_id'`, leaving stale blocks forever.
+    blocked_posts = db.query(Post).filter(Post.author_id == blocked_id).all()
     for post in blocked_posts:
         post_hidden = db.query(HiddenContent).filter(
             HiddenContent.user_id == current_user.id,

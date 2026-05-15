@@ -160,7 +160,6 @@ struct GlassSlider: View {
                 }
                 
                 // Fill
-                let fillStart = range.lowerBound < 0 ? centerX : 0
                 let fillWidth = range.lowerBound < 0 ? abs(thumbX - centerX) : thumbX
                 let fillX = range.lowerBound < 0 ? min(thumbX, centerX) : 0
                 

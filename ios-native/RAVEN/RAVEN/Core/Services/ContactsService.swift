@@ -80,7 +80,7 @@ class ContactsService {
         
         // 💡 Move heavy synchronous contact enumeration to a detached task
         // to avoid blocking the cooperative thread pool (which would freeze UI)
-        let fetchResult = await Task.detached(priority: .userInitiated) { [weak self] () -> Result<[LocalContact], Error> in
+        let fetchResult = await Task.detached(priority: .userInitiated) { () -> Result<[LocalContact], Error> in
             let store = CNContactStore()
             let keysToFetch: [CNKeyDescriptor] = [
                 CNContactGivenNameKey as CNKeyDescriptor,
