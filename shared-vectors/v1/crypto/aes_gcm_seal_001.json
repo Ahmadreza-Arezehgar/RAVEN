@@ -1,0 +1,18 @@
+{
+  "name": "AES-256-GCM seal — Alice×Bob key, fixed nonce",
+  "description": "Combined-blob seal: output = nonce(12) || ciphertext || tag(16). Empty AAD.",
+  "protocol_version": "v1",
+  "spec_reference": "MESH_PROTOCOL.md §D — AEAD",
+  "created_at": "2026-05-15T00:00:00Z",
+  "deterministic": true,
+  "inputs": {
+    "key_hex": "e0cf37af1cfdb90273ebcc14c976db52cd3341003211da61d7b4c46cda680560",
+    "nonce_hex": "000102030405060708090a0b",
+    "plaintext_utf8": "hello raven mesh",
+    "aad_hex": ""
+  },
+  "expected": {
+    "combined_hex": "000102030405060708090a0ba695fccc6b3fa9015ddaae223a117aae1620388ea6da14667155d43712d6ab8d",
+    "combined_b64": "AAECAwQFBgcICQoLppX8zGs/qQFd2q4iOhF6rhYgOI6m2hRmcVXUNxLWq40="
+  }
+}

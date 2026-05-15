@@ -1,0 +1,14 @@
+{
+  "name": "Single-chunk encoded packet",
+  "description": "Payload < MTU → 1-byte flag (0x00) + raw JSON.",
+  "protocol_version": "v1",
+  "spec_reference": "MESH_PROTOCOL.md §B",
+  "created_at": "2026-05-15T00:00:00Z",
+  "deterministic": true,
+  "inputs": {
+    "payload_utf8": "{\"x\":1}"
+  },
+  "expected": {
+    "packet_hex": "007b2278223a317d"
+  }
+}

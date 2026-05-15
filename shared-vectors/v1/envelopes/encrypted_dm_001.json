@@ -1,0 +1,27 @@
+{
+  "name": "EncryptedMeshPayload — Alice → Bob",
+  "description": "Encrypted DM: AES-256-GCM of the DM envelope JSON. Outer spk is the X25519 agreement key per §I.2.",
+  "protocol_version": "v1",
+  "spec_reference": "MESH_PROTOCOL.md §C.2 + §I.2",
+  "created_at": "2026-05-15T00:00:00Z",
+  "deterministic": true,
+  "inputs": {
+    "payload": {
+      "c": "qrvM3e7/ABEiM0RVq7QRnzPCjSo3V/iAyWGpnF7PskIVk/H3U84KUawT/bFX8ITpvFaVMRZjrUJHvLEL+SarEgGUn3ZPZOT5hMF9rpWuRQ3GrqzzU+ZhMYvDYWfzJHd7JTZI4xewVcK5zahNtbad3fK9eqro5VQT5MthphXE0qT1FmqPyuuYqkx+saoIt7gFm9N9q4Ej25tG2D6gi9baswbajk1GJKvXPkC4Py1JhVdSMXtYVHkF79oS+03Oz5SZgqWGRU7c/TO8k+tXjXpxdwuv0yjDPNzL/fHkh5n2kr72KKpTFpTGwo4EJ5I4MuJEQr3X14k+U0plrazXTz5V4MIJuA7VFXVx7fb15EGm//vUY316o3JN5cmnQMZ5gMLXqadM8xBBq7pXygcMYehAKDe1IcCFQK8KDGl9+/WCCUVxCeMvA4Ic7JOs9KTZ/78whLtYvwEn3DLAriJ0zxuTmI10gXnGQXGuTTaCb9CelsSHwzi1iyJrAjqhobjL0gEB2s00OnC5LhBkX1XvAmp2Vp24kdDZpJ9+/QDphATCa3OMY6k5sXXMlG8k+9DYjaXQv9cZHVA7FcAbPsHbB1oCArUqiCOdvg3y+ZI8i+r+xUX/sG3WT/8DufZedb4F8311pcZslYK10ffcPjstxUVkwL6vv/yH8pLNG/vlVOW+1SRHtk0qm7V87YNgDygmMxY4Qdc1ChnVkMxN9OYt5Jp96g==",
+      "n": "qrvM3e7/ABEiM0RV",
+      "spk": "hSDwCYkwp1R0i33ctD73Wg2/Og0mOBr066SpjqqbTmo=",
+      "v": 1,
+      "s": "vGFnmNY0vt1z3ZKsWXy1C2kUnN/5tiRghSJw62owkBZWvAbXpIszBcteYBnKVKsyA8grD9hlc4G/TZ8qoqnyCw==",
+      "ssk": "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo="
+    },
+    "aes_key_hex": "e0cf37af1cfdb90273ebcc14c976db52cd3341003211da61d7b4c46cda680560",
+    "ecdh_self": "alice",
+    "ecdh_peer": "bob",
+    "expected_plaintext_utf8": "{\"clientMessageId\":\"dm-001\",\"roomId\":\"room:alice-bob\",\"senderId\":\"alice\",\"senderName\":\"Alice\",\"recipientId\":\"bob\",\"type\":0,\"nonceB64\":\"ABEiM0RVZneImaq7zN3u/w==\",\"senderPublicKeyB64\":\"11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=\",\"timestampMs\":1700000000000,\"originDeviceId\":\"alice-device-1\",\"text\":\"hello from alice\",\"mediaUrl\":null,\"thumbnailUrl\":null,\"fileName\":null,\"mimeType\":null,\"fileSize\":null,\"audioDurationSec\":null,\"replyToMessageId\":null,\"replyToTextPreview\":null,\"replyToSenderName\":null,\"geoFence\":null}"
+  },
+  "expected": {
+    "aes_key_hex": "e0cf37af1cfdb90273ebcc14c976db52cd3341003211da61d7b4c46cda680560",
+    "combined_hex": "aabbccddeeff001122334455abb4119f33c28d2a3757f880c961a99c5ecfb2421593f1f753ce0a51ac13fdb157f084e9bc5695311663ad4247bcb10bf926ab1201949f764f64e4f984c17dae95ae450dc6aeacf353e661318bc36167f324777b253648e317b055c2b9cda84db5b69dddf2bd7aaae8e55413e4cb61a615c4d2a4f5166a8fcaeb98aa4c7eb1aa08b7b8059bd37dab8123db9b46d83ea08bd6dab306da8e4d4624abd73e40b83f2d49855752317b58547905efda12fb4dcecf949982a586454edcfd33bc93eb578d7a71770bafd328c33cdccbfdf1e48799f692bef628aa531694c6c28e0427923832e24442bdd7d7893e534a65adacd74f3e55e0c209b80ed5157571edf6f5e441a6fffbd4637d7aa3724de5c9a740c67980c2d7a9a74cf31041abba57ca070c61e8402837b521c08540af0a0c697dfbf58209457109e32f03821cec93acf4a4d9ffbf3084bb58bf0127dc32c0ae2274cf1b93988d748179c64171ae4d36826fd09e96c487c338b58b226b023aa1a1b8cbd20101dacd343a70b92e10645f55ef026a76569db891d0d9a49f7efd00e98404c26b738c63a939b175cc946f24fbd0d88da5d0bfd7191d503b15c01b3ec1db075a0202b52a88239dbe0df2f9923c8beafec545ffb06dd64fff03b9f65e75be05f37d75a5c66c9582b5d1f7dc3e3b2dc54564c0beafbffc87f292cd1bfbe554e5bed52447b64d2a9bb57ced83600f282633163841d7350a19d590cc4df4e62de49a7dea",
+    "combined_b64": "qrvM3e7/ABEiM0RVq7QRnzPCjSo3V/iAyWGpnF7PskIVk/H3U84KUawT/bFX8ITpvFaVMRZjrUJHvLEL+SarEgGUn3ZPZOT5hMF9rpWuRQ3GrqzzU+ZhMYvDYWfzJHd7JTZI4xewVcK5zahNtbad3fK9eqro5VQT5MthphXE0qT1FmqPyuuYqkx+saoIt7gFm9N9q4Ej25tG2D6gi9baswbajk1GJKvXPkC4Py1JhVdSMXtYVHkF79oS+03Oz5SZgqWGRU7c/TO8k+tXjXpxdwuv0yjDPNzL/fHkh5n2kr72KKpTFpTGwo4EJ5I4MuJEQr3X14k+U0plrazXTz5V4MIJuA7VFXVx7fb15EGm//vUY316o3JN5cmnQMZ5gMLXqadM8xBBq7pXygcMYehAKDe1IcCFQK8KDGl9+/WCCUVxCeMvA4Ic7JOs9KTZ/78whLtYvwEn3DLAriJ0zxuTmI10gXnGQXGuTTaCb9CelsSHwzi1iyJrAjqhobjL0gEB2s00OnC5LhBkX1XvAmp2Vp24kdDZpJ9+/QDphATCa3OMY6k5sXXMlG8k+9DYjaXQv9cZHVA7FcAbPsHbB1oCArUqiCOdvg3y+ZI8i+r+xUX/sG3WT/8DufZedb4F8311pcZslYK10ffcPjstxUVkwL6vv/yH8pLNG/vlVOW+1SRHtk0qm7V87YNgDygmMxY4Qdc1ChnVkMxN9OYt5Jp96g=="
+  }
+}

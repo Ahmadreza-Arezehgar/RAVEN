@@ -1,0 +1,24 @@
+{
+  "name": "ACK pipe-canonical signing bytes — delivered",
+  "description": "MeshACKEnvelope pipe signing per §D Rule 4. Mutable fields (path, hopCount, routePath) NOT in signed bytes.",
+  "protocol_version": "v1",
+  "spec_reference": "MESH_PROTOCOL.md §C.4 + §D Rule 4",
+  "created_at": "2026-05-15T00:00:00Z",
+  "deterministic": true,
+  "inputs": {
+    "ack": {
+      "originalMessageId": "dm-001",
+      "senderId": "bob",
+      "recipientId": "alice",
+      "status": "delivered",
+      "timestampSec": 1700000060.0
+    },
+    "signer": "bob"
+  },
+  "expected": {
+    "signing_bytes_hex": "646d2d3030317c626f627c616c6963657c64656c6976657265647c31373030303030303630303030",
+    "signing_bytes_utf8": "dm-001|bob|alice|delivered|1700000060000",
+    "signature_hex": "60a8dffc63e273a58797aeb85f4cdd9bb456e3a462c536864d7aa5c4d0ba85c8bc4a8685f11f960cc6fde6e238e91b0623ab53583501c2561521fede42f6bd01",
+    "signature_b64": "YKjf/GPic6WHl664X0zdm7RW46RixTaGTXqlxNC6hci8SoaF8R+WDMb95uI46RsGI6tTWDUBwlYVIf7eQva9AQ=="
+  }
+}

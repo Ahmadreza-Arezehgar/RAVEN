@@ -1,0 +1,17 @@
+{
+  "name": "Ed25519 sign — Alice signs \"the quick brown fox\"",
+  "description": "Deterministic Ed25519 signature. Output is the 64-byte signature.",
+  "protocol_version": "v1",
+  "spec_reference": "MESH_PROTOCOL.md §D — Identity keypairs",
+  "created_at": "2026-05-15T00:00:00Z",
+  "deterministic": true,
+  "inputs": {
+    "private_key_hex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+    "public_key_hex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+    "message_utf8": "the quick brown fox"
+  },
+  "expected": {
+    "signature_hex": "735c46cac13b0b90bc2e79a870ba9e713e24ee723adb254920414b70f144144fe38476b22fa1911fb6e48efd3a60f303c5ed7dae28c2b1f853b283ea47d7ce05",
+    "signature_b64": "c1xGysE7C5C8LnmocLqecT4k7nI62yVJIEFLcPFEFE/jhHayL6GRH7bkjv06YPMDxe19rijCsfhTsoPqR9fOBQ=="
+  }
+}

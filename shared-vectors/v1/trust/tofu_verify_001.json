@@ -1,0 +1,17 @@
+{
+  "name": "Friend-device verify after pairing code match",
+  "description": "Promote unverified → verified once user confirms the out-of-band pairing code.",
+  "protocol_version": "v1",
+  "spec_reference": "PROTOCOL_BUGS_REVIEW.md §I.11 + MESH_PROTOCOL.md §F",
+  "created_at": "2026-05-15T00:00:00Z",
+  "deterministic": true,
+  "inputs": {
+    "device_id": "bob-device-1",
+    "via": "pairing_code"
+  },
+  "expected": {
+    "state": "verified",
+    "verified_via": "pairing_code",
+    "is_trusted_relay": true
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "Forward decision — direct recipient bypasses spray budget",
+  "description": "If the connected peer's deviceId matches the envelope's recipientId, forward regardless of spray budget.",
+  "protocol_version": "v1",
+  "spec_reference": "MESH_PROTOCOL.md §E — Forwarding rules",
+  "created_at": "2026-05-15T00:00:00Z",
+  "deterministic": true,
+  "inputs": {
+    "envelope_recipient_id": "bob",
+    "peer_device_id": "bob-device-1",
+    "current_tokens": 1
+  },
+  "expected": {
+    "forward": true,
+    "reason": "direct_recipient"
+  }
+}

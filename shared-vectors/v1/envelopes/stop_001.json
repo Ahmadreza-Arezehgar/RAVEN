@@ -1,0 +1,22 @@
+{
+  "name": "StopCommand — Alice cancels her DM",
+  "description": "Stop command for dm-001 issued 120s after send.",
+  "protocol_version": "v1",
+  "spec_reference": "MESH_PROTOCOL.md §C.5",
+  "created_at": "2026-05-15T00:00:00Z",
+  "deterministic": true,
+  "inputs": {
+    "stop": {
+      "messageId": "dm-001",
+      "timestampSec": 1700000120.0,
+      "type": "STOP",
+      "signatureB64": "+IiCey9O2Xl9IBg1rYl9Ze6sJbcl1OuXMaYNKp6Jq5kabzIGqrci2od5ZkY7pY1PLzpYTUvPVqva7PpRBfE2Dg==",
+      "signerPublicKeyB64": "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo="
+    },
+    "signer": "alice"
+  },
+  "expected": {
+    "signing_bytes_hex": "53544f507c646d2d3030317c31373030303030313230303030",
+    "signature_hex": "f888827b2f4ed9797d201835ad897d65eeac25b725d4eb9731a60d2a9e89ab991a6f3206aab722da877966463ba58d4f2f3a584d4bcf56abdaecfa5105f1360e"
+  }
+}

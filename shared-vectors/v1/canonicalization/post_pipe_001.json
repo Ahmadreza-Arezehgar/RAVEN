@@ -1,0 +1,27 @@
+{
+  "name": "Post pipe-canonical signing bytes",
+  "description": "MeshPostEnvelope pipe signing per §D Rule 2.",
+  "protocol_version": "v1",
+  "spec_reference": "MESH_PROTOCOL.md §C.3 + §D Rule 2",
+  "created_at": "2026-05-15T00:00:00Z",
+  "deterministic": true,
+  "inputs": {
+    "post": {
+      "postId": "post-001",
+      "authorId": "alice",
+      "authorUsername": "alice_raven",
+      "authorAvatar": "https://cdn.raven.app/u/alice.png",
+      "text": "first mesh post from alice",
+      "createdAtSec": 1700000000.0,
+      "scope": "friends",
+      "signerPublicKeyB64": "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo="
+    },
+    "signer": "alice"
+  },
+  "expected": {
+    "signing_bytes_hex": "504f53547c706f73742d3030317c616c6963657c616c6963655f726176656e7c68747470733a2f2f63646e2e726176656e2e6170702f752f616c6963652e706e677c6669727374206d65736820706f73742066726f6d20616c6963657c313730303030303030303030307c667269656e64737c3131715941594b7843726656532f3754795751484f6737686376506170694d6c727749616150634855526f3d",
+    "signing_bytes_utf8": "POST|post-001|alice|alice_raven|https://cdn.raven.app/u/alice.png|first mesh post from alice|1700000000000|friends|11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=",
+    "signature_hex": "c0e4bfdf058731ec55f041b1184d2cab1ff4dcb5e1ea7effd13470377169d10d4076f8a47481deb9abf56d4e68e9eb9a693ef109d62e881070ddc3d93ce99806",
+    "signature_b64": "wOS/3wWHMexV8EGxGE0sqx/03LXh6n7/0TRwN3Fp0Q1AdvikdIHeuav1bU5o6euaaT7xCdYuiBBw3cPZPOmYBg=="
+  }
+}
