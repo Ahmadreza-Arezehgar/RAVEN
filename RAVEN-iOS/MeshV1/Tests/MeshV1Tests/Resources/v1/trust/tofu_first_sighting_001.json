@@ -1,0 +1,21 @@
+{
+  "name": "Friend-device TOFU — first sighting",
+  "description": "Recording a new fingerprint should produce state=unverified; subsequent sightings preserve state.",
+  "protocol_version": "v1",
+  "spec_reference": "PROTOCOL_BUGS_REVIEW.md §I.11 + MESH_PROTOCOL.md §F",
+  "created_at": "2026-05-15T00:00:00Z",
+  "deterministic": true,
+  "inputs": {
+    "device_id": "bob-device-1",
+    "user_id": "bob",
+    "fingerprint": "39F7-13D0-A644",
+    "ed25519_public_key_b64": "PUAXw+hDiVqStwqnTRt+vJyYLM8uxJaMwM1V8Sr0Zgw=",
+    "x25519_public_key_b64": "3p7bfXt9wbTTW2HC7OQ1Nz+DQ8hbeGdNrfx+FG+IK08=",
+    "is_first_sighting": true
+  },
+  "expected": {
+    "state": "unverified",
+    "verified_via": null,
+    "is_trusted_relay": false
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "HKDF-SHA256 with RAVEN-MESH salt — Alice×Bob AES key",
+  "description": "Derive the 32-byte AES-GCM key from the X25519 shared secret, using salt=\"RAVEN-MESH\" and empty info.",
+  "protocol_version": "v1",
+  "spec_reference": "MESH_PROTOCOL.md §D — Key derivation",
+  "created_at": "2026-05-15T00:00:00Z",
+  "deterministic": true,
+  "inputs": {
+    "shared_secret_hex": "4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742",
+    "salt_utf8": "RAVEN-MESH",
+    "info_hex": "",
+    "length": 32
+  },
+  "expected": {
+    "derived_key_hex": "e0cf37af1cfdb90273ebcc14c976db52cd3341003211da61d7b4c46cda680560"
+  }
+}

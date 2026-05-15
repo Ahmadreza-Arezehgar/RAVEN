@@ -1,0 +1,24 @@
+{
+  "name": "Dedup key strings per frame kind",
+  "description": "Exact dedup-key strings stored in MeshDedupRepository per §E.",
+  "protocol_version": "v1",
+  "spec_reference": "MESH_PROTOCOL.md §E",
+  "created_at": "2026-05-15T00:00:00Z",
+  "deterministic": true,
+  "inputs": {
+    "client_message_id": "dm-001",
+    "post_id": "post-001",
+    "nonce_b64": "qrvM3e7/ABEiM0RV",
+    "ack_sender_id": "bob",
+    "ack_recipient_id": "alice",
+    "ack_status": "delivered"
+  },
+  "expected": {
+    "signed_dm_key": "dm-001",
+    "encrypted_dm_key": "enc:qrvM3e7/ABEiM0RV",
+    "post_key": "post-001",
+    "ack_key": "ack:dm-001|bob|alice|delivered",
+    "stop_key": "stop:dm-001",
+    "frame_key": "frame:frame-001"
+  }
+}

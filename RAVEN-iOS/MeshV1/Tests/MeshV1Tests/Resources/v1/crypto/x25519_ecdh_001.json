@@ -1,0 +1,16 @@
+{
+  "name": "X25519 ECDH — Alice × Bob",
+  "description": "X25519 shared secret between Alice and Bob using their fixed test seeds.",
+  "protocol_version": "v1",
+  "spec_reference": "MESH_PROTOCOL.md §D — ECDH",
+  "created_at": "2026-05-15T00:00:00Z",
+  "deterministic": true,
+  "inputs": {
+    "self_x_private_hex": "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a",
+    "peer_x_public_hex": "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f"
+  },
+  "expected": {
+    "shared_secret_hex": "4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742"
+  },
+  "notes": "Should be symmetric: (Bob priv) × (Alice pub) yields the same bytes."
+}

@@ -1,0 +1,19 @@
+{
+  "name": "Multi-chunk reassembly — out-of-order arrival",
+  "description": "Same chunks as 001 but delivered in reverse order; reassembled payload must equal the original.",
+  "protocol_version": "v1",
+  "spec_reference": "MESH_PROTOCOL.md §B — ChunkReassembler",
+  "created_at": "2026-05-15T00:00:00Z",
+  "deterministic": true,
+  "inputs": {
+    "chunks_hex_in_arrival_order": [
+      "01efbeadde0302494a",
+      "01efbeadde030145464748",
+      "01efbeadde030041424344"
+    ],
+    "sender_device_id": "alice-device-1"
+  },
+  "expected": {
+    "reassembled_hex": "4142434445464748494a"
+  }
+}

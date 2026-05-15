@@ -1,0 +1,16 @@
+{
+  "name": "Binary Spray-and-Wait — wait phase at 1 token",
+  "description": "sprayCounter=1 → at threshold; tokensToGive=1, tokensRemaining=0, inWaitPhase=true.",
+  "protocol_version": "v1",
+  "spec_reference": "MESH_PROTOCOL.md §E",
+  "created_at": "2026-05-15T00:00:00Z",
+  "deterministic": true,
+  "inputs": {
+    "current_tokens": 1
+  },
+  "expected": {
+    "tokens_to_give": 1,
+    "tokens_remaining": 0,
+    "in_wait_phase": true
+  }
+}

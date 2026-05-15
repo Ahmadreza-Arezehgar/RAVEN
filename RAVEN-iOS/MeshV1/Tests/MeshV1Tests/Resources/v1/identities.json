@@ -1,0 +1,47 @@
+{
+  "protocol_version": "v1",
+  "spec_reference": "MESH_PROTOCOL.md \u00a7D",
+  "created_at": "2026-05-15T00:00:00Z",
+  "identities": {
+    "alice": {
+      "ed_private_hex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+      "ed_public_hex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+      "ed_public_b64": "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=",
+      "x_private_hex": "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a",
+      "x_public_hex": "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a",
+      "x_public_b64": "hSDwCYkwp1R0i33ctD73Wg2/Og0mOBr066SpjqqbTmo=",
+      "fingerprint": "21FE-31DF-A154",
+      "device_id": "alice-device-1"
+    },
+    "bob": {
+      "ed_private_hex": "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+      "ed_public_hex": "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
+      "ed_public_b64": "PUAXw+hDiVqStwqnTRt+vJyYLM8uxJaMwM1V8Sr0Zgw=",
+      "x_private_hex": "5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb",
+      "x_public_hex": "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f",
+      "x_public_b64": "3p7bfXt9wbTTW2HC7OQ1Nz+DQ8hbeGdNrfx+FG+IK08=",
+      "fingerprint": "39F7-13D0-A644",
+      "device_id": "bob-device-1"
+    },
+    "carol": {
+      "ed_private_hex": "c5aa8df43f9f837bedb7442f31dcb7b166d38535076f094b85ce3a2e0b4458f7",
+      "ed_public_hex": "fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025",
+      "ed_public_b64": "/FHNjmIYoaONpH7QAjDwWAgW7RO6MwOsXeuRFUiQgCU=",
+      "x_private_hex": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+      "x_public_hex": "05ee18184ed593900f639b87b8d99a7a5c5c00cc0aaac5629c45f8869c602907",
+      "x_public_b64": "Be4YGE7Vk5APY5uHuNmaelxcAMwKqsVinEX4hpxgKQc=",
+      "fingerprint": "DAC0-73E0-123B",
+      "device_id": "carol-device-1"
+    },
+    "dave": {
+      "ed_private_hex": "0d4a05b07352a5436e180356da0ae6efa0345ff7fb1572575772e8005ed978e9",
+      "ed_public_hex": "e61a185bcef2613a6c7cb79763ce945d3b245d76114dd440bcf5f2dc1aa57057",
+      "ed_public_b64": "5hoYW87yYTpsfLeXY86UXTskXXYRTdRAvPXy3BqlcFc=",
+      "x_private_hex": "fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321",
+      "x_public_hex": "85e8fbb889731064e043a3252ad4850aa330482bad5f5d71ddc5f550e6c3bd46",
+      "x_public_b64": "hej7uIlzEGTgQ6MlKtSFCqMwSCutX11x3cX1UObDvUY=",
+      "fingerprint": "34DE-F686-F4B1",
+      "device_id": "dave-device-1"
+    }
+  }
+}

@@ -163,7 +163,11 @@ raven_website/
 raven_website_new/
 raiven_landing/
 raven_dashboard/
-RAVEN-iOS/
+# Ignore the iOS app source but ship the open-source wire-protocol
+# reference package (mirrors RAVEN-Android/modules/mesh — both
+# validated against shared-vectors/v1).
+RAVEN-iOS/*
+!RAVEN-iOS/MeshV1/
 docs/
 pubspec.yaml
 pubspec.lock

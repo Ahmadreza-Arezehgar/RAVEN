@@ -1,0 +1,17 @@
+{
+  "name": "Key-rotation attestation — Alice signs Bob's pub at ts",
+  "description": "Attestation message = new_ed_public(32) || timestamp_ms(int64 BE). Signed with the old private key.",
+  "protocol_version": "v1",
+  "spec_reference": "MESH_PROTOCOL.md §D — Key rotation",
+  "created_at": "2026-05-15T00:00:00Z",
+  "deterministic": true,
+  "inputs": {
+    "old_private_key_hex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+    "new_public_key_hex": "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
+    "timestamp_ms": 1700000000000
+  },
+  "expected": {
+    "attestation_message_hex": "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c0000018bcfe56800",
+    "signature_hex": "a7f395e2be301055e9ca286541e756609419b55f857c2b929daffc8d0b70ae15842e40c0820d2ddcd6cb24eb212fdace8459b74f32fbbb663f80c7bcd2fbbe09"
+  }
+}

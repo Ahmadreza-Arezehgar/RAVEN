@@ -1,0 +1,16 @@
+{
+  "name": "Binary Spray-and-Wait — split from 4 tokens",
+  "description": "sprayCounter=4 → tokensToGive=2, tokensRemaining=2, inWaitPhase=false.",
+  "protocol_version": "v1",
+  "spec_reference": "MESH_PROTOCOL.md §E",
+  "created_at": "2026-05-15T00:00:00Z",
+  "deterministic": true,
+  "inputs": {
+    "current_tokens": 4
+  },
+  "expected": {
+    "tokens_to_give": 2,
+    "tokens_remaining": 2,
+    "in_wait_phase": false
+  }
+}
