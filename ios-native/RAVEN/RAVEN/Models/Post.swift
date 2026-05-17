@@ -17,6 +17,18 @@ struct PostMedia: Identifiable, Codable, Equatable, Hashable {
     let thumbnailUrl: String?  // Required for videos (cover frame)
     var topComments: [TopComment]?  // Top 3 comments for this media
     
+    /// Defensive video detection — checks mediaType AND URL extension.
+    /// Prevents video URLs from being rendered as broken images when mediaType is nil.
+    private static let videoExtensions: Set<String> = ["mp4", "mov", "m4v", "avi", "webm", "mkv"]
+    
+    var isVideo: Bool {
+        if mediaType?.lowercased() == "video" { return true }
+        // Fallback: check URL extension (handles cases where mediaType is nil or wrong)
+        let cleanUrl = url.components(separatedBy: "?").first ?? url  // Strip query params
+        let ext = (cleanUrl as NSString).pathExtension.lowercased()
+        return Self.videoExtensions.contains(ext)
+    }
+    
     // Top comment preview for per-media display
     // Note: No CodingKeys needed — NetworkService's decoder uses .convertFromSnakeCase
     struct TopComment: Identifiable, Codable, Equatable, Hashable {
@@ -26,6 +38,13 @@ struct PostMedia: Identifiable, Codable, Equatable, Hashable {
         let content: String
         let likes: Int
     }
+}
+
+// MARK: - Tagged User in Post
+struct PostTagUser: Codable, Equatable, Hashable, Identifiable {
+    let id: String
+    let username: String
+    let avatarPath: String?
 }
 
 // MARK: - Post Model
@@ -45,6 +64,9 @@ struct Post: Identifiable, Codable, Equatable, Hashable {
     let isLocal: Bool
     var isLiked: Bool
     var isReposted: Bool
+    /// Server-side bookmark state. Defaulted because legacy server
+    /// responses (before the `post_bookmarks` table) don't include it.
+    var isBookmarked: Bool? = nil
     
     // NEW: Multi-image support (max 4)
     var media: [PostMedia]?
@@ -78,12 +100,24 @@ struct Post: Identifiable, Codable, Equatable, Hashable {
     // NEW: Mesh status for offline-sent posts
     var meshStatus: String?  // "queued_mesh", "broadcasting", "synced"
     
+    // NEW: Vault lock for location-encrypted posts
+    var vaultLock: VaultLock?
+    
     // DTN: How was this post first sent? "internet" or "mesh"
     var initialSend: String?  // "internet" | "mesh"
     
     // Location coordinates (for spatial decay in RavenRank)
     var latitude: Double?
     var longitude: Double?
+    
+    // Raven Shot: opt-in flag for social map display
+    var showOnRavenShot: Bool?
+    
+    // Human-readable location name (e.g. "Starbucks, Madrid")
+    var locationName: String?
+    
+    // Tagged users in post
+    var taggedUsers: [PostTagUser]?
     
     // Author verification status
     var isVerified: Bool?
@@ -149,7 +183,10 @@ struct Post: Identifiable, Codable, Equatable, Hashable {
         if let media = media, !media.isEmpty {
             return media.sorted { $0.orderIndex < $1.orderIndex }
         } else if let imageUrl = imageUrl {
-            return [PostMedia(id: id + "_0", url: imageUrl, orderIndex: 0, mediaType: "image", thumbnailUrl: nil, topComments: nil)]
+            // Detect video URLs so they aren't incorrectly rendered as images
+            let probe = PostMedia(id: id + "_0", url: imageUrl, orderIndex: 0, mediaType: nil, thumbnailUrl: nil, topComments: nil)
+            let resolvedType = probe.isVideo ? "video" : "image"
+            return [PostMedia(id: id + "_0", url: imageUrl, orderIndex: 0, mediaType: resolvedType, thumbnailUrl: nil, topComments: nil)]
         }
         return []
     }
@@ -213,7 +250,16 @@ struct Comment: Identifiable, Codable {
     var transcriptText: String?
     var transcriptStatus: String?
     var transcriptLanguage: String?
-    
+
+    // ✏️ Edit support — non-nil when comment was edited at least once.
+    // UI shows a small "edited" hint next to the timestamp.
+    var editedAt: Date?
+
+    // 📌 Pin support — `is_pinned` floats this comment to the top of its
+    // post. `pinned_at` drives ordering within the pinned section.
+    var isPinned: Bool? = false
+    var pinnedAt: Date?
+
     // Computed helpers — coalesce all server naming variants
     var verifiedStatus: Bool {
         isVerified == true || verified == true || badgeType == "verified" || badgeType == "brand" || badgeType == "org"

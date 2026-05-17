@@ -427,7 +427,7 @@ struct VoiceRecordingSheet: View {
                     }
                     .onDisappear { pulseScale = 1.0 }
                 
-                RoundedRectangle(cornerRadius: 8)
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(Color.red)
                     .frame(width: 28, height: 28)
             }

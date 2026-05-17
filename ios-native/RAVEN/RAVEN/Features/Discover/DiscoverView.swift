@@ -15,6 +15,8 @@ struct DiscoverView: View {
     // blocking it during AirPlay/screen mirror is a UX-breaking soft-brick.
     @State private var selectedHashtag: String? = nil
     @State private var selectedTab: DiscoverTab = .all
+    @State private var showNearby = false
+    @State private var showConcertMode = false
     
     enum DiscoverTab: String, CaseIterable {
         case all = "All"
@@ -81,6 +83,11 @@ struct DiscoverView: View {
                     )
                     .padding(.vertical, 12)
                     .transition(.identity)
+                    
+                    // MARK: - Mesh Feature Cards
+                    if FeatureFlag.isEchoEnabled || FeatureFlag.isClubModeEnabled {
+                        meshFeatureCards
+                    }
                 } else {
                     if selectedTab == .all || selectedTab == .users {
                         // MARK: - Search Results: Accounts Carousel
@@ -125,12 +132,7 @@ struct DiscoverView: View {
         }
         .task {
             currentUserId = await KeychainService.shared.getUserId() ?? ""
-            // Load contacts if permission granted (once per session)
-            let cs = ContactsService.shared
-            if cs.permissionStatus == .authorized && !cs.hasSyncedThisSession {
-                cs.hasSyncedThisSession = true
-                await cs.syncWithServer()
-            }
+            // Note: Contacts sync is handled by MainShellView on launch (with 2s delay)
         }
         .sheet(isPresented: $discoverStore.showAllSuggestionsSheet) {
             SuggestedProfilesSheet(
@@ -157,7 +159,20 @@ struct DiscoverView: View {
                 }
             }
         }
-            
+        .sheet(isPresented: $showNearby) {
+            NearbyPeopleSheet { userId in
+                // Open chat with this user. Routes via DeepLinkRouter so the
+                // existing 1:1 chat flow handles persistence + outbox.
+                DeepLinkRouter.shared.route(to: .chat(roomId: userId))
+            }
+        }
+        .sheet(isPresented: $showConcertMode) {
+            ConcertModeSheet { groupId in
+                // Drop the user into the venue group chat
+                DeepLinkRouter.shared.route(to: .chat(roomId: groupId))
+            }
+        }
+
     }
     
     // MARK: - Posts Section (inlined to avoid nested ScrollView)
@@ -223,6 +238,165 @@ struct DiscoverView: View {
             }
         }
     }
+    
+    // MARK: - Mesh Feature Cards
+    
+    @ViewBuilder
+    private var meshFeatureCards: some View {
+        VStack(spacing: 12) {
+            HStack(spacing: 6) {
+                Image(systemName: "antenna.radiowaves.left.and.right")
+                    .foregroundStyle(.purple)
+                    .font(.subheadline)
+                Text("Mesh Features")
+                    .font(.headline)
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 12) {
+                    // 🎤 Concert Mode — auto-group everyone in a venue.
+                    // (Inner horizontal ScrollView claims the gesture below
+                    // so panning these cards doesn't switch root tabs.)
+                    Button {
+                        Haptics.medium()
+                        showConcertMode = true
+                    } label: {
+                        MeshFeatureCard(
+                            icon: "music.mic",
+                            title: "Concert Mode",
+                            subtitle: "Group everyone here",
+                            gradient: [.pink, .orange]
+                        )
+                    }
+                    .buttonStyle(.plain)
+
+                    // 🌐 People Nearby — opens a sheet listing every userId
+                    // currently learned via BLE mesh, resolved to profiles.
+                    Button {
+                        Haptics.light()
+                        showNearby = true
+                    } label: {
+                        MeshFeatureCard(
+                            icon: "person.2.wave.2.fill",
+                            title: "People Nearby",
+                            subtitle: "Discover via mesh",
+                            gradient: [.green, .mint]
+                        )
+                    }
+                    .buttonStyle(.plain)
+
+                    // Unified Mesh Features (Swipe between Echo / Club / Vault)
+                    NavigationLink {
+                        MeshFeaturesContainerView()
+                    } label: {
+                        MeshFeatureCard(
+                            icon: "antenna.radiowaves.left.and.right",
+                            title: "Mesh Features",
+                            subtitle: "Echo • Club • Vault",
+                            gradient: [.blue, .purple]
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    
+                    // Individual quick-access cards
+                    if FeatureFlag.isEchoEnabled {
+                        NavigationLink {
+                            EchoMapView()
+                        } label: {
+                            MeshFeatureCard(
+                                icon: "waveform",
+                                title: "Echo",
+                                subtitle: "Anonymous Q&A",
+                                gradient: [.purple, .indigo]
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    
+                    if FeatureFlag.isClubModeEnabled {
+                        NavigationLink {
+                            ClubListView()
+                        } label: {
+                            MeshFeatureCard(
+                                icon: "person.3.fill",
+                                title: "Club",
+                                subtitle: "Group Tracking",
+                                gradient: [.orange, .red]
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    
+                    if FeatureFlag.isVaultEnabled {
+                        NavigationLink {
+                            VaultListView()
+                        } label: {
+                            MeshFeatureCard(
+                                icon: "lock.shield.fill",
+                                title: "Vault",
+                                subtitle: "Location Vault",
+                                gradient: [.teal, .blue]
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 16)
+            }
+            // 🚧 Claim the gesture while panning these horizontal cards so
+            // the root TabPager does NOT switch tabs (Discover ↔ Account)
+            // when the user is actually scrolling the mesh-feature carousel.
+            // Same pattern as PeekCarousel in the feed.
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 8)
+                    .onChanged { value in
+                        if abs(value.translation.width) > abs(value.translation.height) * 1.2 {
+                            NestedSwipeCoordinator.shared.isHandlingSwipe = true
+                        }
+                    }
+                    .onEnded { _ in
+                        NestedSwipeCoordinator.shared.isHandlingSwipe = false
+                    }
+            )
+        }
+        .padding(.vertical, 8)
+    }
+}
+
+// MARK: - Mesh Feature Card
+
+struct MeshFeatureCard: View {
+    let icon: String
+    let title: String
+    let subtitle: String
+    let gradient: [Color]
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Image(systemName: icon)
+                .font(.title2)
+                .foregroundStyle(.white)
+            
+            Spacer()
+            
+            Text(title)
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(.white)
+            
+            Text(subtitle)
+                .font(.caption2)
+                .foregroundStyle(.white.opacity(0.8))
+        }
+        .frame(width: 140, height: 120, alignment: .leading)
+        .padding(14)
+        .background(
+            LinearGradient(colors: gradient, startPoint: .topLeading, endPoint: .bottomTrailing),
+            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+        )
+        .shadow(color: gradient.first?.opacity(0.3) ?? .clear, radius: 8, y: 4)
+    }
 }
 
 // MARK: - Unified Suggested For You Section (4 cards + Show more)
@@ -235,9 +409,13 @@ struct SuggestedForYouSection: View {
     let onRemoveFriend: (String) -> Void
     let onShowMore: () -> Void
     
-    // Show only first 4 cards
+    // Show only first 4 cards. Contacts are surfaced first so the preview row
+    // doesn't bury people the user already knows behind purely algorithmic
+    // matches; remaining slots are filled in API order.
     private var previewAccounts: [SearchUser] {
-        Array(accounts.prefix(4))
+        let contacts = accounts.filter { $0.source == "contacts" }
+        let others = accounts.filter { $0.source != "contacts" }
+        return Array((contacts + others).prefix(4))
     }
     
     var body: some View {
@@ -272,13 +450,15 @@ struct SuggestedForYouSection: View {
             .padding(.horizontal, 16)
             
             if isLoading {
-                // Loading shimmer
+                // Loading shimmer — actually shimmers now (the previous version
+                // was just a static gray rectangle calling itself a shimmer).
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 12) {
                         ForEach(0..<4, id: \.self) { _ in
-                            RoundedRectangle(cornerRadius: 16)
-                                .fill(Color.gray.opacity(0.2))
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .fill(Color.gray.opacity(0.18))
                                 .frame(width: 140, height: 180)
+                                .shimmering()
                         }
                     }
                     .padding(.horizontal, 16)
@@ -291,11 +471,11 @@ struct SuggestedForYouSection: View {
                     .frame(maxWidth: .infinity)
                     .padding()
             } else {
-                // Horizontal scroll of 4 preview cards
+                // Horizontal scroll of 4 preview cards with staggered fade-in.
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 12) {
                         // ✅ FIX Bug 6: Wrap cards in NavigationLink for tap-to-profile
-                        ForEach(previewAccounts) { user in
+                        ForEach(Array(previewAccounts.enumerated()), id: \.element.id) { index, user in
                             NavigationLink(value: ProfileRoute(userId: user.id)) {
                                 SuggestedProfileCard(
                                     user: user,
@@ -306,6 +486,7 @@ struct SuggestedForYouSection: View {
                                 )
                             }
                             .buttonStyle(.plain)
+                            .staggeredAppear(index: index)
                         }
                     }
                     .padding(.horizontal, 16)
@@ -418,7 +599,7 @@ struct SuggestedProfileCard: View {
         }
         .frame(width: 110, height: 185)
         .padding(10)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .alert("Remove Friend", isPresented: $showRemoveAlert) {
             Button("Cancel", role: .cancel) { }
             Button("Remove", role: .destructive) { onRemoveFriend() }
@@ -483,9 +664,10 @@ struct SuggestedProfilesSheet: View {
                 if isLoading {
                     VStack(spacing: 16) {
                         ForEach(0..<6, id: \.self) { _ in
-                            RoundedRectangle(cornerRadius: 14)
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
                                 .fill(Color.gray.opacity(0.15))
                                 .frame(height: 72)
+                                .shimmering()
                         }
                     }
                     .padding()
@@ -500,7 +682,7 @@ struct SuggestedProfilesSheet: View {
                             )
                             
                             // ✅ FIX Bug 6: Wrap rows in NavigationLink for tap-to-profile
-                            ForEach(contactSuggestions) { user in
+                            ForEach(Array(contactSuggestions.enumerated()), id: \.element.id) { index, user in
                                 NavigationLink(value: ProfileRoute(userId: user.id)) {
                                     SuggestionListRow(
                                         user: user,
@@ -511,6 +693,7 @@ struct SuggestedProfilesSheet: View {
                                     )
                                 }
                                 .buttonStyle(.plain)
+                                .staggeredAppear(index: index)
                             }
                         }
                         
@@ -523,7 +706,7 @@ struct SuggestedProfilesSheet: View {
                             )
                             .padding(.top, contactSuggestions.isEmpty ? 0 : 8)
                             
-                            ForEach(algorithmSuggestions) { user in
+                            ForEach(Array(algorithmSuggestions.enumerated()), id: \.element.id) { index, user in
                                 NavigationLink(value: ProfileRoute(userId: user.id)) {
                                     SuggestionListRow(
                                         user: user,
@@ -534,6 +717,7 @@ struct SuggestedProfilesSheet: View {
                                     )
                                 }
                                 .buttonStyle(.plain)
+                                .staggeredAppear(index: contactSuggestions.count + index)
                             }
                         }
                         
@@ -685,7 +869,7 @@ struct SuggestionListRow: View {
             .disabled(hasSentRequest && !isFriend)
         }
         .padding(12)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .alert("Remove Friend", isPresented: $showRemoveAlert) {
             Button("Cancel", role: .cancel) { }
             Button("Remove", role: .destructive) { onRemoveFriend() }

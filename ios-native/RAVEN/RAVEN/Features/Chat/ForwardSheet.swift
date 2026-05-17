@@ -24,7 +24,7 @@ struct ForwardSheet: View {
                         .textFieldStyle(.plain)
                 }
                 .padding()
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 
                 // Conversation list
                 ScrollView {

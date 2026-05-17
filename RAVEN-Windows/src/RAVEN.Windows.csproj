@@ -52,6 +52,9 @@
 
     <!-- WebSocket client for real-time delivery (online mode). -->
     <PackageReference Include="Microsoft.Extensions.Logging" Version="8.0.1" />
+
+    <!-- QR code generation for the desktop "Log in by scanning" flow. -->
+    <PackageReference Include="QRCoder" Version="1.6.0" />
   </ItemGroup>
 
   <ItemGroup>

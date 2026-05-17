@@ -14,9 +14,9 @@ struct FriendRequest: Identifiable, Codable {
 // MARK: - Accept/Reject Response
 private struct AcceptResponse: Codable {
     let message: String
-    let friendId: String?
-    let friendUsername: String?
-    let friendAvatar: String?
+    let followerId: String?
+    let followerUsername: String?
+    let followerAvatar: String?
 }
 
 private struct RejectResponse: Codable {
@@ -37,9 +37,9 @@ final class FriendRequestsStore: ObservableObject {
         errorMessage = nil
         
         do {
-            requests = try await networkService.get(path: "/api/users/friend-requests")
+            requests = try await networkService.get(path: "/api/users/follow-requests")
             #if DEBUG
-            print("📥 Fetched \(requests.count) pending friend requests")
+            print("📥 Fetched \(requests.count) pending follow requests")
             #endif
         } catch {
             errorMessage = "Failed to load requests: \(error.localizedDescription)"
@@ -58,12 +58,12 @@ final class FriendRequestsStore: ObservableObject {
         Haptics.success()
         
         do {
-            let response: AcceptResponse = try await networkService.post(
-                path: "/api/users/friend-request/\(request.id)/accept",
+            let _: AcceptResponse = try await networkService.post(
+                path: "/api/users/follow-request/\(request.id)/accept",
                 body: EmptyBody()
             )
             #if DEBUG
-            print("✅ Accepted friend request from \(request.requesterUsername)")
+            print("✅ Accepted follow request from \(request.requesterUsername)")
             #endif
             return true
         } catch {
@@ -86,11 +86,11 @@ final class FriendRequestsStore: ObservableObject {
         
         do {
             let _: RejectResponse = try await networkService.post(
-                path: "/api/users/friend-request/\(request.id)/reject",
+                path: "/api/users/follow-request/\(request.id)/reject",
                 body: EmptyBody()
             )
             #if DEBUG
-            print("❌ Rejected friend request from \(request.requesterUsername)")
+            print("❌ Rejected follow request from \(request.requesterUsername)")
             #endif
             return true
         } catch {
@@ -130,7 +130,7 @@ struct FriendRequestsView: View {
                     requestsList
                 }
             }
-            .navigationTitle("Friend Requests")
+            .navigationTitle("Follow Requests")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
@@ -180,11 +180,11 @@ struct FriendRequestsView: View {
                 .font(.system(size: 48))
                 .foregroundColor(.secondary)
             
-            Text("No Friend Requests")
+            Text("No Follow Requests")
                 .font(.title3.weight(.semibold))
                 .foregroundColor(.primary)
             
-            Text("When someone sends you a friend request, it will appear here")
+            Text("When someone sends you a follow request, it will appear here")
                 .font(.subheadline)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
@@ -272,7 +272,7 @@ struct FriendRequestCard: View {
         .background(.ultraThinMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 16))
         .overlay(
-            RoundedRectangle(cornerRadius: 16)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .stroke(Color.primary.opacity(0.15), lineWidth: 0.6)
         )
     }

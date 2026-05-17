@@ -76,6 +76,7 @@
 // Account
 "edit_profile" = "Редактировать профиль";
 "friend_requests" = "Запросы в друзья";
+"follow_requests" = "Запросы на подписку";
 "joined" = "Присоединился";
 "add_bio" = "Добавить описание";
 

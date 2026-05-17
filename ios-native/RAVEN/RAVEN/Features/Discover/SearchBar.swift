@@ -34,8 +34,8 @@ struct SearchBar: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        // Apple Native Liquid Glass Effect (iOS 26+)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+        // Liquid Glass material effect (iOS 15+)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
     }

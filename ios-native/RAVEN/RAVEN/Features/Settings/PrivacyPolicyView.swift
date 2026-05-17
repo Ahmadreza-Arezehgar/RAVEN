@@ -32,10 +32,10 @@ struct PrivacyPolicyView: View {
 
     
     private var lastUpdated: String { "pp.last_updated".localized }
-    private let version = "2.2"
+    private let version = "2.3"
     
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // MARK: - Content (64 Q&A, 9 sections)
+    // MARK: - Content (74 Q&A, 10 sections)
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     
     private var sections: [PPSection] {
@@ -144,6 +144,19 @@ struct PrivacyPolicyView: View {
                 PPItem(id: next(), question: "pp.q64".localized, answer: "pp.a64".localized),
                 PPItem(id: next(), question: "pp.q65".localized, answer: "pp.a65".localized),
             ]),
+            
+            // J — Echo, Club, Vault & Discovery (66–74)
+            PPSection(id: 9, title: "pp.section.9".localized, icon: "waveform.circle", items: [
+                PPItem(id: next(), question: "pp.q66".localized, answer: "pp.a66".localized),
+                PPItem(id: next(), question: "pp.q67".localized, answer: "pp.a67".localized),
+                PPItem(id: next(), question: "pp.q68".localized, answer: "pp.a68".localized),
+                PPItem(id: next(), question: "pp.q69".localized, answer: "pp.a69".localized),
+                PPItem(id: next(), question: "pp.q70".localized, answer: "pp.a70".localized),
+                PPItem(id: next(), question: "pp.q71".localized, answer: "pp.a71".localized),
+                PPItem(id: next(), question: "pp.q72".localized, answer: "pp.a72".localized),
+                PPItem(id: next(), question: "pp.q73".localized, answer: "pp.a73".localized),
+                PPItem(id: next(), question: "pp.q74".localized, answer: "pp.a74".localized),
+            ]),
         ]
     }
     
@@ -180,8 +193,9 @@ struct PrivacyPolicyView: View {
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(spacing: DS.space16) {
                     headerCard
+                    honestDisclosuresCard
                     searchBar
-                    
+
                     // Sections
                     ForEach(Array(filteredSections.enumerated()), id: \.element.id) { index, section in
                         sectionCard(for: section)
@@ -272,9 +286,136 @@ struct PrivacyPolicyView: View {
     }
     
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // MARK: - Honest disclosures (radical-honesty banner)
+    //
+    // A privacy policy that overstates is worse than none. This card
+    // sits above the searchable Q&A and lists, plainly, what we have
+    // shipped vs what we have NOT shipped yet, with the version each
+    // gap closes in. Mirrors the "Security commitments" section on
+    // the marketing site so users see the same honest scoreboard
+    // wherever they look.
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    private var honestDisclosuresCard: some View {
+        VStack(alignment: .leading, spacing: DS.space12) {
+            HStack(spacing: 8) {
+                Image(systemName: "checkmark.shield.fill")
+                    .foregroundStyle(.green)
+                Text("Honest disclosures")
+                    .font(.system(size: 17, weight: .semibold))
+            }
+            Text("What's true today, what's not yet:")
+                .font(.system(size: 14))
+                .foregroundStyle(.secondary)
+
+            // ━━━━━ Shipped in v1.5 ━━━━━
+            disclosureRow(.shipped, "End-to-end encryption (Signal X3DH + Double Ratchet)",
+                          "On every 1:1 conversation, on internet AND mesh.")
+            disclosureRow(.shipped, "Safety Numbers (out-of-band identity verification)",
+                          "60-digit fingerprint comparable in person, by voice, or QR.")
+            disclosureRow(.shipped, "Hardware-bound keys (Secure Enclave + Keychain)",
+                          "Identity, signing, ratchet keys never leave your device.")
+            // ━━━━━ Shipped in v1.6 (May 2026) ━━━━━
+            disclosureRow(.shipped, "OPAQUE PAKE (RFC 9497, first iteration)",
+                          "Zero-knowledge password authentication — the server never receives your password, not even hashed. Full standards-compliant OPAQUE with a server-side OPRF round lands in v1.7.")
+            disclosureRow(.shipped, "Sealed Sender",
+                          "X25519 ephemeral + AES-GCM seals the inner envelope to the recipient's identity key — the relay layer no longer learns who sent a given envelope.")
+            disclosureRow(.shipped, "Encrypted key backup & recovery",
+                          "Opt-in: PBKDF2-SHA256 600 000 iterations + AES-256-GCM seals your identity + ratchet state with a passphrase the server never sees. Wrong passphrase fails AEAD authentication — there is no partial restore.")
+            disclosureRow(.shipped, "180-day identity-key rotation with cross-signed transition certs",
+                          "Both old and new keys sign each transition. Peers who only see the new key can prove provenance back to the old one and vice versa. Local chain log is forward and backward verifiable.")
+            disclosureRow(.shipped, "Defence-in-depth Double-AEAD construction",
+                          "Inner ChaCha20-Poly1305 wrapped in outer AES-256-GCM with a key-committing HMAC tag. Both ciphers must fall before plaintext leaks; commitment defeats the Salamander class of multi-key attacks.")
+            disclosureRow(.shipped, "Memory hygiene primitives (mlock + triple-zeroise)",
+                          "Sensitive byte buffers are page-locked so the OS can't write them to swap, and triple-zeroised on deinit (0x00 / 0xFF / 0x00 — alternation defeats compiler-eliding writes).")
+            disclosureRow(.shipped, "Mesh-to-Internet Gateway (Helper Mode, opt-in)",
+                          "An online RAVEN can opt in to relay opaque ciphertext envelopes for nearby offline neighbours over BLE. Cryptographically blind: only recipient hint + opaque blob cross the gateway. Token-bucket rate limit, replay-nonce dedup, auto-deactivates on heat / low battery / background.")
+            disclosureRow(.shipped, "Reproducible builds (stage 1)",
+                          "Every release ships a manifest of source SHA-256 + Mach-O SHA-256 + bundle SHA-256. Anyone can re-run our open verify-binary.sh and check the hashes match. Bit-for-bit reproducible IPAs target v1.7.")
+            // ━━━━━ Next ━━━━━
+            disclosureRow(.next, "Post-quantum identity (ML-DSA-65 + ML-KEM-768)",
+                          "Hybrid signing + key agreement layered on top of the current Ed25519 / X25519 stack. Rolls in once Apple ships ML-KEM in CryptoKit (we won't take a third-party C-lib dependency for crypto).")
+            disclosureRow(.next, "3-of-5 social key recovery",
+                          "Shamir + Feldman VSS so a passphrase-loss user can recover with three trusted contacts instead of being permanently locked out — no copy of the key on our servers.")
+            disclosureRow(.next, "Onion-style relay routing for mesh",
+                          "Today the gateway sees the recipient hint. Sphinx-style layered encryption hides who-asked-whom-to-relay-what from the gateway and from any single mesh hop.")
+            // ━━━━━ Committed ━━━━━
+            disclosureRow(.committed, "Open source (cryptographic core)",
+                          "X3DH / Double Ratchet / MeshEnvelope / BLE transport / desktop-login bridge — released under an audit-friendly license alongside the third-party audit. Committed 2026 H2.")
+            disclosureRow(.committed, "Independent third-party audit",
+                          "Cure53 / Trail of Bits / NCC Group-tier engagement, full report in the open. Committed 2026 H2. \"Designed to be reviewed\" is not the same as \"audited\" — we know.")
+            disclosureRow(.committed, "MLS for groups (RFC 9420)",
+                          "Today: per-group AES-256 keys with rotation on member-leave. MLS lands in v1.8 / 2026 H2 for proper continuous group key agreement at scale.")
+            disclosureRow(.committed, "Mesh cover traffic + padding (Loopix-style)",
+                          "BLE radio-traffic analysis can leak who-talks-to-whom today. Constant-rate cover traffic + decoy envelopes ship in 2026 H2.")
+            disclosureRow(.committed, "Censorship-resistant transport",
+                          "Mesh path is unaffected by network filters today. For online: domain fronting + obfs4 / Snowflake-style transports committed 2026 H2.")
+
+            Text("If we miss a date, we will say so on this page. Trust earned by inspection is the only kind worth having.")
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
+                .padding(.top, DS.space8)
+        }
+        .padding(DS.space16)
+        .ravenCard()
+        .opacity(appeared ? 1 : 0)
+        .offset(y: appeared ? 0 : 12)
+        .animation(.easeOut(duration: 0.35).delay(0.05), value: appeared)
+    }
+
+    private enum DisclosureStatus {
+        case shipped, next, committed, local
+        var label: String {
+            switch self {
+            case .shipped:   return "✓ Shipped · v1.6"
+            case .next:      return "→ Next · v1.7"
+            case .committed: return "⚑ Committed · 2026 H2"
+            case .local:     return "△ Local-only"
+            }
+        }
+        var color: Color {
+            switch self {
+            case .shipped:   return .green
+            case .next:      return .cyan
+            case .committed: return .purple
+            case .local:     return .orange
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func disclosureRow(_ status: DisclosureStatus, _ title: String, _ detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Text(status.label)
+                    .font(.system(size: 10, weight: .semibold).monospaced())
+                    .foregroundStyle(status.color)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background(
+                        Capsule()
+                            .fill(status.color.opacity(0.10))
+                            .overlay(Capsule().strokeBorder(status.color.opacity(0.30), lineWidth: 0.5))
+                    )
+                Text(title)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .multilineTextAlignment(.leading)
+                Spacer(minLength: 0)
+            }
+            Text(detail)
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.vertical, 2)
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // MARK: - Search
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    
+
     private var searchBar: some View {
         HStack(spacing: DS.space8) {
             Image(systemName: "magnifyingglass")

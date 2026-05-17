@@ -30,6 +30,14 @@ struct StoryViewerView: View {
     
     // Seen Stories Tracking
     @State private var seenStoryIds: Set<String> = []
+
+    /// Strong reference to the screenshot observer token. 🟠 BUG FIX
+    /// (2026-05-10): the previous version dropped the
+    /// `addObserver(forName:…)` token on the floor — every viewer
+    /// presentation registered ANOTHER observer that survived past
+    /// dismissal, so a single screenshot triggered N copies of
+    /// `handleScreenshot` once the user had opened a few stories.
+    @State private var screenshotObserver: NSObjectProtocol?
     
     // Single-View Timer
     @State private var singleViewTimer: Timer?
@@ -112,6 +120,7 @@ struct StoryViewerView: View {
         }
         .onDisappear {
             stopSingleViewTimer()
+            stopObservingScreenshots()
             // Return seen story IDs to caller for removal from feed
             onDismiss(seenStoryIds)
         }
@@ -655,12 +664,26 @@ struct StoryViewerView: View {
     
     // MARK: - Screenshot Detection & Prevention
     private func observeScreenshots() {
-        NotificationCenter.default.addObserver(
+        // Tear down any prior observer before registering a new one,
+        // so re-presenting the viewer (e.g. user navigates away and
+        // back) doesn't stack observers.
+        if let token = screenshotObserver {
+            NotificationCenter.default.removeObserver(token)
+        }
+        screenshotObserver = NotificationCenter.default.addObserver(
             forName: UIApplication.userDidTakeScreenshotNotification,
             object: nil,
             queue: .main
         ) { _ in
             handleScreenshot()
+        }
+    }
+
+    /// Tear down the screenshot observer. Call from `.onDisappear`.
+    private func stopObservingScreenshots() {
+        if let token = screenshotObserver {
+            NotificationCenter.default.removeObserver(token)
+            screenshotObserver = nil
         }
     }
     

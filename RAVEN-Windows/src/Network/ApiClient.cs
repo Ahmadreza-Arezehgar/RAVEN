@@ -122,6 +122,30 @@ public sealed class ApiClient : IDisposable
         return resp;
     }
 
+    // ─── QR-code desktop login (mirrors `server/routers/qr_login.py`) ─
+
+    public async Task<QrLoginInitResponse> QrLoginInitAsync(CancellationToken ct = default)
+    {
+        var resp = await _http.PostAsync("/api/auth/qr-login/init", content: null, ct).ConfigureAwait(false);
+        resp.EnsureSuccessStatusCode();
+        return await resp.Content.ReadFromJsonAsync<QrLoginInitResponse>(cancellationToken: ct).ConfigureAwait(false)
+               ?? throw new InvalidOperationException("Empty qr-login init response");
+    }
+
+    public async Task<QrLoginPollResponse> QrLoginPollAsync(string sessionId, string nonce, CancellationToken ct = default)
+    {
+        var path = $"/api/auth/qr-login/poll/{Uri.EscapeDataString(sessionId)}?nonce={Uri.EscapeDataString(nonce)}";
+        var resp = await _http.GetAsync(path, ct).ConfigureAwait(false);
+        resp.EnsureSuccessStatusCode();
+        var poll = await resp.Content.ReadFromJsonAsync<QrLoginPollResponse>(cancellationToken: ct).ConfigureAwait(false)
+                   ?? throw new InvalidOperationException("Empty poll response");
+        if (poll.Status == "approved" && !string.IsNullOrEmpty(poll.Token))
+        {
+            await _tokens.SaveAsync(poll.Token!, poll.RefreshToken ?? string.Empty).ConfigureAwait(false);
+        }
+        return poll;
+    }
+
     // ─── Mesh-bridge endpoints (online uplink for ACKs) ──────────────
 
     public async Task BridgeAckDeliveredAsync(string originalMessageId, string senderId, string recipientId, CancellationToken ct = default)
@@ -157,4 +181,20 @@ public sealed class RefreshResponse
 public sealed class AuthExpiredException : Exception
 {
     public AuthExpiredException() : base("Auth tokens expired; user must re-login.") { }
+}
+
+public sealed class QrLoginInitResponse
+{
+    [JsonPropertyName("sessionId")] public string SessionId { get; set; } = string.Empty;
+    [JsonPropertyName("nonce")] public string Nonce { get; set; } = string.Empty;
+    [JsonPropertyName("expiresAt")] public DateTime ExpiresAt { get; set; }
+}
+
+public sealed class QrLoginPollResponse
+{
+    [JsonPropertyName("status")] public string Status { get; set; } = string.Empty;
+    [JsonPropertyName("token")] public string? Token { get; set; }
+    [JsonPropertyName("refreshToken")] public string? RefreshToken { get; set; }
+    [JsonPropertyName("userId")] public string? UserId { get; set; }
+    [JsonPropertyName("username")] public string? Username { get; set; }
 }

@@ -201,23 +201,36 @@ final class AudioPlaybackStore {
             
             self.player?.play()
             self.isPlaying = true
-            
+            Self.setKeepScreenOn(true)
+
             withAnimation(.spring(response: 0.45, dampingFraction: 0.86)) {
                 self.displayState = .mini
             }
         }
     }
-    
+
     // MARK: - Controls
-    
+
     func pause() {
         player?.pause()
         isPlaying = false
+        Self.setKeepScreenOn(false)
     }
-    
+
     func resume() {
         player?.play()
         isPlaying = true
+        Self.setKeepScreenOn(true)
+    }
+
+    /// Keep the screen awake while voice is playing — auto-lock during a
+    /// long voice message is a sharp annoyance because the audio routes to
+    /// the speaker but the user's hands are off the device. Released the
+    /// moment playback pauses or ends.
+    private static func setKeepScreenOn(_ keepOn: Bool) {
+        Task { @MainActor in
+            UIApplication.shared.isIdleTimerDisabled = keepOn
+        }
     }
     
     func togglePlayPause() {
@@ -287,6 +300,7 @@ final class AudioPlaybackStore {
     
     private func handlePlaybackEnded() {
         isPlaying = false
+        Self.setKeepScreenOn(false)
         progress = 1
         currentTime = duration
         // Reset to beginning for replay

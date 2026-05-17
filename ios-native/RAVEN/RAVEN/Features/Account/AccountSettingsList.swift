@@ -10,6 +10,7 @@ struct AccountSettingsContent: View {
     @State private var showFriendRequests = false
     @State private var showPaywall = false
     @State private var pendingRequestsCount = 0
+    @State private var showInviteFriends = false
     
     var body: some View {
         VStack(spacing: 20) {
@@ -39,7 +40,7 @@ struct AccountSettingsContent: View {
                     showFriendRequests = true
                 } label: {
                     GlassSettingsRow(
-                        title: "friend_requests".localized,
+                        title: "follow_requests".localized,
                         icon: "person.fill.badge.plus",
                         iconColor: DS.accentBlue,
                         badge: pendingRequestsCount > 0 ? "\(pendingRequestsCount)" : nil,
@@ -63,7 +64,7 @@ struct AccountSettingsContent: View {
                 .buttonStyle(.plain)
                 
                 GlassDivider()
-                
+
                 NavigationLink {
                     VerificationView()
                 } label: {
@@ -75,6 +76,55 @@ struct AccountSettingsContent: View {
                     )
                 }
                 .buttonStyle(.plain)
+
+                GlassDivider()
+
+                // ✨ Refer a friend → 1 month Raven+ free for both sides
+                Button {
+                    showInviteFriends = true
+                } label: {
+                    GlassSettingsRow(
+                        title: "Invite friends · 1 month Raven+",
+                        icon: "gift.fill",
+                        iconColor: DS.accentPurple,
+                        showChevron: true
+                    )
+                }
+                .buttonStyle(.plain)
+                .sheet(isPresented: $showInviteFriends) {
+                    InviteFriendsSheet()
+                }
+
+                GlassDivider()
+
+                // 🖥️ Linked devices — see every signed-in device, revoke any.
+                NavigationLink {
+                    LinkedDevicesView()
+                } label: {
+                    GlassSettingsRow(
+                        title: "Linked devices",
+                        icon: "laptopcomputer.and.iphone",
+                        iconColor: DS.accentBlue,
+                        showChevron: true
+                    )
+                }
+                .buttonStyle(.plain)
+
+                // ✨ On-device AI (iOS 26+ Foundation Models)
+                if FoundationAIService.shared.isAvailable {
+                    GlassDivider()
+                    NavigationLink {
+                        AISettingsView()
+                    } label: {
+                        GlassSettingsRow(
+                            title: "On-device AI",
+                            icon: "sparkles",
+                            iconColor: DS.accentPurple,
+                            showChevron: true
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
             }
             
             // MARK: - General Section
@@ -173,6 +223,20 @@ struct AccountSettingsContent: View {
                         title: "device_identity".localized,
                         icon: "touchid",
                         iconColor: DS.accentPurple,
+                        showChevron: true
+                    )
+                }
+                .buttonStyle(.plain)
+
+                GlassDivider()
+
+                NavigationLink {
+                    E2EESettingsView()
+                } label: {
+                    GlassSettingsRow(
+                        title: "End-to-End Encryption",
+                        icon: "lock.shield.fill",
+                        iconColor: DS.accentBlue,
                         showChevron: true
                     )
                 }
@@ -401,7 +465,7 @@ struct AccountSettingsContent: View {
     
     private func fetchPendingRequestsCount() async {
         do {
-            let requests: [FriendRequest] = try await NetworkService.shared.get(path: "/api/users/friend-requests")
+            let requests: [FriendRequest] = try await NetworkService.shared.get(path: "/api/users/follow-requests")
             await MainActor.run {
                 pendingRequestsCount = requests.count
             }
@@ -775,3 +839,154 @@ struct CountryCodePickerSheet: View {
         }
     }
 }
+
+// MARK: - Invite Friends Sheet (Referral Program)
+//
+// Each existing user gets a personalised invite code. When a new user signs
+// up via that code, BOTH parties get 1 month of Raven+ free.
+//
+// Server endpoints required (not all yet implemented — UI gracefully shows
+// "preparing your code…" until they exist):
+//   • GET  /api/invites/code              → { code, shareUrl, redeemed_count, available_until }
+//   • POST /api/invites/redeem            { code } → grants entitlement to both sides
+// Both should call RevenueCat's promotional-entitlement API server-side to
+// extend each user's `raven_plus` entitlement by 30 days. Anti-abuse guards
+// (rate limits, device-fingerprint dedup, 7-day liveness check) live there.
+struct InviteFriendsSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var code: String?
+    @State private var shareUrl: URL?
+    @State private var redeemedCount: Int = 0
+    @State private var isLoading = true
+    @State private var loadError: String?
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 24) {
+                    // Hero
+                    VStack(spacing: 12) {
+                        Image(systemName: "gift.fill")
+                            .font(.system(size: 56))
+                            .foregroundStyle(.purple)
+                        Text("Give 1 month, get 1 month")
+                            .font(.title2.weight(.bold))
+                            .multilineTextAlignment(.center)
+                        Text("Each friend who signs up with your code unlocks Raven+ for both of you for 30 days.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 16)
+                    }
+                    .padding(.top, 24)
+
+                    // Code card
+                    Group {
+                        if let code = code {
+                            codeCard(code: code)
+                        } else if isLoading {
+                            ProgressView("Preparing your code…")
+                                .padding(.vertical, 32)
+                        } else if let err = loadError {
+                            VStack(spacing: 8) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundStyle(.orange)
+                                Text(err)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .multilineTextAlignment(.center)
+                                Button("Try again") { Task { await load() } }
+                                    .buttonStyle(.bordered)
+                            }
+                            .padding(.vertical, 32)
+                        }
+                    }
+                    .padding(.horizontal, 20)
+
+                    // Stats
+                    if redeemedCount > 0 {
+                        Text("\(redeemedCount) friend\(redeemedCount == 1 ? "" : "s") redeemed your code")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Spacer(minLength: 24)
+                }
+            }
+            .background(Color(.systemGroupedBackground).ignoresSafeArea())
+            .navigationTitle("Invite Friends")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .task { await load() }
+        }
+    }
+
+    @ViewBuilder
+    private func codeCard(code: String) -> some View {
+        VStack(spacing: 14) {
+            Text("Your invite code")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(code)
+                .font(.system(size: 28, weight: .bold, design: .rounded).monospaced())
+                .padding(.horizontal, 24)
+                .padding(.vertical, 14)
+                .glassSurface(in: Capsule())
+
+            HStack(spacing: 12) {
+                Button {
+                    UIPasteboard.general.string = code
+                    Haptics.success()
+                } label: {
+                    Label("Copy", systemImage: "doc.on.doc")
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .glassSurface(in: Capsule())
+                }
+                .buttonStyle(.plain)
+
+                if let shareUrl = shareUrl {
+                    ShareLink(item: shareUrl, subject: Text("Join me on Raven"),
+                              message: Text("Use my code \(code) to get 1 month of Raven+ free.")) {
+                        Label("Share", systemImage: "square.and.arrow.up")
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .glassAccent(in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 12)
+        }
+        .padding(.vertical, 18)
+    }
+
+    private struct InviteCodeResponse: Decodable {
+        let code: String
+        let shareUrl: String?
+        let redeemedCount: Int?
+    }
+
+    private func load() async {
+        isLoading = true
+        loadError = nil
+        defer { isLoading = false }
+        do {
+            let response: InviteCodeResponse = try await NetworkService.shared.get(path: "/api/invites/code")
+            await MainActor.run {
+                code = response.code
+                shareUrl = response.shareUrl.flatMap(URL.init)
+                redeemedCount = response.redeemedCount ?? 0
+            }
+        } catch {
+            await MainActor.run {
+                loadError = "Couldn't fetch your invite code. Check your connection and try again."
+            }
+        }
+    }
+}
+

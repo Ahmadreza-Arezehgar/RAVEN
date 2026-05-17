@@ -76,6 +76,7 @@
 // Account
 "edit_profile" = "ویرایش پروفایل";
 "friend_requests" = "درخواست‌های دوستی";
+"follow_requests" = "درخواست‌های فالو";
 "joined" = "عضویت";
 "add_bio" = "بیوگرافی اضافه کنید";
 

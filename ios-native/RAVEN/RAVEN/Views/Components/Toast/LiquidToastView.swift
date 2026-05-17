@@ -2,7 +2,7 @@ import SwiftUI
 
 // MARK: - Capsule Liquid Toast View
 /// Premium Liquid Glass capsule-style toast notification
-/// - Appears from top-right, disappears to top-right
+/// - Slides in from top, slides out to top (matches PostUploadToast)
 /// - Compact capsule design with avatar and preview
 /// - Swipe DOWN to expand for quick reply (message/voice)
 /// - Swipe LEFT to dismiss
@@ -36,21 +36,12 @@ struct LiquidToastView: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
-        .background(toastBackground)
-        .clipShape(RoundedRectangle(cornerRadius: isExpanded ? 24 : 28))
-        .overlay(
-            RoundedRectangle(cornerRadius: isExpanded ? 24 : 28)
-                .stroke(
-                    LinearGradient(
-                        colors: [.white.opacity(0.4), .white.opacity(0.1)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ),
-                    lineWidth: 1
-                )
-        )
-        .shadow(color: .black.opacity(0.2), radius: 20, x: 0, y: 10)
-        .shadow(color: typeColor.opacity(0.3), radius: 8, x: 0, y: 4)
+        // Unified liquid-glass surface (one design language across the app).
+        // Type-color tint is applied as an additional outer-glow shadow only,
+        // so the base material/stroke/highlight stay consistent with every
+        // other glass surface (tab bar, cards, sheets, etc.).
+        .modifier(ToastGlassSurface(isExpanded: isExpanded))
+        .shadow(color: typeColor.opacity(0.22), radius: 16, x: 0, y: 4) // type-color glow
         .scaleEffect(isPressed ? 0.96 : 1.0)
         .offset(dragOffset)
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isPressed)
@@ -304,25 +295,9 @@ struct LiquidToastView: View {
             )
     }
     
-    // MARK: - Toast Background
-    private var toastBackground: some View {
-        ZStack {
-            // Frosted glass
-            RoundedRectangle(cornerRadius: isExpanded ? 24 : 28)
-                .fill(.ultraThinMaterial)
-            
-            // Subtle gradient tint
-            RoundedRectangle(cornerRadius: isExpanded ? 24 : 28)
-                .fill(
-                    LinearGradient(
-                        colors: [typeColor.opacity(0.1), .clear],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-        }
-    }
-    
+    // toastBackground replaced by `ToastGlassSurface` modifier below — the
+    // gradient highlight is now handled by the shared LiquidGlass tokens.
+
     // MARK: - Type Color
     private var typeColor: Color {
         switch item.type.accentColor {
@@ -384,5 +359,25 @@ struct LiquidToastView: View {
             .frame(maxWidth: 320)
         }
         .padding()
+    }
+}
+
+// MARK: - Toast Glass Surface (delegates to unified LiquidGlass tokens)
+/// Picks the right shape (Capsule when collapsed, RoundedRectangle when expanded)
+/// and applies the shared `liquidGlass(in:)` modifier, so toasts share the same
+/// material / stroke / specular / drop shadow as every other glass surface.
+private struct ToastGlassSurface: ViewModifier {
+    let isExpanded: Bool
+
+    func body(content: Content) -> some View {
+        if isExpanded {
+            content
+                .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+                .glassSurface(in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        } else {
+            content
+                .clipShape(Capsule())
+                .glassSurface(in: Capsule())
+        }
     }
 }

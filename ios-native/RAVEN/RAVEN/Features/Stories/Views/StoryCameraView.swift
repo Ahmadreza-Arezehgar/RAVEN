@@ -40,6 +40,12 @@ struct StoryCameraView: View {
                             .frame(width: 44, height: 44)
                             .background(.ultraThinMaterial, in: Circle())
                     }
+                    // BUG FIX (2026-05-10): VoiceOver had no way to
+                    // identify or operate the camera's icon-only
+                    // controls; the close button was the only dismiss
+                    // path for the screen.
+                    .accessibilityLabel("Close camera")
+                    .accessibilityHint("Returns to the previous screen.")
                     
                     Spacer()
                 }
@@ -61,7 +67,7 @@ struct StoryCameraView: View {
                             Circle()
                                 .stroke(.white, lineWidth: 4)
                                 .frame(width: 80, height: 80)
-                            
+
                             Circle()
                                 .fill(.white)
                                 .frame(width: 68, height: 68)
@@ -69,7 +75,9 @@ struct StoryCameraView: View {
                         }
                     }
                     .disabled(isCapturing)
-                    
+                    .accessibilityLabel("Capture photo")
+                    .accessibilityHint(isCapturing ? "Capture in progress." : "Takes a photo with the current camera.")
+
                     // Flip Camera Button
                     Button {
                         camera.toggleCamera()
@@ -80,6 +88,8 @@ struct StoryCameraView: View {
                             .frame(width: 44, height: 44)
                             .background(.ultraThinMaterial, in: Circle())
                     }
+                    .accessibilityLabel("Flip camera")
+                    .accessibilityHint("Switches between front and back camera.")
                 }
                 .padding(.bottom, 40)
             }

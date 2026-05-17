@@ -81,7 +81,7 @@ struct MentionPickerView: View {
                 .padding(.vertical, 6)
             }
             .frame(maxHeight: 220)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             .shadow(color: .black.opacity(0.12), radius: 12, x: 0, y: -4)
             .transition(.asymmetric(
                 insertion: .move(edge: .bottom).combined(with: .opacity),

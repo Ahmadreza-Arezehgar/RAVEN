@@ -15,9 +15,14 @@ struct PairingView: View {
     @State private var showingScanner = false
     @State private var verificationInput = ""
     
-    // Reusable QR code generation resources (CIContext is GPU-heavy)
-    private let ciContext = CIContext()
-    private let qrFilter = CIFilter.qrCodeGenerator()
+    // BUG FIX (2026-05-10): hoisted off the view struct. Storing
+    // `let ciContext = CIContext()` and `let qrFilter = ...` directly
+    // on a SwiftUI View struct allocated a fresh CIContext (GPU-heavy)
+    // and CIFilter (stateful) every body recomputation. The "Reusable"
+    // claim in the original comment was false — every re-render leaked
+    // a Metal command queue. Singleton on the type level is reused
+    // across all instances + all body invocations.
+    private static let qrCache = QRCache.shared
     
     var body: some View {
         NavigationStack {
@@ -83,7 +88,7 @@ struct PairingView: View {
                     .font(.system(.title2, design: .monospaced))
                     .fontWeight(.semibold)
                     .padding()
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 
                 // QR Code
                 if let qrImage = generateQRCode(from: pairingService.generateQRCodeData()) {
@@ -93,14 +98,14 @@ struct PairingView: View {
                         .scaledToFit()
                         .frame(width: 200, height: 200)
                         .padding()
-                        .background(.white, in: RoundedRectangle(cornerRadius: 16))
+                        .background(.white, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 }
             } else {
                 ProgressView("Generating identity...")
             }
         }
         .padding()
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20))
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
     }
     
     // MARK: - Pairing State
@@ -118,7 +123,7 @@ struct PairingView: View {
                     .foregroundStyle(.secondary)
             }
             .padding()
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             
         case .scanning:
             HStack(spacing: 12) {
@@ -127,7 +132,7 @@ struct PairingView: View {
                     .foregroundStyle(.secondary)
             }
             .padding()
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             
         case .exchanging:
             HStack(spacing: 12) {
@@ -136,7 +141,7 @@ struct PairingView: View {
                     .foregroundStyle(.secondary)
             }
             .padding()
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             
         case .verifying:
             verificationSection
@@ -156,7 +161,7 @@ struct PairingView: View {
                     .foregroundStyle(.secondary)
             }
             .padding()
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
     }
     
@@ -176,7 +181,7 @@ struct PairingView: View {
                     .font(.system(size: 48, weight: .bold, design: .monospaced))
                     .tracking(8)
                     .padding()
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             }
             
             Text("Compare this code with your partner's device")
@@ -206,7 +211,7 @@ struct PairingView: View {
             }
         }
         .padding()
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20))
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
     }
     
     // MARK: - Success Section
@@ -226,7 +231,7 @@ struct PairingView: View {
                 .foregroundStyle(.secondary)
         }
         .padding()
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20))
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
     }
     
     // MARK: - Action Section
@@ -281,24 +286,43 @@ struct PairingView: View {
     }
     
     // MARK: - QR Code Generator
-    
+    /// Delegates to the shared QRCache so the GPU CIContext + the
+    /// stateful CIFilter are reused across body recomputes / view
+    /// instances rather than re-allocated each time.
     private func generateQRCode(from data: Data?) -> UIImage? {
+        Self.qrCache.image(for: data)
+    }
+}
+
+// MARK: - QR Code Cache (singleton Metal context + filter)
+
+/// One CIContext + CIFilter for the entire app. Allocating a CIContext
+/// stands up a Metal command queue (~5ms + ~1MB GPU resources); doing
+/// that on every SwiftUI body recompute is the leak the previous
+/// PairingView design caused. CIFilter shared state (`setValue` for
+/// `inputMessage`/`inputCorrectionLevel`) is mutated under a single
+/// queue so two concurrent views can't clobber each other.
+private final class QRCache {
+    static let shared = QRCache()
+    private let ciContext = CIContext()
+    private let qrFilter = CIFilter.qrCodeGenerator()
+    private let queue = DispatchQueue(label: "app.raven.qr-cache", qos: .userInitiated)
+    private init() {}
+
+    func image(for data: Data?) -> UIImage? {
         guard let data = data else { return nil }
-        
-        qrFilter.setValue(data, forKey: "inputMessage")
-        qrFilter.setValue("H", forKey: "inputCorrectionLevel")
-        
-        guard let outputImage = qrFilter.outputImage else { return nil }
-        
-        let scale = UIScreen.main.scale * 10
-        let transform = CGAffineTransform(scaleX: scale, y: scale)
-        let scaledImage = outputImage.transformed(by: transform)
-        
-        guard let cgImage = ciContext.createCGImage(scaledImage, from: scaledImage.extent) else {
-            return nil
+        return queue.sync {
+            qrFilter.setValue(data, forKey: "inputMessage")
+            qrFilter.setValue("H", forKey: "inputCorrectionLevel")
+            guard let outputImage = qrFilter.outputImage else { return nil }
+            let scale = UIScreen.main.scale * 10
+            let transform = CGAffineTransform(scaleX: scale, y: scale)
+            let scaledImage = outputImage.transformed(by: transform)
+            guard let cgImage = ciContext.createCGImage(scaledImage, from: scaledImage.extent) else {
+                return nil
+            }
+            return UIImage(cgImage: cgImage)
         }
-        
-        return UIImage(cgImage: cgImage)
     }
 }
 
@@ -321,7 +345,7 @@ struct PairingQRScannerView: View {
 
                 VStack {
                     Spacer()
-                    RoundedRectangle(cornerRadius: 20)
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
                         .stroke(Color.white, lineWidth: 3)
                         .frame(width: 250, height: 250)
                     Spacer()

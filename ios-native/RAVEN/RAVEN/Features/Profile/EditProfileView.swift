@@ -512,7 +512,7 @@ struct EditProfileView: View {
                             }
                             .padding(.horizontal, 12)
                             .padding(.vertical, 10)
-                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                         }
                         .buttonStyle(.plain)
                         
@@ -835,78 +835,21 @@ struct EditProfileView: View {
         }
     }
     
-    // Response model for image upload
-    private struct ImageUploadResponse: Codable {
-        let imageUrl: String
-        let filename: String
-        
-        enum CodingKeys: String, CodingKey {
-            case imageUrl = "image_url"
-            case filename
-        }
-    }
-    
     private func uploadAvatar(_ image: UIImage) async throws {
-        // Offload heavy image processing to background thread to avoid OOM/freeze
-        let imageData: Data = try await Task.detached(priority: .userInitiated) {
-            let safeImage = image.downscaled(maxDimension: 1024)
-            guard let data = safeImage.jpegData(compressionQuality: 0.8) else {
-                throw URLError(.cannotDecodeContentData)
-            }
-            return data
-        }.value
-        
-        // Step 1: Upload image to /api/uploads/image (CDN)
-        let boundary = UUID().uuidString
-        var body = Data()
-        body.appendString("--\(boundary)\r\n")
-        body.appendString("Content-Disposition: form-data; name=\"file\"; filename=\"avatar.jpg\"\r\n")
-        body.appendString("Content-Type: image/jpeg\r\n\r\n")
-        body.append(imageData)
-        body.appendString("\r\n--\(boundary)--\r\n")
-        
-        guard let uploadURL = AppConfig.apiURL(path: "/api/uploads/image") else {
-            throw URLError(.badURL)
-        }
-        var uploadRequest = URLRequest(url: uploadURL)
-        uploadRequest.httpMethod = "POST"
-        uploadRequest.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        
-        if let (token, _) = await KeychainService.shared.getToken() {
-            uploadRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
-        
-        let (uploadData, uploadResponse) = try await URLSession.shared.upload(for: uploadRequest, from: body)
-        guard let httpResponse = uploadResponse as? HTTPURLResponse,
-              (200...299).contains(httpResponse.statusCode) else {
-            throw URLError(.badServerResponse)
-        }
-        
-        guard let uploadResult = try? JSONDecoder().decode(ImageUploadResponse.self, from: uploadData) else {
-            throw URLError(.cannotParseResponse)
-        }
-        
-        // Step 2: Update profile picture at /api/users/profile-picture
-        guard let profileURL = AppConfig.apiURL(path: "/api/users/profile-picture") else {
-            throw URLError(.badURL)
-        }
-        var profileRequest = URLRequest(url: profileURL)
-        profileRequest.httpMethod = "POST"
-        profileRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
-        if let (token, _) = await KeychainService.shared.getToken() {
-            profileRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
-        
-        let profileBody = ["image_url": uploadResult.imageUrl]
-        profileRequest.httpBody = try JSONEncoder().encode(profileBody)
-        
-        let (_, profileResponse) = try await URLSession.shared.data(for: profileRequest)
-        guard let profileHttpResponse = profileResponse as? HTTPURLResponse,
-              (200...299).contains(profileHttpResponse.statusCode) else {
-            throw URLError(.badServerResponse)
-        }
-        
+        // Step 1: upload via the shared, hardened multipart pipeline (retries
+        // on transient network errors that older iOS devices regularly hit
+        // when talking to Cloud Run over HTTP/3 — without retry the user just
+        // sees "server is down" the first time the radio hiccups).
+        let imageUrl = try await AttachmentService.shared.uploadAvatarImage(image)
+
+        // Step 2: tell the server this URL is the new avatar. Small JSON
+        // request, so we ride NetworkService which already has its own retry.
+        struct ProfilePictureBody: Encodable { let imageUrl: String }
+        let _: Empty = try await NetworkService.shared.post(
+            path: "/api/users/profile-picture",
+            body: ProfilePictureBody(imageUrl: imageUrl)
+        )
+
         #if DEBUG
         print("✅ Avatar uploaded successfully via 2-step upload")
         #endif

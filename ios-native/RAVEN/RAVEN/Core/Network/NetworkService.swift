@@ -19,10 +19,26 @@ enum SharedDateFormatters {
         f.formatOptions = [.withInternetDateTime]
         return f
     }()
-    /// Microsecond precision (e.g. "2024-01-15T12:30:00.123456")
+    /// Microsecond precision with T separator (e.g. "2024-01-15T12:30:00.123456")
     static let microsecond: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS"
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(secondsFromGMT: 0)
+        return f
+    }()
+    /// PostgreSQL default format — space separator (e.g. "2024-01-15 12:30:00.123456")
+    static let postgresTimestamp: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd HH:mm:ss.SSSSSS"
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(secondsFromGMT: 0)
+        return f
+    }()
+    /// PostgreSQL without fractional seconds (e.g. "2024-01-15 12:30:00")
+    static let postgresTimestampNoFraction: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd HH:mm:ss"
         f.locale = Locale(identifier: "en_US_POSIX")
         f.timeZone = TimeZone(secondsFromGMT: 0)
         return f
@@ -32,9 +48,15 @@ enum SharedDateFormatters {
         iso8601WithFraction.date(from: string)
             ?? iso8601Standard.date(from: string)
     }
-    /// Format a Date as an ISO 8601 string (standard, no fractional seconds).
+    /// Format a Date as an ISO 8601 string WITH fractional seconds.
+    /// 🟡 BUG FIX (2026-05-10): the previous version dropped sub-
+    /// second precision; two messages sent within the same wall
+    /// second sorted identically by `ORDER BY timestamp` and the
+    /// UI message order became non-deterministic across launches.
+    /// `parseISO8601` already accepts both forms so existing rows
+    /// without fractional digits still decode correctly.
     static func formatISO8601(_ date: Date) -> String {
-        iso8601Standard.string(from: date)
+        iso8601WithFraction.string(from: date)
     }
 }
 
@@ -159,14 +181,18 @@ actor NetworkService {
     private let encoder: JSONEncoder
     private let tlsDelegate: TLSValidationDelegate
     
+    // ⚡ PERF: ETag cache — stores ETag + response data per path
+    // On 304 Not Modified, returns cached data (skips download + decode)
+    private var etagCache: [String: (etag: String, data: Data)] = [:]
+    
     private init() {
         let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 30
+        config.timeoutIntervalForRequest = 8   // ⚡ 8s timeout — fail fast, retry fast
         // timeoutIntervalForResource intentionally omitted — OS default (~7 days)
         // allows RAVEN+ 2 GB uploads to complete without premature cancellation
-        config.waitsForConnectivity = true               // FIX: Allow cellular radio to wake up
-        // Multipath handover removed — requires com.apple.developer.networking.multipath entitlement
-        // which needs a special request from Apple. Re-enable if/when entitlement is granted.
+        config.waitsForConnectivity = true                 // Allow cellular radio wake-up (false causes -999)
+        config.httpMaximumConnectionsPerHost = 10          // ⚡ Up from 6 — feed + API won't compete
+        config.httpShouldUsePipelining = true              // ⚡ Pipeline requests on same connection
         
         // 🚨 Critical: Explicitly allow cellular/expensive/constrained access
         // Without these, iOS may block requests in Low Data Mode or on NAT64 cellular networks
@@ -196,6 +222,13 @@ actor NetworkService {
             if let date = SharedDateFormatters.microsecond.date(from: dateString) {
                 return date
             }
+            // PostgreSQL default: "2024-01-15 12:30:00.123456" (space instead of T)
+            if let date = SharedDateFormatters.postgresTimestamp.date(from: dateString) {
+                return date
+            }
+            if let date = SharedDateFormatters.postgresTimestampNoFraction.date(from: dateString) {
+                return date
+            }
             
             throw DecodingError.dataCorruptedError(
                 in: container,
@@ -209,8 +242,31 @@ actor NetworkService {
         encoder.keyEncodingStrategy = .convertToSnakeCase
     }
     
+    // MARK: - Warmup
+
+    /// Warm the TLS handshake + TCP connection on the shared session so the
+    /// first real API call doesn't pay the handshake cost. ~150-300ms saved
+    /// on cold start. Best-effort; silently no-ops on failure.
+    func warmConnection() async {
+        guard let url = URL(string: "\(baseURL)/health") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 5
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        do {
+            _ = try await session.data(for: request)
+            #if DEBUG
+            print("⚡ [NetworkService] Warm connection ready (shared session)")
+            #endif
+        } catch {
+            #if DEBUG
+            print("⚠️ [NetworkService] Warmup failed: \(error.localizedDescription)")
+            #endif
+        }
+    }
+
     // MARK: - Request Methods
-    
+
     func get<T: Decodable>(
         path: String,
         queryItems: [URLQueryItem]? = nil
@@ -350,14 +406,19 @@ actor NetworkService {
             request.httpBody = try encoder.encode(body)
         }
         
+        // ⚡ PERF: Add If-None-Match for GET requests (ETag conditional request)
+        if method == "GET", let cachedETag = etagCache[path]?.etag {
+            request.setValue(cachedETag, forHTTPHeaderField: "If-None-Match")
+        }
+        
         // Execute with retry
-        return try await executeWithRetry(request: request, retries: 3)
+        return try await executeWithRetry(request: request, retries: 2)  // ⚡ 2 retries (was 3) — max 20s total
     }
     
     private func executeWithRetry<T: Decodable>(
         request: URLRequest,
         retries: Int,
-        currentDelay: TimeInterval = 1.0
+        currentDelay: TimeInterval = 0.4
     ) async throws -> T {
         // Stop zombie retries if the Task was cancelled (e.g. user left screen)
         try Task.checkCancellation()
@@ -404,6 +465,13 @@ actor NetworkService {
             switch httpResponse.statusCode {
             case 200...299:
                 ServerFailover.shared.reportSuccess()
+                
+                // ⚡ PERF: Store ETag from response for conditional requests
+                if let etag = httpResponse.value(forHTTPHeaderField: "ETag"),
+                   let path = request.url?.path {
+                    etagCache[path] = (etag: etag, data: data)
+                }
+                
                 if let empty = Empty() as? T {
                     return empty
                 }
@@ -423,7 +491,13 @@ actor NetworkService {
                 }
                 
                 do {
-                    return try decoder.decode(T.self, from: dataToDecode)
+                    // ⚡ PERF: Decode on background thread — the custom date decoder tries 5 formatters
+                    // per date field, which is measurable on older devices for large feed responses.
+                    let localDecoder = self.decoder
+                    let result: T = try await Task.detached(priority: .userInitiated) {
+                        try localDecoder.decode(T.self, from: dataToDecode)
+                    }.value
+                    return result
                 } catch let decodingError as DecodingError {
                     #if DEBUG
                     print("❌ [NetworkService] DECODE ERROR for \(T.self):")
@@ -472,10 +546,29 @@ actor NetworkService {
                 return try await executeWithRetry(request: retryRequest, retries: 0)
                 
             case 403:
+                // Preserve the server's detail body so callers can surface
+                // user-actionable messages (e.g. message-request limits,
+                // privacy gates) instead of a generic "Access denied".
+                let forbiddenDetail = (try? decoder.decode(ErrorResponse.self, from: data))?.detail
+                if let forbiddenDetail, !forbiddenDetail.isEmpty {
+                    throw APIError.httpError(403, forbiddenDetail)
+                }
                 throw APIError.forbidden
                 
             case 404:
                 throw APIError.notFound
+                
+            case 304:
+                // ⚡ PERF: Not Modified — use cached response data
+                if let path = request.url?.path,
+                   let cached = etagCache[path] {
+                    #if DEBUG
+                    print("⚡ [NetworkService] 304 Not Modified → using cached ETag response for \(path)")
+                    #endif
+                    return try decoder.decode(T.self, from: cached.data)
+                }
+                // Shouldn't happen (304 without prior cache), treat as empty
+                throw APIError.serverError
                 
             case 422:
                 #if DEBUG
@@ -535,8 +628,21 @@ actor NetworkService {
                 throw APIError.networkError(error)
             }
             
-            // Exponential backoff for transient network errors
-            if retries > 0 {
+            // Exponential backoff for transient network errors.
+            // BUG FIX (2026-05-10): only retry methods that are
+            // idempotent OR that the caller explicitly tagged with an
+            // `Idempotency-Key` header. The previous version blindly
+            // retried POST/PUT/PATCH/DELETE on any URLError, which on
+            // the unhappy path "server processed the write but the
+            // response packet was lost" caused duplicate writes —
+            // duplicate reactions, duplicate friend-request
+            // accept/decline, duplicate registration calls. Safe set
+            // of HTTP methods is GET/HEAD; PUT is idempotent if the
+            // server treats it as such (which RAVEN's API does).
+            let method = (request.httpMethod ?? "GET").uppercased()
+            let hasIdempotencyKey = request.value(forHTTPHeaderField: "Idempotency-Key") != nil
+            let safeToRetry = (method == "GET" || method == "HEAD" || method == "PUT") || hasIdempotencyKey
+            if retries > 0 && safeToRetry {
                 #if DEBUG
                 if isTimeout {
                     print("⚠️ [NetworkService] Request timed out, retrying in \(currentDelay)s... (\(retries) left)")
@@ -550,6 +656,10 @@ actor NetworkService {
                     retries: retries - 1,
                     currentDelay: min(currentDelay * 2.0, 10.0)
                 )
+            } else if retries > 0 && !safeToRetry {
+                #if DEBUG
+                print("⚠️ [NetworkService] Skipping retry for \(method) without Idempotency-Key — would risk duplicate write")
+                #endif
             }
             
             // ═══════════════════════════════════════════════════════════════
@@ -604,6 +714,11 @@ actor NetworkService {
     /// The in-flight refresh task. Concurrent 401s all await the SAME task,
     /// and Swift automatically handles cancellation — no continuation leak possible.
     private var activeRefreshTask: Task<Void, Error>?
+    /// Generation counter — bumped on every fresh refresh start. Lets
+    /// `clearActiveRefresh` confirm the slot still belongs to "our"
+    /// refresh before nil-ing (cheap value-typed identity since `Task`
+    /// is a struct and can't be `===`-compared).
+    private var activeRefreshGeneration: UInt64 = 0
     
     /// Attempt to refresh the access token using stored refresh token.
     /// Uses Task-based single-flight: if a refresh is already running, all callers
@@ -620,20 +735,50 @@ actor NetworkService {
             try await existingTask.value
             return
         }
-        
-        // Create a new refresh task — defer is INSIDE the Task body so that
-        // cancellation of the calling task doesn't prematurely nil the reference
-        // while the refresh network request is still in-flight.
-        let task = Task<Void, Error> {
-            defer {
-                self.activeRefreshTask = nil
+
+        // BUG FIX (2026-05-10): the previous version nil-ed out
+        // `activeRefreshTask` inside the Task body's `defer`. While the
+        // Task inherits the actor's isolation (so the assignment IS
+        // actor-isolated), the defer fires BEFORE the awaiters'
+        // `task.value` resolves — opening a TOCTOU window where a new
+        // 401 caller arriving in that micro-window sees nil and kicks
+        // a second refresh, even though the just-completed one
+        // succeeded. New invariant: only nil the slot if it still
+        // points to ourselves (handles cancellation + concurrent
+        // restart cleanly), and do it via an explicit
+        // actor-isolated helper rather than a free-standing defer.
+        activeRefreshGeneration &+= 1
+        let myGeneration = activeRefreshGeneration
+
+        let task = Task<Void, Error> { [weak self] in
+            do {
+                try await self?.performRefresh()
+            } catch {
+                await self?.clearActiveRefresh(generation: myGeneration)
+                throw error
             }
-            try await performRefresh()
+            await self?.clearActiveRefresh(generation: myGeneration)
         }
-        
-        // Store for concurrent callers to share
+
         activeRefreshTask = task
-        try await task.value
+        do {
+            try await task.value
+        } catch {
+            // If we threw, make sure the slot is cleared even if the
+            // catch path inside the Task didn't run yet.
+            clearActiveRefresh(generation: myGeneration)
+            throw error
+        }
+        clearActiveRefresh(generation: myGeneration)
+    }
+
+    /// Actor-isolated cleanup. Compares the caller's generation against
+    /// the current one and only nil-clears if they match — so a stale
+    /// finalizer can't blow away the slot a fresh refresh has already
+    /// claimed.
+    private func clearActiveRefresh(generation: UInt64) {
+        guard activeRefreshGeneration == generation else { return }
+        activeRefreshTask = nil
     }
     
     /// The actual refresh network call — only ever called by one task at a time.
@@ -726,6 +871,249 @@ actor NetworkService {
     }
 }
 
+// MARK: - QR Login (Desktop pairing)
+//
+// Mobile-side counterpart to the macOS app's QR-login flow. Server
+// router lives at `server/routers/qr_login.py`, mobile endpoints:
+//
+//   • POST /api/auth/qr-login/scan    — pending → scanned (signed)
+//   • POST /api/auth/qr-login/approve — scanned → approved (signed)
+//   • POST /api/auth/qr-login/deny    — *      → denied
+//
+// All three are authed (current user). `scan` and `approve` carry an
+// Ed25519 signature over a fixed-format payload — the server verifies
+// it against `User.public_key` (which iOS uploads via
+// `POST /api/users/me/identity-key`). See
+// `Features/QRCode/DesktopLoginApprovalView.swift` for the UI.
+
+// 🔴 Bug fix (2026-05-09): the NetworkService default encoder runs
+// `convertToSnakeCase` and the default decoder runs `convertFromSnakeCase`.
+// The QR-login server (`server/routers/qr_login.py`) uses literal
+// camelCase keys (`sessionId`, `deviceFingerprint`, `requesterIp`,
+// `expiresAt`, …). Without explicit `CodingKeys`, every request/response
+// for these endpoints fails with HTTP 422 ("Field required") because
+// the encoder rewrote our keys to `session_id` / `device_fingerprint`.
+// The CodingKeys below pin every field to its exact camelCase wire name,
+// which the encoder/decoder respect over the snake-case strategy.
+
+struct QRScanRequest: Encodable {
+    let sessionId: String
+    let nonce: String
+    let deviceFingerprint: String
+    let timestamp: Int
+    let signature: String
+
+    enum CodingKeys: String, CodingKey {
+        case sessionId, nonce, deviceFingerprint, timestamp, signature
+    }
+}
+
+struct QRScanResponse: Decodable {
+    let status: String
+    let requesterIp: String?
+    let expiresAt: Date?
+
+    enum CodingKeys: String, CodingKey {
+        case status, requesterIp, expiresAt
+    }
+}
+
+struct QRApproveRequest: Encodable {
+    let sessionId: String
+    let timestamp: Int
+    let signature: String
+    let desktopDeviceName: String
+    let desktopDeviceModel: String?
+    let desktopDeviceOs: String?
+
+    enum CodingKeys: String, CodingKey {
+        case sessionId, timestamp, signature
+        case desktopDeviceName, desktopDeviceModel, desktopDeviceOs
+    }
+}
+
+struct QRApproveResponse: Decodable {
+    let status: String
+}
+
+struct QRDenyRequest: Encodable {
+    let sessionId: String
+
+    enum CodingKeys: String, CodingKey {
+        case sessionId
+    }
+}
+
+struct IdentityKeyRequest: Encodable {
+    let publicKey: String
+
+    enum CodingKeys: String, CodingKey {
+        case publicKey
+    }
+}
+
+struct IdentityKeyResponse: Decodable {
+    let status: String
+}
+
+/// Server `GET /api/auth/qr-login/poll/{sid}` response shape. Used
+/// by the phone in **Phase 2** to fetch the JWT it will then forward
+/// to the desktop over BLE (`MeshLoginTokenEnvelope`). The fields
+/// match the macOS `QrPollResponse` so the desktop's existing
+/// `completeQrLogin` path consumes them unchanged.
+struct QRPollResponse: Decodable {
+    let status: String
+    let token: String?
+    let refreshToken: String?
+    let userId: String?
+    let username: String?
+
+    enum CodingKeys: String, CodingKey {
+        case status, token, refreshToken, userId, username
+    }
+}
+
+extension NetworkService {
+    /// Poll the QR-login session for its server-issued tokens. Used
+    /// by the phone in Phase-2 bridging (it normally is the desktop
+    /// who polls). Anonymous endpoint — no auth header required, the
+    /// nonce in the query string is what authenticates the request.
+    func qrLoginPoll(sessionId: String, nonce: String) async throws -> QRPollResponse {
+        try await get(
+            path: "/api/auth/qr-login/poll/\(sessionId)",
+            queryItems: [URLQueryItem(name: "nonce", value: nonce)]
+        )
+    }
+}
+
+extension NetworkService {
+
+    /// Mobile flips a desktop-initiated QR-login session from `pending`
+    /// to `scanned`. Server checks: nonce match, signature over
+    /// `v1|sid|nonce|deviceFp|ts` validates against `User.public_key`,
+    /// timestamp within window. Returns the desktop's IP + the
+    /// session's expiry so the UI can show context before approve/deny.
+    func qrLoginScan(_ body: QRScanRequest) async throws -> QRScanResponse {
+        try await postCamelCase(path: "/api/auth/qr-login/scan", body: body)
+    }
+
+    /// Approve the previously-scanned desktop. Server upserts a
+    /// `LinkedDevice` row + flips status to `approved`; the desktop's
+    /// next poll receives the access + refresh tokens.
+    func qrLoginApprove(_ body: QRApproveRequest) async throws -> QRApproveResponse {
+        try await postCamelCase(path: "/api/auth/qr-login/approve", body: body)
+    }
+
+    /// Deny the desktop login. Idempotent — re-denying a denied
+    /// session is a no-op on the server.
+    func qrLoginDeny(_ body: QRDenyRequest) async throws -> Empty {
+        try await postCamelCase(path: "/api/auth/qr-login/deny", body: body)
+    }
+
+    /// Upload this device's Ed25519 raw public key so the server can
+    /// verify signatures from us (qr-login scan/approve, mesh bridge
+    /// attestations, etc.). Idempotent — server returns
+    /// `{"status":"unchanged"}` if the key matches what's already
+    /// registered. iOS calls this once per session after login.
+    func uploadIdentityKey(publicKeyBase64: String) async throws -> IdentityKeyResponse {
+        try await postCamelCase(
+            path: "/api/users/me/identity-key",
+            body: IdentityKeyRequest(publicKey: publicKeyBase64)
+        )
+    }
+
+    /// 🔴 Bug fix (2026-05-10): the default `post(...)` runs a
+    /// JSONEncoder with `keyEncodingStrategy = .convertToSnakeCase`.
+    /// **`convertToSnakeCase` is applied AFTER `CodingKeys` lookup**
+    /// — meaning even the explicit `case sessionId` we set was
+    /// transformed into `session_id` on the wire, which the server's
+    /// strict-camelCase Pydantic models rejected with HTTP 422.
+    ///
+    /// `postCamelCase` builds the request manually with a vanilla
+    /// `JSONEncoder` (no key strategy, ISO-8601 dates) so the JSON
+    /// keys exactly match the struct's `CodingKeys` raw values. We
+    /// keep the rest of the network plumbing — auth, idempotency,
+    /// status handling, decoder — identical to the standard `post`
+    /// path by reusing the public `get`-style decode at the end.
+    func postCamelCase<T: Decodable, B: Encodable>(
+        path: String,
+        body: B
+    ) async throws -> T {
+        guard let url = URL(string: baseURL + path) else {
+            throw APIError.invalidURL
+        }
+
+        // Vanilla encoder: NO key strategy. CodingKeys raw values are
+        // emitted verbatim — `sessionId` stays `sessionId`.
+        let camelEncoder = JSONEncoder()
+        camelEncoder.dateEncodingStrategy = .iso8601
+        let httpBody = try camelEncoder.encode(body)
+
+        // Build a request, attach the freshest auth token. Factored as a
+        // closure so we can re-build with a refreshed token after a 401.
+        let buildRequest: () async -> URLRequest = {
+            var req = URLRequest(url: url)
+            req.httpMethod = "POST"
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            if let (token, _) = await KeychainService.shared.getToken() {
+                req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            }
+            req.httpBody = httpBody
+            return req
+        }
+
+        // Inner sender — attempts the call once and returns the response
+        // pair. Pulled out so the 401 retry below doesn't duplicate the
+        // request-construction code.
+        func sendOnce() async throws -> (Data, HTTPURLResponse) {
+            let req = await buildRequest()
+            let (data, response) = try await session.data(for: req)
+            guard let http = response as? HTTPURLResponse else {
+                throw APIError.serverError
+            }
+            return (data, http)
+        }
+
+        var (data, http) = try await sendOnce()
+
+        // Bug fix (2026-05-10): postCamelCase used to silently fail on a
+        // mid-call token expiry — every QR-login + identity-key endpoint
+        // routes through here, so a stale access token meant the user
+        // saw `httpError(401, …)` with no recovery path. Mirror the
+        // 401-refresh-once pattern that `executeWithRetry` uses for
+        // every other endpoint: refresh the access token via the
+        // refresh token, rebuild the request with the new bearer, and
+        // try exactly once more. If the refresh itself fails (offline
+        // or refresh-token rejected), `attemptTokenRefresh` throws the
+        // appropriate error and we surface that instead of `unauthorized`.
+        if http.statusCode == 401 {
+            try await attemptTokenRefresh()
+            (data, http) = try await sendOnce()
+        }
+
+        guard (200..<300).contains(http.statusCode) else {
+            // Surface server detail when present so the UI can show
+            // the actual reason instead of a generic "request failed".
+            let detail: String
+            if let err = try? JSONDecoder().decode(ErrorResponse.self, from: data) {
+                detail = err.detail
+            } else {
+                detail = "HTTP \(http.statusCode)"
+            }
+            throw APIError.httpError(http.statusCode, detail)
+        }
+
+        // For empty 2xx responses (e.g. /qr-login/deny), return Empty
+        // if the caller asked for it. Use safe `as?` instead of force
+        // cast so a future caller passing a different `T` for an empty
+        // body throws a decoder error instead of crashing.
+        if data.isEmpty, let empty = Empty() as? T {
+            return empty
+        }
+        return try decoder.decode(T.self, from: data)
+    }
+}
+
 // MARK: - Helper Types
 
 struct Empty: Codable {}
@@ -749,3 +1137,265 @@ struct RefreshResponse: Codable {
 // MARK: - Notification Names
 // Note: .forceReAuth removed — was dead code (posted but never observed).
 // Auth failures now propagate via APIError.unauthorized; AuthService handles gracefully.
+
+
+// MARK: - Chat Endpoints (reactions / typing / in-thread search)
+
+extension NetworkService {
+
+    struct MessageReactionDTO: Codable, Equatable {
+        let id: String
+        let userId: String
+        let emoji: String
+        let createdAt: Date
+        // Note: NO explicit CodingKeys — the NetworkService decoder uses
+        // `.convertFromSnakeCase`, which already maps server-side
+        // `user_id` → `userId` and `created_at` → `createdAt`. Adding
+        // explicit `case userId = "user_id"` makes the decoder look for
+        // a literal `user_id` key AFTER the strategy has already
+        // transformed it to `userId`, producing a "key not found" crash.
+    }
+
+    struct ToggleReactionResponse: Decodable {
+        let action: String                 // "added" | "removed"
+        let reactions: [MessageReactionDTO]
+    }
+
+    /// Toggle the (user, emoji) pair on a message. The server adds the
+    /// reaction if it didn't exist and removes it otherwise — no separate
+    /// DELETE endpoint needed. `isGroup` switches which message table the
+    /// server looks in.
+    @discardableResult
+    func toggleMessageReaction(
+        messageId: String,
+        emoji: String,
+        isGroup: Bool
+    ) async throws -> ToggleReactionResponse {
+        struct Body: Encodable { let emoji: String; let isGroup: Bool }
+        return try await post(
+            path: "/api/messages/\(messageId)/reactions",
+            body: Body(emoji: emoji, isGroup: isGroup)
+        )
+    }
+
+    /// Fetch the current reaction list for a single message.
+    func messageReactions(messageId: String, isGroup: Bool) async throws -> [MessageReactionDTO] {
+        struct Wrapper: Decodable { let reactions: [MessageReactionDTO] }
+        let queryItems = [URLQueryItem(name: "is_group", value: isGroup ? "true" : "false")]
+        let resp: Wrapper = try await get(
+            path: "/api/messages/\(messageId)/reactions",
+            queryItems: queryItems
+        )
+        return resp.reactions
+    }
+
+    struct MessageSearchHit: Decodable, Identifiable {
+        let id: String
+        let senderId: String
+        let content: String
+        let timestamp: Date
+        let editedAt: Date?
+    }
+
+    /// In-thread substring search across DM history with a peer.
+    func searchThread(peerId: String, query: String, limit: Int = 50) async throws -> [MessageSearchHit] {
+        struct Wrapper: Decodable { let matches: [MessageSearchHit] }
+        let resp: Wrapper = try await get(
+            path: "/api/messages/search",
+            queryItems: [
+                URLQueryItem(name: "peer_id", value: peerId),
+                URLQueryItem(name: "query", value: query),
+                URLQueryItem(name: "limit", value: String(limit)),
+            ]
+        )
+        return resp.matches
+    }
+
+    /// Push a typing indicator to the peer / group. Fire-and-forget — we
+    /// don't surface failures because typing is purely cosmetic.
+    func postTyping(peerId: String, isTyping: Bool, isGroup: Bool) async {
+        struct Body: Encodable { let peerId: String; let isTyping: Bool; let isGroup: Bool }
+        struct Empty: Decodable {}
+        _ = try? await (post(
+            path: "/api/messages/typing",
+            body: Body(peerId: peerId, isTyping: isTyping, isGroup: isGroup)
+        ) as Empty)
+    }
+
+    // MARK: - Pinned messages
+
+    /// One pinned message — the shape matches the server's
+    /// `PinnedMessageResponse` (snake_case via the encoder strategy).
+    struct PinnedMessageDTO: Decodable, Identifiable, Equatable {
+        let id: String
+        let senderId: String
+        let senderUsername: String?
+        let senderName: String?
+        let content: String?
+        let messageType: String
+        let audioUrl: String?
+        let audioDurationSeconds: Int?
+        let timestamp: Date
+        let pinnedAt: Date
+        let pinnedByUserId: String
+    }
+
+    struct TogglePinResponse: Decodable {
+        let action: String          // "pinned" | "unpinned" | "noop"
+        let pinned: Bool
+        let pinnedAt: Date?
+        let pinnedByUserId: String?
+    }
+
+    /// Pin or unpin a message. `pinned: true` pins, `false` unpins.
+    /// Idempotent — re-pinning an already-pinned message returns
+    /// `action: "noop"` but still pushes a WS event so peers re-sync.
+    @discardableResult
+    func toggleMessagePin(
+        messageId: String,
+        isGroup: Bool,
+        pinned: Bool
+    ) async throws -> TogglePinResponse {
+        struct Body: Encodable { let isGroup: Bool; let pinned: Bool }
+        return try await post(
+            path: "/api/messages/\(messageId)/pin",
+            body: Body(isGroup: isGroup, pinned: pinned)
+        )
+    }
+
+    /// All currently pinned messages in the 1:1 thread with `peerId`,
+    /// most-recently-pinned first.
+    func pinnedMessagesDM(peerId: String) async throws -> [PinnedMessageDTO] {
+        try await get(path: "/api/messages/conversation/\(peerId)/pinned")
+    }
+
+    /// All currently pinned messages in a group.
+    func pinnedMessagesGroup(groupId: String) async throws -> [PinnedMessageDTO] {
+        try await get(path: "/api/messages/group/\(groupId)/pinned")
+    }
+
+    // MARK: - Saved messages (per-user bookmarks)
+
+    struct SavedMessageDTO: Decodable, Identifiable, Equatable {
+        /// The bookmark row id — what you DELETE against if you want to
+        /// remove a single bookmark.
+        let id: String
+        let messageId: String
+        let isGroup: Bool
+        let savedAt: Date
+        let senderUsername: String?
+        let senderName: String?
+        let content: String?
+        let messageType: String
+        let audioUrl: String?
+        let audioDurationSeconds: Int?
+        let timestamp: Date
+        let peerUserId: String?
+        let groupId: String?
+    }
+
+    struct SaveActionResponse: Decodable {
+        let action: String  // "saved" | "removed" | "noop"
+        let id: String?     // bookmark row id (only on "saved")
+    }
+
+    @discardableResult
+    func saveMessage(messageId: String, isGroup: Bool) async throws -> SaveActionResponse {
+        struct Body: Encodable { let isGroup: Bool }
+        return try await post(
+            path: "/api/messages/\(messageId)/save",
+            body: Body(isGroup: isGroup)
+        )
+    }
+
+    @discardableResult
+    func unsaveMessage(messageId: String, isGroup: Bool) async throws -> SaveActionResponse {
+        try await delete(
+            path: "/api/messages/\(messageId)/save?is_group=\(isGroup ? "true" : "false")"
+        )
+    }
+
+    /// Every message the current user has bookmarked. Newest-bookmark-first.
+    func listSavedMessages() async throws -> [SavedMessageDTO] {
+        try await get(path: "/api/messages/saved")
+    }
+
+    // MARK: - Group polls
+
+    struct PollOptionDTO: Decodable, Identifiable, Equatable {
+        let id: String
+        let text: String
+        let voteCount: Int
+        let voters: [String]   // empty list when poll is anonymous
+    }
+
+    struct PollDTO: Decodable, Identifiable, Equatable {
+        let id: String
+        let groupId: String
+        let creatorId: String
+        let creatorName: String
+        let question: String
+        let options: [PollOptionDTO]
+        let allowMultiple: Bool
+        let isAnonymous: Bool
+        let isClosed: Bool
+        let totalVotes: Int
+        let myVotes: [String]  // option IDs the current user has selected
+        let createdAt: Date
+        let expiresAt: Date?
+    }
+
+    @discardableResult
+    func createPoll(
+        groupId: String,
+        question: String,
+        options: [String],
+        allowMultiple: Bool,
+        isAnonymous: Bool,
+        expiresInMinutes: Int?
+    ) async throws -> PollDTO {
+        struct Body: Encodable {
+            let question: String
+            let options: [String]
+            let allowMultiple: Bool
+            let isAnonymous: Bool
+            let expiresInMinutes: Int?
+        }
+        return try await post(
+            path: "/api/groups/\(groupId)/polls",
+            body: Body(
+                question: question,
+                options: options,
+                allowMultiple: allowMultiple,
+                isAnonymous: isAnonymous,
+                expiresInMinutes: expiresInMinutes
+            )
+        )
+    }
+
+    func listPolls(groupId: String) async throws -> [PollDTO] {
+        try await get(path: "/api/groups/\(groupId)/polls")
+    }
+
+    func getPoll(groupId: String, pollId: String) async throws -> PollDTO {
+        try await get(path: "/api/groups/\(groupId)/polls/\(pollId)")
+    }
+
+    @discardableResult
+    func votePoll(groupId: String, pollId: String, optionId: String) async throws -> PollDTO {
+        struct Body: Encodable { let optionId: String }
+        return try await post(
+            path: "/api/groups/\(groupId)/polls/\(pollId)/vote",
+            body: Body(optionId: optionId)
+        )
+    }
+
+    @discardableResult
+    func closePoll(groupId: String, pollId: String) async throws -> PollDTO {
+        struct Empty: Encodable {}
+        return try await post(
+            path: "/api/groups/\(groupId)/polls/\(pollId)/close",
+            body: Empty()
+        )
+    }
+}

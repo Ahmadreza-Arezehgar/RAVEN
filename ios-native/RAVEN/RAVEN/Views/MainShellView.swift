@@ -20,6 +20,10 @@ struct MainShellView: View {
     @State private var showNotificationsSheet = false
     @State private var showSearchSheet = false
     @State private var showAudioRooms = false
+    @State private var showClubList = false
+    @State private var showEchoMap = false
+    @State private var showRavenShot = false  // Social map (swipe-right from Home)
+    @State private var ravenShotDragOffset: CGFloat = 0  // Interactive drag position
     @State private var deepLinkRoomId: String? = nil
     @State private var profileUserId: String?
     @State private var conversationStore = ConversationStore.shared
@@ -61,6 +65,57 @@ struct MainShellView: View {
             // ✅ Only ignore CONTAINER safe area (home indicator), NOT keyboard
             // .ignoresSafeArea(edges: .bottom) defaults to .all regions which kills keyboard avoidance!
             .ignoresSafeArea(.container, edges: [.top, .bottom])
+            // 📍 Raven Shot: Edge swipe from left to open social map (Home tab only)
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 12)
+                    .onChanged { value in
+                        guard selectedTab == .home else { return }
+                        guard !feedStateManager.isDetailViewActive else { return }
+                        // 🚧 Bail when RavenShot is already presented OR when a
+                        // nested pager has claimed the gesture. Without these
+                        // guards, panning the RavenShot map (which fires
+                        // horizontal drags) would re-trigger the open
+                        // animation on top of the already-open view, causing
+                        // SwiftUI to invalidate the Map repeatedly → crash.
+                        guard !showRavenShot else { return }
+                        guard !NestedSwipeCoordinator.shared.isHandlingSwipe else { return }
+                        // Only trigger from left edge (start point near left edge)
+                        guard value.startLocation.x < 35 else { return }
+                        // Must be predominantly horizontal
+                        guard abs(value.translation.width) > abs(value.translation.height) * 1.2 else { return }
+                        guard value.translation.width > 0 else { return }
+
+                        let progress = min(value.translation.width, UIScreen.main.bounds.width)
+                        ravenShotDragOffset = progress
+                    }
+                    .onEnded { value in
+                        guard selectedTab == .home else { return }
+                        guard !feedStateManager.isDetailViewActive else { return }
+                        guard !showRavenShot else { return }
+                        guard !NestedSwipeCoordinator.shared.isHandlingSwipe else { return }
+                        guard value.startLocation.x < 35 else {
+                            withAnimation(.interpolatingSpring(stiffness: 320, damping: 32)) {
+                                ravenShotDragOffset = 0
+                            }
+                            return
+                        }
+
+                        let screenWidth = UIScreen.main.bounds.width
+                        let velocity = value.predictedEndTranslation.width - value.translation.width
+                        // Commit on 22% of screen OR moderate flick velocity
+                        if value.translation.width > screenWidth * 0.22 || velocity > 250 {
+                            Haptics.medium()
+                            withAnimation(.interpolatingSpring(stiffness: 320, damping: 32)) {
+                                showRavenShot = true
+                                ravenShotDragOffset = 0
+                            }
+                        } else {
+                            withAnimation(.interpolatingSpring(stiffness: 320, damping: 32)) {
+                                ravenShotDragOffset = 0
+                            }
+                        }
+                    }
+            )
             
             // NOTE: Floating Search Pill removed per Apple/Liquid Glass design
             // Search is now ONLY accessible from the native .searchable modifier in InboxView
@@ -70,7 +125,9 @@ struct MainShellView: View {
             if selectedTab == .home && !feedStateManager.isDetailViewActive {
                 RadialMenuFAB(
                     onNewPost: { showCreatePost = true },
-                    onAudioRoom: { showAudioRooms = true }
+                    onAudioRoom: { showAudioRooms = true },
+                    onClub: { showClubList = true },
+                    onEcho: { showEchoMap = true }
                 )
                 // Smooth slide animation with bottom bar
                 .offset(y: feedStateManager.isChromeHidden ? 120 : 0)
@@ -119,6 +176,7 @@ struct MainShellView: View {
                 HapticTabBar(
                     selected: $selectedTab,
                     badgeCount: conversationStore.totalUnreadCount,
+                    userAvatarURL: AppConfig.mediaURL(from: AuthService.shared.currentUser?.avatarPath),
                     actionsProvider: makeQuickActions
                 )
                 .ignoresSafeArea(.keyboard, edges: .bottom)
@@ -147,8 +205,9 @@ struct MainShellView: View {
             let isOAuth = AuthService.shared.currentUser?.authMethod != .password
             let isVerified = isOAuth || AuthService.shared.isEmailVerified
             if isVerified {
-                // 🚀 Delay 1s so the feed gets 100% bandwidth at launch
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                // 🚀 Small 250ms buffer so feed fetch dispatches first; WebSocket
+                // connect is small and runs in parallel without competing meaningfully
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
                     RealtimeEngine.shared.start()
                     
                     // 💓 Start presence heartbeats so server knows we're online
@@ -167,7 +226,7 @@ struct MainShellView: View {
                 // 🚀 Delay 2s for heavy contacts sync
                 Task {
                     try? await Task.sleep(nanoseconds: 2_000_000_000)
-                    await ContactsService.shared.requestPermission()
+                    _ = await ContactsService.shared.requestPermission()
                     if ContactsService.shared.permissionStatus == .authorized {
                         await ContactsService.shared.syncWithServer()
                     }
@@ -214,6 +273,34 @@ struct MainShellView: View {
         }
         .sheet(isPresented: $showSearchSheet) {
             ConversationSearchSheet()
+        }
+        .sheet(isPresented: $showClubList) {
+            NavigationStack {
+                ClubListView()
+            }
+        }
+        .sheet(isPresented: $showEchoMap) {
+            NavigationStack {
+                EchoMapView()
+            }
+        }
+        // Raven Shot map overlay (smooth slide from left)
+        .overlay {
+            if showRavenShot {
+                RavenShotView(isPresented: $showRavenShot)
+                    .transition(.move(edge: .leading).combined(with: .opacity))
+                    .zIndex(999)
+            }
+        }
+        // Interactive peek preview during drag
+        .overlay {
+            if ravenShotDragOffset > 0 && !showRavenShot {
+                RavenShotPeekView(progress: ravenShotDragOffset / UIScreen.main.bounds.width)
+                    .frame(width: ravenShotDragOffset)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .transition(.opacity)
+                    .zIndex(998)
+            }
         }
         .fullScreenCover(isPresented: $showAudioRooms) {
             NavigationStack {
@@ -309,6 +396,11 @@ struct MainShellView: View {
         .overlay {
             ToastHostOverlay()
         }
+        // 🌐 Disaster Mode banner has been moved INTO each tab's view
+        // (currently FeedView) so it sits BELOW the floating Local/Friends
+        // pill on Home rather than overlapping it. Other tabs can mount
+        // `DisasterModeBanner()` themselves where it makes sense for their
+        // layout if/when they want to surface the offline state.
         // ✅ Audio Room Mini Player — shown when room is minimized
         .overlay(alignment: .top) {
             if RoomService.shared.isInRoom,
@@ -339,9 +431,8 @@ struct MainShellView: View {
                     }
                     .padding(.horizontal, 16)
                     .padding(.vertical, 12)
-                    .background(.ultraThinMaterial, in: Capsule())
-                    .overlay(Capsule().stroke(Color.green.opacity(0.4), lineWidth: 1))
-                    .shadow(color: .black.opacity(0.15), radius: 10, y: 5)
+                    .glassSurface(in: Capsule())
+                    .overlay(Capsule().stroke(Color.green.opacity(0.4), lineWidth: 1)) // live-room green tint
                     .padding(.horizontal, 20)
                     .padding(.top, 60)
                 }

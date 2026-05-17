@@ -8,9 +8,16 @@
                 <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls"/>
             </ResourceDictionary.MergedDictionaries>
 
-            <!-- ─── Brand colours (matching raven-messager.com + iOS app) ─── -->
+            <!--
+              Brand tokens — sourced byte-for-byte from
+              `RAVEN-MacApp/RAVEN/Views/RavenTheme.swift` so the macOS-Swift
+              build and the Windows build look identical. If you change a
+              colour here, change the matching constant in RavenTheme.swift
+              in the same commit.
+            -->
 
-            <Color x:Key="RavenBgColor">#030305</Color>
+            <!-- Surfaces (pure black to match the macOS shell) -->
+            <Color x:Key="RavenBgColor">#000000</Color>
             <Color x:Key="RavenBgCardColor">#0DFFFFFF</Color>     <!-- 5% white -->
             <Color x:Key="RavenBgCardHoverColor">#1FFFFFFF</Color> <!-- 12% white -->
             <Color x:Key="RavenBorderColor">#1AFFFFFF</Color>      <!-- 10% white -->
@@ -19,11 +26,24 @@
             <Color x:Key="RavenText2Color">#99FFFFFF</Color>       <!-- 60% white -->
             <Color x:Key="RavenText3Color">#66FFFFFF</Color>       <!-- 40% white -->
 
-            <Color x:Key="RavenPurple">#bf73ff</Color>
-            <Color x:Key="RavenBlue">#298dff</Color>
-            <Color x:Key="RavenCyan">#40f2ff</Color>
-            <Color x:Key="RavenGreen">#22c55e</Color>
-            <Color x:Key="RavenPink">#ff4d99</Color>
+            <!-- Mac RavenColors (RavenTheme.swift) -->
+            <Color x:Key="RavenPrimary">#6644FF</Color>            <!-- primary purple -->
+            <Color x:Key="RavenSecondary">#00CCCC</Color>          <!-- cyan -->
+            <Color x:Key="RavenAccent">#FF6699</Color>             <!-- pink -->
+            <Color x:Key="RavenLogoStart">#5BA0E8</Color>          <!-- azure -->
+            <Color x:Key="RavenLogoEnd">#9F7DE8</Color>            <!-- violet -->
+
+            <!-- Status / utility -->
+            <Color x:Key="RavenGreen">#22C55E</Color>
+            <Color x:Key="RavenRed">#EF4444</Color>
+
+            <!-- Legacy aliases (kept for back-compat during the rebrand) -->
+            <Color x:Key="RavenPurple">#9F7DE8</Color>
+            <Color x:Key="RavenBlue">#5BA0E8</Color>
+            <Color x:Key="RavenCyan">#00CCCC</Color>
+            <Color x:Key="RavenPink">#FF6699</Color>
+
+            <!-- ─── Solid brushes ─── -->
 
             <SolidColorBrush x:Key="RavenBg" Color="{StaticResource RavenBgColor}"/>
             <SolidColorBrush x:Key="RavenBgCard" Color="{StaticResource RavenBgCardColor}"/>
@@ -34,33 +54,53 @@
             <SolidColorBrush x:Key="RavenText2" Color="{StaticResource RavenText2Color}"/>
             <SolidColorBrush x:Key="RavenText3" Color="{StaticResource RavenText3Color}"/>
 
+            <SolidColorBrush x:Key="RavenPrimaryBrush" Color="{StaticResource RavenPrimary}"/>
+            <SolidColorBrush x:Key="RavenSecondaryBrush" Color="{StaticResource RavenSecondary}"/>
+            <SolidColorBrush x:Key="RavenAccentBrush" Color="{StaticResource RavenAccent}"/>
+            <SolidColorBrush x:Key="RavenLogoStartBrush" Color="{StaticResource RavenLogoStart}"/>
+            <SolidColorBrush x:Key="RavenLogoEndBrush" Color="{StaticResource RavenLogoEnd}"/>
+
             <SolidColorBrush x:Key="RavenPurpleBrush" Color="{StaticResource RavenPurple}"/>
             <SolidColorBrush x:Key="RavenBlueBrush" Color="{StaticResource RavenBlue}"/>
             <SolidColorBrush x:Key="RavenCyanBrush" Color="{StaticResource RavenCyan}"/>
             <SolidColorBrush x:Key="RavenGreenBrush" Color="{StaticResource RavenGreen}"/>
+            <SolidColorBrush x:Key="RavenRedBrush" Color="{StaticResource RavenRed}"/>
 
-            <!-- Brand gradient: purple → blue (used on CTAs + brand text) -->
+            <!-- Brand gradient: primary → secondary (purple → cyan) — Mac LinearGradient.ravenBrand -->
             <LinearGradientBrush x:Key="RavenBrandGradient" StartPoint="0,0" EndPoint="1,1">
-                <GradientStop Color="{StaticResource RavenPurple}" Offset="0"/>
-                <GradientStop Color="{StaticResource RavenBlue}" Offset="1"/>
+                <GradientStop Color="{StaticResource RavenPrimary}" Offset="0"/>
+                <GradientStop Color="{StaticResource RavenSecondary}" Offset="1"/>
             </LinearGradientBrush>
 
-            <!-- Brand gradient subtle: 18% opacity (used as button bg w/ glow) -->
+            <!-- Logo gradient: logoStart → logoEnd (azure → violet) — Mac LinearGradient.ravenLogo -->
+            <LinearGradientBrush x:Key="RavenLogoGradient" StartPoint="0,0" EndPoint="1,1">
+                <GradientStop Color="{StaticResource RavenLogoStart}" Offset="0"/>
+                <GradientStop Color="{StaticResource RavenLogoEnd}" Offset="1"/>
+            </LinearGradientBrush>
+
+            <!-- Brand gradient subtle (20% — used as button bg w/ glow) -->
             <LinearGradientBrush x:Key="RavenBrandGradientSubtle" StartPoint="0,0" EndPoint="1,1">
-                <GradientStop Color="#33bf73ff" Offset="0"/>
-                <GradientStop Color="#33298dff" Offset="1"/>
+                <GradientStop Color="#336644FF" Offset="0"/>
+                <GradientStop Color="#3300CCCC" Offset="1"/>
+            </LinearGradientBrush>
+
+            <!-- Logo gradient subtle (18% — Mac's profile-header card) -->
+            <LinearGradientBrush x:Key="RavenLogoGradientSubtle" StartPoint="0,0" EndPoint="1,1">
+                <GradientStop Color="#2E5BA0E8" Offset="0"/>
+                <GradientStop Color="#2E9F7DE8" Offset="1"/>
             </LinearGradientBrush>
 
             <!-- Outgoing chat bubble: brand gradient -->
             <LinearGradientBrush x:Key="OutgoingBubbleBrush" StartPoint="0,0" EndPoint="1,1">
-                <GradientStop Color="#bf73ff" Offset="0"/>
-                <GradientStop Color="#298dff" Offset="1"/>
+                <GradientStop Color="{StaticResource RavenPrimary}" Offset="0"/>
+                <GradientStop Color="{StaticResource RavenSecondary}" Offset="1"/>
             </LinearGradientBrush>
 
             <!-- ─── Typography ─── -->
 
             <x:Double x:Key="FontSizeHero">28</x:Double>
-            <x:Double x:Key="FontSizeTitle">20</x:Double>
+            <x:Double x:Key="FontSizeTitle">22</x:Double>
+            <x:Double x:Key="FontSizeSection">18</x:Double>
             <x:Double x:Key="FontSizeBody">14</x:Double>
             <x:Double x:Key="FontSizeCaption">12</x:Double>
             <x:Double x:Key="FontSizeMicro">11</x:Double>
@@ -70,7 +110,7 @@
             <CornerRadius x:Key="RavenCardRadius">14</CornerRadius>
             <CornerRadius x:Key="RavenCapsuleRadius">999</CornerRadius>
 
-            <!-- ─── Capsule button style (matches iOS RavenGlassCapsuleButton) ─── -->
+            <!-- ─── Capsule button styles (match Mac's brand-gradient Post button) ─── -->
 
             <Style x:Key="CapsuleButton" TargetType="Button">
                 <Setter Property="Background" Value="{StaticResource RavenBgCard}"/>
@@ -88,6 +128,14 @@
                 <Setter Property="Background" Value="{StaticResource RavenBrandGradient}"/>
                 <Setter Property="Foreground" Value="White"/>
                 <Setter Property="BorderThickness" Value="0"/>
+            </Style>
+
+            <!-- The big Post button on the rail (Mac: 50pt tall, ExtraBold 17pt) -->
+            <Style x:Key="PostButton" TargetType="Button" BasedOn="{StaticResource CapsuleButtonProminent}">
+                <Setter Property="MinHeight" Value="50"/>
+                <Setter Property="FontSize" Value="17"/>
+                <Setter Property="FontWeight" Value="ExtraBold"/>
+                <Setter Property="HorizontalAlignment" Value="Stretch"/>
             </Style>
 
             <!-- ─── Sidebar item style (capsule selectable row) ─── -->

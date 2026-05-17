@@ -116,7 +116,7 @@ struct GeminiAskSheet: View {
                         }
                         .padding()
                         .background(
-                            RoundedRectangle(cornerRadius: 16)
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
                                 .fill(
                                     LinearGradient(
                                         colors: [
@@ -129,7 +129,7 @@ struct GeminiAskSheet: View {
                                 )
                         )
                         .overlay(
-                            RoundedRectangle(cornerRadius: 16)
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
                                 .strokeBorder(
                                     LinearGradient(
                                         colors: [.purple.opacity(0.3), .blue.opacity(0.3)],

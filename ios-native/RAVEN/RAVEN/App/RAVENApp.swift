@@ -5,16 +5,70 @@ import GoogleSignIn
 import BackgroundTasks
 #endif
 
+// 🍏 Mac-only command notifications — bridge the menu-bar shortcuts into
+// SwiftUI views. iOS doesn't post these (no menu bar), so subscribers
+// can listen without platform guards.
+extension Notification.Name {
+    static let ravenNewMessage = Notification.Name("ravenNewMessage")
+    static let ravenOpenBackgroundMesh = Notification.Name("ravenOpenBackgroundMesh")
+}
+
+
 @main
 struct RAVENApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @Environment(\.scenePhase) private var scenePhase
     @State private var appSettings = AppSettings.shared
     @State private var languageManager = AppLanguageManager.shared
-    
+
+    // ─────────────────────────────────────────────────────────────────
+    // 🍏 Mac mesh-daemon mode
+    // ─────────────────────────────────────────────────────────────────
+    // When the LaunchAgent starts RAVEN with `--mesh-daemon`, we run a
+    // headless WindowGroup that DOES NOT open a window — it just keeps
+    // the BLE engine + WebSocket alive so the mesh stays bridged while
+    // the user has the GUI app closed.
+    //
+    // On iOS / Catalyst foreground launches (no flag), this is `false`
+    // and the normal UI scene runs.
+    private static let isMeshDaemonMode: Bool = {
+        #if targetEnvironment(macCatalyst)
+        return CommandLine.arguments.contains("--mesh-daemon")
+        #else
+        return false
+        #endif
+    }()
+
+    // ─────────────────────────────────────────────────────────────────
+    // Root content
+    // ─────────────────────────────────────────────────────────────────
+    // Single-rooted view that the modifier chain in `body` attaches to.
+    // Splitting the platform branches across `#if/#else` directly inside
+    // the modifier chain breaks Swift's type inference (each branch
+    // produces a different opaque `View`), so we resolve it here.
+    @ViewBuilder
+    private var rootContent: some View {
+        #if targetEnvironment(macCatalyst)
+        if Self.isMeshDaemonMode {
+            // Headless daemon mode — keep BLE + WebSocket alive without
+            // ever showing UI. A 1×1 Color.clear is enough to satisfy
+            // WindowGroup; the LaunchAgent hides the dock icon via Info.plist.
+            Color.clear.frame(width: 1, height: 1)
+        } else {
+            AuthGateView()
+        }
+        #else
+        AuthGateView()
+        #endif
+    }
+
     var body: some Scene {
         WindowGroup {
-            AuthGateView()
+            // Single-rooted view so the modifier chain below applies cleanly
+            // on both platforms. The Catalyst branch handles daemon mode
+            // (1×1 hidden window) and the post-auth shell dispatch lives
+            // inside AuthGateView itself.
+            rootContent
                 .preferredColorScheme(appSettings.preferredColorScheme)
                 .dynamicTypeSize(appSettings.dynamicTypeSize)  // Global text scaling
                 .environment(\.layoutDirection, languageManager.layoutDirection)
@@ -24,7 +78,70 @@ struct RAVENApp: App {
                 // Background mesh onboarding moved to MainShellView (after login/setup complete)
                 // Screenshot protection removed from root - will be applied per-view
                 .handleDeepLinks()
+                // 🍎 BUG FIX (2026-05-10): wire NSUserActivity handlers
+                // for the activity types declared in Info.plist
+                // (`INSendMessageIntent`, `INStartCallIntent`). Without
+                // these, Siri-suggested message intents and Handoff
+                // continuations are dropped and iOS 26 logs
+                // "no handler registered" on every launch.
+                .onContinueUserActivity("INSendMessageIntent") { activity in
+                    // Forward to the router via the existing URL handler.
+                    // Siri's INSendMessageIntent attaches the conversation
+                    // identifier as `userInfo["conversationIdentifier"]`.
+                    if let convo = activity.userInfo?["conversationIdentifier"] as? String,
+                       let url = URL(string: "raven://room/\(convo)") {
+                        DeepLinkRouter.shared.handleURL(url)
+                    }
+                }
+                .onContinueUserActivity("INStartCallIntent") { _ in
+                    // Calling is not implemented yet — log so we know
+                    // when the activity arrives, but don't crash.
+                    #if DEBUG
+                    print("📞 [App] INStartCallIntent received — call feature not yet implemented")
+                    #endif
+                }
+                // Universal links / Handoff fallback for unknown activity types
+                .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
+                    if let url = activity.webpageURL {
+                        DeepLinkRouter.shared.handleURL(url)
+                    }
+                }
                 .task {
+                    // v1.6 self-tests — verify the new cryptographic
+                    // surfaces still work end-to-end on this device.
+                    // PASS/FAIL appears once per launch in the console;
+                    // a regression in the cryptographic boundary surfaces
+                    // immediately rather than at user-facing fail time.
+                    #if DEBUG
+                    KeyBackupService.runDebugSelfTest()
+                    SealedSenderEnvelope.runDebugSelfTest()
+                    await OPAQUEService.runDebugSelfTest()
+                    await MeshGatewayService.runDebugSelfTest()
+                    SecretKey.runDebugSelfTest()
+                    DoubleAEAD.runDebugSelfTest()
+                    IdentityRotationService.runDebugSelfTest()
+                    #endif
+
+                    // Identity rotation: bootstrap the 180-day timer
+                    // and check on every launch whether we're due. The
+                    // first launch records "now" as the baseline so a
+                    // fresh install doesn't immediately rotate.
+                    IdentityRotationService.shared.bootstrap()
+                    _ = await IdentityRotationService.shared.rotateIfDue()
+
+                    // Bootstrap the Mesh-to-Internet Gateway service.
+                    // No-op until the user toggles Helper Mode on in
+                    // Settings; the bootstrap call only registers
+                    // observers + starts the score-tick timer.
+                    MeshGatewayService.shared.bootstrap()
+
+                    // 🖼️ Avatar disk cache: prune past 100 MB cap so
+                    // long-running installs don't bloat. Cheap walk
+                    // of `Documents/avatars/`. Not awaited — fire and
+                    // forget; the actor serialises any concurrent
+                    // image() reads against this.
+                    Task { await AvatarCacheService.shared.prune() }
+
                     // Request push permissions on app start
                     let granted = await PushNotificationService.shared.requestAuthorization()
                     #if DEBUG
@@ -42,6 +159,27 @@ struct RAVENApp: App {
                     // listed in Settings until next launch.
                     if AuthService.shared.isAuthenticated {
                         _ = await LinkedDevicesService.shared.heartbeat()
+
+                        // 🔐 Upload our Ed25519 identity public key so the
+                        // server can verify signatures we produce (currently
+                        // used by the desktop QR-login flow — see
+                        // `Features/QRCode/DesktopLoginApprovalView.swift`).
+                        // Idempotent: server returns `unchanged` if the key
+                        // matches what's already registered. Best-effort —
+                        // a failure here just means the user can't approve
+                        // a desktop login until the next launch.
+                        if let pub = DeviceIdentityService.shared.publicKeyBase64 {
+                            do {
+                                let resp = try await NetworkService.shared.uploadIdentityKey(publicKeyBase64: pub)
+                                #if DEBUG
+                                print("🔐 [App] Identity key upload: \(resp.status)")
+                                #endif
+                            } catch {
+                                #if DEBUG
+                                print("⚠️ [App] Identity key upload failed: \(error.localizedDescription)")
+                                #endif
+                            }
+                        }
                     }
 
                     // 🩻 MetricKit diagnostics — subscribes to Apple's daily
@@ -65,6 +203,30 @@ struct RAVENApp: App {
                     }
                 }
         }
+        // 🍏 Mac-only window chrome: sane default size, content-min resizing,
+        // unified glass title bar (macOS 26 convention). The modifiers are
+        // gated so iOS still gets the original full-screen single-window UX.
+        #if targetEnvironment(macCatalyst)
+        .defaultSize(width: 1180, height: 760)
+        .windowResizability(.contentMinSize)
+        .commands {
+            // Replace iOS-style "New" with a Mac-friendly "New Message" command
+            CommandGroup(replacing: .newItem) {
+                Button("New Message") {
+                    NotificationCenter.default.post(name: .ravenNewMessage, object: nil)
+                }
+                .keyboardShortcut("n", modifiers: .command)
+            }
+            // Sidebar navigation toggle (⌘\ — Mac convention)
+            CommandGroup(after: .sidebar) {
+                Divider()
+                Button("Background Mesh") {
+                    NotificationCenter.default.post(name: .ravenOpenBackgroundMesh, object: nil)
+                }
+                .keyboardShortcut("m", modifiers: [.command, .shift])
+            }
+        }
+        #endif
         .onChange(of: scenePhase) { _, newPhase in
             switch newPhase {
             case .active:
@@ -155,6 +317,21 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         
         // Setup push notification delegate
         UNUserNotificationCenter.current().delegate = self
+
+        // 🔔 BUG FIX (2026-05-10): register for remote notifications
+        // SYNCHRONOUSLY here, before `didFinishLaunching` returns.
+        // The previous version did this from a `.task { ... }` on
+        // the root WindowGroup — by the time we asked for the token,
+        // iOS had already forwarded any cold-launch silent-push
+        // payload, and on iOS 26 with provisional auth the first
+        // foreground delivery was dropped. Calling
+        // `registerForRemoteNotifications` here means
+        // `didRegisterForRemoteNotificationsWithDeviceToken` fires
+        // before the cold-launch push handlers run.
+        // The user-facing `requestAuthorization()` prompt (the alert)
+        // still happens later from the `.task {}` because it requires
+        // user interaction and shouldn't block app launch.
+        UIApplication.shared.registerForRemoteNotifications()
         
         // Start DTN Mesh infrastructure (Server-first, Mesh-fallback)
         NetworkMonitor.shared.start()
@@ -221,10 +398,19 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
                 try await DeviceIdentityService.shared.initialize()
                 try await ConversationRepository.shared.deduplicateByPeerId()
                 try await ConversationRepository.shared.normalizeRoomIdsToPeerId()
-                
+
                 #if DEBUG
                 print("🔐 [App] Device identity initialized: \(DeviceIdentityService.shared.fingerprint ?? "generating...")")
                 #endif
+
+                // 🔐 E2EE bootstrap — wires the pre-key bundle provider,
+                // publishes our public bundle on first launch, and tops
+                // up the server-side OPK pool. Idempotent + non-fatal:
+                // failures only mean E2EE stays gated by its feature
+                // flag (`E2EEMessageGateway.isEnabled`).
+                Task.detached(priority: .utility) {
+                    await E2EEBootstrap.shared.runIfNeeded()
+                }
                 
                 #if !targetEnvironment(simulator)
                 await MeshPostSyncWorker.shared.startMonitoring()
@@ -333,12 +519,25 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         didReceiveRemoteNotification userInfo: [AnyHashable: Any],
         fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
     ) {
-        Task {
+        // BUG FIX (2026-05-10): the previous version awaited
+        // `handlePushReceived` (which can do a full server sync, >30 s
+        // on slow networks) BEFORE calling `completionHandler`. iOS
+        // gives ~30 s for silent-push handlers to complete; if we go
+        // over, the system records a non-completion against the bundle
+        // id and starts throttling future silent pushes. Worse, if
+        // `handlePushReceived` ever threw / hung, the completion
+        // handler was never called at all.
+        //
+        // Now: report `.newData` immediately so iOS marks the silent
+        // push as handled, then continue the heavy work in a separate
+        // detached task that's free to run as long as it needs.
+        completionHandler(.newData)
+        let appState = application.applicationState
+        Task.detached(priority: .userInitiated) {
             await PushNotificationService.shared.handlePushReceived(
                 userInfo,
-                appState: application.applicationState
+                appState: appState
             )
-            completionHandler(.newData)
         }
     }
     #endif
@@ -511,18 +710,18 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
             
         // ── View Post / Join Audio Room ──
         case "VIEW":
-            Task {
+            Task { @MainActor in
                 if let postId = userInfo["post_id"] as? String {
-                    await DeepLinkRouter.shared.route(to: .post(postId: postId))
+                    DeepLinkRouter.shared.route(to: .post(postId: postId))
                 }
                 completionHandler()
             }
             return
-            
+
         case "JOIN":
-            Task {
+            Task { @MainActor in
                 if let roomId = userInfo["room_id"] as? String {
-                    await DeepLinkRouter.shared.route(to: .audioRoom(slug: roomId))
+                    DeepLinkRouter.shared.route(to: .audioRoom(slug: roomId))
                 }
                 completionHandler()
             }
@@ -751,24 +950,29 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
             safeSenderName = "\(safeSenderName) in \(gName)"
         }
         
-        var safePreview = message.text ?? "💬 Mesh message"
-        if safePreview.looksEncrypted {
-            switch message.type {
-            case .image: safePreview = "📷 Photo"
-            case .video: safePreview = "🎥 Video"
-            case .videoNote: safePreview = "📹 Video note"
-            case .ephemeralPhoto: safePreview = "📸 Snap Photo"
-            case .voice: safePreview = "🎤 Voice message"
-            case .file: safePreview = "📄 File"
-            case .location: safePreview = "📍 Location"
-            case .postShare: safePreview = "🔄 Shared post"
-            case .system: safePreview = "🔔 Notification"
-            default: safePreview = "🔒 Secure message"
-            }
-        }
+        // Type-aware preview ("📷 Photo", "🎤 Voice message · 12s",
+        // file names with caption, etc.) Centralised so APNs +
+        // mesh + in-app toasts all show consistent strings — see
+        // MessagePreviewFormatter.swift for the type matrix.
+        let safePreview = MessagePreviewFormatter.format(message: message)
         
         if appState == .active {
-            // App is in foreground - show toast notification
+            // App is in foreground - show toast notification IF we
+            // are the first delivery channel to see this message.
+            //
+            // 🔴 Bug fix (2026-05-09): the same message could arrive
+            // via mesh AND server (or via APNs background → in-app
+            // foreground when the user opens the app), producing two
+            // in-app banners for one event. Centralised dedup uses
+            // `NotificationDedupCache.claim(messageId:)` — the first
+            // path to claim shows the banner, the others silently skip.
+            let firstToShow = await NotificationDedupCache.shared.claim(messageId: message.id)
+            guard firstToShow else {
+                #if DEBUG
+                print("📵 [Notif] Skipping mesh in-app toast for \(message.id.prefix(8)) — already shown")
+                #endif
+                return
+            }
             await MainActor.run {
                 let toast = ToastItem.message(
                     senderName: safeSenderName,
@@ -781,22 +985,49 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
                 NotificationPipeline.shared.enqueue(toast)
             }
         } else {
+            // 🔁 Dedup with the APNs path. If the same message already
+            // arrived via a server push and iOS displayed that alert,
+            // we skip the mesh-side local notification — otherwise the
+            // user gets two banners for one message (the original
+            // user-reported bug).
+            let firstToShow = await NotificationDedupCache.shared.claim(messageId: message.id)
+            guard firstToShow else {
+                #if DEBUG
+                print("📵 [Notif] Skipping mesh local-notif for \(message.id.prefix(8)) — APNs already showed it")
+                #endif
+                return
+            }
+
             // ALWAYS fire local notification for Mesh Messages to guarantee Lock Screen delivery
             let content = UNMutableNotificationContent()
             content.title = safeSenderName
-            
+
             // 🔒 Privacy: Respect user's message preview setting (default: true)
             let showPreview = UserDefaults.standard.object(forKey: "messagePreview") as? Bool ?? true
             content.body = showPreview ? safePreview : "New Message"
-            
+
             content.sound = .default
             content.threadIdentifier = roomId
+            // 🔴 Bug fix (2026-05-09): mesh-delivered messages were
+            // missing the lock-screen "Reply" action because we never
+            // set `categoryIdentifier`. APNs-delivered messages had it
+            // (server sets `aps.category = "MESSAGE"`), but for mesh we
+            // construct the content locally and forgot the category.
+            // Without it, iOS shows no action buttons on the lock screen
+            // — smart reply silently does nothing.
+            content.categoryIdentifier = "MESSAGE"
+            // Pass the keys the REPLY handler in `didReceive` reads.
+            // It looks at `room_id` / `chat_id` / `group_id` and
+            // `sender_id` — so we use snake_case here too, matching
+            // what the APNs server payload sends.
             content.userInfo = [
-                "roomId": roomId,
-                "type": "mesh_message",
-                "senderId": message.senderId
+                "room_id": roomId,
+                "chat_id": roomId,
+                "type": isGroupMessage ? "group_message" : "message",
+                "sender_id": message.senderId,
+                "message_id": message.id
             ]
-            
+
             // Use message.id so if APNs also sends a push with apns-collapse-id = message.id, iOS merges them
             let request = UNNotificationRequest(identifier: message.id, content: content, trigger: nil)
             try? await UNUserNotificationCenter.current().add(request)
@@ -873,11 +1104,6 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         // Previously only .delivered stopped broadcast — .read ACKs were ignored,
         // causing messages to broadcast for up to 24h (TTL) and draining battery.
         if ack.status == .delivered || ack.status == .read {
-            let msgRows = try? await DatabaseService.shared.query(
-                "SELECT room_id FROM messages WHERE client_message_id = ? LIMIT 1",
-                params: [ack.originalMessageId]
-            )
-            let ackRoomId = msgRows?.first?["room_id"] as? String
             // Bug 4 fix: Stop delivery job for ALL messages (including groups).
             // For groups, a single ACK proves the message entered the mesh successfully.
             // This breaks the infinite retry loop that was draining battery.

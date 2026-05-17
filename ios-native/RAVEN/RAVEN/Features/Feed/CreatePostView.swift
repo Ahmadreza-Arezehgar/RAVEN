@@ -1,4 +1,5 @@
 import SwiftUI
+@preconcurrency import AVFoundation
 
 // MARK: - Post Visibility Enum
 enum PostVisibility: String, CaseIterable {
@@ -62,6 +63,19 @@ struct CreatePostView: View {
     @State private var showMediaPicker = false
     @State private var showError = false
     @State private var errorMessage = ""
+
+    // ───────────────────────────────────────────────────────────────────
+    // @mention picker state.
+    // Was previously absent — users could type `@username` manually but
+    // there was no autocomplete, so a typo silently mis-routed the
+    // mention notification (or hit nobody if the regex hit a non-existent
+    // name). Now we hook MentionTracker, debounce-search the user
+    // directory, and send structured `entities` through to the API so the
+    // server uses the user_id directly (skipping the buggy regex).
+    // ───────────────────────────────────────────────────────────────────
+    @State private var mentionTracker = MentionTracker()
+    @State private var mentionCandidates: [MentionCandidate] = []
+    @State private var mentionSearchTask: Task<Void, Never>? = nil
     
     // Voice recording
     @State private var audioRecorder: AudioRecorderService?
@@ -73,6 +87,11 @@ struct CreatePostView: View {
     @State private var showPaywall = false
     @State private var showUpgradeAlert = false
     @State private var upgradeAlertMessage = ""
+    @State private var showVaultLockSheet = false
+    @State private var postVaultLock: VaultLock? = nil
+    
+    // Raven Shot: opt-in location toggle for social map
+    @State private var showOnRavenShot = false
     
     private let networkService = NetworkService.shared
     private let maxCharacters = 500
@@ -129,7 +148,7 @@ struct CreatePostView: View {
                                         } label: {
                                             HStack(spacing: 4) {
                                                 Image(systemName: "plus")
-                                                Text("Add")
+                                                Text("Add").lineLimit(1)
                                             }
                                             .font(.system(size: 13, weight: .medium))
                                             .foregroundColor(.accentColor)
@@ -142,7 +161,7 @@ struct CreatePostView: View {
                                         } label: {
                                             HStack(spacing: 4) {
                                                 Image(systemName: "crown.fill")
-                                                Text("More")
+                                                Text("More").lineLimit(1)
                                             }
                                             .font(.system(size: 13, weight: .medium))
                                             .foregroundColor(.orange)
@@ -168,10 +187,10 @@ struct CreatePostView: View {
                             }
                             .padding(12)
                             .background(
-                                RoundedRectangle(cornerRadius: 16)
+                                RoundedRectangle(cornerRadius: 16, style: .continuous)
                                     .fill(.ultraThinMaterial)
                                     .overlay(
-                                        RoundedRectangle(cornerRadius: 16)
+                                        RoundedRectangle(cornerRadius: 16, style: .continuous)
                                             .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
                                     )
                             )
@@ -180,6 +199,14 @@ struct CreatePostView: View {
                         
                         // Visibility Picker (Glass Segmented)
                         visibilityPicker
+                        
+                        // Raven Shot Toggle (Social Map)
+                        ravenShotToggle
+                        
+                        // Vault Lock Indicator (when active)
+                        if postVaultLock != nil {
+                            vaultLockIndicator
+                        }
                         
                         // Voice Recording Preview
                         if hasVoiceRecording {
@@ -248,6 +275,9 @@ struct CreatePostView: View {
         }
         .sheet(isPresented: $showPaywall) {
             RavenPlusPaywallView()
+        }
+        .sheet(isPresented: $showVaultLockSheet) {
+            VaultLockSheet(vaultLock: $postVaultLock)
         }
     }
     
@@ -356,7 +386,18 @@ struct CreatePostView: View {
                     .scrollContentBackground(.hidden)
                     .frame(minHeight: 120, maxHeight: 220)
                     .padding(12)
-                
+                    // 🔔 @mention live-picker — fires on every keystroke,
+                    // looks for "@…" tokens, debounces a /api/users/search
+                    // and surfaces the picker overlay below the composer.
+                    .onChange(of: content) { _, newValue in
+                        mentionTracker.processTextChange(newValue)
+                        if mentionTracker.isShowingPicker {
+                            scheduleMentionSearch(query: mentionTracker.mentionSearchText)
+                        } else {
+                            mentionCandidates = []
+                        }
+                    }
+
                 // Placeholder
                 if content.isEmpty {
                     Text("Share your thoughts...")
@@ -366,11 +407,27 @@ struct CreatePostView: View {
                         .padding(.vertical, 20)
                         .allowsHitTesting(false)
                 }
+
+                // Mention picker overlay — anchored to the text editor's
+                // top-left so it sits right above the cursor visually.
+                if mentionTracker.isShowingPicker && !mentionCandidates.isEmpty {
+                    MentionPickerView(
+                        members: mentionCandidates,
+                        searchText: mentionTracker.mentionSearchText,
+                        onSelect: { candidate in
+                            content = mentionTracker.insertMention(into: content, candidate: candidate)
+                            mentionCandidates = []
+                            Haptics.light()
+                        }
+                    )
+                    .padding(.top, 4)
+                    .zIndex(10)
+                }
             }
             .background(.regularMaterial)
             .clipShape(RoundedRectangle(cornerRadius: 16))
             .overlay(
-                RoundedRectangle(cornerRadius: 16)
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .stroke(Color.primary.opacity(0.12), lineWidth: 0.5)
             )
             .shadow(color: .black.opacity(0.04), radius: 8, y: 4)
@@ -405,7 +462,7 @@ struct CreatePostView: View {
                     } label: {
                         HStack(spacing: 4) {
                             Image(systemName: "plus")
-                            Text("Add")
+                            Text("Add").lineLimit(1)
                         }
                         .font(.system(size: 13, weight: .medium))
                         .foregroundColor(.accentColor)
@@ -418,7 +475,7 @@ struct CreatePostView: View {
                     } label: {
                         HStack(spacing: 4) {
                             Image(systemName: "crown.fill")
-                            Text("More")
+                            Text("More").lineLimit(1)
                         }
                         .font(.system(size: 13, weight: .medium))
                         .foregroundColor(.orange)
@@ -439,7 +496,7 @@ struct CreatePostView: View {
                             .frame(height: 100)
                             .clipShape(RoundedRectangle(cornerRadius: 12))
                             .overlay(
-                                RoundedRectangle(cornerRadius: 12)
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
                                     .stroke(Color.primary.opacity(0.1), lineWidth: 0.5)
                             )
                             .shadow(color: .black.opacity(0.04), radius: 4, y: 2)
@@ -456,7 +513,7 @@ struct CreatePostView: View {
                         Button {
                             Haptics.light()
                             withAnimation(.spring(response: 0.25)) {
-                                selectedMedia.remove(at: index)
+                                _ = selectedMedia.remove(at: index)
                             }
                         } label: {
                             Image(systemName: "xmark.circle.fill")
@@ -472,10 +529,10 @@ struct CreatePostView: View {
         }
         .padding(12)
         .background(
-            RoundedRectangle(cornerRadius: 16)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(.ultraThinMaterial)
                 .overlay(
-                    RoundedRectangle(cornerRadius: 16)
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
                         .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
                 )
         )
@@ -503,6 +560,8 @@ struct CreatePostView: View {
                             
                             Text(option.rawValue)
                                 .font(.system(size: 14, weight: visibility == option ? .semibold : .medium))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.85)
                         }
                         .foregroundColor(visibility == option ? .white : .primary)
                         .frame(maxWidth: .infinity)
@@ -532,6 +591,66 @@ struct CreatePostView: View {
             )
             .shadow(color: .black.opacity(0.04), radius: 6, y: 3)
         }
+    }
+    
+    // MARK: - Raven Shot Toggle (Social Map)
+    private var ravenShotToggle: some View {
+        HStack(spacing: 12) {
+            // Map icon
+            Image(systemName: showOnRavenShot ? "map.fill" : "map")
+                .font(.system(size: 18))
+                .foregroundStyle(showOnRavenShot ? .blue : .secondary)
+                .frame(width: 40, height: 40)
+                .background(
+                    showOnRavenShot
+                        ? Color.blue.opacity(0.12)
+                        : Color.secondary.opacity(0.08)
+                )
+                .clipShape(Circle())
+                .animation(.easeInOut(duration: 0.2), value: showOnRavenShot)
+            
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Show on Raven Shot")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.primary)
+                
+                Text(showOnRavenShot
+                     ? "Visible on the social map"
+                     : "Post won't appear on map")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            
+            Spacer()
+            
+            Toggle("", isOn: $showOnRavenShot)
+                .labelsHidden()
+                .tint(.blue)
+                .onChange(of: showOnRavenShot) { _, newValue in
+                    if newValue {
+                        Haptics.selection()
+                        // Request location permission if not granted
+                        if !LocationManager.shared.hasLocationPermission {
+                            LocationManager.shared.requestWhenInUse()
+                        }
+                    }
+                }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(.ultraThinMaterial)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(
+                            showOnRavenShot
+                                ? Color.blue.opacity(0.25)
+                                : Color.primary.opacity(0.08),
+                            lineWidth: 0.5
+                        )
+                )
+        )
+        .animation(.easeInOut(duration: 0.2), value: showOnRavenShot)
     }
     
     // MARK: - Voice Preview Card
@@ -590,20 +709,103 @@ struct CreatePostView: View {
         }
         .padding(14)
         .background(
-            RoundedRectangle(cornerRadius: 16)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(.ultraThinMaterial)
                 .overlay(
-                    RoundedRectangle(cornerRadius: 16)
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
                         .stroke(Color.orange.opacity(0.2), lineWidth: 0.5)
                 )
         )
         .transition(.scale.combined(with: .opacity))
     }
     
+    /// Debounced user-search for the @mention picker. Cancels the in-flight
+    /// search when the user types another character, fires after 200 ms of
+    /// quiet, hits `/api/users/search?q=…` and decodes the lightweight
+    /// `UserSearchHit` array. Empty query → most-recent friends from the
+    /// /api/users/friends fallback (always shown when picker just opened).
+    private func scheduleMentionSearch(query: String) {
+        mentionSearchTask?.cancel()
+        let q = query.trimmingCharacters(in: .whitespaces)
+        mentionSearchTask = Task {
+            try? await Task.sleep(nanoseconds: 200_000_000) // 200 ms debounce
+            if Task.isCancelled { return }
+            do {
+                struct UserSearchHit: Decodable {
+                    let id: String
+                    let username: String
+                    let avatarPath: String?
+                    let bio: String?
+                }
+                let path = q.isEmpty
+                    ? "/api/users/friends"
+                    : "/api/users/search?q=\(q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? q)"
+                let hits: [UserSearchHit] = try await NetworkService.shared.get(path: path)
+                if Task.isCancelled { return }
+                await MainActor.run {
+                    mentionCandidates = hits.prefix(8).map {
+                        MentionCandidate(id: $0.id, username: $0.username, displayName: nil, avatarUrl: $0.avatarPath)
+                    }
+                }
+            } catch {
+                #if DEBUG
+                print("⚠️ [MentionPicker] search failed: \(error)")
+                #endif
+            }
+        }
+    }
+
     private func formatVoiceDuration(_ seconds: TimeInterval) -> String {
         let mins = Int(seconds) / 60
         let secs = Int(seconds) % 60
         return String(format: "%d:%02d", mins, secs)
+    }
+    
+    // MARK: - Vault Lock Indicator
+    private var vaultLockIndicator: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "lock.shield.fill")
+                .font(.system(size: 18))
+                .foregroundStyle(.teal)
+                .frame(width: 40, height: 40)
+                .background(Color.teal.opacity(0.12))
+                .clipShape(Circle())
+            
+            VStack(alignment: .leading, spacing: 2) {
+                Text("قفل مکانی فعال")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.primary)
+                
+                Text("فقط افراد نزدیک این مکان محتوا رو می‌بینن")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            
+            Spacer()
+            
+            // Remove vault lock
+            Button {
+                Haptics.light()
+                withAnimation(.spring(response: 0.25)) {
+                    postVaultLock = nil
+                }
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 20))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(.ultraThinMaterial)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(Color.teal.opacity(0.2), lineWidth: 0.5)
+                )
+        )
+        .transition(.scale.combined(with: .opacity))
     }
     
     // MARK: - Bottom Attach Bar (Floating Glass)
@@ -625,6 +827,8 @@ struct CreatePostView: View {
                         .font(.system(size: 16, weight: .medium))
                     Text("Media")
                         .font(.system(size: 14, weight: .medium))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
                 }
                 .foregroundColor(.accentColor)
                 .padding(.horizontal, 16)
@@ -651,6 +855,8 @@ struct CreatePostView: View {
                         .font(.system(size: 16, weight: .medium))
                     Text("Voice")
                         .font(.system(size: 14, weight: .medium))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
                 }
                 .foregroundColor(hasVoiceRecording ? .white : .orange)
                 .padding(.horizontal, 16)
@@ -663,6 +869,30 @@ struct CreatePostView: View {
                 )
             }
             // Media + Voice can now coexist — no mutual exclusion
+            
+            // Vault Lock Button
+            Button {
+                Haptics.light()
+                showVaultLockSheet = true
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: postVaultLock != nil ? "lock.shield.fill" : "lock.shield")
+                        .font(.system(size: 16, weight: .medium))
+                    Text("Vault")
+                        .font(.system(size: 14, weight: .medium))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                }
+                .foregroundColor(postVaultLock != nil ? .white : .teal)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(postVaultLock != nil ? AnyShapeStyle(Color.teal) : AnyShapeStyle(.regularMaterial))
+                .clipShape(Capsule())
+                .overlay(
+                    Capsule()
+                        .stroke(Color.teal.opacity(0.3), lineWidth: postVaultLock != nil ? 0 : 0.5)
+                )
+            }
             
             Spacer()
             
@@ -742,153 +972,37 @@ struct CreatePostView: View {
             return
         }
         
-        // ONLINE: Correct flow — upload ALL media FIRST, then create post on server,
-        // then insert to UI only after server confirms success.
-        do {
-            // Step 1: Upload ALL selected media (images + videos) in parallel
-            var uploadedMediaPayloads: [PostMediaPayload] = []
-            if !selectedMedia.isEmpty {
-                #if DEBUG
-                print("📤 [\(clientRequestId.prefix(8))] Uploading \(selectedMedia.count) media items in parallel...")
-                #endif
-                uploadedMediaPayloads = try await withThrowingTaskGroup(of: (Int, PostMediaPayload).self) { group in
-                    for (index, item) in selectedMedia.enumerated() {
-                        group.addTask { [self] in
-                            switch item.media {
-                            case .image(let image):
-                                #if DEBUG
-                                print("📤 [\(clientRequestId.prefix(8))] Uploading image \(index + 1)/\(self.selectedMedia.count)...")
-                                #endif
-                                let url = try await self.uploadImage(image)
-                                #if DEBUG
-                                print("✅ [\(clientRequestId.prefix(8))] Image \(index + 1) uploaded: \(url)")
-                                #endif
-                                return (index, PostMediaPayload(url: url, mediaType: "image", thumbnailUrl: nil))
-                                
-                            case .video(let videoURL, let thumbnail):
-                                #if DEBUG
-                                print("📤 [\(clientRequestId.prefix(8))] Uploading video \(index + 1)/\(self.selectedMedia.count)...")
-                                #endif
-                                let result = try await self.uploadVideo(videoURL: videoURL, thumbnail: thumbnail)
-                                #if DEBUG
-                                print("✅ [\(clientRequestId.prefix(8))] Video \(index + 1) uploaded: \(result.videoUrl)")
-                                #endif
-                                return (index, PostMediaPayload(url: result.videoUrl, mediaType: "video", thumbnailUrl: result.thumbnailUrl))
-                            }
-                        }
-                    }
-                    var results = [(Int, PostMediaPayload)]()
-                    for try await result in group {
-                        results.append(result)
-                    }
-                    // Sort by original index to preserve media order
-                    return results.sorted(by: { $0.0 < $1.0 }).map(\.1)
-                }
-            }
-            
-            // Legacy backward compat: first image URL
-            let firstImageUrl = uploadedMediaPayloads.first(where: { $0.mediaType == "image" })?.url
-                ?? uploadedMediaPayloads.first?.thumbnailUrl
-            
-            // Step 2: Upload voice if present
-            var uploadedVoiceUrl: String?
-            var uploadedVoiceDuration: Int?
-            var uploadedWaveform: [Float]?
-            
-            if hasVoiceRecording, let fileURL = voiceFileURL {
-                #if DEBUG
-                print("🎤 [\(clientRequestId.prefix(8))] Uploading voice recording...")
-                #endif
-                let result = try await VoiceUploadService.upload(fileURL: fileURL)
-                uploadedVoiceUrl = result.voiceUrl
-                uploadedVoiceDuration = Int(voiceDuration)
-                uploadedWaveform = voiceWaveform
-                #if DEBUG
-                print("✅ [\(clientRequestId.prefix(8))] Voice uploaded: \(result.voiceUrl)")
-                #endif
-            }
-            
-            // Step 3: Create post on server (media already uploaded)
-            let deviceLocation = await FeedStore.shared.currentLocation
-            let body = CreatePostBody(
-                content: textContent,
-                visibility: visibility.apiValue,
-                imageUrl: firstImageUrl,
-                imageUrls: uploadedMediaPayloads.isEmpty ? nil : uploadedMediaPayloads.filter({ $0.mediaType == "image" }).map(\.url),
-                mediaItems: uploadedMediaPayloads.isEmpty ? nil : uploadedMediaPayloads,
-                latitude: deviceLocation?.coordinate.latitude,
-                longitude: deviceLocation?.coordinate.longitude,
-                voiceUrl: uploadedVoiceUrl,
-                voiceDuration: uploadedVoiceDuration,
-                waveform: uploadedWaveform,
-                clientRequestId: clientRequestId
-            )
-            
-            #if DEBUG
-            print("📝 [\(clientRequestId.prefix(8))] Creating post with visibility: '\(body.visibility)', mediaItems count: \(body.mediaItems?.count ?? 0), hasVoice: \(body.voiceUrl != nil)")
-            #endif
-            
-            let newPost: Post = try await networkService.post(
-                path: "/api/posts/create",
-                body: body
-            )
-            
-            #if DEBUG
-            print("✅ [\(clientRequestId.prefix(8))] Post created on server: id=\(newPost.id), visibility=\(newPost.visibility ?? "nil")")
-            #endif
-            
-            // Step 4: Server confirmed — NOW insert to UI (post-success optimistic insert)
-            await FeedStore.shared.insertPostOptimistically(newPost)
-            
-            // Also save to DB cache
-            let feedType: FeedType = (visibility == .friendsOnly) ? .friends : .local
-            Task.detached {
-                try? await PostRepository.shared.upsert(newPost, feedType: feedType)
-            }
-            
-            #if DEBUG
-            print("✅ [\(clientRequestId.prefix(8))] Post visible in feed: \(newPost.id)")
-            #endif
-            
-            Haptics.success()
-            dismiss()
-            
-        } catch let apiError as APIError {
-            #if DEBUG
-            print("❌ [\(clientRequestId.prefix(8))] Post creation failed (API): \(apiError)")
-            #endif
-            
-            // Surface the actual error details for decoding issues
-            if case .decodingError(let decodingError) = apiError {
-                let detail: String
-                switch decodingError {
-                case let DecodingError.typeMismatch(type, context):
-                    detail = "Type mismatch for \(type) at \(context.codingPath.map(\.stringValue).joined(separator: "."))"
-                case let DecodingError.keyNotFound(key, _):
-                    detail = "Missing key: '\(key.stringValue)'"
-                case let DecodingError.valueNotFound(type, context):
-                    detail = "Null value for \(type) at \(context.codingPath.map(\.stringValue).joined(separator: "."))"
-                case let DecodingError.dataCorrupted(context):
-                    detail = "Data corrupted at \(context.codingPath.map(\.stringValue).joined(separator: ".")): \(context.debugDescription)"
-                default:
-                    detail = decodingError.localizedDescription
-                }
-                errorMessage = "Post saved on server but response parsing failed: \(detail)"
-            } else {
-                errorMessage = "Failed to create post: \(apiError.localizedDescription)"
-            }
-            showError = true
-            Haptics.error()
-        } catch {
-            #if DEBUG
-            print("❌ [\(clientRequestId.prefix(8))] Post creation failed: \(error)")
-            #endif
-            errorMessage = "Failed to create post: \(error.localizedDescription)"
-            showError = true
-            Haptics.error()
+        // ONLINE: Hand off to PostUploadManager for background upload
+        // Create the job with all data needed for upload
+        // 🔔 mentionEntities: only forward entities whose `@username` token
+        // still appears in the final text (user may have deleted some after
+        // selecting them via the picker). Keeps the server's mention list
+        // honest.
+        let liveEntities: [MentionEntity] = mentionTracker.entities.filter { ent in
+            textContent.range(of: "@\(ent.username)") != nil
         }
+        let job = PostUploadJob(
+            content: textContent,
+            visibility: visibility.apiValue,
+            media: selectedMedia,
+            hasVoiceRecording: hasVoiceRecording,
+            voiceFileURL: voiceFileURL,
+            voiceDuration: voiceDuration,
+            voiceWaveform: voiceWaveform,
+            authorId: authorId,
+            authorUsername: authorUsername,
+            authorAvatar: authorAvatar,
+            clientPostId: clientPostId,
+            clientRequestId: clientRequestId,
+            showOnRavenShot: showOnRavenShot,
+            mentionEntities: liveEntities.isEmpty ? nil : liveEntities
+        )
+        
+        // Submit to background manager and dismiss immediately
+        PostUploadManager.shared.submit(job: job)
         
         isSubmitting = false
+        dismiss()
     }
     
     // MARK: - Submit via Mesh (Offline Text-Only)
@@ -1022,7 +1136,9 @@ struct CreatePostView: View {
         let compressedURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("compressed_\(UUID().uuidString).mp4")
         
-        let preset = PremiumLimits.isPremium ? AVAssetExportPreset1920x1080 : AVAssetExportPreset1280x720
+        // HEVC (H.265): ~40% smaller than H.264 at same visual quality.
+        // Free: 1080p HEVC, RAVEN+: Highest quality HEVC
+        let preset = PremiumLimits.isPremium ? AVAssetExportPresetHEVCHighestQuality : AVAssetExportPresetHEVC1920x1080
         let asset = AVURLAsset(url: videoURL)
         
         guard let exportSession = AVAssetExportSession(asset: asset, presetName: preset) else {
@@ -1033,13 +1149,33 @@ struct CreatePostView: View {
         exportSession.outputFileType = .mp4
         exportSession.shouldOptimizeForNetworkUse = true
         
+        // ⚡ Cap output file size — AVFoundation auto-reduces bitrate to fit.
+        // Free: 95MB (under 100MB upload cap), RAVEN+: no limit
+        if !PremiumLimits.isPremium {
+            exportSession.fileLengthLimit = Int64(95 * 1024 * 1024)
+        }
+        
+        #if DEBUG
+        let duration = try await asset.load(.duration)
+        let durationSec = CMTimeGetSeconds(duration)
+        print("🎬 [CreatePost] Source duration: \(String(format: "%.1f", durationSec))s, preset: \(preset)")
+        #endif
+        
+        // See PostUploadManager: AVAssetExportSession is non-Sendable in the
+        // iOS 18 SDK, so the @Sendable completion handler can't capture it
+        // directly. Box it.
+        let sessionBox = UncheckedSendableBox(exportSession)
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            exportSession.exportAsynchronously {
-                switch exportSession.status {
+            sessionBox.value.exportAsynchronously {
+                switch sessionBox.value.status {
                 case .completed:
                     continuation.resume()
                 case .failed:
-                    continuation.resume(throwing: exportSession.error ?? NSError(domain: "CreatePost", code: 3, userInfo: [NSLocalizedDescriptionKey: "Video compression failed"]))
+                    let err = sessionBox.value.error
+                    #if DEBUG
+                    print("❌ [CreatePost] Export failed: \(err?.localizedDescription ?? "unknown")")
+                    #endif
+                    continuation.resume(throwing: err ?? NSError(domain: "CreatePost", code: 3, userInfo: [NSLocalizedDescriptionKey: "Video compression failed"]))
                 case .cancelled:
                     continuation.resume(throwing: CancellationError())
                 default:
@@ -1170,7 +1306,7 @@ struct PostMediaPayload: Encodable {
     }
 }
 
-private struct CreatePostBody: Encodable {
+struct CreatePostBody: Encodable {
     let content: String  // Required by API (send empty string for image-only posts)
     let visibility: String
     let imageUrl: String?  // Legacy single image (backward compat)
@@ -1182,7 +1318,12 @@ private struct CreatePostBody: Encodable {
     let voiceDuration: Int?
     let waveform: [Float]?
     let clientRequestId: String?  // End-to-end tracing ID
-    
+    let showOnRavenShot: Bool?    // Opt-in for social map display
+    /// Structured @mentions from the picker. Server processes these
+    /// preferentially over the regex extraction — correct for any
+    /// username, including ones with dots/hyphens.
+    var entities: [MentionEntity]? = nil
+
     enum CodingKeys: String, CodingKey {
         case content
         case visibility
@@ -1195,18 +1336,20 @@ private struct CreatePostBody: Encodable {
         case voiceDuration = "voice_duration"
         case waveform
         case clientRequestId = "client_request_id"
+        case showOnRavenShot = "show_on_raven_shot"
+        case entities
     }
 }
 
 // MARK: - Upload Responses
 // Note: No CodingKeys needed — NetworkService's decoder uses .convertFromSnakeCase
 // which automatically maps image_url → imageUrl, thumbnail_url → thumbnailUrl
-private struct ImageUploadResponse: Decodable {
+struct ImageUploadResponse: Decodable {
     let imageUrl: String
     let thumbnailUrl: String?
 }
 
-private struct VideoUploadResult {
+struct VideoUploadResult {
     let videoUrl: String
     let thumbnailUrl: String
 }
@@ -1220,8 +1363,9 @@ struct MediaPicker: UIViewControllerRepresentable {
     @Binding var selectedVideoURL: URL?
     @Environment(\.dismiss) private var dismiss
     
-    // Max video duration: 2 minutes
-    static var maxVideoDuration: TimeInterval { PremiumLimits.isPremium ? 600 : 120 }
+    // Max video duration: 2 minutes. Marked nonisolated so the picker's
+    // detached photo-load Task can read it without hopping to MainActor.
+    nonisolated static var maxVideoDuration: TimeInterval { PremiumLimits.isPremium ? 600 : 120 }
     
     func makeUIViewController(context: Context) -> PHPickerViewController {
         var config = PHPickerConfiguration(photoLibrary: .shared())
@@ -1262,21 +1406,25 @@ struct MediaPicker: UIViewControllerRepresentable {
                         #endif
                         return
                     }
-                    
+
                     // Copy to temp location
                     let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(
                         "post_video_\(UUID().uuidString).mov"
                     )
-                    
+
                     do {
                         try FileManager.default.copyItem(at: url, to: tempURL)
-                        
-                        // Check video duration
+
+                        // Check video duration. Re-bind `self` to a `let` here
+                        // so the inner Task captures a constant (Sendable),
+                        // not the outer `[weak self]` mutable var (which
+                        // tripped the Swift 6 data-race warning).
+                        let weakSelf = self
                         let asset = AVAsset(url: tempURL)
                         Task {
                             let duration = try await asset.load(.duration)
                             let seconds = CMTimeGetSeconds(duration)
-                            
+
                              if seconds > MediaPicker.maxVideoDuration {
                                  #if DEBUG
                                  print("⚠️ Video too long: \(seconds)s, max: \(MediaPicker.maxVideoDuration)s")
@@ -1290,13 +1438,13 @@ struct MediaPicker: UIViewControllerRepresentable {
                                  }
                                  return
                              }
-                            
+
                             #if DEBUG
                             print("✅ Video selected: \(seconds)s")
                             #endif
                             await MainActor.run {
-                                self?.parent.selectedVideoURL = tempURL
-                                self?.parent.selectedImage = nil
+                                weakSelf?.parent.selectedVideoURL = tempURL
+                                weakSelf?.parent.selectedImage = nil
                             }
                         }
                     } catch {

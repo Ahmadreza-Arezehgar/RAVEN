@@ -354,13 +354,13 @@ struct StoryReplySheet: View {
                     Spacer()
                 }
                 .padding()
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 
                 // Reply input
                 TextField("Send a message...", text: $replyText, axis: .vertical)
                     .textFieldStyle(.plain)
                     .padding()
-                    .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+                    .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .lineLimit(1...5)
                 
                 Spacer()

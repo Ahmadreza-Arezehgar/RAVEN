@@ -5,14 +5,15 @@ import AuthenticationServices
 // OAuth buttons prominent at top, Email actions below
 
 struct AuthLandingView: View {
+    @Environment(\.colorScheme) private var colorScheme
     @State private var authService = AuthService.shared
     @State private var isLoading = false
     @State private var errorMessage: String?
-    
+
     // OAuth Coordinators (held in state to survive async flow)
     @State private var googleSignInCoordinator: GoogleSignInCoordinator?
     @State private var appleSignInCoordinator: AppleSignInCoordinator?
-    
+
     // Navigation states
     @State private var showEmailSignup = false
     @State private var showEmailLogin = false
@@ -71,18 +72,34 @@ struct AuthLandingView: View {
                 // MARK: - OAuth Buttons (Top Priority)
                 VStack(spacing: 12) {
                     // Continue with Google
+                    //
+                    // Hidden on Mac Catalyst ad-hoc builds: GoogleSignIn's
+                    // SDK uses GTMAppAuth's hard-coded data-protection
+                    // Keychain, which refuses every operation without a
+                    // team-prefixed `application-identifier` entitlement.
+                    // Ad-hoc-signed Catalyst can't have that entitlement
+                    // (AMFI rejects the binary), so the button would just
+                    // surface "keychain error" on every tap. Email + Apple
+                    // sign-in route through KeychainService which has a
+                    // file-based fallback for this case.
+                    #if !targetEnvironment(macCatalyst)
                     SocialSignInButton(provider: .google) {
                         signInWithGoogle()
                     }
                     .disabled(isLoading)
-                    
+                    #endif
+
                     // Continue with Apple (Official Apple button — required by Guideline 4.8)
+                    // Style follows the system colour scheme: `.black` reads
+                    // correctly on a light background, `.white` on dark. The
+                    // old `.whiteOutline` value rendered a near-invisible
+                    // white pill on light mode.
                     SignInWithAppleButton(.continue) { request in
                         request.requestedScopes = [.fullName, .email]
                     } onCompletion: { result in
                         handleAppleSignInResult(result)
                     }
-                    .signInWithAppleButtonStyle(.whiteOutline)
+                    .signInWithAppleButtonStyle(colorScheme == .dark ? .white : .black)
                     .frame(height: 50)
                     .clipShape(RoundedRectangle(cornerRadius: 14))
                     .disabled(isLoading)
@@ -127,7 +144,9 @@ struct AuthLandingView: View {
                     }
                     .disabled(isLoading)
                     
-                    // Login (Email)
+                    // Login (Email) — outlined secondary CTA. `.ultraThinMaterial`
+                    // disappears on light mode (white-on-white), so we use a
+                    // tinted accent fill that reads in both colour schemes.
                     Button {
                         showEmailLogin = true
                     } label: {
@@ -135,12 +154,12 @@ struct AuthLandingView: View {
                             .font(.headline)
                             .frame(maxWidth: .infinity)
                             .padding()
-                            .background(.ultraThinMaterial)
-                            .foregroundStyle(.primary)
+                            .background(Color.blue.opacity(colorScheme == .dark ? 0.18 : 0.10))
+                            .foregroundStyle(Color.blue)
                             .clipShape(RoundedRectangle(cornerRadius: 14))
                             .overlay(
-                                RoundedRectangle(cornerRadius: 14)
-                                    .stroke(.white.opacity(0.2), lineWidth: 1)
+                                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                    .stroke(Color.blue.opacity(0.35), lineWidth: 1)
                             )
                     }
                     .disabled(isLoading)

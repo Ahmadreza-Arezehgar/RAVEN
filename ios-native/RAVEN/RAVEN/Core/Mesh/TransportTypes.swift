@@ -46,3 +46,54 @@ enum DeliveryState: String, Codable {
     case expired              = "EXPIRED"
     case failed               = "FAILED"
 }
+
+// MARK: - 1.5 Mesh Message Kind
+
+/// Identifies the type of mesh message for handler dispatch.
+/// New features register handlers for their specific kinds via
+/// `BLEMeshEngine.register(handler:for:)`.
+enum MeshMessageKind: String, Codable {
+    // Existing (dispatched via legacy path)
+    case chat           = "chat"
+    case post           = "post"
+    case ack            = "ack"
+    
+    // Club Mode
+    case clubPing      = "club_ping"
+    case clubJoin      = "club_join"
+    case clubLeave     = "club_leave"
+    
+    // Echo
+    case echoBroadcast  = "echo_broadcast"
+    case echoResponse   = "echo_response"
+    
+    // Vault (location-locked content)
+    case vaultContent = "vault_content"
+    
+    // MARK: - Backward Compatibility
+    
+    /// Accepts legacy Flock raw values from older peers:
+    /// "flockPing" → .clubPing, "flockJoin" → .clubJoin, etc.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let raw = try container.decode(String.self)
+        
+        // Try standard init first
+        if let kind = MeshMessageKind(rawValue: raw) {
+            self = kind
+            return
+        }
+        
+        // Legacy mapping
+        switch raw {
+        case "flockPing", "flock_ping":     self = .clubPing
+        case "flockJoin", "flock_join":     self = .clubJoin
+        case "flockLeave", "flock_leave":   self = .clubLeave
+        case "proximity_content":           self = .vaultContent
+        default:
+            throw DecodingError.dataCorrupted(
+                .init(codingPath: container.codingPath, debugDescription: "Unknown MeshMessageKind: \(raw)")
+            )
+        }
+    }
+}

@@ -1,12 +1,13 @@
 import Foundation
 import SwiftUI
 import Combine
+import UserNotifications
 
 // MARK: - Conversation Store (Source of Truth = DB)
 @MainActor
 @Observable
 class ConversationStore {
-    nonisolated(unsafe) static let shared = ConversationStore()
+    static let shared = ConversationStore()
     
     var conversations: [Conversation] = []
     var isLoading = false
@@ -113,6 +114,18 @@ class ConversationStore {
     
     // MARK: - Load from DB (Primary data source)
     
+    /// Insert (or update) a conversation locally without round-tripping the
+    /// database. Used for snappy UI when starting a new chat offline — the
+    /// chat appears immediately and the DB is upserted in parallel.
+    func addLocally(_ conversation: Conversation) {
+        if let idx = conversations.firstIndex(where: { $0.roomId == conversation.roomId }) {
+            conversations[idx] = conversation
+        } else {
+            conversations.append(conversation)
+        }
+        sortConversations()
+    }
+
     func loadFromDB() async {
         do {
             let rows = try await conversationRepo.getAllSorted()
@@ -198,8 +211,24 @@ class ConversationStore {
         let currentUserId = await KeychainService.shared.getUserId() ?? ""
         let isOutgoing = message.senderId == currentUserId
         let peerId = isOutgoing ? message.recipientId : message.senderId
-        
+
         var normalizedMessage = message
+
+        // 🔐 E2EE: decrypt incoming body if it carries the magic
+        // prefix. Outgoing copies (e.g. our own sendText updating the
+        // inbox preview) hold plaintext already; only peer-authored
+        // bodies need unwrapping. On decrypt failure the original
+        // text is preserved unchanged so diagnostic info isn't lost.
+        if !isOutgoing,
+           let incomingText = normalizedMessage.text,
+           E2EEMessagePipeline.isEncrypted(incomingText) {
+            let plaintext = await E2EEMessagePipeline.unwrapIncoming(
+                text: incomingText,
+                senderUserId: peerId,
+                messageId: normalizedMessage.id
+            )
+            normalizedMessage.text = plaintext
+        }
         // Bug 3 fix: Multi-layer group detection — don't rely solely on in-memory array.
         // 1. Check in-memory conversations (fast path)
         // 2. Fallback: check groups DB table (covers groups not yet loaded into memory)
@@ -472,6 +501,54 @@ class ConversationStore {
         #endif
     }
     
+    /// Telegram-style archive: hide a chat from the main inbox into
+    /// the "Archived" folder. Optimistic — local SQLite is updated
+    /// first, server is fire-and-forget for cross-device sync. Idempotent.
+    func toggleArchive(roomId: String) async {
+        guard let index = conversations.firstIndex(where: { $0.roomId == roomId }) else { return }
+
+        let newArchivedState = !conversations[index].isArchived
+        let peerId = conversations[index].peer.userId
+
+        // Optimistic local update.
+        if newArchivedState {
+            try? await conversationRepo.archive(roomId: roomId)
+        } else {
+            try? await conversationRepo.unarchive(roomId: roomId)
+        }
+
+        // Reload from DB so the in-memory list reflects the new
+        // archived/unarchived split (the main filter excludes archived).
+        await loadFromDB()
+
+        // Sync to server (best-effort, non-blocking).
+        if NetworkMonitor.shared.isOnline {
+            struct ArchiveRequest: Codable {
+                let peer_id: String
+                let archived: Bool
+            }
+            _ = try? await NetworkService.shared.post(
+                path: "/api/messages/conversations/archive",
+                body: ArchiveRequest(peer_id: peerId, archived: newArchivedState)
+            ) as EmptyResponse
+        }
+        #if DEBUG
+        print("📥 [ConversationStore] Archive synced: \(newArchivedState) for \(roomId.prefix(8))")
+        #endif
+    }
+
+    /// Snapshot of the current archived bucket. Re-queried each
+    /// time `ArchivedConversationsView` opens. Cheap (indexed lookup).
+    func loadArchivedConversations() async -> [Conversation] {
+        return (try? await conversationRepo.getArchivedSorted()) ?? []
+    }
+
+    /// How many chats currently live in the archive — drives the
+    /// folder pill at the top of the inbox.
+    func archivedCount() async -> Int {
+        return (try? await conversationRepo.archivedCount()) ?? 0
+    }
+
     func deleteConversation(roomId: String) async {
         let conversation = conversations.first { $0.roomId == roomId }
         let peerId = conversation?.peer.userId
@@ -555,6 +632,21 @@ class ConversationStore {
             let aTime = a.lastMessage?.timestamp ?? a.updatedAt
             let bTime = b.lastMessage?.timestamp ?? b.updatedAt
             return aTime > bTime
+        }
+        updateAppBadge()
+    }
+
+    /// Push the total unread count to the iOS app icon badge so it
+    /// stays in sync as the user reads / mutes / opens new conversations.
+    /// Without this, the badge only updates when an APNs push arrives,
+    /// which means it can stay stale for hours after the user actually
+    /// catches up. iOS 16+ API; we just early-return on older builds
+    /// (the project's deployment target is well above that).
+    private func updateAppBadge() {
+        let total = totalUnreadCount
+        let center = UNUserNotificationCenter.current()
+        center.setBadgeCount(total) { _ in
+            // Best-effort — we don't surface badge errors to the user.
         }
     }
     

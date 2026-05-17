@@ -22,6 +22,53 @@ final class ImageCache: @unchecked Sendable {
         let cost = image.cgImage.map { $0.bytesPerRow * $0.height } ?? 0
         cache.setObject(image, forKey: url as NSURL, cost: cost)
     }
+    
+    /// ⚡ PERF: Prefetch images for upcoming feed cards so they're in cache before scroll.
+    /// Fire-and-forget — failures are silently ignored (the card will load on its own).
+    func prefetch(urls: [URL]) {
+        for url in urls {
+            guard image(for: url) == nil else { continue }  // Skip if already cached
+            Task.detached(priority: .utility) {
+                do {
+                    let (data, response) = try await Self.imageSession.data(from: url)
+                    guard let http = response as? HTTPURLResponse,
+                          (200...299).contains(http.statusCode) else { return }
+                    
+                    let prepared = await Task.detached(priority: .utility) {
+                        let opts = [kCGImageSourceShouldCache: false] as CFDictionary
+                        guard let source = CGImageSourceCreateWithData(data as CFData, opts) else { return nil as UIImage? }
+                        let downOpts: [CFString: Any] = [
+                            kCGImageSourceCreateThumbnailFromImageAlways: true,
+                            kCGImageSourceShouldCacheImmediately: true,
+                            kCGImageSourceThumbnailMaxPixelSize: 1024
+                        ]
+                        guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, downOpts as CFDictionary) else { return nil as UIImage? }
+                        return UIImage(cgImage: cg)
+                    }.value
+                    
+                    if let img = prepared {
+                        self.store(img, for: url)
+                    }
+                } catch {
+                    // Prefetch failure is non-critical — card will load normally
+                }
+            }
+        }
+    }
+    
+    // ⚡ PERF: Dedicated session for image downloads — matches NetworkService config
+    // (cellular access, constrained network, waitsForConnectivity)
+    // Lives here (non-generic class) because Swift forbids static stored properties in generic types.
+    static let imageSession: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 15
+        config.allowsCellularAccess = true
+        config.allowsExpensiveNetworkAccess = true
+        config.allowsConstrainedNetworkAccess = true
+        config.waitsForConnectivity = true
+        config.httpMaximumConnectionsPerHost = 6  // More parallel image downloads
+        return URLSession(configuration: config)
+    }()
 }
 
 // MARK: - CachedAsyncImage
@@ -82,7 +129,7 @@ struct CachedAsyncImage<Content: View, Placeholder: View>: View {
                 request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
             }
             
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await ImageCache.imageSession.data(for: request)
             
             guard !Task.isCancelled,
                   let httpResponse = response as? HTTPURLResponse,

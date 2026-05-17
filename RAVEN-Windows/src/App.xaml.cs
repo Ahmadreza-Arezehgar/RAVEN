@@ -1,7 +1,8 @@
 // App.xaml.cs
 //
 // Application entry point. Brings up the singleton services
-// (KeyStore, EncryptedDb, BleEngine, MessageRouter) and shows the main window.
+// (KeyStore, EncryptedDb, BleEngine, MessageRouter), exposes the shared
+// `ShellRouter` for the three-column shell, and shows the main window.
 
 using System;
 using System.Threading.Tasks;
@@ -19,14 +20,18 @@ namespace RAVEN.Windows;
 public partial class App : Application
 {
     public static IServiceProvider Services { get; private set; } = default!;
+
+    /// Shared navigation state for the three-column shell. All views read
+    /// from here; only the rail and the chat-list column write to it.
+    public static ShellRouter ShellRouter { get; } = new ShellRouter();
+
     private Window? _window;
+    private TrayService? _tray;
 
     public App()
     {
         this.InitializeComponent();
     }
-
-    private TrayService? _tray;
 
     protected override async void OnLaunched(LaunchActivatedEventArgs args)
     {

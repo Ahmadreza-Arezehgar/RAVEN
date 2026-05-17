@@ -103,11 +103,12 @@ final class BlockService {
     
     /// Unblock a user. Optimistic: removes from local cache immediately.
     func unblockUser(userId: String) async throws {
-        // Optimistic: remove immediately
+        // Optimistic: remove immediately. Discard the removed-element return
+        // values so MainActor.run keeps a Void inferred type.
         await MainActor.run {
-            blockedUserIds.remove(userId)
+            _ = blockedUserIds.remove(userId)
         }
-        
+
         do {
             let _: UnblockResponse = try await NetworkService.shared.delete(
                 path: "/api/blocks/\(userId)"
@@ -119,7 +120,7 @@ final class BlockService {
         } catch {
             // Rollback on failure
             await MainActor.run {
-                blockedUserIds.insert(userId)
+                _ = blockedUserIds.insert(userId)
             }
             Haptics.error()
             throw error

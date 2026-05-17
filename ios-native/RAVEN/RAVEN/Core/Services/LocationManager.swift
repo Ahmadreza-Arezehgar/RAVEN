@@ -9,8 +9,11 @@ import Foundation
 import CoreLocation
 import Combine
 
-/// Manages location permissions and updates for location sharing feature
-final class LocationManager: NSObject, ObservableObject {
+/// Manages location permissions and updates for location sharing feature.
+/// Marked `@unchecked Sendable` because every state read/write is funneled
+/// onto the main queue (see `DispatchQueue.main.async` blocks below) and
+/// CLLocationManager itself is documented as main-thread-only.
+final class LocationManager: NSObject, ObservableObject, @unchecked Sendable {
     static let shared = LocationManager()
     
     private let manager = CLLocationManager()

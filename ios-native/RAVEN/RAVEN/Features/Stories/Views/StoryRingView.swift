@@ -74,7 +74,7 @@ struct StoryRingView: View {
                 .fill(.gray.opacity(0.2))
                 .frame(width: 64, height: 64)
             
-            RoundedRectangle(cornerRadius: 4)
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
                 .fill(.gray.opacity(0.2))
                 .frame(width: 48, height: 12)
         }

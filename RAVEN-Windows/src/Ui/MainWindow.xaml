@@ -9,100 +9,44 @@
     Title="RAVEN">
 
     <!--
-      ┌───────────────────────────────────────────────────────────────┐
-      │  Windows scope (lightweight client, full mesh node):           │
-      │   • Feed     — Echo Wall posts                                 │
-      │   • Messages — DMs + group chats                               │
-      │   • Account  — settings, identity, mesh diagnostics            │
-      │                                                                │
-      │  Mesh layer is FULL — Windows participates as a peer with      │
-      │  iPhone & Mac for bridge + relay.                              │
-      └───────────────────────────────────────────────────────────────┘
+      Three-column shell. Mirrors Mac's `MacShellView`:
+        Rail (240) │ Main column │ Right pane (340)
+
+      The main column hosts five swappable views (Home / Explore /
+      Notifications / Messages / Profile); the right pane swaps between
+      ChatThreadView (when Section == Messages) and WidgetsView. Section
+      changes are driven by `App.ShellRouter` — the rail items set it,
+      everything else reacts.
     -->
 
-    <Grid>
-        <!-- Background gradient — matches website hero -->
-        <Grid.Background>
-            <RadialGradientBrush Center="0.1,0.1" RadiusX="0.6" RadiusY="0.6">
-                <GradientStop Color="#1Abf73ff" Offset="0"/>
-                <GradientStop Color="{StaticResource RavenBgColor}" Offset="0.7"/>
-                <GradientStop Color="{StaticResource RavenBgColor}" Offset="1"/>
-            </RadialGradientBrush>
-        </Grid.Background>
-        <Grid>
-            <Grid.Background>
-                <RadialGradientBrush Center="0.95,0.95" RadiusX="0.5" RadiusY="0.5">
-                    <GradientStop Color="#1A40f2ff" Offset="0"/>
-                    <GradientStop Color="Transparent" Offset="0.7"/>
-                </RadialGradientBrush>
-            </Grid.Background>
+    <Grid Background="{StaticResource RavenBg}">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="240"/>
+            <ColumnDefinition Width="1"/>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="1"/>
+            <ColumnDefinition Width="340"/>
+        </Grid.ColumnDefinitions>
+
+        <!-- COL 0: Rail -->
+        <local:RailView Grid.Column="0"/>
+
+        <!-- Vertical hairline divider -->
+        <Border Grid.Column="1" Background="{StaticResource RavenBorder}" Width="1"/>
+
+        <!-- COL 1: Main column — switches by section -->
+        <Grid Grid.Column="2">
+            <local:HomeView          x:Name="HomeHost"         Visibility="Visible"/>
+            <local:ExploreView       x:Name="ExploreHost"      Visibility="Collapsed"/>
+            <local:NotificationsView x:Name="NotificationsHost" Visibility="Collapsed"/>
+            <local:ChatListColumn    x:Name="ChatListHost"     Visibility="Collapsed"/>
+            <local:ProfileView       x:Name="ProfileHost"      Visibility="Collapsed"/>
         </Grid>
 
-        <Grid>
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="240"/>
-                <ColumnDefinition Width="*"/>
-            </Grid.ColumnDefinitions>
+        <!-- Vertical hairline divider -->
+        <Border Grid.Column="3" Background="{StaticResource RavenBorder}" Width="1"/>
 
-            <!-- ═══════════════════════════════════════════════════════ -->
-            <!--  COL 1: Sidebar — 3 items + mesh status                  -->
-            <!-- ═══════════════════════════════════════════════════════ -->
-            <Grid Grid.Column="0">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="*"/>
-                    <RowDefinition Height="Auto"/>
-                </Grid.RowDefinitions>
-
-                <!-- Brand header -->
-                <StackPanel Grid.Row="0" Orientation="Horizontal" Padding="20,18,20,14" Spacing="10">
-                    <TextBlock FontSize="22" VerticalAlignment="Center">
-                        <Run Text="🐦"/><Run Text="‍⬛"/>
-                    </TextBlock>
-                    <TextBlock Text="RAVEN" FontSize="19" FontWeight="ExtraBold"
-                               Foreground="{StaticResource RavenBrandGradient}"
-                               VerticalAlignment="Center" CharacterSpacing="50"/>
-                </StackPanel>
-
-                <ScrollViewer Grid.Row="1" Padding="8,4">
-                    <StackPanel x:Name="SidebarPanel" Spacing="2">
-                        <local:SidebarRow x:Name="NavFeed" Icon="&#xE9F5;" Label="Feed"
-                                          Tint="{StaticResource RavenBlueBrush}" IsSelected="False"
-                                          Tapped="OnSidebarItemTapped"/>
-                        <local:SidebarRow x:Name="NavMessages" Icon="&#xE8F2;" Label="Messages"
-                                          Tint="{StaticResource RavenPurpleBrush}" IsSelected="True"
-                                          Tapped="OnSidebarItemTapped"/>
-                        <local:SidebarRow x:Name="NavAccount" Icon="&#xE77B;" Label="Account"
-                                          Tint="{StaticResource RavenText3}" IsSelected="False"
-                                          Tapped="OnSidebarItemTapped"/>
-                    </StackPanel>
-                </ScrollViewer>
-
-                <!-- Mesh status pill -->
-                <Border Grid.Row="2" Margin="12,8,12,16" Padding="14,10"
-                        Background="{StaticResource RavenBgCard}"
-                        BorderBrush="{StaticResource RavenBorder}" BorderThickness="1"
-                        CornerRadius="999">
-                    <StackPanel Orientation="Horizontal" Spacing="10">
-                        <Ellipse x:Name="MeshDot" Width="8" Height="8"
-                                 Fill="{StaticResource RavenGreenBrush}"/>
-                        <TextBlock x:Name="MeshStatus" Text="Mesh idle" FontSize="12" FontWeight="Medium"
-                                   Foreground="{StaticResource RavenText2}" VerticalAlignment="Center"/>
-                    </StackPanel>
-                </Border>
-            </Grid>
-
-            <!-- ═══════════════════════════════════════════════════════ -->
-            <!--  COL 2: Main pane — swaps based on sidebar selection      -->
-            <!-- ═══════════════════════════════════════════════════════ -->
-            <Grid Grid.Column="1" Margin="0,12,12,12">
-                <!-- Messages view (default visible) -->
-                <local:MessagesView x:Name="MessagesView"/>
-                <!-- Feed view (hidden until selected) -->
-                <local:FeedView x:Name="FeedView" Visibility="Collapsed"/>
-                <!-- Account view (hidden until selected) -->
-                <local:AccountView x:Name="AccountView" Visibility="Collapsed"/>
-            </Grid>
-        </Grid>
+        <!-- COL 2: Right pane (chat thread or widgets) -->
+        <local:RightPane Grid.Column="4"/>
     </Grid>
 </Window>

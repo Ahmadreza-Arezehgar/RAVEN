@@ -18,6 +18,22 @@ struct AccountView: View {
     @State private var showAvatarPreview = false
     @State private var isUploadingAvatar = false
     @State private var showEditProfile = false  // Edit Profile sheet
+    
+    // Profile stats & content
+    @State private var profileStats: FullProfileResponse?
+    @State private var myPosts: [Post] = []
+    @State private var myLikedPosts: [Post] = []
+    @State private var myRepliedPosts: [Post] = []
+    @State private var selectedProfileTab: ProfileTab = .posts
+    @State private var isLoadingStats = false
+    @State private var isLoadingMyPosts = false
+    @State private var isLoadingMyLikes = false
+    @State private var isLoadingMyReplies = false
+    @State private var showFollowersList = false
+    @State private var showFollowingList = false
+    @State private var showFriendsList = false
+    @State private var showSettingsSheet = false
+    @State private var hasAppearedOnce = false
 
     // Expanded header height
     private let expandedHeight: CGFloat = 260
@@ -64,10 +80,26 @@ struct AccountView: View {
                         Color.clear
                             .frame(height: expandedHeight + safeTop + 12)
 
+                        // Settings is reachable via the gear button in the
+                        // header (always visible, expanded or collapsed).
+                        // No duplicate pill row here.
+
                         // Content
-                        AccountSettingsContent()
-                            .padding(.horizontal, 16)
-                            .padding(.bottom, 120)
+                        if let stats = profileStats {
+                            accountStatsRow(stats)
+                                .padding(.horizontal, 16)
+
+                            accountTabPicker()
+                                .padding(.horizontal, 16)
+                                .padding(.top, 8)
+
+                            accountTabbedContent()
+                                .padding(.horizontal, 16)
+                                .padding(.top, 4)
+                        }
+
+                        // Trailing breathing room above bottom tab bar
+                        Color.clear.frame(height: 120)
                     }
                 }
                 .coordinateSpace(name: "accountScroll")
@@ -86,9 +118,13 @@ struct AccountView: View {
                     onEditTap: {
                         Haptics.light()
                         showEditProfile = true
+                    },
+                    onSettingsTap: {
+                        Haptics.light()
+                        showSettingsSheet = true
                     }
                 )
-                // Note: Hit testing enabled for camera button and edit button
+                // Note: Hit testing enabled for camera button, edit button, and settings button
             }
         }
         .navigationBarHidden(true)
@@ -123,101 +159,89 @@ struct AccountView: View {
         .sheet(isPresented: $showEditProfile) {
             EditProfileView()
         }
+        .sheet(isPresented: $showSettingsSheet) {
+            NavigationStack {
+                AccountSettingsList()
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Done") { showSettingsSheet = false }
+                        }
+                    }
+            }
+        }
+        .sheet(isPresented: $showFollowersList) {
+            if let userId = authService.currentUser?.id {
+                FollowListSheet(
+                    userId: userId,
+                    listType: .followers,
+                    isPrivate: false,
+                    isFriend: true,
+                    isOwnProfile: true
+                )
+            }
+        }
+        .sheet(isPresented: $showFollowingList) {
+            if let userId = authService.currentUser?.id {
+                FollowListSheet(
+                    userId: userId,
+                    listType: .following,
+                    isPrivate: false,
+                    isFriend: true,
+                    isOwnProfile: true
+                )
+            }
+        }
+        .sheet(isPresented: $showFriendsList) {
+            if let userId = authService.currentUser?.id {
+                FriendsListSheet(
+                    userId: userId,
+                    isPrivate: false,
+                    isFriend: true
+                )
+            }
+        }
+        .onAppear {
+            // Only load when the Account tab actually becomes visible
+            // (TabPager creates all views at launch — this prevents request storms)
+            if !hasAppearedOnce {
+                hasAppearedOnce = true
+                Task {
+                    // Delay 2s on first launch to let Feed + Inbox get full bandwidth
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    await loadAccountStats()
+                }
+            }
+        }
     }
     
     private func uploadAvatar() async {
         guard let image = selectedImage else { return }
-        
+
         isUploadingAvatar = true
         defer { isUploadingAvatar = false }
-        
+
         do {
-            // Offload heavy image processing to background thread to avoid OOM/freeze
-            let imageData: Data = try await Task.detached(priority: .userInitiated) {
-                let safeImage = image.downscaled(maxDimension: 1024)
-                guard let data = safeImage.jpegData(compressionQuality: 0.8) else {
-                    throw URLError(.cannotDecodeContentData)
-                }
-                return data
-            }.value
-            
-            let baseURL = AppConfig.apiBaseURL
-            
-            // Step 1: Upload image to /api/uploads/image
-            let boundary = UUID().uuidString
-            var body = Data()
-            body.appendString("--\(boundary)\r\n")
-            body.appendString("Content-Disposition: form-data; name=\"file\"; filename=\"avatar.jpg\"\r\n")
-            body.appendString("Content-Type: image/jpeg\r\n\r\n")
-            body.append(imageData)
-            body.appendString("\r\n--\(boundary)--\r\n")
-            
-            guard let uploadURL = AppConfig.apiURL(path: "/api/uploads/image") else { return }
-            var uploadRequest = URLRequest(url: uploadURL)
-            uploadRequest.httpMethod = "POST"
-            uploadRequest.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-            
-            if let (token, _) = await KeychainService.shared.getToken() {
-                uploadRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            }
-            
-            let (uploadData, uploadResponse) = try await URLSession.shared.upload(for: uploadRequest, from: body)
-            
-            guard let httpResponse = uploadResponse as? HTTPURLResponse,
-                  (200...299).contains(httpResponse.statusCode) else {
-                #if DEBUG
-                print("❌ Image upload failed with status: \((uploadResponse as? HTTPURLResponse)?.statusCode ?? -1)")
-                #endif
-                Haptics.error()
-                return
-            }
-            
-            // Parse response to get image URL
-            guard let uploadResult = try? JSONDecoder().decode(ImageUploadResponse.self, from: uploadData) else {
-                #if DEBUG
-                print("❌ Failed to parse upload response")
-                #endif
-                Haptics.error()
-                return
-            }
-            
-            #if DEBUG
-            print("✅ Image uploaded: \(uploadResult.imageUrl)")
-            #endif
-            
-            // Step 2: Update profile picture at /api/users/profile-picture
-            guard let profileURL = AppConfig.apiURL(path: "/api/users/profile-picture") else { return }
-            var profileRequest = URLRequest(url: profileURL)
-            profileRequest.httpMethod = "POST"
-            profileRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            
-            if let (token, _) = await KeychainService.shared.getToken() {
-                profileRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            }
-            
-            let profileBody = ["image_url": uploadResult.imageUrl]
-            profileRequest.httpBody = try JSONEncoder().encode(profileBody)
-            
-            let (_, profileResponse) = try await URLSession.shared.data(for: profileRequest)
-            
-            guard let profileHttpResponse = profileResponse as? HTTPURLResponse,
-                  (200...299).contains(profileHttpResponse.statusCode) else {
-                #if DEBUG
-                print("❌ Profile picture update failed with status: \((profileResponse as? HTTPURLResponse)?.statusCode ?? -1)")
-                #endif
-                Haptics.error()
-                return
-            }
-            
-            // Refresh user profile
+            // Step 1: hardened multipart upload (retries on transient errors —
+            // the ad-hoc URLSession.shared call this used to do had no retry,
+            // so a single radio hiccup on older iOS would surface as a hard
+            // failure with no recovery).
+            let imageUrl = try await AttachmentService.shared.uploadAvatarImage(image)
+
+            // Step 2: tell the server this URL is the new avatar.
+            struct ProfilePictureBody: Encodable { let imageUrl: String }
+            let _: Empty = try await NetworkService.shared.post(
+                path: "/api/users/profile-picture",
+                body: ProfilePictureBody(imageUrl: imageUrl)
+            )
+
             try await authService.fetchCurrentUser()
-            
+
             await MainActor.run {
                 Haptics.success()
                 selectedImage = nil
                 showAvatarPreview = false
             }
-            
+
             #if DEBUG
             print("✅ Profile picture updated successfully")
             #endif
@@ -226,17 +250,6 @@ struct AccountView: View {
             print("❌ Avatar upload failed: \(error)")
             #endif
             await MainActor.run { Haptics.error() }
-        }
-    }
-    
-    // Response model for image upload
-    private struct ImageUploadResponse: Codable {
-        let imageUrl: String
-        let filename: String
-        
-        enum CodingKeys: String, CodingKey {
-            case imageUrl = "image_url"
-            case filename
         }
     }
     
@@ -272,6 +285,257 @@ struct AccountView: View {
             }
         }
     }
+    
+    // MARK: - Account Stats Row (Liquid Glass)
+    private func accountStatsRow(_ p: FullProfileResponse) -> some View {
+        HStack(spacing: 0) {
+            accountStatItem(value: p.postsCount, label: "Posts")
+            accountStatDivider
+            
+            Button { showFollowingList = true } label: {
+                accountStatItem(value: p.followingCount ?? 0, label: "Following")
+            }.buttonStyle(.plain)
+            
+            accountStatDivider
+            
+            Button { showFriendsList = true } label: {
+                accountStatItem(value: p.mutualFriendsCount ?? p.friendsCount, label: "Friends")
+            }.buttonStyle(.plain)
+        }
+        .padding(.vertical, 14)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: DS.radiusCard, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: DS.radiusCard, style: .continuous)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
+        )
+        .shadow(color: DS.shadowColor, radius: DS.shadowRadius, y: DS.shadowY)
+    }
+    
+    private var accountStatDivider: some View {
+        Rectangle()
+            .fill(Color.primary.opacity(0.1))
+            .frame(width: 0.5, height: 32)
+    }
+
+    
+    private func accountStatItem(value: Int, label: String) -> some View {
+        VStack(spacing: 2) {
+            Text("\(value)")
+                .font(.system(size: 18, weight: .bold))
+            Text(label)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+    }
+    
+    // MARK: - Account Tab Picker (Segmented Capsule)
+    private func accountTabPicker() -> some View {
+        HStack(spacing: 0) {
+            ForEach(ProfileTab.allCases, id: \.self) { tab in
+                Button {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                        selectedProfileTab = tab
+                    }
+                    Task { await loadTabContent(tab) }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: tab.icon)
+                            .font(.system(size: 12, weight: .semibold))
+                        Text(tab.title)
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                    .foregroundStyle(selectedProfileTab == tab ? .primary : .secondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .background(
+                        selectedProfileTab == tab
+                            ? AnyShapeStyle(.ultraThinMaterial)
+                            : AnyShapeStyle(Color.clear)
+                    )
+                    .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(4)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay(
+            Capsule().stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
+        )
+    }
+    
+    // MARK: - Account Tabbed Content
+    @ViewBuilder
+    private func accountTabbedContent() -> some View {
+        switch selectedProfileTab {
+        case .posts:
+            if isLoadingMyPosts && myPosts.isEmpty {
+                ProgressView()
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 40)
+            } else if myPosts.isEmpty {
+                accountEmptyTab(icon: "square.and.pencil", title: "No posts yet", subtitle: "Share your first post.")
+            } else {
+                LazyVStack(spacing: 0) {
+                    ForEach(myPosts) { post in
+                        PostCard(
+                            post: post,
+                            feedStore: FeedStore.shared,
+                            currentUserId: authService.currentUser?.id ?? ""
+                        )
+                        Divider()
+                    }
+                }
+            }
+        case .replies:
+            if isLoadingMyReplies && myRepliedPosts.isEmpty {
+                ProgressView()
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 40)
+            } else if myRepliedPosts.isEmpty {
+                accountEmptyTab(icon: "arrowshape.turn.up.left", title: "No replies yet", subtitle: "Posts you reply to will appear here.")
+            } else {
+                LazyVStack(spacing: 0) {
+                    ForEach(myRepliedPosts) { post in
+                        PostCard(
+                            post: post,
+                            feedStore: FeedStore.shared,
+                            currentUserId: authService.currentUser?.id ?? ""
+                        )
+                        Divider()
+                    }
+                }
+            }
+        case .likes:
+            if isLoadingMyLikes && myLikedPosts.isEmpty {
+                ProgressView()
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 40)
+            } else if myLikedPosts.isEmpty {
+                accountEmptyTab(icon: "heart", title: "No liked posts", subtitle: "Posts you like will appear here.")
+            } else {
+                LazyVStack(spacing: 0) {
+                    ForEach(myLikedPosts) { post in
+                        PostCard(
+                            post: post,
+                            feedStore: FeedStore.shared,
+                            currentUserId: authService.currentUser?.id ?? ""
+                        )
+                        Divider()
+                    }
+                }
+            }
+        }
+    }
+    
+    private func accountEmptyTab(icon: String, title: String, subtitle: String) -> some View {
+        VStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 32))
+                .foregroundStyle(.secondary.opacity(0.5))
+            Text(title)
+                .font(.system(size: 16, weight: .semibold))
+            Text(subtitle)
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 36)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: DS.radiusCard, style: .continuous))
+        .shadow(color: DS.shadowColor, radius: DS.shadowRadius, y: DS.shadowY)
+    }
+    
+    // MARK: - Data Loading
+    private func loadAccountStats() async {
+        guard let userId = authService.currentUser?.id else { return }
+        isLoadingStats = true
+        do {
+            let response: FullProfileResponse = try await NetworkService.shared.get(
+                path: "/api/users/\(userId)/profile"
+            )
+            #if DEBUG
+            print("👤 [Account] Profile stats: posts=\(response.postsCount), following=\(response.followingCount ?? -1), friends=\(response.mutualFriendsCount ?? response.friendsCount)")
+            #endif
+            await MainActor.run {
+                profileStats = response
+                isLoadingStats = false
+            }
+            // Also load posts
+            await loadTabContent(.posts)
+        } catch {
+            #if DEBUG
+            print("❌ [Account] Failed to load profile stats: \(error)")
+            #endif
+            await MainActor.run { isLoadingStats = false }
+        }
+    }
+    
+    private func loadTabContent(_ tab: ProfileTab) async {
+        guard let userId = authService.currentUser?.id else { return }
+        switch tab {
+        case .posts:
+            guard myPosts.isEmpty else { return }
+            await MainActor.run { isLoadingMyPosts = true }
+            do {
+                let posts: [Post] = try await NetworkService.shared.get(
+                    path: "/api/posts/user/\(userId)"
+                )
+                #if DEBUG
+                print("📋 [Account] Loaded \(posts.count) posts for user \(userId.prefix(8))")
+                #endif
+                await MainActor.run {
+                    myPosts = posts.filter { !$0.content.looksEncrypted }
+                    isLoadingMyPosts = false
+                }
+            } catch {
+                #if DEBUG
+                print("❌ [Account] Failed to load posts: \(error)")
+                #endif
+                await MainActor.run { isLoadingMyPosts = false }
+            }
+        case .replies:
+            guard myRepliedPosts.isEmpty else { return }
+            await MainActor.run { isLoadingMyReplies = true }
+            do {
+                let posts: [Post] = try await NetworkService.shared.get(
+                    path: "/api/posts/user/\(userId)/replies"
+                )
+                #if DEBUG
+                print("💬 [Account] Loaded \(posts.count) replies for user \(userId.prefix(8))")
+                #endif
+                await MainActor.run {
+                    myRepliedPosts = posts.filter { !$0.content.looksEncrypted }
+                    isLoadingMyReplies = false
+                }
+            } catch {
+                #if DEBUG
+                print("❌ [Account] Failed to load replies: \(error)")
+                #endif
+                await MainActor.run { isLoadingMyReplies = false }
+            }
+        case .likes:
+            guard myLikedPosts.isEmpty else { return }
+            await MainActor.run { isLoadingMyLikes = true }
+            do {
+                let posts: [Post] = try await NetworkService.shared.get(
+                    path: "/api/posts/user/\(userId)/likes"
+                )
+                #if DEBUG
+                print("❤️ [Account] Loaded \(posts.count) liked posts for user \(userId.prefix(8))")
+                #endif
+                await MainActor.run {
+                    myLikedPosts = posts.filter { !$0.content.looksEncrypted }
+                    isLoadingMyLikes = false
+                }
+            } catch {
+                #if DEBUG
+                print("❌ [Account] Failed to load likes: \(error)")
+                #endif
+                await MainActor.run { isLoadingMyLikes = false }
+            }
+        }
+    }
 }
 
 
@@ -285,6 +549,7 @@ private struct ProfileHeaderPinned: View {
     let progress: CGFloat
     var onCameraTap: (() -> Void)? = nil
     var onEditTap: (() -> Void)? = nil
+    var onSettingsTap: (() -> Void)? = nil
 
     // Sizes
     private let expandedAvatar: CGFloat = 110
@@ -401,6 +666,25 @@ private struct ProfileHeaderPinned: View {
                     .opacity(Double(progress))
                     .position(x: cardW - 30, y: collapsedHeight / 2)
                     .allowsHitTesting(progress > 0.5)
+
+                    // Settings gear — visible when expanded AND when collapsed
+                    // (sticky access while scrolling). In expanded state it sits
+                    // top-right of the card; in collapsed state, just left of the edit button.
+                    Button {
+                        onSettingsTap?()
+                    } label: {
+                        Image(systemName: "gearshape.fill")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(.primary.opacity(0.85))
+                            .frame(width: 36, height: 36)
+                            .glassSurface(in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .position(
+                        x: progress > 0.5 ? cardW - 76 : cardW - 30,
+                        y: progress > 0.5 ? collapsedHeight / 2 : 26
+                    )
+                    .allowsHitTesting(true)
                 }
             }
             .frame(width: cardW, height: headerH)

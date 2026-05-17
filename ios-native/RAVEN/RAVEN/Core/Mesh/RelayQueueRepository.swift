@@ -80,10 +80,18 @@ actor RelayQueueRepository {
         }
     }
     
-    /// Count of messages in queue
+    /// Count of messages in queue.
+    /// BUG FIX (2026-05-10): SQLite returns INTEGER columns as `Int64`
+    /// via DatabaseService.query (DatabaseService.swift:1099). The
+    /// previous `as? Int` cast silently failed and `count()` always
+    /// returned 0 — every back-pressure signal, badge, or metric built
+    /// on this read "queue empty" while the queue was full. Mirrors the
+    /// correct pattern in `MeshSeenPostsRepository.count()`.
     func count() async -> Int {
         let rows = try? await db.query("SELECT COUNT(*) as cnt FROM relay_queue")
-        return (rows?.first?["cnt"] as? Int) ?? 0
+        if let i64 = rows?.first?["cnt"] as? Int64 { return Int(i64) }
+        if let i = rows?.first?["cnt"] as? Int { return i }
+        return 0
     }
     
     /// Cleanup expired entries
