@@ -495,20 +495,35 @@ extension MPCTransportService: MCSessionDelegate {
         switch marker {
         case 0xAC: // Auth Challenge
             if let challenge = try? JSONDecoder().decode(MPCAuthChallenge.self, from: Data(payload)) {
-                // For now, accept peers whose fingerprint prefix matches discovery info
-                let fpPrefix = String(peerID.displayName.dropFirst("RAVEN-".count))
-                if challenge.fingerprint.hasPrefix(fpPrefix) {
-                    authenticatedPeers.insert(peerID.displayName)
-                    
-                    // Map to BLE device via nonce
-                    nonceLock.withLock {
-                        if let bleId = pendingNonces[challenge.sessionNonce] {
-                            mapLock.withLock { bleToMPC[bleId] = peerID }
-                            pendingNonces.removeValue(forKey: challenge.sessionNonce)
+                // 🔴 AUDIT 2026-05-29 (C2) — actually VERIFY the Ed25519-signed
+                // challenge against a BLE-trusted identity before trusting the
+                // peer. Previously this only did a spoofable displayName /
+                // fingerprint prefix match and never called verify(), so any
+                // nearby device advertising "RAVEN-*" with a self-consistent
+                // fingerprint could authenticate and inject bulk frames.
+                // MPCAuthChallenge.verify() resolves the signer key from the
+                // BLE-trusted device set and rejects unknown peers.
+                Task { [weak self] in
+                    guard let self else { return }
+                    // Replay guard: reject challenges outside a 5-minute window.
+                    let now = Int64(Date().timeIntervalSince1970)
+                    guard abs(now - challenge.timestamp) <= 300 else {
+                        logger.debug("MPC auth rejected (stale challenge) from \(peerID.displayName, privacy: .private)")
+                        return
+                    }
+                    guard await challenge.verify() else {
+                        logger.debug("MPC auth rejected (untrusted signer) from \(peerID.displayName, privacy: .private)")
+                        return
+                    }
+                    self.authenticatedPeers.insert(peerID.displayName)
+                    // Map to BLE device via nonce (best-effort binding).
+                    self.nonceLock.withLock {
+                        if let bleId = self.pendingNonces[challenge.sessionNonce] {
+                            self.mapLock.withLock { self.bleToMPC[bleId] = peerID }
+                            self.pendingNonces.removeValue(forKey: challenge.sessionNonce)
                         }
                     }
-                    
-                    logger.debug("Authenticated peer \(peerID.displayName, privacy: .private)")
+                    logger.debug("Authenticated MPC peer \(peerID.displayName, privacy: .private)")
                 }
             }
 
