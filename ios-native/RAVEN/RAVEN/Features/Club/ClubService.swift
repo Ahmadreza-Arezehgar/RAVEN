@@ -332,8 +332,21 @@ final class ClubService: ObservableObject {
             MeshMessageFrame<ClubPingPayload>.self,
             from: data
         ) else { return }
-        
+
         let payload = frame.payload
+
+        // 🔴 AUDIT 2026-05-29 (C3) — bind the signing key to the claimed user's
+        // pinned identity. The signature proves integrity, not authenticity:
+        // without this, any device could forge a signed frame claiming an
+        // arbitrary userId (here: spoofing a member's location). When the user's
+        // identity is pinned, the signer key MUST match it.
+        if let pinned = await PeerKeyDirectory.shared.identityKey(for: payload.userId),
+           Data(base64Encoded: sig.signerPublicKey ?? "") != pinned {
+            #if DEBUG
+            print("🐦 [Club] REJECTED ping: signer != pinned identity for \(payload.userId.prefix(8))")
+            #endif
+            return
+        }
 
         // Only process pings for our active club
         guard let club = await MainActor.run(body: { self.activeClub }),
@@ -377,9 +390,19 @@ final class ClubService: ObservableObject {
             MeshMessageFrame<ClubJoinPayload>.self,
             from: data
         ) else { return }
-        
+
         let payload = frame.payload
-        
+
+        // 🔴 AUDIT 2026-05-29 (C3) — bind signer to claimed identity (anti-spoof);
+        // when payload.userId is pinned, the frame's signer key must match it.
+        if let pinned = await PeerKeyDirectory.shared.identityKey(for: payload.userId),
+           Data(base64Encoded: sig.signerPublicKey ?? "") != pinned {
+            #if DEBUG
+            print("🐦 [Club] REJECTED join: signer != pinned identity for \(payload.userId.prefix(8))")
+            #endif
+            return
+        }
+
         // If we're in the same club, add the member
         if let club = await MainActor.run(body: { self.activeClub }),
            club.id == payload.clubId {
@@ -447,9 +470,19 @@ final class ClubService: ObservableObject {
             MeshMessageFrame<ClubLeavePayload>.self,
             from: data
         ) else { return }
-        
+
         let payload = frame.payload
-        
+
+        // 🔴 AUDIT 2026-05-29 (C3) — bind signer to claimed identity (anti-spoof);
+        // prevents a forged "leave" evicting another member from the club.
+        if let pinned = await PeerKeyDirectory.shared.identityKey(for: payload.userId),
+           Data(base64Encoded: sig.signerPublicKey ?? "") != pinned {
+            #if DEBUG
+            print("🐦 [Club] REJECTED leave: signer != pinned identity for \(payload.userId.prefix(8))")
+            #endif
+            return
+        }
+
         guard let club = await MainActor.run(body: { self.activeClub }),
               club.id == payload.clubId else { return }
 
