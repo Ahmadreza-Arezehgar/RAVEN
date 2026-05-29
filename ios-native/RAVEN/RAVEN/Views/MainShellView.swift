@@ -382,11 +382,42 @@ struct MainShellView: View {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                     FeedStateManager.shared.deepLinkPostId = postId
                 }
+            // (2026-05-15 — round 7) Home-screen Quick Action targets
+            // get translated into the same in-app navigation:
+            //   newMessage → switch to inbox + post a "compose" hint
+            //   newPost    → switch to home + post a "compose post" hint
+            //   search     → switch to home + post a "search" hint
+            //   voiceNote  → switch to inbox + post a "voice note" hint
+            // Each leaf screen listens for the corresponding sub-notification
+            // and presents the right composer.
+            case .newMessage:
+                selectedTab = .messages
+                NotificationCenter.default.post(name: .ravenShortcutNewMessage, object: nil)
+            case .newPost:
+                selectedTab = .home
+                NotificationCenter.default.post(name: .ravenShortcutNewPost, object: nil)
+            case .search:
+                selectedTab = .home
+                NotificationCenter.default.post(name: .ravenShortcutSearch, object: nil)
+            case .voiceNote:
+                selectedTab = .messages
+                NotificationCenter.default.post(name: .ravenShortcutVoiceNote, object: nil)
             default:
                 break // Other destinations handled elsewhere (audioRoom, etc.)
             }
-            
             DeepLinkRouter.shared.pendingDestination = nil
+        }
+        // (2026-05-15 — round 7) New Post quick-action lives at the
+        // shell layer because the existing `+` FAB also drives
+        // `showCreatePost`. Single source of truth — no double sheets.
+        .onReceive(NotificationCenter.default.publisher(for: .ravenShortcutNewPost)) { _ in
+            showCreatePost = true
+        }
+        // Search shortcut hops to the Discover tab (no dedicated
+        // `.search` tab today) where the user can drive the
+        // existing in-app search surface.
+        .onReceive(NotificationCenter.default.publisher(for: .ravenShortcutSearch)) { _ in
+            selectedTab = .discover
         }
         // ✅ Voice Mini Player Overlay - global, above tab bar
         .overlay(alignment: .bottom) {

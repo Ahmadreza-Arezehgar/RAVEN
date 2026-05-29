@@ -247,7 +247,12 @@ public sealed class MessageRouter
                         _log.LogWarning("Encrypted DM signature INVALID for {Id} — dropping", env.ClientMessageId);
                         return;
                     }
-                    await TrustOrRejectAsync(env.SenderId, payload.SignerEd25519PublicKey).ConfigureAwait(false);
+                    if (!await TrustOrRejectAsync(env.SenderId, payload.SignerEd25519PublicKey).ConfigureAwait(false))
+                    {
+                        // Signer doesn't match a previously-trusted key for this
+                        // user — drop the message rather than rendering it.
+                        return;
+                    }
                 }
 
                 await DispatchInboundDmAsync(env).ConfigureAwait(false);
@@ -328,7 +333,10 @@ public sealed class MessageRouter
             _log.LogWarning("Signed DM signature INVALID for {Id} — dropping", payload.Envelope.ClientMessageId);
             return;
         }
-        await TrustOrRejectAsync(payload.Envelope.SenderId, payload.SignerPublicKey).ConfigureAwait(false);
+        if (!await TrustOrRejectAsync(payload.Envelope.SenderId, payload.SignerPublicKey).ConfigureAwait(false))
+        {
+            return;
+        }
 
         await DispatchInboundDmAsync(payload.Envelope).ConfigureAwait(false);
 
@@ -344,17 +352,28 @@ public sealed class MessageRouter
 
         if (!await _dedup.ClaimAsync($"post:{post.PostId}").ConfigureAwait(false)) return;
 
-        if (!string.IsNullOrEmpty(post.Signature) && !string.IsNullOrEmpty(post.SignerPublicKey))
+        // 🔴 hacker-audit 2026-05-19 — REQUIRE a signature on mesh posts.
+        //
+        // PREVIOUSLY the signature check was wrapped in
+        // `if (!string.IsNullOrEmpty(post.Signature) && ...)`, meaning
+        // a post with no signature at all silently fell through and got
+        // dispatched to the local feed. An attacker could BLE-broadcast
+        // a fabricated MeshPostEnvelope claiming AuthorUsername=<celeb>
+        // with no signature; nearby Windows clients would happily render
+        // it. Posts without a verified signer don't get rendered.
+        if (string.IsNullOrEmpty(post.Signature) || string.IsNullOrEmpty(post.SignerPublicKey))
         {
-            var ok = MeshCrypto.Ed25519Verify(
-                Convert.FromBase64String(post.SignerPublicKey),
-                post.SigningData(),
-                Convert.FromBase64String(post.Signature));
-            if (!ok)
-            {
-                _log.LogWarning("Mesh post signature INVALID for {Id}", post.PostId);
-                return;
-            }
+            _log.LogWarning("Mesh post {Id} arrived UNSIGNED — dropping", post.PostId);
+            return;
+        }
+        var ok = MeshCrypto.Ed25519Verify(
+            Convert.FromBase64String(post.SignerPublicKey),
+            post.SigningData(),
+            Convert.FromBase64String(post.Signature));
+        if (!ok)
+        {
+            _log.LogWarning("Mesh post signature INVALID for {Id}", post.PostId);
+            return;
         }
 
         // TODO: persist post into local feed table; surface UI event.
@@ -422,19 +441,43 @@ public sealed class MessageRouter
         _log.LogInformation("STOP received for {Id}", stop.MessageId);
     }
 
-    private async Task TrustOrRejectAsync(string userId, string signerEd25519PubBase64)
+    /// <summary>
+    /// Returns true when the incoming signer is acceptable for this userId
+    /// (either TOFU on first contact, or matches a previously-trusted key).
+    /// Returns false when the signer is NEW for a userId we already know —
+    /// caller MUST drop the message.
+    ///
+    /// 🔴 hacker-audit 2026-05-19 — was a fire-and-forget Task. Comment
+    /// admitted "v1 accepts; v2 should reject." This was a silent
+    /// impersonation primitive: an attacker who compromised a peer's
+    /// signing key (or stole a fresh one from a forgotten device) could
+    /// send DMs that looked authentically signed under the victim's
+    /// userId, even though the public key didn't match what we'd seen
+    /// before. The Windows client showed the message as legit. Now we
+    /// return a bool, and both callers (HandleEncryptedDmAsync,
+    /// HandleSignedDmAsync) drop the message on false.
+    /// </summary>
+    private async Task<bool> TrustOrRejectAsync(string userId, string signerEd25519PubBase64)
     {
         var signerPub = Convert.FromBase64String(signerEd25519PubBase64);
         var trustedDevs = await _trust.GetTrustedDevicesAsync(userId).ConfigureAwait(false);
         if (trustedDevs.Count == 0)
         {
-            // TOFU — auto-trust (PROTOCOL v1 behaviour).
+            // TOFU — auto-trust on first contact.
             await _trust.AddAsync(userId, signerPub, TrustState.Tofu, name: "mesh-tofu").ConfigureAwait(false);
-            return;
+            return true;
         }
-        // Already known — match the key. (If no match, the verify call has
-        // already returned true here, meaning sender used a key we don't
-        // know but signed correctly — protocol v1 accepts; v2 should reject.)
+        // Already known — accept only if signer matches an existing
+        // trusted key for this userId.
+        foreach (var d in trustedDevs)
+        {
+            if (d.PublicKey != null && d.PublicKey.AsSpan().SequenceEqual(signerPub))
+                return true;
+        }
+        _log.LogWarning(
+            "Mesh signer key mismatch for userId={UserId} — known keys exist but this signer is new. Dropping.",
+            userId);
+        return false;
     }
 
     private Task DispatchInboundDmAsync(SecureMeshEnvelope env)

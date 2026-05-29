@@ -25,12 +25,15 @@ else:
 
 ALGORITHM = "HS256"
 
-# Access tokens: 7 days — shorter expiry causes 401 errors when iOS app
-# is in background (bridge-downlink timer keeps firing but token refresh
-# doesn't work reliably in background mode).
+# 🔴 ROUND 71 S27: shortened access-token TTL from 7d → 30min.
+# Previously 10080 minutes defeated the round-13 jti + tokens_invalidated_at
+# revocation defense — a leaked JWT remained valid for a full week
+# after logout / password-reset. iOS already has a working refresh-
+# token rotation loop in `KeychainService.refreshAccessToken`, so
+# background-mode 401s should self-heal via that path.
 # Refresh tokens: Effectively permanent — only invalidated on explicit sign-out
 # or app uninstall. Revocation is handled via DB (revoke_refresh_token).
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "10080"))
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
 REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "3650"))
 
 
@@ -357,27 +360,150 @@ def revoke_all_user_tokens(db, user_id: str) -> int:
     db.commit()
     return count
 
+# ==================== ACCESS-TOKEN REVOCATION (round 26 / Server F4) ====================
+#
+# 🔴 ROUND 26 (2026-05-16) — hacker-audit finding Server F4 (MEDIUM).
+#
+# Before this round, a freshly-minted access token was usable for the full
+# 30-minute window even after the user explicitly logged out, rotated a
+# credential, or the device was reported stolen. The refresh-token table
+# had revocation (`RefreshToken.revoked_at`), but the access JWT was
+# self-contained — decode_token would happily verify it from the
+# signature alone.
+#
+# Practical attack: hacker steals an access token (via a man-in-the-
+# middle on an old HTTPS cert pin, malware on the device, a logged-out
+# session that wasn't wiped, etc.). User notices and hits "Log out all
+# devices" — but the stolen token still works until its `exp`.
+#
+# Fix: maintain an in-memory revocation set keyed on the JWT `jti`
+# (UUID-per-token) plus the original `exp`. `decode_token` rejects
+# anything whose jti is in the set. A periodic sweeper (or the next
+# call) drops entries whose `exp` has passed so the set can't grow
+# unbounded — a revoked token that's already expired adds no security.
+#
+# In-memory is fine because:
+#   1. Access tokens are short-lived (30min default). A pod restart
+#      drops the revocation list, but every revoked token also expires
+#      within 30min — gap is bounded and small.
+#   2. Multi-pod deploys: the user's next /auth/logout hits ONE pod,
+#      and the revocation only takes effect on that pod's traffic. The
+#      other pods will see the revoked token until either (a) the
+#      stolen-token attacker happens to route to a pod that received
+#      the revoke, or (b) the token naturally expires. Acceptable for
+#      the threat model — the user gets *some* immediate mitigation
+#      without us needing a Redis dependency. A DB-backed JTI table is
+#      a follow-up if traffic crosses the multi-pod threshold.
+#
+# `RefreshToken.revoked_at` is still the source of truth for "I am
+# permanently logged out" — once the access token expires, no new
+# access token can be minted from the revoked refresh row.
+
+import threading
+from typing import Tuple
+
+_revoked_lock = threading.Lock()
+# (jti, exp_unix_timestamp) — exp is used by the sweeper to evict
+# entries that have aged out of usefulness. We track per-jti to keep
+# membership tests O(1).
+_revoked_access_jti: dict[str, int] = {}
+
+
+def revoke_access_token(token: str) -> bool:
+    """
+    Decode `token` and add its `jti` to the revocation set so future
+    calls to `decode_token(token)` return None.
+
+    Used by /auth/logout. Returns True if a revocation was recorded;
+    False if the token was already invalid (in which case revocation
+    is moot — the token wouldn't have decoded anyway).
+    """
+    try:
+        # `verify_exp=False` so we can revoke an already-expired token
+        # idempotently (no error path the caller has to special-case).
+        payload = jwt.decode(
+            token,
+            SECRET_KEY,
+            algorithms=[ALGORITHM],
+            issuer="hybrid-messenger",
+            audience="hybrid-messenger-app",
+            options={"verify_exp": False},
+        )
+    except JWTError:
+        return False
+
+    jti = payload.get("jti")
+    exp = payload.get("exp")
+    if not jti or not exp:
+        return False
+    try:
+        exp_int = int(exp)
+    except (TypeError, ValueError):
+        return False
+
+    with _revoked_lock:
+        _revoked_access_jti[jti] = exp_int
+        _sweep_revoked_locked()
+    return True
+
+
+def _sweep_revoked_locked() -> None:
+    """Drop revoked entries that have passed their `exp` — called
+    under `_revoked_lock`. Keeps the set's RAM bounded by the count
+    of currently-live tokens."""
+    if not _revoked_access_jti:
+        return
+    now = int(datetime.utcnow().timestamp())
+    stale = [j for j, e in _revoked_access_jti.items() if e <= now]
+    for j in stale:
+        _revoked_access_jti.pop(j, None)
+
+
+def is_access_jti_revoked(jti: str) -> bool:
+    """O(1) membership check used inside `decode_token`."""
+    if not jti:
+        return False
+    with _revoked_lock:
+        # Opportunistic sweep so a quiet endpoint doesn't let the set
+        # grow when there's no /auth/logout traffic.
+        _sweep_revoked_locked()
+        return jti in _revoked_access_jti
+
+
 def decode_token(token: str) -> Optional[dict]:
     """
     Decode and verify JWT token with claim validation.
-    
+
     Args:
         token: JWT token string
-        
+
     Returns:
         Decoded token data or None if invalid
+
+    🔴 ROUND 26 — Server F4: check the access-jti revocation set so
+    a logged-out access token stops working immediately even though
+    it hasn't reached `exp`.
     """
     try:
         payload = jwt.decode(
-            token, 
-            SECRET_KEY, 
+            token,
+            SECRET_KEY,
             algorithms=[ALGORITHM],
             issuer="hybrid-messenger",
             audience="hybrid-messenger-app"
         )
-        return payload
     except JWTError:
         return None
+
+    # Round 26 — Server F4: deny access tokens whose jti was revoked
+    # (e.g. by /auth/logout). Refresh tokens have their own DB-backed
+    # revocation in `RefreshToken.revoked_at` so we skip this check
+    # for the refresh type.
+    if payload.get("type") == "access":
+        if is_access_jti_revoked(payload.get("jti", "")):
+            return None
+
+    return payload
 
 
 # Optional dependency imports for get_current_user_optional

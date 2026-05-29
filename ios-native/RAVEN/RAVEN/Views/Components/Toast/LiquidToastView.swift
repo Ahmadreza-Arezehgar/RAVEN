@@ -87,39 +87,203 @@ struct LiquidToastView: View {
         }
     }
     
-    // MARK: - Main Capsule Content
+    // MARK: - Main Capsule Content (R76 rewrite — full context + Liquid Glass)
+    //
+    // 🟢 ROUND 76 (2026-05-24) — banner UI overhaul.
+    //
+    // PRE-FIX: a single HStack with a tiny avatar, a 14pt title row,
+    // and a 13pt body row that collapsed to nothing when `body` was
+    // short or empty. On a black chat background the toast looked
+    // like only "Ahmadreza" floating with no preview, no group
+    // context, no timestamp, no transport indicator — basically a
+    // useless poke. Screenshot from user (2026-05-24) confirms.
+    //
+    // NEW LAYOUT (Apple-class):
+    //
+    //   ┌────────────────────────────────────────────────────────┐
+    //   │ [44pt avatar●]  Ahmadreza · DM        🔒  now      ⌃ │
+    //   │                 💬 Hey, are you free tonight?          │
+    //   └────────────────────────────────────────────────────────┘
+    //
+    // ROW 1 (top): type-icon + sender + " · " + context-label.
+    //   - context-label = group name for groups, "DM" for 1:1,
+    //     "Friend Request" / "Like" / "Comment" etc. for non-chat.
+    // ROW 2 (bottom): full message preview, NEVER collapsed.
+    //   - safe-fallback: if `item.body` is empty/whitespace,
+    //     synthesize a verb-style "Sent a message" so the row is
+    //     ALWAYS visible (never zero-height).
+    // RIGHT META: transport indicator (E2E lock) + time chip + chevron.
     private var mainCapsule: some View {
-        HStack(spacing: 10) {
-            // Avatar (small)
+        HStack(alignment: .center, spacing: 12) {
+            // Avatar (bumped to 44pt for proper visibility)
             avatarView
-            
-            // Content
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 4) {
+
+            // Two-row content column
+            VStack(alignment: .leading, spacing: 3) {
+                // ROW 1 — sender + chat context
+                HStack(spacing: 5) {
                     Image(systemName: item.type.icon)
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(typeColor)
-                    
-                    Text(item.title)
-                        .font(.system(size: 14, weight: .semibold))
+                        .frame(width: 14)
+
+                    Text(item.title.isEmpty ? "RAVEN" : item.title)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.primary)
                         .lineLimit(1)
+
+                    if !contextLabel.isEmpty {
+                        Text("·")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(.tertiary)
+                        Text(contextLabel)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
                 }
-                
-                Text(item.body)
+
+                // ROW 2 — preview (always rendered, with fallback)
+                Text(displayBody)
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            
-            Spacer(minLength: 4)
-            
-            // Quick Actions
+
+            Spacer(minLength: 6)
+
+            // RIGHT META column — transport, time, action
             if !isExpanded {
-                quickActionButtons
+                rightMetaColumn
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+    }
+
+    /// Context label that appears next to the sender name on the top
+    /// row. For 1:1 chats it's "DM"; for groups it's the group name;
+    /// for non-chat (likes, comments, …) it describes the action.
+    private var contextLabel: String {
+        switch item.type {
+        case .message:
+            if item.isGroup, let g = item.groupName, !g.isEmpty {
+                return g
+            }
+            return "Direct"
+        case .voice:
+            if item.isGroup, let g = item.groupName, !g.isEmpty {
+                return g
+            }
+            return "Direct"
+        case .friendRequest:
+            return "Friend Request"
+        case .like:
+            return "liked your post"
+        case .comment:
+            return "commented"
+        case .groupInvite:
+            return item.groupName ?? "Group invite"
+        case .meshPeerNearby:
+            return "Nearby on mesh"
+        case .audioRoomMention:
+            return item.groupName ?? "Live room"
+        case .vaultAccess:
+            return "Vault"
+        case .backupDone:
+            return "Backup"
+        case .twoFactorRequest:
+            return "2FA"
+        case .disasterMode:
+            return "Disaster mode"
+        case .appUpdate:
+            return "Update"
+        case .security:
+            return "Security"
+        }
+    }
+
+    /// Message preview with safety fallback so the row is never empty.
+    private var displayBody: String {
+        let trimmed = item.body.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { return trimmed }
+        switch item.type {
+        case .message: return "Sent you a message"
+        case .voice: return "Sent a voice message"
+        case .friendRequest: return "wants to connect"
+        case .like: return "tapped ♥ on your post"
+        case .comment: return "left a comment"
+        case .groupInvite: return "Invited you to a group"
+        case .meshPeerNearby: return "Just appeared on the mesh"
+        case .audioRoomMention: return "Mentioned you in a live room"
+        case .vaultAccess: return "Vault attachment opened"
+        case .backupDone: return "Encrypted backup finished"
+        case .twoFactorRequest: return "Sign-in approval needed"
+        case .disasterMode: return "Disaster mode is active"
+        case .appUpdate: return "A new version is available"
+        case .security: return "Security update"
+        }
+    }
+
+    // MARK: - Right Meta Column (R76)
+    @ViewBuilder
+    private var rightMetaColumn: some View {
+        // Friend-request and group-invite items show inline accept /
+        // decline; everything else shows transport + time + chevron.
+        if item.type == .friendRequest || item.type == .groupInvite {
+            quickActionButtons
+        } else {
+            VStack(alignment: .trailing, spacing: 4) {
+                // Transport pill — E2E lock for messages so the user
+                // sees that the body in the preview is encrypted on
+                // the wire. Tiny + non-interactive.
+                if item.type == .message {
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(typeColor)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(
+                            Capsule().fill(typeColor.opacity(0.15))
+                        )
+                }
+                // Time chip — "now" by default, age-aware after a few
+                // seconds so the toast pile-up reads sensibly.
+                Text(relativeTimeLabel)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.tertiary)
+                    .monospacedDigit()
+            }
+            // Chevron to the right of the meta column hints at tappability.
+            Image(systemName: "chevron.right")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(.tertiary)
+                .padding(.leading, 2)
+        }
+    }
+
+    /// Age-aware time label.
+    private var relativeTimeLabel: String {
+        let secs = Int(Date().timeIntervalSince(item.receivedAt))
+        if secs < 5 { return "now" }
+        if secs < 60 { return "\(secs)s" }
+        let mins = secs / 60
+        if mins < 60 { return "\(mins)m" }
+        let hours = mins / 60
+        if hours < 24 { return "\(hours)h" }
+        return "\(hours / 24)d"
+    }
+
+    /// Legacy convenience kept for callers/styling that still reference
+    /// the old combined-title format.
+    private var composedTitle: String {
+        if item.isGroup, let groupName = item.groupName, !groupName.isEmpty,
+           !item.title.isEmpty, item.title != groupName {
+            return "\(item.title) · \(groupName)"
+        }
+        return item.title
     }
     
     // MARK: - Quick Action Buttons

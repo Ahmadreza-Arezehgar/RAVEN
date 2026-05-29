@@ -2,6 +2,7 @@
 Admin endpoints for database management.
 DANGER: These endpoints can destroy all data!
 """
+import secrets as _secrets_mod
 from fastapi import APIRouter, Depends, HTTPException, Header
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
@@ -10,13 +11,101 @@ import os
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
-# Secret key for admin operations - set via environment variable
-ADMIN_SECRET = os.getenv("ADMIN_SECRET", "RAVEN_ADMIN_2026")
+# 🔴 ROUND 56 (2026-05-19) — hacker-audit Server F15 (CATASTROPHIC).
+#
+# THE BUG:
+#   PREVIOUSLY: `ADMIN_SECRET = os.getenv("ADMIN_SECRET", "RAVEN_ADMIN_2026")`
+#   plus `if x_admin_secret != ADMIN_SECRET`. Two compounding
+#   disasters:
+#
+#   (a) Hardcoded default secret literally checked into the repo
+#       (and into the GitHub mirror we just shared with a
+#       collaborator). On any deploy where the operator forgot to
+#       set ADMIN_SECRET, the secret falls back to a string anyone
+#       reading the source can copy-paste:
+#
+#         curl -X POST https://api.raven-messager.com/api/admin/reset-database \
+#              -H "X-Admin-Secret: RAVEN_ADMIN_2026"
+#
+#       One HTTP call → `/reset-database` deletes EVERY row in
+#       every table: users, messages, posts, verification requests,
+#       backups. Total destruction with zero authentication.
+#
+#       The same un-authentication unlocks:
+#         • /clear-messages          (wipe all DMs)
+#         • /verification/queue      (list every KYC submission)
+#         • /verification/doc/...    (DOWNLOAD ANY USER'S ID DOC +
+#                                     selfie photos — passports,
+#                                     national IDs, driver licenses
+#                                     of every verified user)
+#         • /verification/{id}       (decrypted legal names of every
+#                                     verified user)
+#         • /verification/{id}/approve  (grant attacker a verified
+#                                     badge by approving their own
+#                                     blank request)
+#         • /run-migration           (run arbitrary ALTER TABLE)
+#         • /reports                 (read every abuse report)
+#
+#   (b) `x_admin_secret != ADMIN_SECRET` is direct string compare,
+#       not constant-time. Even if the operator sets a strong env,
+#       a timing oracle can leak the first byte of the secret over
+#       network noise (low-rate attack but eventually fatal).
+#
+# THE FIX (defense in layers):
+#   1. Fail closed when ADMIN_SECRET is empty. Production refuses
+#      to serve admin endpoints at all — same posture as the round
+#      46 RevenueCat webhook fix.
+#   2. Refuse to serve admin endpoints when ADMIN_SECRET equals the
+#      known historical default ("RAVEN_ADMIN_2026"). Even if some
+#      operator literally typed that into the env var, treat it as
+#      "secret is leaked" and lock the admin surface.
+#   3. Constant-time compare via `secrets.compare_digest`.
+#   4. Operators MUST set a fresh strong secret (e.g.,
+#      `python -c "import secrets; print(secrets.token_urlsafe(48))"`)
+#      before admin endpoints work.
+ADMIN_SECRET = os.getenv("ADMIN_SECRET", "")
+
+# 🔴 ROUND 56 — the well-known historical default. Any deploy whose
+# operator left this literal string in place is treated as "unset"
+# so the admin surface stays locked.
+_KNOWN_BAD_DEFAULTS = {
+    "RAVEN_ADMIN_2026",
+    "RAVEN_ADMIN",
+    "admin",
+    "secret",
+    "changeme",
+    "",
+}
 
 
 def verify_admin_secret(x_admin_secret: str = Header(...)):
-    """Verify the admin secret header."""
-    if x_admin_secret != ADMIN_SECRET:
+    """Verify the admin secret header.
+
+    🔴 ROUND 56 — fail-closed posture + constant-time compare. See
+    the module-level comment block for the catastrophic bug this
+    replaces.
+    """
+    # 1. Refuse to authorize if the configured secret is empty or
+    #    matches the historical default. Logs loudly so the
+    #    operator notices.
+    if not ADMIN_SECRET or ADMIN_SECRET in _KNOWN_BAD_DEFAULTS:
+        env = os.getenv("ENVIRONMENT", "development")
+        if env == "production":
+            # In production this is a SEV-1; never allow admin work.
+            print(
+                "🚫 [Admin] CRITICAL: ADMIN_SECRET is unset or set to a "
+                "known-bad default. Refusing all admin requests. "
+                "Operator: set ADMIN_SECRET to a fresh "
+                "`secrets.token_urlsafe(48)` value."
+            )
+        raise HTTPException(
+            status_code=503,
+            detail="admin endpoints disabled — operator must configure ADMIN_SECRET",
+        )
+
+    # 2. Constant-time compare so a partial-match timing oracle
+    #    can't dribble out the first byte of the configured secret.
+    if not _secrets_mod.compare_digest(str(x_admin_secret or ""), str(ADMIN_SECRET)):
         raise HTTPException(status_code=403, detail="Invalid admin secret")
     return True
 
@@ -193,8 +282,23 @@ def get_verification_queue(
     requests = query.offset(offset).limit(limit).all()
     
     items = []
+    # 🔴 ROUND 71 S25 + FIX-UP: country + legal_name need decrypt-or-
+    # passthrough. Local import of `decrypt_text` because admin.py
+    # does NOT import it at module top — same NameError bug pattern
+    # as serve_verification_document.
+    from encryption import decrypt_text as _q_dec
+    def _try_dec(val):
+        if not val:
+            return None
+        try:
+            return _q_dec(val)
+        except Exception:
+            return val
+
     for req in requests:
         user = db.query(User).filter(User.id == req.user_id).first()
+        first = _try_dec(req.legal_first_name) or ""
+        last = _try_dec(req.legal_last_name) or ""
         items.append({
             "id": req.id,
             "user_id": req.user_id,
@@ -202,9 +306,9 @@ def get_verification_queue(
             "avatar": user.avatar_path if user else None,
             "status": req.status,
             "category": req.category,
-            "country": req.country,
+            "country": _try_dec(req.country) or "—",
             "doc_type": req.doc_type,
-            "legal_name": f"{decrypt_text(req.legal_first_name)} {decrypt_text(req.legal_last_name)}",
+            "legal_name": f"{first} {last}".strip(),
             "submitted_at": req.submitted_at.isoformat() if req.submitted_at else None,
             "has_front": bool(req.doc_front_url),
             "has_back": bool(req.doc_back_url),
@@ -222,15 +326,62 @@ def serve_verification_document(
 ):
     """Serve a verification document image (admin only).
     Supports both GCS storage (production) and local filesystem (development).
+
+    🔴 ROUND 71 S26: previously only the admin-secret header was
+    required; no DB lookup confirmed the (user_id, filename) pair
+    actually belonged to a VerificationRequest row. Anyone with the
+    admin secret (which leaks via logs / dev tools / shared docs)
+    could guess `user_id/filename` GCS paths and download arbitrary
+    files from the bucket. Now: a Session dep + lookup against
+    VerificationRequest.doc_*_url confirms the path is referenced
+    by an actual KYC submission before serving.
     """
     from pathlib import Path
     import mimetypes
     from fastapi.responses import Response
-    
+    from database import SessionLocal
+    from models import VerificationRequest
+
     # Sanitize path components to prevent directory traversal
     if '..' in user_id or '/' in user_id or '..' in filename or '/' in filename:
         raise HTTPException(status_code=400, detail="Invalid path")
-    
+
+    # 🔴 ROUND 71 S26: ownership check — verify this path actually
+    # belongs to a VerificationRequest row. Decrypt-then-substring
+    # match (round-70 Fernet-wrapped) with a small per-user scan
+    # (KYC volume is low). Refuses 404 on unknown paths to prevent
+    # arbitrary bucket reads.
+    #
+    # 🔴 ROUND 71 FIX-UP: `decrypt_text` is not imported at module
+    # top; the previous edit assumed it was. Local import here so
+    # the function actually runs instead of throwing NameError →
+    # 500 on every admin doc fetch.
+    from encryption import decrypt_text as _vd_dec
+    _db = SessionLocal()
+    try:
+        _vreqs = _db.query(VerificationRequest).filter(
+            VerificationRequest.user_id == user_id
+        ).all()
+        _found = False
+        for _vr in _vreqs:
+            for _col in ("doc_front_url", "doc_back_url", "selfie_url"):
+                _stored = getattr(_vr, _col, None)
+                if not _stored:
+                    continue
+                try:
+                    _plain = _vd_dec(_stored)
+                except Exception:
+                    _plain = _stored
+                if _plain and filename in _plain:
+                    _found = True
+                    break
+            if _found:
+                break
+        if not _found:
+            raise HTTPException(status_code=404, detail="Document not found")
+    finally:
+        _db.close()
+
     gcs_path = f"{user_id}/{filename}"
     print(f"📄 [VerifDoc] Serving: {gcs_path}")
     
@@ -301,13 +452,24 @@ def debug_verification_request(
     if not req:
         raise HTTPException(status_code=404, detail="Request not found")
     
+    # 🔴 ROUND 70 — KYC URL columns may carry either legacy plaintext
+    # or new Fernet-wrapped bytes; decrypt-or-passthrough handles both.
+    from encryption import decrypt_text as _dec
+    def _kyc(val):
+        if not val:
+            return None
+        try:
+            return _dec(val)
+        except Exception:
+            return val  # legacy plaintext
+
     return {
         "id": req.id,
         "user_id": req.user_id,
         "doc_type": req.doc_type,
-        "raw_doc_front_url": req.doc_front_url,
-        "raw_doc_back_url": req.doc_back_url,
-        "raw_selfie_url": req.selfie_url,
+        "raw_doc_front_url": _kyc(req.doc_front_url),
+        "raw_doc_back_url": _kyc(req.doc_back_url),
+        "raw_selfie_url": _kyc(req.selfie_url),
         "status": req.status,
     }
 
@@ -367,6 +529,17 @@ def get_verification_detail(
         print(f"   → Local path: {result}")
         return result
     
+    # 🔴 ROUND 70 — KYC URL columns may be Fernet-wrapped now.
+    # Try decrypt; fall through to plaintext for legacy rows. Country
+    # may also be wrapped on round-70+ rows.
+    def _try_dec(val):
+        if not val:
+            return None
+        try:
+            return decrypt_text(val)
+        except Exception:
+            return val
+
     return {
         "id": req.id,
         "user_id": req.user_id,
@@ -375,12 +548,12 @@ def get_verification_detail(
         "status": req.status,
         "legal_first_name": decrypt_text(req.legal_first_name),
         "legal_last_name": decrypt_text(req.legal_last_name),
-        "country": req.country or "—",
+        "country": (_try_dec(req.country) or "—"),
         "category": req.category or "—",
         "doc_type": req.doc_type or "Not specified",
-        "doc_front_url": to_admin_url(req.doc_front_url),
-        "doc_back_url": to_admin_url(req.doc_back_url),
-        "selfie_url": to_admin_url(req.selfie_url),
+        "doc_front_url": to_admin_url(_try_dec(req.doc_front_url)),
+        "doc_back_url": to_admin_url(_try_dec(req.doc_back_url)),
+        "selfie_url": to_admin_url(_try_dec(req.selfie_url)),
         "links": json_mod.loads(req.links_json) if req.links_json else [],
         "submitted_at": req.submitted_at.isoformat() if req.submitted_at else None,
         "reviewed_at": req.reviewed_at.isoformat() if req.reviewed_at else None,
@@ -967,6 +1140,179 @@ async def admin_apns_connectivity(
     return results
 
 
+# ==================== BROADCAST NOTIFICATION ====================
+
+
+class BroadcastRequest(PydanticBaseModel):
+    """Payload for /broadcast-notification. Both languages are sent
+    in one push (concatenated with a separator) so a Persian user
+    and an English user each recognise their half. Title is short
+    enough to fit a lock-screen line on either locale."""
+    title_en: str = "Security Update — please update RAVEN"
+    title_fa: str = "به‌روزرسانی امنیتی — لطفاً RAVEN را به‌روز کنید"
+    body_en: str = (
+        "We've shipped important security fixes. Open the App Store "
+        "and update RAVEN to the latest version."
+    )
+    body_fa: str = (
+        "اصلاحات امنیتی مهم منتشر شده است. لطفاً RAVEN را از اپ استور "
+        "به آخرین نسخه به‌روزرسانی کنید."
+    )
+    dry_run: bool = True   # default safe: count recipients, don't actually send
+    max_recipients: int = 100_000
+
+
+@router.post("/broadcast-notification")
+async def broadcast_notification(
+    req: BroadcastRequest,
+    db: Session = Depends(get_db),
+    _: bool = Depends(verify_admin_secret),
+):
+    """One-shot fan-out of a security-update notification to every
+    user with a push token.
+
+    Channels:
+      • In-app `Notification` row (always created)
+      • APNs push (only when `dry_run=False` AND `push_token` set)
+
+    Safety:
+      • Default `dry_run=True` returns counts only — actually sending
+        requires an explicit `{ "dry_run": false }` in the body.
+      • Caps at `max_recipients` so an accidental call can't fan out
+        infinitely.
+      • Skips banned / restricted users.
+      • De-duplicates per `push_token` (a stale token recycled across
+        accounts only pushes once).
+      • Caller can pre-translate title/body per language; we pick the
+        right one per user by `User.language` if present, else fall
+        back to English.
+    """
+    from models import User as _User, Notification as _Notif
+    from services.apns_service import get_apns_service, APNsService
+    import json as _json
+    import uuid as _uuid
+    from datetime import datetime as _dt
+
+    # Recipients: any user with a push token who isn't banned/restricted.
+    candidates_q = db.query(_User).filter(
+        _User.push_token.isnot(None),
+        _User.push_token != "",
+        (_User.is_banned == False) | (_User.is_banned.is_(None)),
+        (_User.is_restricted == False) | (_User.is_restricted.is_(None)),
+    )
+    total_eligible = candidates_q.count()
+    candidates = candidates_q.limit(req.max_recipients).all()
+
+    if req.dry_run:
+        # Preview only — no notifications, no pushes.
+        platforms: dict = {}
+        for u in candidates:
+            p = (u.push_platform or "unknown").lower()
+            platforms[p] = platforms.get(p, 0) + 1
+        return {
+            "dry_run": True,
+            "eligible_total": total_eligible,
+            "would_notify": len(candidates),
+            "by_platform": platforms,
+            "title_en": req.title_en,
+            "title_fa": req.title_fa,
+            "body_en": req.body_en[:120],
+            "body_fa": req.body_fa[:120],
+            "hint": "POST again with {\"dry_run\": false} to actually send.",
+        }
+
+    # Real broadcast. We send synchronously per-batch but the apns
+    # client uses HTTP/2 multiplexing — throughput is plenty for tens
+    # of thousands of recipients in a single request.
+    apns = get_apns_service()
+    sent_push = 0
+    sent_notif = 0
+    skipped_pref = 0
+    failed_push = 0
+    seen_tokens: set[str] = set()
+
+    for u in candidates:
+        # Pick the right language for each recipient based on the
+        # user's `language` column. Fallback to English when unset.
+        lang = (getattr(u, "language", None) or "").lower()
+        title = req.title_fa if lang.startswith("fa") else req.title_en
+        body = req.body_fa if lang.startswith("fa") else req.body_en
+
+        # 1) In-app notification row
+        try:
+            notif = _Notif(
+                id=str(_uuid.uuid4()),
+                user_id=u.id,
+                type="security_update",
+                data=_json.dumps({
+                    "event": "security_update",
+                    "title": title,
+                    "body": body,
+                    "min_app_version": "latest",
+                }),
+                is_read=False,
+                timestamp=_dt.utcnow(),
+            )
+            db.add(notif)
+            sent_notif += 1
+        except Exception as e:
+            logging.warning(f"in-app notif failed for {u.id}: {e}")
+
+        # 2) APNs push (only iOS for now)
+        if (u.push_platform or "").lower() != "ios":
+            continue
+        token = u.push_token or ""
+        if not token or token in seen_tokens:
+            continue
+        seen_tokens.add(token)
+
+        # Respect each user's push preferences. The "system" channel
+        # is treated as always-allowed for security messages, since
+        # forcing a quiet hour to swallow a security update is worse
+        # than a single mistimed buzz.
+        prefs = APNsService.should_send_push(u, "system")
+        if not prefs.get("allowed", True):
+            skipped_pref += 1
+            continue
+
+        try:
+            ok = await apns.send_push(
+                device_token=token,
+                title=title,
+                body=body,
+                data={
+                    "type": "security_update",
+                    "url": "https://apps.apple.com/app/raven-messenger/id6739196697",
+                },
+            )
+            if ok:
+                sent_push += 1
+            else:
+                failed_push += 1
+        except Exception as e:
+            failed_push += 1
+            logging.warning(f"apns push failed for {u.id}: {e}")
+
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logging.error(f"broadcast commit failed: {e}")
+
+    print(f"📢 [Broadcast] notif={sent_notif} push={sent_push} "
+          f"skip-pref={skipped_pref} fail={failed_push} "
+          f"of total_eligible={total_eligible}")
+
+    return {
+        "dry_run": False,
+        "eligible_total": total_eligible,
+        "in_app_notifications_created": sent_notif,
+        "push_notifications_sent": sent_push,
+        "push_skipped_by_preference": skipped_pref,
+        "push_failed": failed_push,
+    }
+
+
 # ==================== APPLE REVIEWER ACCOUNT SETUP ====================
 
 @router.post("/setup-reviewers")
@@ -987,17 +1333,27 @@ def setup_reviewer_accounts(
     import hashlib
     import uuid
 
+    # 🔴 hacker-audit 2026-05-20 — no hardcoded credentials in source.
+    # PREVIOUSLY both reviewer accounts shipped the literal password
+    # "REDACTED-ROTATE-ME" right here in the repo (and echoed it in
+    # the response) — anyone with read access to the source or git
+    # history could log into the production reviewer accounts.
+    # NOW: take the password from REVIEWER_PASSWORD; if it is unset,
+    # mint a strong random one. Either way it is returned ONCE in
+    # this admin-only response so the operator can hand it to review.
+    reviewer_password = os.getenv("REVIEWER_PASSWORD") or _secrets_mod.token_urlsafe(18)
+
     reviewer_accounts = [
         {
             "username": "reviewer1",
-            "password": "REDACTED-ROTATE-ME",
+            "password": reviewer_password,
             "first_name": "Apple",
             "last_name": "Reviewer",
             "email": "apple-reviewer-1@raven-messenger.com",
         },
         {
             "username": "reviewer2",
-            "password": "REDACTED-ROTATE-ME",
+            "password": reviewer_password,
             "first_name": "App",
             "last_name": "Reviewer",
             "email": "apple-reviewer-2@raven-messenger.com",
@@ -1092,8 +1448,8 @@ def setup_reviewer_accounts(
         "accounts": results,
         "friendship": friendship_status,
         "login_instructions": {
-            "account_1": {"username": "reviewer1", "password": "REDACTED-ROTATE-ME"},
-            "account_2": {"username": "reviewer2", "password": "REDACTED-ROTATE-ME"},
+            "account_1": {"username": "reviewer1", "password": reviewer_password},
+            "account_2": {"username": "reviewer2", "password": reviewer_password},
         }
     }
 

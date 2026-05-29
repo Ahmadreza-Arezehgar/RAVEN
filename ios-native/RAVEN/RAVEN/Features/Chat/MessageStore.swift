@@ -2,6 +2,9 @@ import Foundation
 import Combine
 import UIKit
 import SwiftUI
+import os
+
+fileprivate let logger = Logger(subsystem: "app.raven.ios", category: "MessageStore")
 
 // MARK: - Message Store (Observe messages by roomId from DB)
 @MainActor
@@ -157,6 +160,9 @@ class MessageStore {
     
     func loadFromDB() async {
         do {
+            // 🔴 v1.8 — sweep expired disappearing messages from the
+            // on-device cache before loading so they never render.
+            try? await messageRepo.purgeExpiredMessages()
             let rows = try await messageRepo.getMessages(roomId: roomId, limit: messageLimit)
             
             // 🚀 Parse + sort in background thread to avoid blocking UI
@@ -278,7 +284,8 @@ class MessageStore {
                         return url
                     } else {
                         #if DEBUG
-                        print("⚠️ [MessageStore] Server returned voice msg but ALL url fields are nil. content=\(msg.content?.prefix(80) ?? "nil")")
+                        // SECURITY (round 11): don't dump content bytes to console.
+                        print("⚠️ [MessageStore] Server returned voice msg but ALL url fields are nil. content size: \(msg.content?.count ?? 0)b")
                         #endif
                     }
                 } else {
@@ -356,6 +363,28 @@ class MessageStore {
                         continue
                     }
                     
+                    // 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — decrypt
+                    // the AES-GCM group ciphertext BEFORE persisting.
+                    // Pre-fix the row was stored with raw base64
+                    // ciphertext in `text` and the bubble rendered
+                    // gibberish on scrollback. Use the same
+                    // GroupKeyService.decrypt path the WS handler
+                    // uses; placeholder when key isn't available.
+                    let displayedText: String
+                    if let v = gm.groupKeyVersion,
+                       !gm.content.isEmpty,
+                       let plain = await GroupKeyService.shared.decrypt(
+                            gm.content, groupId: roomId, version: v
+                       ) {
+                        displayedText = plain
+                    } else if gm.groupKeyVersion != nil {
+                        // Server flagged this as group-sealed but
+                        // we couldn't decrypt — placeholder.
+                        displayedText = "🔒 [Encrypted message — could not decrypt]"
+                    } else {
+                        displayedText = gm.content
+                    }
+
                     let chatMessage = ChatMessage(
                         id: gm.id,
                         serverId: gm.id,
@@ -363,7 +392,7 @@ class MessageStore {
                         senderId: gm.senderId,
                         senderName: gm.senderName,
                         recipientId: roomId,  // For groups, use roomId
-                        text: gm.content,
+                        text: displayedText,
                         timestamp: gm.timestamp,
                         type: MessageType.from(name: gm.messageType ?? "text"),
                         status: .sent,
@@ -510,7 +539,158 @@ class MessageStore {
                         }
                     }
                     
-                    newMessages.append(apiMessage.toChatMessage(roomId: roomId))
+                    // 🔴 SECURITY FIX (2026-05-16 — round 11): unseal
+                    // the server-shipped `content` before storing it
+                    // as `text`. Pre-round-10 messages have no magic
+                    // header — those land via `.legacy` and are
+                    // surfaced unchanged (we can't retroactively
+                    // encrypt). Round-10+ messages arrive as a
+                    // Base64 envelope and we either decrypt with the
+                    // Noise session or fall back with an explicit
+                    // "not E2EE" marker that the bubble can render.
+                    var converted = apiMessage.toChatMessage(roomId: roomId)
+                    if let raw = apiMessage.content, !raw.isEmpty {
+                        // Round 12 (2026-05-16): pass `senderUserId`
+                        // through so the unsealer can lazy-fetch +
+                        // verify the sender's prekey bundle when the
+                        // directory doesn't have one cached yet. This
+                        // closes the "first received DM is always
+                        // RVNP1" gap.
+                        let unsealedOpt = await MessageContentSealer.unseal(
+                            encoded: raw,
+                            senderUserId: apiMessage.senderId,
+                            senderAgreementPubKey: nil,
+                            msgId: apiMessage.id
+                        )
+                        #if DEBUG
+                        let rawPrefix = String(raw.prefix(20))
+                        if let u = unsealedOpt {
+                            print("🔍 [MS.unseal] mid=\(apiMessage.id.prefix(8)) sender=\(apiMessage.senderId.prefix(8)) rawPrefix='\(rawPrefix)' rawLen=\(raw.count) → plaintext.count=\(u.plaintext.count) reason=\(u.reason) plaintextPrefix='\(u.plaintext.prefix(20))'")
+                        } else {
+                            print("🔍 [MS.unseal] mid=\(apiMessage.id.prefix(8)) sender=\(apiMessage.senderId.prefix(8)) rawPrefix='\(rawPrefix)' rawLen=\(raw.count) → nil")
+                        }
+                        #endif
+                        if let unsealed = unsealedOpt {
+                            // 🔴 ROUND 71 phase 3 follow-up (2026-05-24)
+                            //   — placeholder when decrypt failed/no
+                            //   sender key. Pre-fix the code assigned
+                            //   `unsealed.plaintext` unconditionally;
+                            //   for `.decryptFailed` / `.noSenderKey`
+                            //   the unsealer returns plaintext=""
+                            //   (no body), so the bubble rendered
+                            //   EMPTY. This was the "bubble khali az
+                            //   A be C" symptom — bridge delivered
+                            //   the sealed bytes but the receiver
+                            //   couldn't decrypt because they had no
+                            //   Noise session with the offline
+                            //   sender. Now: surface a clear
+                            //   placeholder so the user sees
+                            //   "🔒 Sealed message (no key)" instead
+                            //   of an empty bubble; the lock badge
+                            //   still flags `sealedButFailed`.
+                            let placeholderForFailedDecrypt: String?
+                            switch unsealed.reason {
+                            case .decryptFailed:
+                                placeholderForFailedDecrypt = "🔒 Sealed message — couldn't decrypt"
+                            case .noSenderKey:
+                                placeholderForFailedDecrypt = "🔒 Sealed message — sender key unknown"
+                            default:
+                                placeholderForFailedDecrypt = nil
+                            }
+                            if let placeholder = placeholderForFailedDecrypt,
+                               unsealed.plaintext.isEmpty {
+                                converted.text = placeholder
+                            } else {
+                                converted.text = unsealed.plaintext
+                            }
+
+                            // 2026-05-16 — round 12: feed the protocol-
+                            // capability store so the ATSAM mismatch
+                            // banner can decide whether to surface for
+                            // this peer, AND drop a per-message
+                            // verdict into the encryption-status
+                            // side-table so each bubble can render its
+                            // own lock badge.
+                            let peerForVerdict = apiMessage.senderId
+                            switch unsealed.reason {
+                            case .noiseTransport, .atsamHybrid:
+                                await PeerProtocolCapabilityStore.shared
+                                    .record(.modernATSAM, for: peerForVerdict)
+                                await MessageEncryptionStatusStore.shared
+                                    .record(.sealed, for: apiMessage.id)
+                            case .explicitPlaintext:
+                                // Sender's app is round-10+ and
+                                // explicitly admitted no session —
+                                // the less-alarming "Not E2EE"
+                                // badge. Peer still counts as
+                                // downlevel for the chat banner.
+                                await PeerProtocolCapabilityStore.shared
+                                    .record(.legacyClient, for: peerForVerdict)
+                                await MessageEncryptionStatusStore.shared
+                                    .record(.plaintextExplicit, for: apiMessage.id)
+                            case .legacy:
+                                // No magic header at all → sender
+                                // is on an older client that never
+                                // even attempted the seal. Strongest
+                                // warning.
+                                await PeerProtocolCapabilityStore.shared
+                                    .record(.legacyClient, for: peerForVerdict)
+                                await MessageEncryptionStatusStore.shared
+                                    .record(.plaintextLegacy, for: apiMessage.id)
+                            case .decryptFailed:
+                                // We have a sealed envelope but the
+                                // session couldn't decrypt — likely
+                                // peer rotated keys. Tag the bubble
+                                // as `sealedButFailed` so the user
+                                // can see the message exists but is
+                                // currently unreadable.
+                                await MessageEncryptionStatusStore.shared
+                                    .record(.sealedButFailed, for: apiMessage.id)
+                            case .noSenderKey:
+                                // We never got the sender's pubkey —
+                                // can't classify cleanly. Leave the
+                                // badge unset.
+                                break
+                            }
+                        } else {
+                            // 🔴 ROUND 26 (2026-05-17) — empty/raw-base64-
+                            //   bubble bug fix. PREVIOUSLY: when
+                            //   `MessageContentSealer.unseal` returned
+                            //   nil (sender shipped sealed bytes but
+                            //   receiver has no Noise session OR
+                            //   sender's app version is unknown), we
+                            //   fell through WITHOUT touching
+                            //   `converted.text`. The default value
+                            //   was `apiMessage.content` — i.e., the
+                            //   RAW BASE64 WIRE. User saw bubbles like
+                            //   "UlZOUDEAAABNYWluX1ozb3VzIHRvb2sgYS..."
+                            //   instead of the actual text. Same
+                            //   pattern as the mesh-receive bug fixed
+                            //   yesterday.
+                            //   FIX: explicit placeholder. Never show
+                            //   raw wire bytes in a bubble.
+                            #if DEBUG
+                            let rawPrefix = String((apiMessage.content ?? "").prefix(32))
+                            print("🚨 [MS.unsealNil] PLACEHOLDER SET for mid=\(apiMessage.id.prefix(8)) — unseal returned nil. rawContent prefix='\(rawPrefix)'")
+                            #endif
+                            converted.text = "🔒 [Encrypted message — could not decrypt]"
+                            await MessageEncryptionStatusStore.shared
+                                .record(.sealedButFailed, for: apiMessage.id)
+                        }
+                    }
+                    // 🔴 ROUND 26 — also defend against the BASE64-but-
+                    //   sealer-succeeded-with-empty edge case: if
+                    //   `text` ended up empty/nil/raw-base64-looking
+                    //   after all paths, replace with placeholder.
+                    let isBase64Looking = (converted.text ?? "").hasPrefix("UlZO") ||
+                                          (converted.text ?? "").hasPrefix("UlZT")
+                    if (converted.text ?? "").isEmpty || isBase64Looking {
+                        #if DEBUG
+                        print("🚨 [MS.postCheck] PLACEHOLDER SET for mid=\(apiMessage.id.prefix(8)) — text='\((converted.text ?? "").prefix(32))' isEmpty=\((converted.text ?? "").isEmpty) isBase64=\(isBase64Looking)")
+                        #endif
+                        converted.text = "🔒 [Encrypted message — could not decrypt]"
+                    }
+                    newMessages.append(converted)
                 }
                 
                 // Step 3: Batch upsert all new messages in single transaction
@@ -563,25 +743,33 @@ class MessageStore {
         let recipientId = extractRecipientId()
         let clientId = UUID().uuidString
         do {
+            // 🔴 ROUND 19 — hacker-audit Server F2 CRITICAL.
+            // Scheduled sends used to ship `trimmed` plaintext as
+            // the request `content`. Now we run it through the
+            // sealer first so the server only ever stores opaque
+            // bytes for the scheduled-delivery row.
+            let sealed = await MessageContentSealer.seal(
+                plaintext: trimmed,
+                recipientUserId: recipientId,
+                recipientAgreementPubKey: nil,
+                msgId: clientId
+            )
+            await MessageContentSealer.recordSealVerdict(sealed.reason, for: clientId)
             let _: SendMessageResponse = try await NetworkService.shared.post(
                 path: "/api/messages/send",
                 body: SendMessageRequest(
                     messageId: clientId,
                     recipientId: recipientId,
-                    content: trimmed,
+                    content: sealed.base64,
                     messageType: "text",
                     sendMode: "scheduled",
                     scheduledAtUtc: scheduledAt
                 ),
                 idempotencyKey: clientId
             )
-            #if DEBUG
-            print("⏰ [Schedule] Queued for \(scheduledAt) → \(recipientId.prefix(8))")
-            #endif
+            logger.debug("Schedule queued for \(scheduledAt, privacy: .public) → \(recipientId, privacy: .private)")
         } catch {
-            #if DEBUG
-            print("❌ [Schedule] Failed: \(error)")
-            #endif
+            logger.debug("Schedule failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -591,9 +779,7 @@ class MessageStore {
         // Block check: prevent sending to blocked users
         let recipientId = extractRecipientId()
         if BlockService.shared.isBlocked(recipientId) {
-            #if DEBUG
-            print("🚫 [MessageStore] Blocked: cannot send to \(recipientId.prefix(8))")
-            #endif
+            logger.debug("Blocked: cannot send to \(recipientId, privacy: .private)")
             return
         }
         
@@ -736,9 +922,7 @@ class MessageStore {
         await loadFromDB()
         await ConversationStore.shared.handleIncomingMessage(message)
         
-        #if DEBUG
-        print("📸 [MessageStore] System message sent: \(text)")
-        #endif
+        logger.debug("System message sent: \(text, privacy: .private)")
     }
     
     // MARK: - Send Location Message
@@ -844,24 +1028,68 @@ class MessageStore {
         // both the server and mesh paths carry the encrypted body.
         // No-ops when feature flag is off, in groups, or when wrap
         // throws — in those cases the original plaintext is sent.
+        //
+        // 🟥 ROUND 36 (2026-05-17) — skip wrap when offline.
+        //
+        // Bug from user log: device with NO INTERNET tried to send
+        // via mesh.  `E2EEMessagePipeline.wrapOutgoing` doesn't have
+        // an existing Double-Ratchet session for the recipient, so
+        // it tries to fetch the X3DH prekey bundle from the server
+        // (`E2EEService.encryptInternal` line 198–201 calls
+        // `bundleProvider.fetchBundle`).  That HTTP call fails with
+        // NSURLErrorDomain -1009 (not connected), the wrap throws,
+        // and the pipeline silently falls back to plaintext —
+        // visible in the log as:
+        //   `wrap failed for E76770F3: ... -1009 ... sending plaintext`
+        //
+        // Plaintext at the E2EE layer isn't a total security
+        // disaster because the inner NoiseIK seal in MessageRouter
+        // (line ~371) re-wraps with the cached recipient pubkey,
+        // BUT only if PeerKeyDirectory / FriendDeviceRepository has
+        // a pubkey cached for the recipient.  If neither does
+        // (common after a fresh install before first online sync),
+        // the message ships RVNP1 plaintext on the mesh wire —
+        // exactly what the user is reporting.
+        //
+        // Defense: don't even ATTEMPT Double-Ratchet wrap when we
+        // know it'll need a network call we can't make.  Two gates:
+        //   1. We're offline AND
+        //   2. We don't already have a cached session for this peer
+        //
+        // If both hold, skip the wrap entirely.  The inner NoiseIK
+        // seal still runs and produces a properly-encrypted wire IF
+        // the recipient's pubkey is cached.  If it isn't, the user
+        // sees a "not E2EE" badge on the bubble — accurate, not a
+        // silent lie.
         if message.type == .text,
            let plaintextText = message.text,
            !plaintextText.isEmpty,
            !E2EEMessagePipeline.isEncrypted(plaintextText) {
-            let wrapped = await E2EEMessagePipeline.wrapOutgoing(
-                plaintext: plaintextText,
-                recipientUserId: recipientId,
-                messageId: clientId,
-                isGroup: isGroup
+
+            let isOnline = NetworkMonitor.shared.isOnline
+            let hasExistingSession = await E2EEMessagePipeline.hasSession(
+                recipientUserId: recipientId
             )
-            if wrapped != plaintextText {
-                message.text = wrapped
+            let canWrap = isOnline || hasExistingSession
+
+            if canWrap {
+                let wrapped = await E2EEMessagePipeline.wrapOutgoing(
+                    plaintext: plaintextText,
+                    recipientUserId: recipientId,
+                    messageId: clientId,
+                    isGroup: isGroup
+                )
+                if wrapped != plaintextText {
+                    message.text = wrapped
+                }
+            } else {
+                #if DEBUG
+                print("🔐 [E2EE] Skip wrap for \(clientId.prefix(8)) — offline + no cached session. Inner NoiseIK seal will handle encryption if recipient pubkey is cached.")
+                #endif
             }
         }
 
-        #if DEBUG
-        print("[Route] deliver mid=\(clientId.prefix(8)) to=\(recipientId.prefix(8)) strategy=parallel")
-        #endif
+        logger.debug("Route deliver mid=\(clientId, privacy: .private) to=\(recipientId, privacy: .private) strategy=parallel")
         
         // 1. Create persistent delivery jobs (server + mesh for TEXT only)
         let allowMesh = (message.type == .text || message.type == .location)  // Text + Location (~100 bytes) go via Mesh
@@ -870,17 +1098,36 @@ class MessageStore {
             channels: allowMesh ? [.server, .mesh] : [.server]
         )
         
+        // 🔴 ROUND 71 phase 3 follow-up #9 (2026-05-24) — track
+        // server-send outcome so the group-online branch below can
+        // fire a mesh fallback if the server send failed.
+        let serverOutcome = ServerSendOutcomeBox()
+
+        // 🟢 ROUND 76 (2026-05-24) — use netState (NWPath + server-probe
+        // + flaky detection) instead of the bare NWPath `isOnline`. A
+        // device on Wi-Fi with a broken backend (captive portal, Cloud
+        // Run cold start, server outage) reads `isOnline=true` but
+        // `netState=.degraded`. The previous code STILL fired the
+        // server task in that state, burning 3s of timeout before
+        // failing — and group + degraded users saw their message
+        // visibly stall before the mesh fallback kicked in. With
+        // netState, `.degraded` joins `.offline` in skipping the
+        // server task so mesh fires immediately as the primary path,
+        // and `.online` keeps the server-first behaviour.
+        let _r76NetState = NetworkMonitor.shared.netState
+        let shouldStartServerTask = (_r76NetState == .online || _r76NetState == .degraded)
         // Start server path immediately so race is truly parallel with mesh enqueue.
         // We still await it later to keep existing status/update semantics.
-        let serverTask: Task<Void, Never>? = NetworkMonitor.shared.isOnline ? Task { [self] in
+        let serverTask: Task<Void, Never>? = shouldStartServerTask ? Task { [self] in
             let serverTimeout: TimeInterval = 3.0
-            
+
             do {
                 let result = try await sendViaServerWithTimeout(message, timeout: serverTimeout)
                 #if DEBUG
                 print("[Route] ✅ server delivered")
                 #endif
-                
+                await serverOutcome.markSucceeded()
+
                 // Mark server job as delivered
                 try? await DeliveryJobRepository.shared.markDelivered(messageId: clientId, channel: .server)
                 
@@ -903,6 +1150,7 @@ class MessageStore {
                 #if DEBUG
                 print("[Route] ❌ server failed: \(error.localizedDescription)")
                 #endif
+                await serverOutcome.markFailed()
                 // Surface user-actionable 403 / 4xx server messages to
                 // the open ChatView so the user knows a send was gated
                 // (e.g. message-request quota hit, recipient set
@@ -929,32 +1177,216 @@ class MessageStore {
             }
         } : nil
         
-        // 2. Send via MESH immediately (TEXT ONLY - media/voice/file skip mesh)
+        // 2. Send via MESH (TEXT ONLY — media/voice/file skip mesh).
+        //
+        // 🔴 ROUND 71 phase 3 follow-up #9 (2026-05-24) — group
+        // mesh-send prioritisation.
+        //
+        // USER DIRECTIVE:
+        //   "olaviat ersal payam ha dar group chat bayad ba internet
+        //    bashe agar internet nabod bayad switch kone be mesh va
+        //    bridge va mesh relay"
+        //   ≈ for group chat, server path takes priority; only fall
+        //   back to mesh when offline.
+        //
+        // RATIONALE:
+        //   - Online sender → server fans out to every member via WS
+        //     + APNs; offline members get the message through the
+        //     reverse-bridge (B receives WS push and re-broadcasts
+        //     to mesh — that path stays untouched).
+        //   - Mesh broadcast from an ONLINE sender wastes BLE
+        //     airtime + battery and produces double-deliveries to
+        //     nearby peers who already got it via WS.
+        //   - 1:1 keeps the dual-path strategy (server + mesh in
+        //     parallel) — works well today and the user only asked
+        //     about groups.
+        //
+        // GATE (updated R76, 2026-05-24):
+        //   • Group + .online (server reachable + stable) → skip mesh,
+        //     server is primary (saves BLE airtime + battery).
+        //   • Group + .degraded (Wi-Fi up but server unreachable /
+        //     flaky / captive-portal) → FIRE mesh IN PARALLEL with
+        //     the (likely-failing) server task. Whichever path wins
+        //     delivers first; user doesn't see a 3-second stall.
+        //   • Group + .offline → fire mesh (only available path).
+        //   • 1:1 → unchanged dual-path (always fire mesh + server).
+        //
+        // This matches the user's directive verbatim: "olaviat ersal
+        // payam ha dar group chat bayad ba internet bashe agar
+        // internet nabod bayad switch kone be mesh va bridge va
+        // mesh relay" — server-first when truly online, immediate
+        // mesh fallback otherwise.
+        let shouldFireMesh: Bool = {
+            guard allowMesh else { return false }
+            if self.isGroup {
+                let state = NetworkMonitor.shared.netState
+                if state == .online {
+                    #if DEBUG
+                    print("[Route] 🟢 Group + .online — skipping mesh broadcast (server primary)")
+                    #endif
+                    return false
+                }
+                #if DEBUG
+                print("[Route] 🟡 Group + \(state) — firing mesh in parallel with server task")
+                #endif
+                return true
+            }
+            return true
+        }()
+
         #if !targetEnvironment(simulator)
-        if allowMesh {
+        if shouldFireMesh {
             await sendViaMeshImmediate(message)
             // mesh enqueued
         } else {
-            // mesh skipped (non-text)
+            // mesh skipped (either non-text, or group + online)
         }
         #else
         // mesh skipped (simulator)
         #endif
-        
+
         // 3. Await server path result if online
         if let serverTask {
             await serverTask.value
         } else {
             // no internet → mesh only
         }
-        
 
+        // 🔴 ROUND 71 phase 3 follow-up #9 (2026-05-24) — group
+        // safety-net mesh fallback. If we SKIPPED mesh above
+        // (group + online) but the server send failed (didn't
+        // reach success), fire mesh as a last-resort fallback so
+        // the message still has a chance to reach BLE-peer members
+        // via the bridge chain.
+        if self.isGroup && allowMesh && !shouldFireMesh {
+            let succeeded = await serverOutcome.succeeded
+            if !succeeded {
+                #if DEBUG
+                print("[Route] ⚠️ Group server send failed — firing mesh fallback")
+                #endif
+                #if !targetEnvironment(simulator)
+                await sendViaMeshImmediate(message)
+                #endif
+            }
+        }
+    }
+
+    /// Small actor-isolated outcome tracker so the server-task
+    /// can record success/failure that the group-online fallback
+    /// branch can read post-await without sharing mutable state.
+    private actor ServerSendOutcomeBox {
+        private var _succeeded: Bool = false
+        var succeeded: Bool { _succeeded }
+        func markSucceeded() { _succeeded = true }
+        func markFailed() { _succeeded = false }
     }
     
     /// Send via mesh immediately (not waiting for JobRunner)
     private func sendViaMeshImmediate(_ message: ChatMessage) async {
-        let envelope = message.toMeshEnvelope()
-        
+        var envelope = message.toMeshEnvelope()
+
+        // 🟢 ROUND 73 (2026-05-24) — group E2EE on mesh path.
+        //
+        // CRITICAL E2EE BUG (per audit, agent 3 finding #1):
+        // `toMeshEnvelope()` ships `message.text` raw. For 1:1 chats
+        // it's already sealed by `E2EEMessagePipeline.wrapOutgoing`
+        // upstream. For GROUPS, the wrap pipeline is a Double-Ratchet
+        // wrap (1:1 model) and does NOT encrypt under the group's
+        // AES-GCM key — so the body shipped on the mesh wire was
+        // PLAINTEXT GROUP CONTENT. Worse: when an online relayer
+        // bridged this envelope to the server, the server stored
+        // plaintext in the GroupMessage row (the bridge handler
+        // marks the body opaque ONLY when group_key_version is set;
+        // ours wasn't, so it Fernet-wrapped admin-readable plaintext).
+        //
+        // FIX: when the conversation is a group, AES-GCM-encrypt the
+        // body with `GroupKeyService` BEFORE the envelope leaves
+        // this device. Also stamp `isGroup = true` and the
+        // `groupKeyVersion` so receivers can: (a) route via the
+        // group thread, (b) accept the bridge-signature exception
+        // for unsynced groups (R73 MeshCryptoService fix), (c) pick
+        // the correct key version for decrypt.
+        //
+        // FAIL-CLOSED: if the group key isn't available locally
+        // (offline group never synced yet), refuse to mesh-send —
+        // never ship plaintext. The sender's outbox keeps the
+        // message pending; a later sync will replay it through the
+        // proper path.
+        if self.isGroup, let plain = message.text, !plain.isEmpty {
+            // Only encrypt if not already AES-GCM-sealed. The
+            // envelope's text could already be ciphertext if a
+            // higher layer (server WS rebroadcast / DeliveryJob
+            // retry) handed us a sealed body; double-encrypting
+            // would break receiver decrypt.
+            if message.groupKeyVersion == nil {
+                guard let (cipherB64, keyVersion) = await GroupKeyService.shared.encrypt(plain, groupId: self.roomId) else {
+                    #if DEBUG
+                    print("🔒 [MessageStore] REFUSING to mesh-broadcast plaintext group message — group key unavailable for \(self.roomId.prefix(8)). Message stays in outbox.")
+                    #endif
+                    return
+                }
+                envelope.text = cipherB64
+                envelope.groupKeyVersion = keyVersion
+            } else {
+                envelope.groupKeyVersion = message.groupKeyVersion
+            }
+            envelope.isGroup = true
+        } else if !self.isGroup, let plain = message.text, !plain.isEmpty {
+            // 🔐 ROUND 77 (2026-05-24) — 1:1 mesh fail-closed sealer.
+            //
+            // BUG (audit Agent #1, post-R76-revert): for 1:1 chats
+            // this path used to ship `message.text` straight to the
+            // mesh wire, trusting upstream `E2EEMessagePipeline.
+            // wrapOutgoing` to have sealed it. BUT `wrapOutgoing`
+            // fails-OPEN: when there is NO Double-Ratchet session
+            // AND we're offline, it silently returns the raw
+            // plaintext (logs "skip wrap"). The mesh broadcast
+            // then ships that plaintext SIGNED-BUT-UNSEALED — every
+            // BLE relay along the path sees the user's text.
+            //
+            // The `MessageRouter.broadcast` (Core/Mesh) DOES have
+            // the fail-closed gate, but `sendViaMeshImmediate` is
+            // called directly from `attemptDelivery` and bypasses
+            // MessageRouter entirely.
+            //
+            // FIX: run the same `MessageContentSealer.seal` the
+            // HTTPS sendViaServer paths use. Refuse to broadcast
+            // when the sealer returns `isEncrypted=false` (RVNP1
+            // fallback). Outbox keeps the message pending; the
+            // next sync attempt will re-seal once ATSAM/Noise is
+            // available.
+            //
+            // SAFETY: idempotent if the upstream wrap already
+            // sealed the body — the sealer detects existing magic
+            // (RVNA1/RVNS1) and short-circuits to passthrough.
+            // Detect already-sealed by magic-prefix check so we
+            // don't double-encrypt.
+            let alreadySealed: Bool = {
+                guard let data = Data(base64Encoded: plain),
+                      data.count >= 8 else { return false }
+                let magic = data.prefix(5)
+                // RVNS1 / RVNA1 / RVNP1 — all marked with 5-byte ASCII
+                let s = String(data: magic, encoding: .ascii) ?? ""
+                return s == "RVNS1" || s == "RVNA1" || s == "RVNP1"
+            }()
+            if !alreadySealed {
+                let sealed = await MessageContentSealer.seal(
+                    plaintext: plain,
+                    recipientUserId: message.recipientId,
+                    recipientAgreementPubKey: nil,
+                    msgId: message.id
+                )
+                await MessageContentSealer.recordSealVerdict(sealed.reason, for: message.id)
+                guard sealed.isEncrypted, !sealed.base64.isEmpty else {
+                    #if DEBUG
+                    print("🔒 [MessageStore] REFUSING to mesh-broadcast 1:1 plaintext fallback (reason=\(sealed.reason)) for mid=\(message.id.prefix(8)). Outbox retains; will retry when ATSAM/Noise is available.")
+                    #endif
+                    return
+                }
+                envelope.text = sealed.base64
+            }
+        }
+
         // Send immediately via mesh — trust verification happens on the receive side.
         // Blocking on the send side caused 50+ second delays when trusted devices
         // were configured but no trusted peer was directly connected.
@@ -968,18 +1400,51 @@ class MessageStore {
             group.addTask {
                 // Check if this is a group message
                 if self.isGroup {
+                    // 🔴 ROUND 71 phase 3 follow-up (2026-05-24) —
+                    // E2EE the group content (same fix as
+                    // sendViaServer above). Fail-closed on missing
+                    // group key — never ship plaintext.
+
+                    // 🔴 ROUND 71 phase 3 follow-up (2026-05-24) —
+                    // mirror the offline-group reconcile gate from
+                    // sendViaServer. If the roomId is a local UUID
+                    // (offline-create), force a sync before
+                    // attempting the encrypt (which would otherwise
+                    // 404 on /api/groups/local_xxxx/key) and the
+                    // POST.
+                    if self.roomId.hasPrefix("local_"), NetworkMonitor.shared.isOnline {
+                        #if DEBUG
+                        print("🔁 [MessageStore-timeout] Group \(self.roomId.prefix(8)) is local-only — syncing to server before send")
+                        #endif
+                        await GroupService.shared.syncPendingGroups()
+                    }
+
+                    let plain = message.text ?? ""
+                    guard let (cipherB64, keyVersion) = await GroupKeyService.shared.encrypt(plain, groupId: self.roomId) else {
+                        #if DEBUG
+                        print("🔒 [MessageStore] REFUSING to ship plaintext group message via timeout-retry — group key unavailable for \(self.roomId.prefix(8))")
+                        #endif
+                        throw NSError(
+                            domain: "MessageStore",
+                            code: -1001,
+                            userInfo: [NSLocalizedDescriptionKey: "Group key not yet synced; message stays pending."]
+                        )
+                    }
                     // Group message: use group endpoint
                     let response: GroupMessageResponse = try await NetworkService.shared.post(
                         path: "/api/groups/\(self.roomId)/messages",
                         body: SendGroupMessageRequest(
                             messageId: message.id,
-                            content: message.text ?? "",
+                            content: cipherB64,
                             messageType: message.type.rawValue,
                             replyToMessageId: message.replyToMessageId,
-                            replyToTextPreview: message.replyToTextPreview,
+                            // 🔴 ROUND 19 — Server F6: never send the
+                            // reply preview to the server in cleartext.
+                            replyToTextPreview: nil,
                             replyToSenderName: message.replyToSenderName,
                             replyToType: message.replyToType?.rawValue,
-                            entities: message.entities
+                            entities: message.entities,
+                            groupKeyVersion: keyVersion
                         ),
                         idempotencyKey: message.id
                     )
@@ -1007,12 +1472,25 @@ class MessageStore {
                     // roomId) and pass it through so the server can stamp
                     // expires_at and enforce the TTL.
                     let expiryMode = ChatExpirySettings.mode(forRoom: self.roomId)?.rawValue
+
+                    // 🔴 ROUND 19 — hacker-audit Server F2 CRITICAL.
+                    // This timeout-retry path used to ship `message.text`
+                    // straight as `content` (no seal). Run through the
+                    // sealer so it matches what `OutboxManager` /
+                    // `DeliveryJobRunner` already do.
+                    let sealed = await MessageContentSealer.seal(
+                        plaintext: message.text ?? "",
+                        recipientUserId: message.recipientId,
+                        recipientAgreementPubKey: nil,
+                        msgId: message.id
+                    )
+                    await MessageContentSealer.recordSealVerdict(sealed.reason, for: message.id)
                     let response: SendMessageResponse = try await NetworkService.shared.post(
                         path: "/api/messages/send",
                         body: SendMessageRequest(
                             messageId: message.id,
                             recipientId: message.recipientId,
-                            content: message.text ?? "",
+                            content: sealed.base64,
                             messageType: message.type.rawValue,
                             audioUrl: nil,
                             replyToMessageId: nil,
@@ -1113,40 +1591,128 @@ class MessageStore {
         try await messageRepo.updateStatus(clientMessageId: clientId, status: .sending)
         
         if isGroup {
-            // Group message: use group endpoint
-            let response: GroupMessageResponse = try await NetworkService.shared.post(
-                path: "/api/groups/\(roomId)/messages",
-                body: SendGroupMessageRequest(
-                    messageId: clientId,
-                    content: message.text ?? "",
-                    messageType: message.type.rawValue,
-                    replyToMessageId: message.replyToMessageId,
-                    replyToTextPreview: message.replyToTextPreview,
-                    replyToSenderName: message.replyToSenderName,
-                    replyToType: message.replyToType?.rawValue,
-                    entities: message.entities
-                ),
-                idempotencyKey: clientId
-            )
-            
-            // Server ACK - update with server ID
-            try await messageRepo.updateServerId(clientMessageId: clientId, serverId: response.id)
-            try await messageRepo.updateDeliveryAuthority(clientMessageId: clientId, authority: .server)
-            try await messageRepo.updateStatus(clientMessageId: clientId, status: .sent)
-            #if DEBUG
-            print("✅ [MessageStore] Group message sent via server: \(clientId)")
-            #endif
+            // Group message: use group endpoint.
+            //
+            // 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — E2EE the
+            // group content. Pre-fix this path shipped `message.text`
+            // as plaintext to the server, which violated the
+            // bridge-can't-see-content invariant: the server stored
+            // the cleartext and any relay/bridge in the future could
+            // observe it. Now we wrap via the group's symmetric AES-
+            // GCM key (`GroupKeyService.encrypt`) and ship the
+            // ciphertext + `group_key_version` so receivers can
+            // unwrap locally via `GroupKeyService.decrypt`. If the
+            // key isn't available locally (group not yet fully
+            // synced after offline-create), fail-closed and stay in
+            // outbox for retry — never ship plaintext.
+
+            // 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — offline-
+            // group reconcile gate.
+            //
+            // If this is a "local_xxxx" UUID synthesized while the
+            // server was unreachable, the server has no record of
+            // the group yet. Any attempt to POST
+            // `/api/groups/local_xxxx/messages` (or to GET its key
+            // via GroupKeyService.encrypt → /api/groups/.../key)
+            // would 404. Trigger an explicit syncPendingGroups()
+            // here so the server adopts our client_id BEFORE we
+            // attempt to encrypt + send. Cheap no-op when there's
+            // nothing pending. Skips on offline (sync would throw
+            // anyway; mesh path is already firing in parallel).
+            //
+            // 🛡️ SECURITY: the local UUID is adopted by the server
+            // only if the caller is the original creator (see
+            // groups.py create_group `client_id` branch). Other
+            // members can't claim or impersonate the id.
+            if roomId.hasPrefix("local_"), NetworkMonitor.shared.isOnline {
+                #if DEBUG
+                print("🔁 [MessageStore] Group \(roomId.prefix(8)) is local-only — syncing to server before send")
+                #endif
+                await GroupService.shared.syncPendingGroups()
+            }
+
+            let plain = message.text ?? ""
+            guard let (cipherB64, keyVersion) = await GroupKeyService.shared.encrypt(plain, groupId: roomId) else {
+                try await messageRepo.updateStatus(clientMessageId: clientId, status: .failed)
+                #if DEBUG
+                print("🔒 [MessageStore] REFUSING to ship plaintext group message — group key not available for \(roomId.prefix(8)). Outbox will retry once key syncs.")
+                #endif
+                throw NSError(
+                    domain: "MessageStore",
+                    code: -1001,
+                    userInfo: [NSLocalizedDescriptionKey: "Group key not yet synced; message stays pending."]
+                )
+            }
+
+            do {
+                let response: GroupMessageResponse = try await NetworkService.shared.post(
+                    path: "/api/groups/\(roomId)/messages",
+                    body: SendGroupMessageRequest(
+                        messageId: clientId,
+                        content: cipherB64,
+                        messageType: message.type.rawValue,
+                        replyToMessageId: message.replyToMessageId,
+                        replyToTextPreview: nil,   // R19: don't ship reply preview cleartext
+                        replyToSenderName: message.replyToSenderName,
+                        replyToType: message.replyToType?.rawValue,
+                        entities: message.entities,
+                        groupKeyVersion: keyVersion
+                    ),
+                    idempotencyKey: clientId
+                )
+
+                // Server ACK - update with server ID
+                try await messageRepo.updateServerId(clientMessageId: clientId, serverId: response.id)
+                try await messageRepo.updateDeliveryAuthority(clientMessageId: clientId, authority: .server)
+                try await messageRepo.updateStatus(clientMessageId: clientId, status: .sent)
+                #if DEBUG
+                print("✅ [MessageStore] Group message sent via server (sealed v\(keyVersion)): \(clientId)")
+                #endif
+            } catch APIError.notFound {
+                // 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — 404
+                // recovery for offline-created groups.
+                //
+                // If the server returns 404 on /api/groups/{id}/messages
+                // we likely have a local UUID that hasn't been
+                // reconciled yet OR the reconcile briefly raced with
+                // the send. Force one more syncPendingGroups() pass
+                // and let the outbox retry on its normal cadence
+                // (don't recurse here — keeps the failure-mode
+                // bounded if the server truly doesn't know the
+                // group). Stay in failed so DeliveryJobRunner picks
+                // it up. The mesh path already broadcast the same
+                // payload so the message isn't lost.
+                #if DEBUG
+                print("⚠️ [MessageStore] Group send hit 404 for \(roomId.prefix(8)) — triggering syncPendingGroups + leaving in failed for retry")
+                #endif
+                if NetworkMonitor.shared.isOnline {
+                    await GroupService.shared.syncPendingGroups()
+                }
+                try await messageRepo.updateStatus(clientMessageId: clientId, status: .failed)
+                throw APIError.notFound
+            }
         } else {
             // 1:1 message: use regular endpoint. Pull the per-thread
             // disappearing-message default for this room and forward it
             // to the server so it can stamp expires_at + enforce the TTL.
             let expiryMode = ChatExpirySettings.mode(forRoom: self.roomId)?.rawValue
+
+            // 🔴 ROUND 19 — hacker-audit Server F2 CRITICAL.
+            // sendViaServer used to ship plaintext directly. Seal it
+            // first.
+            let sealed = await MessageContentSealer.seal(
+                plaintext: message.text ?? "",
+                recipientUserId: message.recipientId,
+                recipientAgreementPubKey: nil,
+                msgId: clientId
+            )
+            await MessageContentSealer.recordSealVerdict(sealed.reason, for: clientId)
             let response: SendMessageResponse = try await NetworkService.shared.post(
                 path: "/api/messages/send",
                 body: SendMessageRequest(
                     messageId: clientId,
                     recipientId: message.recipientId,
-                    content: message.text ?? "",
+                    content: sealed.base64,
                     messageType: message.type.rawValue,
                     audioUrl: nil,
                     replyToMessageId: message.replyToMessageId,
@@ -1154,7 +1720,7 @@ class MessageStore {
                 ),
                 idempotencyKey: clientId  // Duplicate prevention
             )
-            
+
             // Server ACK - update with server ID
             try await messageRepo.updateServerId(clientMessageId: clientId, serverId: response.id)
             try await messageRepo.updateDeliveryAuthority(clientMessageId: clientId, authority: .server)
@@ -1381,9 +1947,23 @@ class MessageStore {
             // by server_id only — abort silently if we don't have one yet
             // (the message hasn't synced upstream).
             let serverId = messages[idx].serverId ?? id
+
+            // 🔴 ROUND 19 — hacker-audit Server F4 CRITICAL.
+            // Edits used to PATCH the new plaintext directly; an
+            // on-path attacker (or compromised server) saw the new
+            // text in cleartext. Now we run it through the same
+            // sealer the original send used, with the ORIGINAL
+            // msgId so the receiver's AAD binding matches.
+            let recipientForSeal = messages[idx].recipientId
+            let sealed = await MessageContentSealer.seal(
+                plaintext: newText,
+                recipientUserId: recipientForSeal,
+                recipientAgreementPubKey: nil,
+                msgId: id
+            )
             let resp: EditResponse = try await NetworkService.shared.patch(
                 path: "/api/messages/\(serverId)",
-                body: EditBody(content: newText)
+                body: EditBody(content: sealed.base64)
             )
             if let serverEditedAt = resp.editedAt,
                let idx2 = messages.firstIndex(where: { $0.id == id }) {
@@ -1509,7 +2089,33 @@ class MessageStore {
     /// Generate a proper text preview for reply based on message type
     private func generateReplyPreview(for message: ChatMessage?) -> String? {
         guard let message = message else { return nil }
-        
+
+        // 🔴 ROUND 69 (2026-05-23) — hacker-audit VAULT-CRIT-3
+        // (MEDIUM: vault filename leak via reply preview).
+        //
+        // The "📎 \(fileName)" branch below used to echo a vault
+        // attachment's original filename ("passport_2024.pdf") into
+        // the reply-quote bubble. Even with the round-19 / round-26
+        // strip that prevents the preview from crossing the server /
+        // mesh wire, it still showed up in the local chat surface
+        // ABOVE the reply text — including in screenshots, app
+        // switcher snapshots, and the recipient's own copy when
+        // they later opened the conversation. (The recipient
+        // reconstructs the preview locally; with this fix they
+        // generate a generic "🔒 Vault attachment" instead.)
+        //
+        // Detect a vault attachment via the .vlt URL suffix, mirroring
+        // `MessageService.forwardMessage`. Belt-and-suspenders also
+        // check `allowForward == false` which the round-69
+        // AttachmentService sets on every vault send.
+        let isVaultAttachment =
+            message.attachmentUrl?.lowercased().hasSuffix(".vlt") == true ||
+            message.attachmentUrl?.lowercased().contains(".vlt?") == true ||
+            message.allowForward == false
+        if isVaultAttachment {
+            return "🔒 Vault attachment"
+        }
+
         switch message.type {
         case .text:
             // For text messages, use actual text (truncated) - but filter encrypted content
@@ -1566,15 +2172,7 @@ class MessageStore {
         
         // DEBUG: Log which fields are missing
         if id == nil || roomIdFromRow == nil || senderId == nil || recipientId == nil || timestamp == nil || type == nil {
-            #if DEBUG
-            print("⚠️ [parseMessage] SKIPPING message due to missing fields:")
-            print("   id: \(id ?? "NIL")")
-            print("   room_id: \(roomIdFromRow ?? "NIL")")
-            print("   sender_id: \(senderId ?? "NIL")")
-            print("   recipient_id: \(recipientId ?? "NIL")")
-            print("   timestamp: \(timestampStr ?? "NIL") -> \(timestamp != nil ? "OK" : "PARSE FAILED")")
-            print("   type: \(typeStr ?? "NIL") -> \(type != nil ? "OK" : "UNKNOWN TYPE")")
-            #endif
+            logger.debug("parseMessage SKIPPING message due to missing fields: id=\(id ?? "NIL", privacy: .private) room=\(roomIdFromRow ?? "NIL", privacy: .private) sender=\(senderId ?? "NIL", privacy: .private) recipient=\(recipientId ?? "NIL", privacy: .private) ts=\(timestampStr ?? "NIL", privacy: .public) type=\(typeStr ?? "NIL", privacy: .public)")
             return nil
         }
         
@@ -1654,7 +2252,15 @@ class MessageStore {
         
         msg.forwardedFromChannelId = row["forwarded_from_channel"] as? String
         msg.forwardedFromChannelName = row["forwarded_from_channel_name"] as? String
-        
+
+        // 🔴 ROUND 26 — Telegram-style media albums.
+        // Hydrate the three album-grouping columns. SQLite hands
+        // INTEGER columns back as Int64, so we narrow to Int with
+        // the same pattern the surrounding rows use.
+        msg.albumGroupKey = row["media_group_key"] as? String
+        msg.albumIndex = (row["media_group_index"] as? Int64).map { Int($0) }
+        msg.albumTotal = (row["media_group_total"] as? Int64).map { Int($0) }
+
         return msg
     }
     
@@ -1748,17 +2354,21 @@ struct APIMessageResponse: Decodable {
         // Resolve media URL from whichever key the server provided
         var resolvedUrl = audioUrl ?? mediaUrl ?? fileUrl ?? imageUrl ?? voiceUrl
         
-        // DEBUG: Log URL fields for voice messages
+        // 🔴 SECURITY FIX (2026-05-16 — round 11): the previous
+        // version printed the raw `content` field (up to 80 chars)
+        // to Console.app, which leaks message bodies + voice-URL
+        // tokens to anyone with access to the device logs. We now
+        // log only NIL/NON-NIL presence, never the value itself.
         if msgType == .voice {
             #if DEBUG
-            print("🎤 [APIMsg.toChatMessage] VOICE msg id=\(id.prefix(8))")
-            print("   audioUrl: \(audioUrl ?? "nil")")
-            print("   mediaUrl: \(mediaUrl ?? "nil")")
-            print("   fileUrl: \(fileUrl ?? "nil")")
-            print("   imageUrl: \(imageUrl ?? "nil")")
-            print("   voiceUrl: \(voiceUrl ?? "nil")")
-            print("   content: \(content?.prefix(80) ?? "nil")")
-            print("   → resolvedUrl: \(resolvedUrl ?? "nil")")
+            print("[APIMsg.toChatMessage] VOICE msg id=\(id.prefix(8))")
+            print("   audioUrl: \(audioUrl == nil ? "nil" : "present(\(audioUrl?.count ?? 0)b)")")
+            print("   mediaUrl: \(mediaUrl == nil ? "nil" : "present(\(mediaUrl?.count ?? 0)b)")")
+            print("   fileUrl: \(fileUrl == nil ? "nil" : "present(\(fileUrl?.count ?? 0)b)")")
+            print("   imageUrl: \(imageUrl == nil ? "nil" : "present(\(imageUrl?.count ?? 0)b)")")
+            print("   voiceUrl: \(voiceUrl == nil ? "nil" : "present(\(voiceUrl?.count ?? 0)b)")")
+            print("   content: \(content == nil ? "nil" : "present(\(content?.count ?? 0)b)")")
+            print("   → resolvedUrl: \(resolvedUrl == nil ? "nil" : "present")")
             #endif
         }
         
@@ -1893,18 +2503,37 @@ struct SendMessageRequest: Encodable {
     /// worker flips it at `scheduled_at_utc`.
     var sendMode: String? = nil
     var scheduledAtUtc: Date? = nil
+    /// 🔴 ROUND 26 — Telegram-style album grouping fields. The
+    /// picker stamps a shared UUID into `mediaGroupKey` across N
+    /// items; the server stores them as siblings and the receiver
+    /// renders them as one grouped bubble.
+    var mediaGroupKey: String? = nil
+    var mediaGroupIndex: Int? = nil
+    var mediaGroupTotal: Int? = nil
 }
 
 struct SendMessageResponse: Decodable {
     let id: String
-    let timestamp: Date?
+    // 🔴 ROUND 22 — LIVE-TEST BUG.
+    //
+    // `timestamp` used to be `Date?` and decoded via the custom
+    // date-parser configured on NetworkService's JSONDecoder.
+    // When the server's reply included a `timestamp` field in a
+    // format the parser didn't recognize (e.g. a UNIX numeric
+    // epoch instead of an ISO-8601 string), the whole response
+    // decode threw — even though `timestamp` was optional —
+    // surfacing as "Error: cannot parse response" on every
+    // image / file / scheduled send.
+    //
+    // Nothing in the client actually consumes this field. Dropping
+    // it makes the response shape robust against any server-side
+    // change to the timestamp format.
     let status: String?
     let recipientDelivered: Bool?
     let recipientOnline: Bool?
-    
+
     enum CodingKeys: String, CodingKey {
         case id
-        case timestamp
         case status
         case recipientDelivered = "recipient_delivered"
         case recipientOnline = "recipient_online"
@@ -1927,6 +2556,18 @@ struct SendGroupMessageRequest: Encodable {
     var replyToSenderName: String? = nil
     var replyToType: String? = nil
     var entities: [MentionEntity]? = nil  // Structured @mention entities
+    /// 🔴 ROUND 26 — group album passthrough.
+    var mediaGroupKey: String? = nil
+    var mediaGroupIndex: Int? = nil
+    var mediaGroupTotal: Int? = nil
+    /// 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — group key version.
+    /// When set, `content` is the AES-GCM ciphertext encrypted under
+    /// the group's symmetric key at this version. Server stores +
+    /// fans this through unchanged so receivers can decrypt locally.
+    /// Pre-fix the online group-send path shipped PLAINTEXT to the
+    /// server (matching the user's "bridge sees nothing" directive
+    /// violation): server saw cleartext, bridge saw cleartext.
+    var groupKeyVersion: Int? = nil
 }
 
 struct GroupMessageResponse: Decodable {
@@ -1958,6 +2599,15 @@ struct GroupMessageResponse: Decodable {
     let pollId: String?
     let isDuplicate: Bool?
     let status: String?
+    // 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — server-shipped
+    // group-AES-GCM key version so the receiver can decrypt the
+    // opaque ciphertext sitting in `content`. Pre-fix this field
+    // was missing from the decoder, so REST-fetched group history
+    // (offline reconcile, scrollback) rendered raw base64 instead
+    // of the decrypted text. WS push + bridge push handlers already
+    // honour groupKeyVersion via ChatMessage; this is the REST
+    // fetch parity fix.
+    let groupKeyVersion: Int?
 }
 
 // PendingSyncManager REMOVED — OutboxManager handles pending message sync on network reconnect.

@@ -1,0 +1,160 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+    ╔══════════════════════════════════════════════════════════════════╗
+    ║  RAVEN — Mac Catalyst entitlements                               ║
+    ║                                                                  ║
+    ║  This file is used ONLY for the Mac Catalyst slice (set via the  ║
+    ║  build setting CODE_SIGN_ENTITLEMENTS for the Catalyst SDK).     ║
+    ║                                                                  ║
+    ║  Goal: full BLE-mesh performance on macOS, equivalent to iOS,    ║
+    ║  by removing the App Sandbox and granting both Bluetooth roles   ║
+    ║  + a LaunchAgent companion for "always-on" background mesh.      ║
+    ║                                                                  ║
+    ║  IMPORTANT: this configuration is **NOT compatible with the Mac  ║
+    ║  App Store**. Distribute as a Developer ID-signed + notarized    ║
+    ║  DMG (see scripts/build-mac-dmg.sh).                             ║
+    ╚══════════════════════════════════════════════════════════════════╝
+    -->
+
+    <!-- Push notifications. `development` accepts both Apple Development
+         and Developer ID certs; switch to `production` once you generate
+         a Developer ID and want to ship publicly. Mac uses a separate
+         APNS topic from iOS — the server detects the platform. -->
+    <key>aps-environment</key>
+    <string>development</string>
+
+    <!-- Sign in with Apple — same as iOS -->
+    <key>com.apple.developer.applesignin</key>
+    <array>
+        <string>Default</string>
+    </array>
+
+    <!-- Universal links — needed for "Open in RAVEN" deep links. Both
+         the legacy raven.app and the production share host
+         raven-messager.com are listed so existing in-the-wild links keep
+         working. AASA for the latter lives at
+         https://raven-messager.com/.well-known/apple-app-site-association -->
+    <key>com.apple.developer.associated-domains</key>
+    <array>
+        <string>applinks:raven.app</string>
+        <string>webcredentials:raven.app</string>
+        <string>applinks:raven-messager.com</string>
+        <string>applinks:www.raven-messager.com</string>
+    </array>
+
+    <!-- Communication notifications + time-sensitive — same as iOS -->
+    <key>com.apple.developer.usernotifications.communication</key>
+    <true/>
+    <key>com.apple.developer.usernotifications.time-sensitive</key>
+    <true/>
+
+    <!--
+    ─────────────────────────────────────────────────────────────────────
+    🔵 BLE MESH — full performance entitlements
+    ─────────────────────────────────────────────────────────────────────
+    These are what unlock 100% mesh-equivalent behavior on Mac:
+    -->
+
+    <!-- Without App Sandbox, CoreBluetooth's PERIPHERAL role works fully —
+         the same advertise / characteristic-write flow that powers the
+         iOS mesh works identically here. App Sandbox would otherwise
+         block advertising in foreground and kill it instantly in
+         background. We trade Mac App Store eligibility for full mesh. -->
+    <key>com.apple.security.app-sandbox</key>
+    <false/>
+
+    <!-- Bluetooth Central + Peripheral. Always-true on iOS but must be
+         declared explicitly on macOS / Catalyst when sandboxed (we're not,
+         but include for clarity + compatibility with hardened runtime). -->
+    <key>com.apple.security.device.bluetooth</key>
+    <true/>
+
+    <!-- Allows the LaunchAgent companion to persist mesh while the user is
+         logged in (even with the main app closed). See:
+         resources/agents/app.raven.mesh.daemon.plist -->
+    <key>com.apple.security.temporary-exception.apple-events</key>
+    <array>
+        <string>com.apple.launchservices</string>
+    </array>
+
+    <!--
+    ─────────────────────────────────────────────────────────────────────
+    🌐 Networking — server-server bridging on Mac
+    ─────────────────────────────────────────────────────────────────────
+    -->
+
+    <!-- Make + accept network connections (sandbox would default to deny) -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+    <key>com.apple.security.network.server</key>
+    <true/>
+
+    <!-- Local network — needed for MultipeerConnectivity (the BLE-fallback
+         channel for in-room peer discovery). On macOS without this entitle-
+         ment, MCNearbyServiceAdvertiser silently fails. -->
+    <key>com.apple.developer.networking.multicast</key>
+    <true/>
+
+    <!--
+    ─────────────────────────────────────────────────────────────────────
+    🎙️ Media — audio rooms + voice messages
+    ─────────────────────────────────────────────────────────────────────
+    -->
+
+    <key>com.apple.security.device.microphone</key>
+    <true/>
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+
+    <!--
+    ─────────────────────────────────────────────────────────────────────
+    📍 Location — Concert Mode + RavenShot pins on Mac
+    ─────────────────────────────────────────────────────────────────────
+    -->
+
+    <key>com.apple.security.personal-information.location</key>
+    <true/>
+
+    <!--
+    ─────────────────────────────────────────────────────────────────────
+    📁 Files — image / video posts, voice notes
+    ─────────────────────────────────────────────────────────────────────
+    -->
+
+    <key>com.apple.security.files.user-selected.read-write</key>
+    <true/>
+    <key>com.apple.security.files.downloads.read-write</key>
+    <true/>
+
+    <!--
+    ─────────────────────────────────────────────────────────────────────
+    🔐 Keychain access — Mac-only group as of round 70
+    ─────────────────────────────────────────────────────────────────────
+    🔴 ROUND 70 (2026-05-23) — hacker-audit CATALYST-CRIT-1.
+
+    PREVIOUSLY this declared `app.raven.ios` only — the SAME access
+    group iOS uses. With the same provisioning profile + same Apple
+    ID across iPhone and Mac, a stolen Mac with the macOS Keychain
+    unlocked exposed every iOS-side keychain item (auth token,
+    refresh token, push token, contact-sync salt) because they
+    shared the access group.
+
+    FIX: declare a Catalyst-specific group `app.raven.macos`. New
+    KeychainService writes on Catalyst land in this group only. The
+    legacy `app.raven.ios` entry is kept in the array so a current
+    Catalyst install can read its existing items during the
+    migration window — KeychainService removes the legacy entry
+    after copying it into the new group. After flag-day the legacy
+    line can be deleted.
+    -->
+
+    <key>keychain-access-groups</key>
+    <array>
+        <string>$(AppIdentifierPrefix)app.raven.macos</string>
+        <string>$(AppIdentifierPrefix)app.raven.ios</string>
+    </array>
+</dict>
+</plist>

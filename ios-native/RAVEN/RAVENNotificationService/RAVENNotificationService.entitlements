@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+    🔴 ROUND 70 (2026-05-23) — RAVEN Notification Service Extension.
+
+    Shares the same keychain access group as the main app so a
+    future round-71+ NSE can pull the recipient's X25519 private
+    key + sender pubkey and decrypt RVNS1 bodies in-place for the
+    lock screen. For round 70 the NSE only sanitises ciphertext-
+    looking bodies — no decrypt yet — but the access group is
+    pre-wired so the upgrade is purely an `NotificationService.swift`
+    edit.
+    -->
+    <key>keychain-access-groups</key>
+    <array>
+        <string>$(AppIdentifierPrefix)app.raven.ios</string>
+    </array>
+</dict>
+</plist>

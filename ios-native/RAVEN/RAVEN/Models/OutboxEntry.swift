@@ -103,18 +103,40 @@ struct OutboxEntry: Codable, Identifiable {
 // MARK: - Factory
 
 extension OutboxEntry {
-    /// Create a new outbox entry for a message
+    /// Create a new outbox entry for a message.
+    ///
+    /// 🔴 SECURITY FIX (2026-05-16 — round 10): the previous
+    /// implementation stored `payload` straight into
+    /// `payloadCiphertext` without any encryption, which made
+    /// every `MessageRouter` server send leak plaintext over the
+    /// wire even though the field name implied otherwise. Now we
+    /// run the body through `MessageContentSealer` so the rest of
+    /// the pipeline really does ship opaque bytes (Noise-sealed
+    /// when a session is live, transparent-plaintext-flagged
+    /// otherwise — see `MessageContentSealer.SealReason`).
     static func create(
         clientMessageId: String,
         receiverId: String,
         payload: String,
         serverState: RouteState = .queued,
         meshState: RouteState = .idle
-    ) -> OutboxEntry {
-        OutboxEntry(
+    ) async -> OutboxEntry {
+        // Round 12: pass the receiverId in so the sealer can lazy-
+        // fetch + verify the recipient's prekey bundle on miss. The
+        // directory is the SoT for verified peer agreement keys.
+        let sealed = await MessageContentSealer.seal(
+            plaintext: payload,
+            recipientUserId: receiverId,
+            recipientAgreementPubKey: nil,
+            msgId: clientMessageId
+        )
+        // Round 15 — mirror the seal verdict so the sender's bubble
+        // gets a lock badge that matches what the receiver sees.
+        await MessageContentSealer.recordSealVerdict(sealed.reason, for: clientMessageId)
+        return OutboxEntry(
             clientMessageId: clientMessageId,
             receiverId: receiverId,
-            payloadCiphertext: payload,
+            payloadCiphertext: sealed.base64,
             createdAt: Date(),
             serverState: serverState,
             meshState: meshState,

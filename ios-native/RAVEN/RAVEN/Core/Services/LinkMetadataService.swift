@@ -130,14 +130,25 @@ extension String {
         return matches.compactMap { match in
             guard let range = Range(match.range, in: self) else { return nil }
             let urlString = String(self[range])
-            return URL(string: urlString)
+            guard let url = URL(string: urlString) else { return nil }
+            // 🔴 ROUND 71 phase 3 (2026-05-24) — restrict NSDataDetector
+            // output to http(s) ONLY. Pre-fix, any scheme the detector
+            // surfaced (`mailto:`, `tel:`, `ftp:`, custom-app schemes,
+            // `javascript:` on some iOS releases) was returned to the
+            // caller — and the LinkViewer / pre-warm path then dialled
+            // those URIs / fetched OG metadata for them, leaking the
+            // recipient IP + UA + Accept-Language to whatever server
+            // the attacker chose. Scheme-allowlist before returning.
+            let scheme = url.scheme?.lowercased() ?? ""
+            guard scheme == "http" || scheme == "https" else { return nil }
+            return url
         }
     }
-    
+
     var containsURL: Bool {
         !detectedURLs.isEmpty
     }
-    
+
     var firstURL: URL? {
         detectedURLs.first
     }

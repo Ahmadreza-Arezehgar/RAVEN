@@ -35,9 +35,21 @@ class PostSearchResponse(BaseModel):
         from_attributes = True
 
 
+def _escape_like(s: str) -> str:
+    r"""Escape SQL LIKE wildcards in user input.
+
+    🔴 hacker-audit 2026-05-19: without this, q="%" matched every
+    row → full-table scan + bulk content exfil. q="a_b" matched
+    "aXb"/"a1b" too (silent corruption of intent). We use backslash
+    as the escape char and pair it with ``.escape('\\')`` on the
+    SQLAlchemy filter so the DB driver knows to treat ``\%`` literally.
+    """
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 @router.get("/posts", response_model=List[PostSearchResponse])
 def search_posts(
-    q: str = Query(..., min_length=1, description="Search query"),
+    q: str = Query(..., min_length=1, max_length=200, description="Search query"),
     sort: str = Query("latest", regex="^(latest|top)$"),
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
@@ -46,27 +58,46 @@ def search_posts(
 ):
     """
     Search posts by content.
-    
+
     - **q**: Search query (required, min 1 character)
     - **sort**: Sort order - 'latest' (by timestamp) or 'top' (by likes)
     - **limit**: Max results (1-100, default 50)
     - **offset**: Pagination offset
+
+    🔴 hacker-audit 2026-05-19 — two findings rolled in:
+      1. PREVIOUSLY q was wrapped in `%{q}%` with no escape. q="%"
+         matched every row → DoS + bulk content exfil; q="a_b"
+         silently broadened the match. Now wildcard chars are
+         escaped before substitution.
+      2. PREVIOUSLY this endpoint returned posts of ANY visibility
+         (public, friends, local, private). A friends-only or
+         private post by user A was readable in search results by
+         random user B who typed a likely keyword. Now we filter to
+         {public OR author=self}. Friends-only / local / private
+         post results are scoped to the author. Matches the same
+         predicate /feed already enforces (posts.py:627 etc.).
     """
-    # Build search query (SQLite LIKE for MVP)
-    # Note: For production, use Postgres full-text search or Meilisearch
-    search_term = f"%{q}%"
-    
+    from sqlalchemy import or_ as _or_
+
+    search_term = f"%{_escape_like(q)}%"
+
     query = db.query(Post).filter(
-        Post.content.ilike(search_term)
+        Post.content.ilike(search_term, escape="\\"),
+        Post.is_hidden != True,
+        _or_(
+            Post.visibility == "public",
+            Post.visibility.is_(None),  # legacy rows default to public
+            Post.author_id == current_user.id,
+        ),
     )
-    
+
     # Apply sorting
     if sort == "top":
         # Sort by likes count (need subquery for accurate count)
         query = query.order_by(Post.likes.desc(), Post.timestamp.desc())
     else:
         query = query.order_by(Post.timestamp.desc())
-    
+
     # Apply pagination
     posts = query.offset(offset).limit(limit).all()
     
@@ -112,21 +143,36 @@ def search_by_hashtag(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    """Search posts by hashtag.
+
+    🔴 hacker-audit 2026-05-19 — same two findings as /search/posts:
+    LIKE wildcards in `tag` returned every post; missing visibility
+    filter let friends-only / private posts leak to anyone who
+    guessed the hashtag. Now: escape `%`/`_`, length-cap, and gate
+    on {public OR author=self}.
     """
-    Search posts by hashtag.
-    """
-    # Search for hashtag pattern
-    hashtag_pattern = f"%#{tag}%"
-    
+    from sqlalchemy import or_ as _or_
+
+    if len(tag) > 64:
+        return []
+
+    hashtag_pattern = f"%#{_escape_like(tag)}%"
+
     query = db.query(Post).filter(
-        Post.content.ilike(hashtag_pattern)
+        Post.content.ilike(hashtag_pattern, escape="\\"),
+        Post.is_hidden != True,
+        _or_(
+            Post.visibility == "public",
+            Post.visibility.is_(None),
+            Post.author_id == current_user.id,
+        ),
     )
-    
+
     if sort == "top":
         query = query.order_by(Post.likes.desc(), Post.timestamp.desc())
     else:
         query = query.order_by(Post.timestamp.desc())
-    
+
     posts = query.offset(offset).limit(limit).all()
     
     result = []

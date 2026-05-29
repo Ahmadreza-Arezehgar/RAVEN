@@ -768,7 +768,6 @@ struct CountryCodePickerSheet: View {
         ("+98", "🇮🇷", "Iran"),
         ("+966", "🇸🇦", "Saudi Arabia"),
         ("+971", "🇦🇪", "UAE"),
-        ("+972", "🇮🇱", "Israel"),
         ("+91", "🇮🇳", "India"),
         ("+92", "🇵🇰", "Pakistan"),
         ("+880", "🇧🇩", "Bangladesh"),
@@ -939,7 +938,12 @@ struct InviteFriendsSheet: View {
 
             HStack(spacing: 12) {
                 Button {
-                    UIPasteboard.general.string = code
+                    // Round 14 — S9: referral code copied with
+                    // .localOnly so it doesn't sync via Handoff.
+                    // 5-minute expiry (longer than the default
+                    // 60 s) gives the user time to paste it into
+                    // SMS / iMessage / WhatsApp.
+                    SecurePasteboard.copy(code, expiresIn: 300)
                     Haptics.success()
                 } label: {
                     Label("Copy", systemImage: "doc.on.doc")

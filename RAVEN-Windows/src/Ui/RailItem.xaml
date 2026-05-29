@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<UserControl
+    x:Class="RAVEN.Windows.Ui.RailItem"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006">
+
+    <!--
+      Capsule rail row matching `RAVEN-MacApp/RAVEN/Views/Components/RailView.swift`
+      RailItem (lines 81–112). Mac uses 22pt SF-symbol icon + 18pt label,
+      bold when selected, white at 70% opacity otherwise; hover paints a
+      faint white capsule, selected paints a stronger one.
+    -->
+    <Border x:Name="RowBorder" Padding="16,12" CornerRadius="999"
+            Margin="12,2"
+            Background="Transparent"
+            PointerEntered="OnPointerEntered" PointerExited="OnPointerExited"
+            Tapped="OnTapped">
+        <StackPanel Orientation="Horizontal" Spacing="16">
+            <FontIcon x:Name="IconGlyph" FontFamily="Segoe Fluent Icons"
+                      FontSize="22" Glyph="{x:Bind Icon, Mode=OneWay}"
+                      Foreground="{x:Bind LabelBrush, Mode=OneWay}"
+                      Width="26" Height="26"
+                      VerticalAlignment="Center"
+                      HorizontalAlignment="Center"/>
+            <TextBlock x:Name="LabelText" Text="{x:Bind Label, Mode=OneWay}"
+                       FontSize="18"
+                       FontWeight="{x:Bind LabelWeight, Mode=OneWay}"
+                       Foreground="{x:Bind LabelBrush, Mode=OneWay}"
+                       VerticalAlignment="Center"/>
+        </StackPanel>
+    </Border>
+</UserControl>

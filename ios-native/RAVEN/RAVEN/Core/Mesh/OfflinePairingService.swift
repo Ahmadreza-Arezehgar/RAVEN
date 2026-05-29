@@ -8,6 +8,9 @@
 import Foundation
 import CoreBluetooth
 import Combine
+import os
+
+fileprivate let logger = Logger(subsystem: "app.raven.ios", category: "Mesh.OfflinePairing")
 
 /// Manages offline friend pairing via Bluetooth
 /// Exchange public keys and verify with 6-digit code
@@ -72,21 +75,17 @@ final class OfflinePairingService: NSObject, ObservableObject {
     
     /// Start pairing mode (advertise + scan)
     func startPairing() {
-        #if DEBUG
-        print("🔗 [Pairing] Starting offline pairing mode")
-        #endif
-        
+        logger.debug("Starting offline pairing mode")
+
         // Generate nonce for this session
         pairingNonce = generateNonce()
-        
+
         pairingState = .advertising
-        
+
         // Start BLE advertising and scanning
         // Note: In real implementation, use CBCentralManager and CBPeripheralManager
-        
-        #if DEBUG
-        print("🔗 [Pairing] Advertising fingerprint: \(identity.fingerprint ?? "unknown")")
-        #endif
+
+        logger.debug("Advertising fingerprint: \(self.identity.fingerprint ?? "unknown", privacy: .private)")
     }
     
     /// Handle incoming pairing request
@@ -126,11 +125,9 @@ final class OfflinePairingService: NSObject, ObservableObject {
         pendingPeer = requestWithCode
         currentVerificationCode = code
         pairingState = .verifying
-        
-        #if DEBUG
-        print("🔗 [Pairing] Received request from: \(fingerprint)")
-        print("🔗 [Pairing] Verification code: \(code)")
-        #endif
+
+        logger.debug("Received request from: \(fingerprint, privacy: .private)")
+        logger.debug("Verification code: \(code, privacy: .private)")
     }
     
     /// Confirm pairing after code verification
@@ -155,17 +152,13 @@ final class OfflinePairingService: NSObject, ObservableObject {
         pairingState = .paired
         pendingPeer = nil
         currentVerificationCode = nil
-        
-        #if DEBUG
-        print("✅ [Pairing] Successfully paired with: \(peer.fingerprint)")
-        #endif
+
+        logger.debug("Successfully paired with: \(peer.fingerprint, privacy: .private)")
     }
-    
+
     /// Reject pairing request
     func rejectPairing() {
-        #if DEBUG
-        print("❌ [Pairing] Rejected pairing request")
-        #endif
+        logger.debug("Rejected pairing request")
         pendingPeer = nil
         currentVerificationCode = nil
         pairingState = .idle
@@ -179,10 +172,8 @@ final class OfflinePairingService: NSObject, ObservableObject {
         pairingNonce = nil
         
         // Stop BLE advertising/scanning
-        
-        #if DEBUG
-        print("🔗 [Pairing] Stopped pairing mode")
-        #endif
+
+        logger.debug("Stopped pairing mode")
     }
     
     // MARK: - QR Code Pairing (Alternative)

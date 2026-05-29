@@ -7,6 +7,18 @@
       "size" : "1024x1024"
     },
     {
+      "appearances" : [
+        {
+          "appearance" : "luminosity",
+          "value" : "dark"
+        }
+      ],
+      "filename" : "AppIcon-Dark.png",
+      "idiom" : "universal",
+      "platform" : "ios",
+      "size" : "1024x1024"
+    },
+    {
       "filename" : "AppIcon-20@2x.png",
       "idiom" : "iphone",
       "scale" : "2x",

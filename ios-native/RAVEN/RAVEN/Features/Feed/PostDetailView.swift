@@ -414,7 +414,14 @@ struct PostDetailView: View {
                     onVideoTimestampTap: post.allMedia.contains(where: { $0.isVideo }) ? { seconds in
                         Haptics.selection()
                         videoTimestampJump = seconds
-                    } : nil
+                    } : nil,
+                    // 🔴 Bug fix (2026-05-15): inline web links open in
+                    // the capsule SafariSheet instead of system Safari.
+                    onLinkTap: { url in
+                        Haptics.light()
+                        detectedURL = url
+                        showLinkBrowser = true
+                    }
                 )
                 .lineLimit(nil)
                 .multilineTextAlignment(.leading)

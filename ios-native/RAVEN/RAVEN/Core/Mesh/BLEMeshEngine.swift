@@ -13,6 +13,8 @@ import UIKit
 import os
 import CryptoKit
 
+fileprivate let logger = Logger(subsystem: "app.raven.ios", category: "Mesh.BLE")
+
 // MARK: - Mesh Peer
 
 /// Represents a discovered/connected BLE peer
@@ -100,9 +102,7 @@ actor MeshPacketProcessor {
     func processPacket(_ data: Data, from deviceId: String, engine: BLEMeshEngine) async {
         let allowed = await MeshCryptoService.shared.checkRateLimit(for: deviceId)
         guard allowed else {
-            #if DEBUG
-            print("🚫 [BLE] Rate limited peer \(deviceId.prefix(8)) - dropping message")
-            #endif
+            logger.debug("Rate limited peer \(deviceId, privacy: .private) - dropping message")
             return
         }
         await engine.processIncomingDataSecure(data, from: deviceId)
@@ -285,6 +285,10 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
     var peripheralManager: CBPeripheralManager?  // internal for chunking extension
     var messageCharacteristic: CBMutableCharacteristic?  // internal for chunking extension
     private var deviceInfoCharacteristic: CBMutableCharacteristic?
+    /// 🔴 ROUND 70 — per-session ephemeral token served from the
+    /// deviceInfo GATT characteristic instead of the install-stable
+    /// device fingerprint. Regenerated on every BLE engine start.
+    private var bleSessionToken: String = ""
 
     /// v2 message TX/RX — published alongside the v1 service. v2 envelopes
     /// flow over THIS characteristic (binary RUMProtocolV2 wire format)
@@ -426,9 +430,7 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
         handlersLock.withLock {
             messageHandlers[kind] = handler
         }
-        #if DEBUG
-        print("📡 [BLE] Registered handler for \(kind.rawValue)")
-        #endif
+        logger.debug("Registered handler for \(kind.rawValue, privacy: .public)")
     }
     
     // MARK: - Device Info
@@ -455,9 +457,10 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
     // MARK: - Public API
     
     func start() {
-        #if DEBUG
-        print("🔍 [BLE DEBUG] start() called!")
-        #endif
+        logger.debug("start() called")
+
+        // ROUND 41 refresh call REVERTED — see startAdvertising
+        // for context.
 
         // Subscribe the relay service to v2 envelope arrivals so multi-
         // hop forwarding works the moment we have any peers. Idempotent.
@@ -524,9 +527,7 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
                 queue: DispatchQueue(label: "com.raven.ble.central", qos: .userInitiated),
                 options: centralOptions
             )
-            #if DEBUG
-            print("🔍 [BLE DEBUG] Created CBCentralManager with restoration support")
-            #endif
+            logger.debug("Created CBCentralManager with restoration support")
         }
 
         if peripheralManager == nil {
@@ -547,9 +548,7 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
                 queue: DispatchQueue(label: "com.raven.ble.peripheral", qos: .userInitiated),
                 options: peripheralOptions
             )
-            #if DEBUG
-            print("🔍 [BLE DEBUG] Created CBPeripheralManager with restoration support")
-            #endif
+            logger.debug("Created CBPeripheralManager with restoration support")
         }
         
         // Start periodic cleanup timer
@@ -558,10 +557,8 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
         // Start MPC bulk transport alongside BLE
         startMPCTransport()
         
-        #if DEBUG
-        print("📡 [BLE] Engine starting with background restoration...")
-        print("🔍 [BLE DEBUG] Waiting for Bluetooth state callbacks...")
-        #endif
+        logger.debug("Engine starting with background restoration")
+        logger.debug("Waiting for Bluetooth state callbacks")
     }
     
     func stop() {
@@ -574,11 +571,15 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
         stopMPCTransport()
         // PRoPHET: Persist P-table on shutdown
         Task { await DeliveryPredictabilityService.shared.save() }
-        #if DEBUG
-        print("🔴 [BLE] Engine stopped")
-        #endif
+        logger.debug("Engine stopped")
     }
     
+    // MARK: - Round 41 helpers (REMOVED — see startAdvertising
+    // and didUpdateValueFor for the rollback note).  The
+    // characteristic-value mid-life mutation approach was unreliable
+    // in CoreBluetooth; Round 42 below ships a presence-envelope
+    // alternative that doesn't touch the GATT layer.
+
     /// Toggle BLE runtime for foreground/background bridge behavior.
     /// NOTE: iOS does not allow truly "always-on" execution; this configures best-effort background behavior.
     func setBackgroundBridgeMode(enabled: Bool) {
@@ -594,15 +595,11 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
             drainPendingFromDB()
             drainPendingFromOutbox()
             endBackgroundTaskLater(identifier: "ble_background_bridge", after: 25)
-            #if DEBUG
-            print("📡 [BLE] Background bridge mode enabled (best-effort)")
-            #endif
+            logger.debug("Background bridge mode enabled (best-effort)")
         } else {
             restartScanningForCurrentProfile()
             BackgroundMeshManager.shared.endBackgroundTask(identifier: "ble_background_bridge")
-            #if DEBUG
-            print("📡 [BLE] Foreground BLE mode enabled")
-            #endif
+            logger.debug("Foreground BLE mode enabled")
         }
     }
     
@@ -643,9 +640,7 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
         let actions: SweepAction = sessionsLock.withLock {
             var result = SweepAction()
             let sessionCount = peripheralSessions.count
-            #if DEBUG
-            print("[SW] sweep: sessions=\(sessionCount) real=\(realConnected.count)")
-            #endif
+            logger.debug("[SW] sweep: sessions=\(sessionCount, privacy: .public) real=\(realConnected.count, privacy: .public)")
             
             for (uuid, peripheral) in peripheralSessions {
                 if realUUIDs.contains(uuid) {
@@ -698,9 +693,7 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
         // Execute CB API calls outside the lock
         for phantom in actions.phantomsToCancel {
             let peerId = phantom.uuid.uuidString.prefix(8)
-            #if DEBUG
-            print("[SW] 👻 phantom \(peerId) removed")
-            #endif
+            logger.debug("[SW] phantom \(peerId, privacy: .private) removed")
             cm.cancelPeripheralConnection(phantom.peripheral)
             DispatchQueue.main.async {
                 self.connectedPeers.removeAll { $0.id == phantom.uuid }
@@ -714,22 +707,16 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
             item.peripheral.delegate = self
             if let ravenService = item.peripheral.services?.first(where: { $0.uuid == Self.serviceUUID }),
                let chars = ravenService.characteristics, !chars.isEmpty {
-                #if DEBUG
-                print("[SW] \(peerId) cached GATT → fast-promote")
-                #endif
+                logger.debug("[SW] \(peerId, privacy: .private) cached GATT - fast-promote")
                 self.peripheral(item.peripheral, didDiscoverCharacteristicsFor: ravenService, error: nil)
             } else if let ravenService = item.peripheral.services?.first(where: { $0.uuid == Self.serviceUUID }) {
-                #if DEBUG
-                print("[SW] \(peerId) cached service → discover chars")
-                #endif
+                logger.debug("[SW] \(peerId, privacy: .private) cached service - discover chars")
                 item.peripheral.discoverCharacteristics(
                     [Self.messageCharacteristicUUID, Self.deviceInfoCharacteristicUUID],
                     for: ravenService
                 )
             } else {
-                #if DEBUG
-                print("[SW] \(peerId) connected → discover services")
-                #endif
+                logger.debug("[SW] \(peerId, privacy: .private) connected - discover services")
                 item.peripheral.discoverServices([Self.serviceUUID])
             }
             promoted += 1
@@ -737,18 +724,14 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
         
         for item in actions.newlyDiscovered {
             let peerId = item.uuid.uuidString.prefix(8)
-            #if DEBUG
-            print("[SW] 🆕 unknown connected \(peerId) → discover")
-            #endif
+            logger.debug("[SW] unknown connected \(peerId, privacy: .private) - discover")
             item.peripheral.delegate = self
             item.peripheral.discoverServices([Self.serviceUUID])
             promoted += 1
         }
         
         let finalCount = sessionsLock.withLock { peripheralSessions.count }
-        #if DEBUG
-        print("[SW] done: cancelled=\(cancelled) promoted=\(promoted) sessions=\(finalCount)")
-        #endif
+        logger.debug("[SW] done: cancelled=\(cancelled, privacy: .public) promoted=\(promoted, privacy: .public) sessions=\(finalCount, privacy: .public)")
         if cancelled > 0 { restartScanningForCurrentProfile() }
         
         // Fix: If we promoted peers, flush queued messages to them immediately
@@ -760,16 +743,29 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
     
     /// Broadcast message to all connected peers
     /// SECURITY: Signs envelope with Ed25519 before transmission
+    ///
+    /// 🔴 ROUND 26 — hacker-audit Mesh F1 (CRITICAL).
+    /// Before signing, we seal any attached media metadata via
+    /// `MeshMediaSealer.seal` so the BLE wire never carries
+    /// `mediaUrl`/`thumbnailUrl`/`fileName`/`mimeType`/`fileSize`/
+    /// `audioDuration` in plaintext. The legacy six fields are
+    /// nulled IN PLACE; the receiver unseals via
+    /// `MeshMediaSealer.unseal` and re-populates them.
     func enqueueForBroadcast(_ envelope: MeshEnvelope) async {
         let allowedTypes = [0, 4, 6] // text, location, system
         guard allowedTypes.contains(envelope.type) else {
             return
         }
 
+        // 🔴 ROUND 26 — Mesh F1: seal media metadata before
+        // we hand the envelope to the sign + broadcast path.
+        // No-op on text/system messages with no media fields.
+        var envelope = envelope
+        await MeshMediaSealer.seal(envelope: &envelope)
+
         let peers = getSnapshot()
-        #if DEBUG
-        print("[S1] send mid=\(envelope.clientMessageId.prefix(8)) peers=\(peers.count) subs=\(subscriberCount)")
-        #endif
+        let subs = subscriberCount
+        logger.debug("[S1] send mid=\(envelope.clientMessageId, privacy: .private) peers=\(peers.count, privacy: .public) subs=\(subs, privacy: .public)")
         
         // Store in relay queue so future peers also receive this message
         if envelope.sprayCounter > 0 {
@@ -796,14 +792,10 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
             // (via `send(_:to:)`) DO encrypt using per-peer X25519 agreement keys
             // when available. Signature provides authentication + integrity.
             data = try JSONEncoder().encode(signedPayload)
-            #if DEBUG
-            print("[S1] signed broadcast (\(data.count)B)")
-            #endif
-            
+            logger.debug("[S1] signed broadcast (\(data.count, privacy: .public)B)")
+
         } catch {
-            #if DEBUG
-            print("  [S1] sign failed: \(error)")
-            #endif
+            logger.debug("[S1] sign failed: \(error.localizedDescription, privacy: .public)")
             return
         }
         
@@ -812,9 +804,8 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
             queueLock.withLock {
                 if messageQueue.count < maxQueueSize {
                     messageQueue.append(envelope)
-                    #if DEBUG
-                    print("[S2] queued (no peers) queue=\(messageQueue.count)")
-                    #endif
+                    let qcount = messageQueue.count
+                    logger.debug("[S2] queued (no peers) queue=\(qcount, privacy: .public)")
                 } else {
                     // EVICTION: Drop the oldest, lowest-priority message
                     if let evictIdx = messageQueue.indices.min(by: { a, b in
@@ -825,13 +816,9 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
                     }), Self.envelopePriority(envelope) > Self.envelopePriority(messageQueue[evictIdx]) {
                         let evicted = messageQueue[evictIdx]
                         messageQueue[evictIdx] = envelope
-                        #if DEBUG
-                        print("[S2] queue full, evicted \(evicted.clientMessageId.prefix(8))")
-                        #endif
+                        logger.debug("[S2] queue full, evicted \(evicted.clientMessageId, privacy: .private)")
                     } else {
-                        #if DEBUG
-                        print("[S2] queue full, dropped")
-                        #endif
+                        logger.debug("[S2] queue full, dropped")
                     }
                 }
             }
@@ -839,9 +826,7 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
         }
         
         await broadcastDataChunked(data)
-        #if DEBUG
-        print("[S3] ✅ broadcast complete to \(peers.count) peers")
-        #endif
+        logger.debug("[S3] broadcast complete to \(peers.count, privacy: .public) peers")
     }
     
     /// Send ACK envelope for delivery/read receipt.
@@ -855,21 +840,15 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
             signedAck.sign()
         }
         guard signedAck.signature != nil else {
-            #if DEBUG
-            print("❌ [BLE] Refusing to send unsigned ACK \(ack.originalMessageId.prefix(8)) — signing failed")
-            #endif
+            logger.debug("Refusing to send unsigned ACK \(ack.originalMessageId, privacy: .private) - signing failed")
             return
         }
         guard let data = signedAck.toData() else {
-            #if DEBUG
-            print("❌ [BLE] Failed to encode signed ACK")
-            #endif
+            logger.debug("Failed to encode signed ACK")
             return
         }
 
-        #if DEBUG
-        print("📨 [BLE] Sending signed ACK for message \(signedAck.originalMessageId.prefix(8)) - status: \(signedAck.status.rawValue)")
-        #endif
+        logger.debug("Sending signed ACK for message \(signedAck.originalMessageId, privacy: .private) - status: \(signedAck.status.rawValue, privacy: .public)")
         await broadcastData(data)
     }
     
@@ -906,12 +885,10 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
         stopCommand.sign()
         if let data = try? JSONEncoder().encode(stopCommand) {
             await broadcastData(data)
-            #if DEBUG
-            print("🛑 [BLE] Broadcast signed STOP(\(messageId.prefix(8))) to mesh")
-            #endif
+            logger.debug("Broadcast signed STOP \(messageId, privacy: .private) to mesh")
         }
     }
-    
+
     /// Handle incoming stop command from mesh
     func handleStop(_ messageId: String) async {
         guard stateLock.withLock({ stoppedMessageIds[messageId] == nil }) else { return }
@@ -937,10 +914,8 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
         if let data = try? JSONEncoder().encode(stopCommand) {
             await broadcastData(data)
         }
-        
-        #if DEBUG
-        print("🛑 [BLE] Received and propagated STOP(\(messageId.prefix(8)))")
-        #endif
+
+        logger.debug("Received and propagated STOP \(messageId, privacy: .private)")
     }
     
     /// Legacy stop method (for backward compatibility)
@@ -949,9 +924,7 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
         queueLock.withLock {
             messageQueue.removeAll { $0.clientMessageId == messageId }
         }
-        #if DEBUG
-        print("🛑 [BLE] Message \(messageId.prefix(8)) stopped - server delivered")
-        #endif
+        logger.debug("Message \(messageId, privacy: .private) stopped - server delivered")
     }
     
     /// Check if a message has been stopped
@@ -981,9 +954,7 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
         for mid in messageIds { // Persist outside lock
             try? await StopCacheRepository.shared.persist(mid)
         }
-        #if DEBUG
-        print("🛑 [BLE] Applied stop list: \(messageIds.count) messages")
-        #endif
+        logger.debug("Applied stop list: \(messageIds.count, privacy: .public) messages")
     }
     
     /// Clear old stopped message IDs (call periodically) - now uses timestamp-based cleanup
@@ -1006,13 +977,12 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
             relayQueue.removeAll { $0.isExpired }
             let relayAfter = relayQueue.count
             
-            #if DEBUG
-            print("🧹 [BLE] Cleaned old stops/processed, remaining: \(stoppedMessageIds.count)/\(processedMessages.count) relay=\(relayAfter)")
-            #endif
+            let stopsCount = stoppedMessageIds.count
+            let processedCount = processedMessages.count
+            logger.debug("Cleaned old stops/processed, remaining: \(stopsCount, privacy: .public)/\(processedCount, privacy: .public) relay=\(relayAfter, privacy: .public)")
             if relayBefore != relayAfter {
-                #if DEBUG
-                print("🧹 [BLE] Expired \(relayBefore - relayAfter) relay queue entries")
-                #endif
+                let expired = relayBefore - relayAfter
+                logger.debug("Expired \(expired, privacy: .public) relay queue entries")
             }
         }
         
@@ -1034,9 +1004,7 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.discoveredPeers = self.connectedPeers
-                #if DEBUG
-                print("🧹 [BLE] Purged \(purgedDiscoveredCount) stale discovered peripherals from memory")
-                #endif
+                logger.debug("Purged \(purgedDiscoveredCount, privacy: .public) stale discovered peripherals from memory")
             }
         }
     }
@@ -1053,17 +1021,13 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
             // Evict oldest if full
             if relayQueue.count >= maxRelayQueueSize, !relayQueue.isEmpty {
                 let evicted = relayQueue.removeFirst()
-                #if DEBUG
-                print("📦 [RELAY-Q] Evicted oldest: \(evicted.clientMessageId.prefix(8))")
-                #endif
+                logger.debug("[RELAY-Q] Evicted oldest: \(evicted.clientMessageId, privacy: .private)")
             }
             relayQueue.append(envelope)
             return relayQueue.count
         }
         if let count {
-            #if DEBUG
-            print("📦 [RELAY-Q] Stored for forward: \(envelope.clientMessageId.prefix(8)) (mem=\(count))")
-            #endif
+            logger.debug("[RELAY-Q] Stored for forward: \(envelope.clientMessageId, privacy: .private) (mem=\(count, privacy: .public))")
             // Also persist to DB so it survives BLE restarts
             Task {
                 await RelayQueueRepository.shared.enqueue(envelope)
@@ -1094,9 +1058,7 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
             
             guard !allEligible.isEmpty else { return }
             
-            #if DEBUG
-            print("📦 [RELAY-Q] Draining \(allEligible.count) relay messages to \(peerDeviceId.prefix(8)) (mem=\(memEligible.count), db=\(extraFromDB.count))")
-            #endif
+            logger.debug("[RELAY-Q] Draining \(allEligible.count, privacy: .public) relay messages to \(peerDeviceId, privacy: .private) (mem=\(memEligible.count, privacy: .public), db=\(extraFromDB.count, privacy: .public))")
             
             // Bug 3 fix: Binary Spray — halve tokens instead of giving all to first peer.
             // Track which messages to remove vs update in the relay queue.
@@ -1113,9 +1075,7 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
                 
                 await self.send(forwardedEnvelope, to: peer)
                 
-                #if DEBUG
-                print("📦 [RELAY-Q] Forwarded \(envelope.clientMessageId.prefix(8)) → \(peerDeviceId.prefix(8)) | Given: \(givenTokens), Kept: \(keptTokens)")
-                #endif
+                logger.debug("[RELAY-Q] Forwarded \(envelope.clientMessageId, privacy: .private) -> \(peerDeviceId, privacy: .private) | Given: \(givenTokens, privacy: .public), Kept: \(keptTokens, privacy: .public)")
                 
                 if keptTokens > 0 {
                     var updated = envelope
@@ -1152,9 +1112,7 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
                 )
             }
             
-            #if DEBUG
-            print("📦 [RELAY-Q] Drain complete — \(allEligible.count) messages processed (exhausted=\(exhaustedIds.count), kept=\(updatedEnvelopes.count))")
-            #endif
+            logger.debug("[RELAY-Q] Drain complete - \(allEligible.count, privacy: .public) messages processed (exhausted=\(exhaustedIds.count, privacy: .public), kept=\(updatedEnvelopes.count, privacy: .public))")
         }
     }
     
@@ -1192,6 +1150,17 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
     ///   - originalSignerPublicKey: Bug 5 fix: Original sender's public key
     func send(_ envelope: MeshEnvelope, to peer: MeshPeer,
               originalSignature: String? = nil, originalSignerPublicKey: String? = nil) async {
+        // 🔴 ROUND 26 — hacker-audit Mesh F1 (CRITICAL).
+        // The point-to-point `send` is used by the inventory
+        // resend path (`handleInventory*` / `handleWant`) which
+        // re-broadcasts stored ChatMessages — including media —
+        // and is NOT gated by the text/location/system filter.
+        // Seal media metadata here too so an inv-resend can't
+        // leak attachment URLs that the original-send path took
+        // care to strip.
+        var envelope = envelope
+        await MeshMediaSealer.seal(envelope: &envelope)
+
         // Keep point-to-point sends aligned with the same secure transport format
         // used by broadcast path (signed, and encrypted when possible).
         let data: Data
@@ -1233,7 +1202,30 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
                     let v1Data = try JSONEncoder().encode(encryptedPayload)
 
                     let caps = peerCapabilities[peer.id] ?? []
-                    if caps.contains(.v2Protocol) {
+                    // 🔴 ROUND 21 — hacker-audit Mesh F3.
+                    // Force the Noise transport whenever we have an
+                    // established session with this peer, regardless
+                    // of whether the peer is currently advertising
+                    // the v2Protocol capability. Legacy v1 ECDH has
+                    // no forward secrecy: if either party's static
+                    // X25519 is later compromised, every recorded
+                    // ciphertext decrypts. The Noise transport mode
+                    // (post-handshake) uses ephemeral DH so past
+                    // traffic stays opaque even after a static-key
+                    // breach.
+                    //
+                    // A peer that had v2Protocol when we handshook
+                    // but no longer advertises it is suspicious
+                    // (downgrade attack? stale cap cache?) — either
+                    // way the right answer is to keep using the
+                    // already-established channel.
+                    let peerPIDForUpgrade = RUMProtocolV2.peerID(fromPublicKey: agreementKey)
+                    let hasLiveNoise = await MainActor.run {
+                        NoiseSessionStore.shared.hasSession(for: peerPIDForUpgrade)
+                    }
+                    let preferV2 = caps.contains(.v2Protocol) || hasLiveNoise
+
+                    if preferV2 {
                         // Per-peer protocol selection (C.1.d):
                         //
                         //   1. Established Noise session → v2 envelope
@@ -1287,20 +1279,14 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
                             if let mpcPeer = MPCTransportService.shared.mpcPeer(for: peer.deviceId) {
                                 do {
                                     try MPCTransportService.shared.sendBulkData(v2Bytes, to: mpcPeer)
-                                    #if DEBUG
-                                    print("[S1] 🚀 v2 via MPC (\(v2Bytes.count)B, inner \(v1Data.count)B) → \(peer.deviceId.prefix(8))")
-                                    #endif
+                                    logger.debug("[S1] v2 via MPC (\(v2Bytes.count, privacy: .public)B, inner \(v1Data.count, privacy: .public)B) -> \(peer.deviceId, privacy: .private)")
                                     return
                                 } catch {
-                                    #if DEBUG
-                                    print("[S1] mpc send failed (\(error)) — falling back to BLE")
-                                    #endif
+                                    logger.debug("[S1] mpc send failed (\(error.localizedDescription, privacy: .public)) - falling back to BLE")
                                 }
                             }
 
-                            #if DEBUG
-                            print("[S1] 🔐 v2 frame (\(v2Bytes.count)B, inner \(v1Data.count)B) → \(peer.deviceId.prefix(8))")
-                            #endif
+                            logger.debug("[S1] v2 frame (\(v2Bytes.count, privacy: .public)B, inner \(v1Data.count, privacy: .public)B) -> \(peer.deviceId, privacy: .private)")
                             await sendDataChunkedToPeer(
                                 v2Bytes,
                                 peer: peer,
@@ -1312,26 +1298,18 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
                     }
 
                     data = v1Data
-                    #if DEBUG
-                    print("[S1] 🔒 encrypted+signed v1 (\(data.count)B) → \(peer.deviceId.prefix(8))")
-                    #endif
+                    logger.debug("[S1] encrypted+signed v1 (\(data.count, privacy: .public)B) -> \(peer.deviceId, privacy: .private)")
                 } else {
                     data = try JSONEncoder().encode(signedPayload)
-                    #if DEBUG
-                    print("[S1] signed-only (\(data.count)B) → \(peer.deviceId.prefix(8)) (no agreement key)")
-                    #endif
+                    logger.debug("[S1] signed-only (\(data.count, privacy: .public)B) -> \(peer.deviceId, privacy: .private) (no agreement key)")
                 }
             } else {
                 data = try JSONEncoder().encode(signedPayload)
-                #if DEBUG
-                print("[S1] signed-only (\(data.count)B) → unknown peer")
-                #endif
+                logger.debug("[S1] signed-only (\(data.count, privacy: .public)B) -> unknown peer")
             }
 
         } catch {
-            #if DEBUG
-            print("❌ [BLE] Failed to encode secure envelope for peer \(peer.deviceId.prefix(8)): \(error)")
-            #endif
+            logger.debug("Failed to encode secure envelope for peer \(peer.deviceId, privacy: .private): \(error.localizedDescription, privacy: .public)")
             return
         }
 
@@ -1341,14 +1319,14 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
     /// Get currently connected peers
     func getConnectedPeers() async -> [MeshPeer] {
         let snap = getSnapshot()
-        #if DEBUG
         sessionsLock.withLock {
-            print("[SW] peers: connected=\(snap.count) sessions=\(peripheralSessions.count)")
+            let sessionsCount = peripheralSessions.count
+            logger.debug("[SW] peers: connected=\(snap.count, privacy: .public) sessions=\(sessionsCount, privacy: .public)")
             for (uuid, p) in peripheralSessions {
-                print("[SW]   \(uuid.uuidString.prefix(8)) state=\(p.state.rawValue)")
+                let peerId = uuid.uuidString.prefix(8)
+                logger.debug("[SW]   \(peerId, privacy: .private) state=\(p.state.rawValue, privacy: .public)")
             }
         }
-        #endif
         return snap
     }
     
@@ -1358,9 +1336,7 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
     /// This prevents redundant server uploads from other bridge nodes.
     func gossipReceipt(_ receipt: ServerReceipt) async {
         guard receipt.toData() != nil else {
-            #if DEBUG
-            print("❌ [BLE] Failed to encode ServerReceipt")
-            #endif
+            logger.debug("Failed to encode ServerReceipt")
             return
         }
         
@@ -1369,9 +1345,7 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
         guard let taggedData = try? JSONEncoder().encode(tagged) else { return }
         
         await broadcastData(taggedData)
-        #if DEBUG
-        print("📡 [BLE] Gossipped ServerReceipt for \(receipt.messageId.prefix(8))")
-        #endif
+        logger.debug("Gossipped ServerReceipt for \(receipt.messageId, privacy: .private)")
     }
     
     // MARK: - MPC Integration (Bulk Transport)
@@ -1384,18 +1358,14 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
         if data.count > MPCTransportService.bulkThreshold,
            let mpcPeer = MPCTransportService.shared.mpcPeer(for: peerDeviceId) {
             try MPCTransportService.shared.sendBulkData(data, to: mpcPeer)
-            #if DEBUG
-            print("📡 [MPC] Bulk send \(data.count)B → \(peerDeviceId.prefix(8)) via Wi-Fi")
-            #endif
+            logger.debug("Bulk send \(data.count, privacy: .public)B -> \(peerDeviceId, privacy: .private) via Wi-Fi")
         } else {
             // Fallback to BLE chunked send
             guard let peer = getSnapshot().first(where: { $0.deviceId == peerDeviceId }) else {
                 throw MPCTransportService.MPCError.peerNotConnected
             }
             await sendDataChunkedToPeer(data, peer: peer)
-            #if DEBUG
-            print("📡 [BLE] Send \(data.count)B → \(peerDeviceId.prefix(8)) via BLE")
-            #endif
+            logger.debug("Send \(data.count, privacy: .public)B -> \(peerDeviceId, privacy: .private) via BLE")
         }
     }
     
@@ -1421,14 +1391,10 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
                     let signedPayload = try await MeshCryptoService.shared.signEnvelope(secureEnvelope)
                     let data = try JSONEncoder().encode(signedPayload)
                     try MPCTransportService.shared.sendBulkData(data, to: mpcPeer)
-                    #if DEBUG
-                    print("📡 [MPC→BLE] Sent \(category) envelope \(envelope.clientMessageId.prefix(8)) via Wi-Fi (\(data.count)B)")
-                    #endif
+                    logger.debug("[MPC->BLE] Sent \(String(describing: category), privacy: .public) envelope \(envelope.clientMessageId, privacy: .private) via Wi-Fi (\(data.count, privacy: .public)B)")
                     return
                 } catch {
-                    #if DEBUG
-                    print("⚠️ [MPC] Bulk send failed, falling back to BLE: \(error.localizedDescription)")
-                    #endif
+                    logger.debug("Bulk send failed, falling back to BLE: \(error.localizedDescription, privacy: .public)")
                 }
             }
             // Fallback: BLE chunked send
@@ -1468,11 +1434,9 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
             // unsigned local dev builds still get something on the
             // wire — not silently nothing.
             let fingerprint = DeviceIdentityService.shared.fingerprint ?? "unknown"
-            #if DEBUG
             if fingerprint == "unknown" {
-                print("⚠️ [BLE] MPC starting with placeholder fingerprint — keychain access likely stripped by ad-hoc signing. Auth handshake will fail with peers; discovery only.")
+                logger.debug("MPC starting with placeholder fingerprint - keychain access likely stripped by ad-hoc signing. Auth handshake will fail with peers; discovery only.")
             }
-            #endif
             await self.bringUpMPC(with: fingerprint)
         }
     }
@@ -1508,9 +1472,7 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
             }
         }
 
-        #if DEBUG
-        print("📡 [MPC] Bulk transport layer started alongside BLE")
-        #endif
+        logger.debug("Bulk transport layer started alongside BLE")
     }
     
     /// Stop MPC transport layer.
@@ -1522,9 +1484,8 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
     
     private func startAdvertising() {
         guard peripheralManager?.state == .poweredOn else {
-            #if DEBUG
-            print("[C0] ❌ advertise failed (state=\(peripheralManager?.state.rawValue ?? -1))")
-            #endif
+            let state = peripheralManager?.state.rawValue ?? -1
+            logger.debug("[C0] advertise failed (state=\(state, privacy: .public))")
             return
         }
         
@@ -1541,10 +1502,38 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
                 permissions: [.readable, .writeable]
             )
 
+            // 🟥 ROUND 41 REVERTED (2026-05-17).
+            //   Caused a regression breaking both A→C and C→A.
+            //   `char.value = blob` mid-life mutation isn't
+            //   reliably propagated to subscribers by CoreBluetooth
+            //   once the service is published.  Going back to the
+            //   pre-41 single-shot publish.  A separate fix below
+            //   (Round 42) takes a less invasive approach: B
+            //   proactively sends a tiny presence frame to A on
+            //   first connect so A's existing envelope.senderId
+            //   learn-path lights up immediately.
+            // 🔴 ROUND 70 (2026-05-23) — hacker-audit MESH-PASSIVE-CRIT-1.
+            //
+            // PREVIOUSLY this GATT characteristic exposed the FULL stable
+            // device fingerprint (SHA-256 of the Ed25519 identity key)
+            // as a readable, unauthenticated value. Any BLE peer could
+            // connect → read → get a permanent cross-session tracker.
+            //
+            // FIX: serve an ephemeral session token instead. The token
+            // is a random 16-byte value regenerated on every BLE
+            // engine start (cold-start, re-advertise after backgrounding,
+            // etc). It's not a fingerprint — it can't be used to
+            // correlate the same install across two cafés, two days,
+            // or two charge cycles. Peers that need to learn the real
+            // userId still get it through the Noise handshake which
+            // is authenticated end-to-end.
+            let sessionToken = Data((0..<16).map { _ in UInt8.random(in: 0...UInt8.max) })
+                .base64EncodedString()
+            self.bleSessionToken = sessionToken
             let deviceChar = CBMutableCharacteristic(
                 type: Self.deviceInfoCharacteristicUUID,
                 properties: [.read],
-                value: deviceId.data(using: .utf8),
+                value: sessionToken.data(using: .utf8),
                 permissions: [.readable]
             )
 
@@ -1590,32 +1579,36 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
         // Advertise BOTH service UUIDs so v1 and v2 peers both find us.
         // A peer that supports v2 reads the capabilities characteristic
         // and switches; v1-only peers see the v1 UUID and use that.
+        //
+        // 🔴 ROUND 70 — drop the stable LocalName. The previous
+        // `RAVEN-<fp8>` name was a permanent install-stable tracking
+        // tag emitted on every advert packet, observable by any
+        // nearby passive BLE scanner without ever connecting. iOS
+        // rotates the BLE MAC; we now match that with the LocalName.
+        // Just `RAVEN` is enough for users to recognise the app in
+        // pairing UIs; for actual peer identity we rely on the
+        // Noise handshake.
         peripheralManager?.startAdvertising([
             CBAdvertisementDataServiceUUIDsKey: [Self.serviceUUID, RUMProtocolV2.serviceUUID],
-            CBAdvertisementDataLocalNameKey: "RAVEN-\(deviceId.prefix(8))"
+            CBAdvertisementDataLocalNameKey: "RAVEN"
         ])
-        
+
         DispatchQueue.main.async { self.isAdvertising = true }
-        #if DEBUG
-        print("[C0] advertising as RAVEN-\(deviceId.prefix(8))")
-        #endif
+        logger.debug("[C0] advertising as RAVEN (round-70 generic LocalName, no install fingerprint)")
     }
     
     private func stopAdvertising() {
         peripheralManager?.stopAdvertising()
         DispatchQueue.main.async { self.isAdvertising = false }
-        #if DEBUG
-        print("🔴 [BLE] Stopped advertising")
-        #endif
+        logger.debug("Stopped advertising")
     }
     
     // MARK: - Private: Scanning (Central Role)
     
     private func startScanning() {
         guard let cm = centralManager, cm.state == .poweredOn else {
-            #if DEBUG
-            print("[C1] ❌ scan failed (state=\(centralManager?.state.rawValue ?? -1))")
-            #endif
+            let state = centralManager?.state.rawValue ?? -1
+            logger.debug("[C1] scan failed (state=\(state, privacy: .public))")
             return
         }
         guard !isScanningInternal else { return }
@@ -1626,9 +1619,7 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
         )
 
         setScanning(true)
-        #if DEBUG
-        print("[C1] scanning started")
-        #endif
+        logger.debug("[C1] scanning started")
     }
     
     private func stopScanning() {
@@ -1687,21 +1678,15 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
         case .alreadyConnected(let existing):
             if let ravenService = existing.services?.first(where: { $0.uuid == Self.serviceUUID }),
                let chars = ravenService.characteristics, !chars.isEmpty {
-                #if DEBUG
-                print("[C2] \(peerId) cached GATT → fast-promote")
-                #endif
+                logger.debug("[C2] \(peerId, privacy: .private) cached GATT - fast-promote")
                 self.peripheral(existing, didDiscoverCharacteristicsFor: ravenService, error: nil)
             } else {
-                #if DEBUG
-                print("[C2] \(peerId) connected → re-discover services")
-                #endif
+                logger.debug("[C2] \(peerId, privacy: .private) connected - re-discover services")
                 existing.delegate = self
                 existing.discoverServices([Self.serviceUUID])
             }
         case .timeout(let existing):
-            #if DEBUG
-            print("[C2] \(peerId) connect timeout → cancel")
-            #endif
+            logger.debug("[C2] \(peerId, privacy: .private) connect timeout - cancel")
             centralManager?.cancelPeripheralConnection(existing)
             return // Let scanner re-discover this peripheral naturally
         case .stillConnecting:
@@ -1716,9 +1701,7 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
                     CBConnectPeripheralOptionNotifyOnNotificationKey: true
                 ]
             )
-            #if DEBUG
-            print("[C2] connecting \(peerId)...")
-            #endif
+            logger.debug("[C2] connecting \(peerId, privacy: .private)")
         }
     }
     
@@ -1746,9 +1729,7 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
             self.setScanning(true)
         }
         
-        #if DEBUG
-        print("[C1] scanning restarted to clear duplicate filter")
-        #endif
+        logger.debug("[C1] scanning restarted to clear duplicate filter")
     }
     
     /// Schedule a background task that ends itself proactively after `seconds`.
@@ -1764,9 +1745,7 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
         // Just emit the same end-of-task log on schedule for symmetry.
         Task {
             try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
-            #if DEBUG
-            print("⏱️ [Background] Task '\(identifier)' ended proactively after \(seconds)s")
-            #endif
+            logger.debug("[Background] Task '\(identifier, privacy: .public)' ended proactively after \(seconds, privacy: .public)s")
         }
         #else
         // Thread-safe box to prevent Simultaneous Memory Access trap
@@ -1795,9 +1774,7 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
         Task {
             try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
             box.end()
-            #if DEBUG
-            print("⏱️ [Background] Task '\(identifier)' ended proactively after \(seconds)s")
-            #endif
+            logger.debug("[Background] Task '\(identifier, privacy: .public)' ended proactively after \(seconds, privacy: .public)s")
         }
         #endif
     }
@@ -1877,9 +1854,7 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
                     }
                 }
             } else {
-                #if DEBUG
-                print("⚠️ [BLE] No handler registered for kind: \(mkRaw)")
-                #endif
+                logger.debug("No handler registered for kind: \(mkRaw, privacy: .public)")
             }
             return
         }
@@ -1922,7 +1897,7 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
                         _ = processedLock.withLock { processedMessages.removeValue(forKey: postId) }
                         return
                     }
-                    
+
                     if postEnvelope.signature != nil {
                         guard postEnvelope.isSignatureValid() else {
                             _ = processedLock.withLock { processedMessages.removeValue(forKey: postId) }
@@ -1932,18 +1907,39 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
                             let authorId = postEnvelope.authorId
                             let myUserId = await KeychainService.shared.getUserId() ?? ""
                             if authorId == myUserId {
+                                // Own post echo: still must be signed by our key.
                                 if signerKey != DeviceIdentityService.shared.publicKeyBase64 {
                                     _ = processedLock.withLock { processedMessages.removeValue(forKey: postId) }
                                     return
                                 }
-                            } else {
-                                let trustedDevices = await FriendDeviceRepository.shared.getTrustedDevices(forUser: authorId)
-                                let isTrustedKey = trustedDevices.contains { $0.publicKeyBase64 == signerKey }
-                                if !isTrustedKey {
-                                    _ = processedLock.withLock { processedMessages.removeValue(forKey: postId) }
-                                    return
-                                }
                             }
+                            // 🔴 ROUND 26 (2026-05-17) — CRITICAL FIX (audit Q6).
+                            //
+                            // PREVIOUSLY: posts from strangers (authors NOT
+                            // in our FriendDeviceRepository.trustedDevices)
+                            // were silently rejected here. This broke the
+                            // entire point of the mesh-only Local feed —
+                            // public posts from nearby strangers are
+                            // EXACTLY what that feature is for, and they
+                            // by definition won't be in our friend repo.
+                            // The Local tab stayed empty when offline,
+                            // making the "RAVEN works without internet"
+                            // headline feature dead-on-arrival.
+                            //
+                            // FIX: the Ed25519 signature check at line
+                            // 1853 already proves authorship by *some*
+                            // keyholder. For PUBLIC posts that's enough
+                            // — spam/abuse is handled by per-author mute
+                            // + the seen-dedup, not by friendship status.
+                            // The own-post-echo check above (line 1860)
+                            // still protects against someone forging
+                            // OUR userId — they need our actual key,
+                            // which they can't get.
+                            //
+                            // Trust gate remains on 1:1 / group messages
+                            // (handled in MeshCryptoService.verifySignature
+                            // via the pinned-identity-key check from
+                            // MESH-HIGH-4 round 26).
                         }
                     }
                     await MainActor.run { self.onMeshPostReceived?(postEnvelope) }
@@ -1956,8 +1952,40 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
                 // are being received over the wire. Selection lands when
                 // we have ≥2 candidate gateways in the field.
                 if let beacon = try? decoder.decode(GatewayBeacon.self, from: data) {
+                    // 🔴 ROUND 26 — hacker-audit MESH-MED-7.
+                    //   Verify the beacon signature AND TOFU-pin the
+                    //   signer pubkey for this gatewayDeviceId. Reject
+                    //   beacons that arrive unsigned once we've seen
+                    //   a signed one for the same gateway, or that
+                    //   change signer key mid-stream (impersonation).
+                    if let _ = beacon.signature, let _ = beacon.signerPublicKey {
+                        guard beacon.verifySignature() else {
+                            #if DEBUG
+                            NSLog("🌐 [Gateway] REJECTED beacon: signature verify failed for gw=\(beacon.gatewayDeviceId.prefix(8))")
+                            #endif
+                            return
+                        }
+                        if !GatewayBeaconPinStore.shared.acceptOrPin(
+                            gatewayDeviceId: beacon.gatewayDeviceId,
+                            signerPublicKey: beacon.signerPublicKey ?? Data()
+                        ) {
+                            #if DEBUG
+                            NSLog("🌐 [Gateway] REJECTED beacon: signer key changed for gw=\(beacon.gatewayDeviceId.prefix(8)) (TOFU impersonation)")
+                            #endif
+                            return
+                        }
+                    } else if GatewayBeaconPinStore.shared.hasPinned(
+                        gatewayDeviceId: beacon.gatewayDeviceId
+                    ) {
+                        // We've seen a signed beacon for this gateway
+                        // before — refuse to downgrade to unsigned.
+                        #if DEBUG
+                        NSLog("🌐 [Gateway] REJECTED unsigned beacon for previously-signed gw=\(beacon.gatewayDeviceId.prefix(8))")
+                        #endif
+                        return
+                    }
                     #if DEBUG
-                    NSLog("🌐 [Gateway] beacon recv from=\(beacon.gatewayDeviceId.prefix(8)) score=\(String(format: "%.2f", beacon.score))")
+                    NSLog("🌐 [Gateway] beacon recv from=\(beacon.gatewayDeviceId.prefix(8)) score=\(String(format: "%.2f", beacon.score)) signed=\(beacon.signature != nil)")
                     #endif
                 }
                 return
@@ -1997,9 +2025,7 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
                 // halt mesh delivery of a target message. All legitimate senders
                 // already call `.sign()` (see broadcastStop / forward sites).
                 guard stopCommand.signature != nil, stopCommand.isSignatureValid() else {
-                    #if DEBUG
-                    print("[STOP] ❌ Rejected unsigned/invalid stop \(stopCommand.messageId.prefix(8))")
-                    #endif
+                    logger.debug("[STOP] Rejected unsigned/invalid stop \(stopCommand.messageId, privacy: .private)")
                     await MeshDedupRepository.shared.unclaimMessage(id: dedupId)
                     return
                 }
@@ -2037,9 +2063,7 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
                 // mesh broadcast for a victim's message. All outgoing ACKs are
                 // now signed in `sendACK(_:)`.
                 guard ack.signature != nil, ack.isSignatureValid() else {
-                    #if DEBUG
-                    print("[ACK] ❌ Rejected unsigned/invalid ACK for \(ack.originalMessageId.prefix(8))")
-                    #endif
+                    logger.debug("[ACK] Rejected unsigned/invalid ACK for \(ack.originalMessageId, privacy: .private)")
                     await MeshDedupRepository.shared.unclaimMessage(id: dedupId)
                     return
                 }
@@ -2113,9 +2137,7 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
                         // tampered ciphertext used to vanish without a trace,
                         // making "missing message" reports impossible to debug.
                         // Log in DEBUG and increment a metric for production.
-                        #if DEBUG
-                        print("🛑 [Mesh] Decrypt/verify failed for EncryptedMeshPayload from \(deviceId): \(error)")
-                        #endif
+                        logger.debug("Decrypt/verify failed for EncryptedMeshPayload from \(deviceId, privacy: .private): \(error.localizedDescription, privacy: .public)")
                         await MeshDedupRepository.shared.unclaimMessage(id: "enc:\(jsonDict["n"] as? String ?? "?")")
                     }
                 }
@@ -2240,9 +2262,7 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
             
             // Clear any queued legacy ACK for this message if present.
             try? await PendingACKRepository.shared.remove(clientMessageId: ack.originalMessageId)
-            #if DEBUG
-            print("✅ [BLE ACK] Uplinked ACK via bridge: \(ack.originalMessageId.prefix(8))")
-            #endif
+            logger.debug("[BLE ACK] Uplinked ACK via bridge: \(ack.originalMessageId, privacy: .private)")
         } catch {
             // Keep a retry signal for next online sync cycle.
             try? await PendingACKRepository.shared.add(
@@ -2251,9 +2271,7 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
                 pathUsed: "mesh-bridge",
                 idempotencyKey: "ack-\(ack.relayKey)"
             )
-            #if DEBUG
-            print("⚠️ [BLE ACK] Bridge uplink failed, queued: \(ack.originalMessageId.prefix(8)) - \(error)")
-            #endif
+            logger.debug("[BLE ACK] Bridge uplink failed, queued: \(ack.originalMessageId, privacy: .private) - \(error.localizedDescription, privacy: .public)")
         }
     }
     
@@ -2271,38 +2289,56 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
         }
         
         guard !alreadyProcessed else {
-            #if DEBUG
-            print("[R5] duplicate → drop")
-            #endif
+            logger.debug("[R5] duplicate - drop")
             return
         }
-        
+
         if stateLock.withLock({ stoppedMessageIds[envelope.clientMessageId] != nil }) {
-            #if DEBUG
-            print("[R5] 🛑 stopped → drop")
-            #endif
+            logger.debug("[R5] stopped - drop")
             return
         }
-        
+
         if envelope.isExpired {
-            #if DEBUG
-            print("[R5] ⏰ expired → drop")
-            #endif
+            logger.debug("[R5] expired - drop")
             return
         }
-        
+
         let myDeviceId = DeviceIdentityService.shared.fingerprint ?? ""
-        
-        if envelope.hasPassedThrough(deviceId: myDeviceId) {
-            #if DEBUG
-            print("[R5] loop → drop")
-            #endif
-            return
-        }
-        
-        #if DEBUG
-        print("[R6] ✅✅ DELIVERED mid=\(envelope.clientMessageId.prefix(8)) handler=\(onMessageReceived != nil)")
-        #endif
+
+        // 🔴 ROUND 39 (2026-05-19) — wire-routePath loop-DoS fix.
+        //
+        // PREVIOUSLY: this branch dropped any envelope whose wire-
+        // supplied `routePath` already contained MY deviceId, on the
+        // theory "I must have already forwarded this, don't loop."
+        // The routePath, however, is NOT covered by the envelope's
+        // originating signature — every hop appends and re-broadcasts
+        // without re-signing. A rogue peer who knows the target's
+        // device fingerprint (it's derived from the Ed25519 public
+        // key — not a secret, gossiped on every handshake) can
+        // forge an envelope with `routePath = [<victim-fingerprint>]`
+        // and the victim will SILENTLY DROP the message even though
+        // it was the FIRST time it saw that clientMessageId.
+        //
+        // Result before the fix: targeted delivery-denial against
+        // arbitrary users. An attacker who can BLE-broadcast within
+        // range of the victim (or even further upstream, since
+        // honest forwarders propagate the forged envelope) can keep
+        // a target offline on mesh.
+        //
+        // FIX: the authoritative dedup is `processedMessages`
+        // (checked above, line 2253-2264). That uses
+        // `clientMessageId` which IS covered by the signature, so
+        // it can't be forged without breaking the signature. The
+        // wire-routePath loop check is redundant AND vulnerable —
+        // delete it. routePath remains useful as a routing-diversity
+        // HINT (other code uses it when choosing which peer to
+        // forward to next), but it never gates delivery.
+        _ = myDeviceId  // kept in scope for the forwarding code below
+        // (intentional: the inbound delivery check no longer uses
+        // routePath for loop detection).
+
+        let hasHandler = onMessageReceived != nil
+        logger.debug("[R6] DELIVERED mid=\(envelope.clientMessageId, privacy: .private) handler=\(hasHandler, privacy: .public)")
         
         // ════════════════════════════════════════════════════════════════
         // BRIDGE FIX: Learn peer's userId from incoming envelopes.
@@ -2315,25 +2351,47 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
             Task { @MainActor in
                 if let idx = self.connectedPeers.firstIndex(where: { $0.deviceId == deviceId }),
                    self.connectedPeers[idx].userId == nil {
+                    // 🔴 ROUND 26 (2026-05-17) — MESH-HIGH-5 v2 wiring.
+                    //   When we learn the peer's userId, ALSO look
+                    //   up whether their (userId, fingerprint) pair
+                    //   has a trusted device row in our local
+                    //   FriendDeviceRepository. If yes, cache
+                    //   isTrusted=true on the MeshPeer so the
+                    //   downstream recipient-here boost in
+                    //   `processValidatedEnvelope` can grant the
+                    //   100% relay shortcut without further async
+                    //   lookups. An untrusted (TOFU-only) peer
+                    //   keeps isTrusted=false and falls through to
+                    //   probabilistic gossip — same security
+                    //   property as before but with full delivery
+                    //   speed for legitimately-verified contacts.
+                    let fp = self.connectedPeers[idx].fingerprint
+                    let claimedUserId = envelope.senderId
+                    var resolvedTrust = self.connectedPeers[idx].isTrusted
+                    if let fp, !fp.isEmpty, !resolvedTrust {
+                        let trustedDevices = await FriendDeviceRepository.shared
+                            .getTrustedDevices(forUser: claimedUserId)
+                        if trustedDevices.contains(where: { $0.fingerprint == fp }) {
+                            resolvedTrust = true
+                        }
+                    }
                     self.connectedPeers[idx] = MeshPeer(
                         id: self.connectedPeers[idx].id,
                         deviceId: self.connectedPeers[idx].deviceId,
-                        userId: envelope.senderId,
+                        userId: claimedUserId,
                         displayName: self.connectedPeers[idx].displayName,
                         peripheral: self.connectedPeers[idx].peripheral,
                         rssi: self.connectedPeers[idx].rssi,
-                        fingerprint: self.connectedPeers[idx].fingerprint,
+                        fingerprint: fp,
                         publicKey: self.connectedPeers[idx].publicKey,
-                        isTrusted: self.connectedPeers[idx].isTrusted
+                        isTrusted: resolvedTrust
                     )
                     self.syncSnapshot()
-                    #if DEBUG
-                    print("🌉 [BRIDGE] Learned userId=\(envelope.senderId.prefix(8)) for peer \(deviceId.prefix(8))")
-                    #endif
+                    logger.debug("[BRIDGE] Learned userId=\(claimedUserId, privacy: .private) for peer \(deviceId, privacy: .private) (trusted=\(resolvedTrust, privacy: .public))")
                 }
             }
         }
-        
+
         onMessageReceived?(envelope)
         
         // ════════════════════════════════════════════════════════════════
@@ -2366,12 +2424,39 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
                 return h.finalize()
             }())
             let probSlot = Double(probHash % 1_000) / 1_000.0
-            let isRecipientHere = targetPeers.contains { $0.userId == envelope.recipientId }
+
+            // 🔴 ROUND 26 (2026-05-17) — hacker-audit MESH-HIGH-5
+            //   v2: restore the recipient-here boost ONLY for VERIFIED
+            //   peers, defended against the sinkhole attack via
+            //   `peer.isTrusted`.
+            //
+            //   v1 of this fix (yesterday) dropped the boost entirely.
+            //   That closed the sinkhole vector but degraded direct-
+            //   recipient delivery in dense meshes: when peerCount=10,
+            //   forwardProbability = 0.27, so a legitimate recipient
+            //   sitting on a connected BLE link got the message with
+            //   only ~30% per hop instead of 100%. Real-world impact:
+            //   noticeable extra latency for friends who are right next
+            //   to the sender.
+            //
+            //   v2: grant the boost when (a) the connected peer claims
+            //   the recipient's userId AND (b) we've VERIFIED that
+            //   binding in `FriendDeviceRepository` — i.e. the peer
+            //   has a trusted-device row matching (recipientId,
+            //   peer.fingerprint). The trust state is populated by
+            //   the bridge-learn async task below and cached on
+            //   `MeshPeer.isTrusted`, so this check is O(1) sync.
+            //   An attacker without a trusted device for the victim
+            //   can no longer attract the boost, even if they claim
+            //   the victim's userId.
+            let isRecipientHere = targetPeers.contains { peer in
+                peer.userId == envelope.recipientId
+                    && peer.isTrusted
+            }
             let elected = isRecipientHere || (probSlot < forwardProbability)
             if !elected {
-                #if DEBUG
-                print("  [BRIDGE] 🎲 Probabilistic gossip dropped relay for \(envelope.clientMessageId.prefix(8)) (p=\(String(format: "%.2f", forwardProbability)), peers=\(peerCount))")
-                #endif
+                let probStr = String(format: "%.2f", forwardProbability)
+                logger.debug("[BRIDGE] Probabilistic gossip dropped relay for \(envelope.clientMessageId, privacy: .private) (p=\(probStr, privacy: .public), peers=\(peerCount, privacy: .public))")
                 // Still keep it in the relay queue — if peers change later we
                 // may forward to a future peer that wasn't in this snapshot.
                 self.addToRelayQueue(envelope)
@@ -2379,9 +2464,8 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
             }
 
             if !targetPeers.isEmpty {
-                #if DEBUG
-                print("  [BRIDGE] Starting Smart Relay for \(envelope.clientMessageId.prefix(8)) (p=\(String(format: "%.2f", forwardProbability)))")
-                #endif
+                let probStr = String(format: "%.2f", forwardProbability)
+                logger.debug("[BRIDGE] Starting Smart Relay for \(envelope.clientMessageId, privacy: .private) (p=\(probStr, privacy: .public))")
                 
                 Task {
                     // Keep a mutable copy to manage our own spray budget
@@ -2415,9 +2499,7 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
                             }
                             
                             if !isRecipient && !isTrusted {
-                                #if DEBUG
-                                print("  [SMART-RELAY] Spray=1 (Wait Phase). Skipping stranger: \(peer.deviceId.prefix(8))")
-                                #endif
+                                logger.debug("[SMART-RELAY] Spray=1 (Wait Phase). Skipping stranger: \(peer.deviceId, privacy: .private)")
                                 continue
                             }
                         }
@@ -2438,9 +2520,7 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
                                 isPeerTrusted = false
                             }
                             if !isRecipientDirect && !isPeerTrusted {
-                                #if DEBUG
-                                print("  [SMART-RELAY] PRoPHET: skipping \(peer.deviceId.prefix(8)) for dest \(destination.prefix(8)) — we are better carrier")
-                                #endif
+                                logger.debug("[SMART-RELAY] PRoPHET: skipping \(peer.deviceId, privacy: .private) for dest \(destination, privacy: .private) - we are better carrier")
                                 continue
                             }
                         }
@@ -2457,10 +2537,9 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
                                         originalSignature: forwardedEnvelope.originalSignature,
                                         originalSignerPublicKey: forwardedEnvelope.originalSignerPublicKey)
                         // Bug #6 fix: markForwardedToPeer removed (backoff logic no longer used)
-                        
-                        #if DEBUG
-                        print("  [SMART-RELAY] Sent to \(peer.deviceId.prefix(8)) | Given Sprays: \(givenSprayTokens), Kept: \(myRemainingEnvelope.sprayCounter)")
-                        #endif
+
+                        let kept = myRemainingEnvelope.sprayCounter
+                        logger.debug("[SMART-RELAY] Sent to \(peer.deviceId, privacy: .private) | Given Sprays: \(givenSprayTokens, privacy: .public), Kept: \(kept, privacy: .public)")
                         
                         // If our budget is exhausted, stop giving to more peers
                         if myRemainingEnvelope.sprayCounter == 0 { break }
@@ -2472,15 +2551,11 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
                     }
                 }
             } else {
-                #if DEBUG
-                print("  [BRIDGE] No connected peers for relay - stored in relay queue for later")
-                #endif
+                logger.debug("[BRIDGE] No connected peers for relay - stored in relay queue for later")
                 self.addToRelayQueue(envelope)
             }
         } else {
-            #if DEBUG
-            print("📩 [BLE] Message for direct delivery - no forwarding")
-            #endif
+            logger.debug("Message for direct delivery - no forwarding")
         }
     }
     
@@ -2505,9 +2580,7 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
             for envelope in sorted {
                 await enqueueForBroadcast(envelope)
             }
-            #if DEBUG
-            print("📤 [BLE] Flushed \(sorted.count) queued messages (priority-sorted)")
-            #endif
+            logger.debug("Flushed \(sorted.count, privacy: .public) queued messages (priority-sorted)")
         }
     }
     
@@ -2610,9 +2683,7 @@ extension BLEMeshEngine: CBCentralManagerDelegate {
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         let stateNames = ["unknown","resetting","unsupported","unauthorized","poweredOff","poweredOn"]
         let stateName = central.state.rawValue < stateNames.count ? stateNames[central.state.rawValue] : "??"
-        #if DEBUG
-        print("[C0] bluetooth → \(stateName)")
-        #endif
+        logger.debug("[C0] bluetooth -> \(stateName, privacy: .public)")
         DispatchQueue.main.async {
             self.bluetoothState = central.state
         }
@@ -2656,20 +2727,14 @@ extension BLEMeshEngine: CBCentralManagerDelegate {
                 self.discoveredPeers.removeAll()
                 self.syncSnapshot()
             }
-            #if DEBUG
-            print("⚠️ [BLE] Bluetooth OFF → cleared all peer state for clean recovery")
-            #endif
+            logger.debug("Bluetooth OFF - cleared all peer state for clean recovery")
         }
     }
-    
+
     // MARK: - Background State Restoration
-    
+
     func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
-        #if DEBUG
-        print("🔄 [BLE] ═══════════════════════════════════════")
-        print("🔄 [BLE] CENTRAL STATE RESTORATION")
-        print("🔄 [BLE] ═══════════════════════════════════════")
-        #endif
+        logger.debug("CENTRAL STATE RESTORATION")
         
         // Begin background task to have time to process
         BackgroundMeshManager.shared.beginBackgroundTask(
@@ -2679,9 +2744,7 @@ extension BLEMeshEngine: CBCentralManagerDelegate {
         
         // Restore connected peripherals
         if let peripherals = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral] {
-            #if DEBUG
-            print("🔄 [BLE] Restoring \(peripherals.count) peripherals")
-            #endif
+            logger.debug("Restoring \(peripherals.count, privacy: .public) peripherals")
             
             // First, update session tracking under lock
             sessionsLock.withLock {
@@ -2696,30 +2759,26 @@ extension BLEMeshEngine: CBCentralManagerDelegate {
                 
                 // Re-discover services if still connected
                 if peripheral.state == .connected {
-                    #if DEBUG
-                    print("🔄 [BLE] Peripheral \(peripheral.identifier.uuidString.prefix(8)) still connected - rediscovering services")
-                    #endif
+                    let pid = peripheral.identifier.uuidString.prefix(8)
+                    logger.debug("Peripheral \(pid, privacy: .private) still connected - rediscovering services")
                     peripheral.discoverServices([Self.serviceUUID])
                 } else {
-                    #if DEBUG
-                    print("🔄 [BLE] Peripheral \(peripheral.identifier.uuidString.prefix(8)) disconnected - will reconnect")
-                    #endif
+                    let pid = peripheral.identifier.uuidString.prefix(8)
+                    logger.debug("Peripheral \(pid, privacy: .private) disconnected - will reconnect")
                 }
             }
         }
         
         // Log scan state
         if let scanServices = dict[CBCentralManagerRestoredStateScanServicesKey] as? [CBUUID] {
-            #if DEBUG
-            print("🔄 [BLE] Was scanning for services: \(scanServices)")
-            #endif
+            let svcDesc = String(describing: scanServices)
+            logger.debug("Was scanning for services: \(svcDesc, privacy: .public)")
             setScanning(true)
         }
-        
+
         if let scanOptions = dict[CBCentralManagerRestoredStateScanOptionsKey] as? [String: Any] {
-            #if DEBUG
-            print("🔄 [BLE] Scan options: \(scanOptions)")
-            #endif
+            let optsDesc = String(describing: scanOptions)
+            logger.debug("Scan options: \(optsDesc, privacy: .public)")
         }
         
         restartScanningForCurrentProfile()
@@ -2784,9 +2843,7 @@ extension BLEMeshEngine: CBCentralManagerDelegate {
                 }
             }
             
-            #if DEBUG
-            print("[C1] discovered \(name) state=\(peripheral.state.rawValue)")
-            #endif
+            logger.debug("[C1] discovered \(name, privacy: .private) state=\(peripheral.state.rawValue, privacy: .public)")
         }
         
         // connectToPeer internally uses sessionsLock for its own checks
@@ -2813,9 +2870,8 @@ extension BLEMeshEngine: CBCentralManagerDelegate {
             connectionAttemptStarted.removeValue(forKey: peripheral.identifier)
             reconnectAttempts.removeValue(forKey: peripheral.identifier)
         }
-        #if DEBUG
-        print("[C3] ✅ didConnect \(peripheral.name ?? peripheral.identifier.uuidString.prefix(8).description)")
-        #endif
+        let connName = peripheral.name ?? peripheral.identifier.uuidString.prefix(8).description
+        logger.debug("[C3] didConnect \(connName, privacy: .private)")
         
         if runtimeProfile == .backgroundBridge {
             BackgroundMeshManager.shared.beginBackgroundTask(
@@ -2875,9 +2931,8 @@ extension BLEMeshEngine: CBCentralManagerDelegate {
             // 🛑 FIX 4: Hardware Pending Reconnect
             // سختافزار بلوتوث اپل این درخواست را نگه میدارد و به محض دیدن دیوایس 
             // بدون مصرف باتری اپلیکیشن را بیدار میکند.
-            #if DEBUG
-            print("🔄 [BLE] Hardware Pending Reconnect for \(peripheral.name ?? "Peer")")
-            #endif
+            let pname = peripheral.name ?? "Peer"
+            logger.debug("Hardware Pending Reconnect for \(pname, privacy: .private)")
             self.connectToPeer(peripheral)
         }
     }
@@ -2909,25 +2964,19 @@ extension BLEMeshEngine: CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         let peerId = peripheral.identifier.uuidString.prefix(8)
         if let error = error {
-            #if DEBUG
-            print("[C4] ❌ didDiscoverServices FAILED for \(peerId): \(error.localizedDescription)")
-            #endif
+            logger.debug("[C4] didDiscoverServices FAILED for \(peerId, privacy: .private): \(error.localizedDescription, privacy: .public)")
             sessionsLock.withLock { connectionCooldowns[peripheral.identifier] = Date().addingTimeInterval(300) }
             centralManager?.cancelPeripheralConnection(peripheral)
             return
         }
         guard let services = peripheral.services, !services.isEmpty else {
-            #if DEBUG
-            print("[C4] ❌ no services on \(peerId)")
-            #endif
+            logger.debug("[C4] no services on \(peerId, privacy: .private)")
             sessionsLock.withLock { connectionCooldowns[peripheral.identifier] = Date().addingTimeInterval(300) }
             centralManager?.cancelPeripheralConnection(peripheral)
             return
         }
-        
-        #if DEBUG
-        print("[C4] ✅ \(services.count) services on \(peerId)")
-        #endif
+
+        logger.debug("[C4] \(services.count, privacy: .public) services on \(peerId, privacy: .private)")
         
         var foundRavenService = false
         for service in services {
@@ -2949,9 +2998,7 @@ extension BLEMeshEngine: CBPeripheralDelegate {
             }
         }
         if !foundRavenService {
-            #if DEBUG
-            print("[C4] ⚠️ RAVEN service NOT found")
-            #endif
+            logger.debug("[C4] RAVEN service NOT found")
             sessionsLock.withLock { connectionCooldowns[peripheral.identifier] = Date().addingTimeInterval(300) }
             centralManager?.cancelPeripheralConnection(peripheral)
         }
@@ -2960,25 +3007,19 @@ extension BLEMeshEngine: CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
         let peerId = peripheral.identifier.uuidString.prefix(8)
         if let error = error {
-            #if DEBUG
-            print("[C5] ❌ didDiscoverCharacteristics FAILED for \(peerId): \(error.localizedDescription)")
-            #endif
+            logger.debug("[C5] didDiscoverCharacteristics FAILED for \(peerId, privacy: .private): \(error.localizedDescription, privacy: .public)")
             sessionsLock.withLock { connectionCooldowns[peripheral.identifier] = Date().addingTimeInterval(300) }
             centralManager?.cancelPeripheralConnection(peripheral)
             return
         }
         guard let characteristics = service.characteristics, !characteristics.isEmpty else {
-            #if DEBUG
-            print("[C5] ❌ no characteristics on \(peerId)")
-            #endif
+            logger.debug("[C5] no characteristics on \(peerId, privacy: .private)")
             sessionsLock.withLock { connectionCooldowns[peripheral.identifier] = Date().addingTimeInterval(300) }
             centralManager?.cancelPeripheralConnection(peripheral)
             return
         }
-        
-        #if DEBUG
-        print("[C5] ✅ \(characteristics.count) chars on \(peerId)")
-        #endif
+
+        logger.debug("[C5] \(characteristics.count, privacy: .public) chars on \(peerId, privacy: .private)")
         
         for char in characteristics {
             if char.uuid == Self.messageCharacteristicUUID {
@@ -3013,9 +3054,7 @@ extension BLEMeshEngine: CBPeripheralDelegate {
                 peripheral: peripheral,
                 rssi: -50
             )
-            #if DEBUG
-            print("[C6] created MeshPeer on-the-fly for \(peerId)")
-            #endif
+            logger.debug("[C6] created MeshPeer on-the-fly for \(peerId, privacy: .private)")
         }
         
         DispatchQueue.main.async {
@@ -3030,9 +3069,7 @@ extension BLEMeshEngine: CBPeripheralDelegate {
                 }
                 self.connectedPeers.append(peer)
                 self.syncSnapshot()
-                #if DEBUG
-                print("[C6] ✅✅ FULLY CONNECTED \(peer.deviceId.prefix(8)) → flushing queues")
-                #endif
+                logger.debug("[C6] FULLY CONNECTED \(peer.deviceId, privacy: .private) - flushing queues")
                 
                 self.flushQueueIfNeeded()
                 self.drainPendingFromDB()
@@ -3052,6 +3089,10 @@ extension BLEMeshEngine: CBPeripheralDelegate {
     
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
         guard error == nil, let data = characteristic.value else { return }
+
+        // ROUND 41 deviceInfo-parse path REVERTED — see startAdvertising
+        // for context. Round 42 below ships the proper fix via a
+        // presence envelope instead.
 
         if characteristic.uuid == Self.messageCharacteristicUUID {
             let deviceId = getSnapshot().first { $0.id == peripheral.identifier }?.deviceId ?? "unknown"
@@ -3080,10 +3121,9 @@ extension BLEMeshEngine: CBPeripheralDelegate {
             // Cache the peer's capability bitfield. The Phase C sender
             // gates v2 encoding on `caps.contains(.v2Protocol)`.
             peerCapabilities[peripheral.identifier] = parseV2Capabilities(data)
-            #if DEBUG
             let raw = data.map { String(format: "%02x", $0) }.joined()
-            print("[mesh-v2] caps from \(peripheral.identifier.uuidString.prefix(8)): 0x\(raw)")
-            #endif
+            let capsPid = peripheral.identifier.uuidString.prefix(8)
+            logger.debug("[mesh-v2] caps from \(capsPid, privacy: .private): 0x\(raw, privacy: .public)")
         }
     }
 
@@ -3114,14 +3154,10 @@ extension BLEMeshEngine: CBPeripheralDelegate {
         do {
             envelope = try RUMProtocolV2.decode(data)
         } catch {
-            #if DEBUG
-            print("[mesh-v2] decode failed from \(deviceId): \(error)")
-            #endif
+            logger.debug("[mesh-v2] decode failed from \(deviceId, privacy: .private): \(error.localizedDescription, privacy: .public)")
             return
         }
-        #if DEBUG
-        print("[mesh-v2] received \(envelope.type) from \(deviceId) — \(envelope.payload.count) B payload, ttl=\(envelope.ttl)")
-        #endif
+        logger.debug("[mesh-v2] received \(String(describing: envelope.type), privacy: .public) from \(deviceId, privacy: .private) — \(envelope.payload.count, privacy: .public) B payload, ttl=\(envelope.ttl, privacy: .public)")
         // Diagnostic notification — useful for protocol-level debugging.
         NotificationCenter.default.post(
             name: .ravenMeshV2EnvelopeReceived,
@@ -3196,9 +3232,7 @@ extension BLEMeshEngine: CBPeripheralDelegate {
         do {
             result = try NoiseSessionStore.shared.processInboundHandshake1(message1: envelope.payload)
         } catch {
-            #if DEBUG
-            print("[mesh-v2-noise] M1 process failed from \(deviceId): \(error)")
-            #endif
+            logger.debug("[mesh-v2-noise] M1 process failed from \(deviceId, privacy: .private): \(error.localizedDescription, privacy: .public)")
             return
         }
 
@@ -3227,7 +3261,28 @@ extension BLEMeshEngine: CBPeripheralDelegate {
 
         if let encoded = try? RUMProtocolV2.encode(m2Envelope) {
             let padded = RUMProtocolV2.pad(encoded)
-            Task { await self.relayV2EnvelopeBytesToAllPeers(padded, except: "") }
+            // 🟥 CRITICAL FIX (2026-05-17) — was
+            // `relayV2EnvelopeBytesToAllPeers`, which ONLY fans out
+            // to peripheral peers in `getSnapshot()` + MPC + WiFiAware.
+            // It SKIPS central subscribers entirely.
+            //
+            // Failure mode that this caused:
+            //   • Receiver (acting as central, subscribed to sender's
+            //     v2 char) fires triggerRehandshake → sends M1 to sender.
+            //   • Sender (acting as peripheral) processes M1, builds M2.
+            //   • Sender pushes M2 via relayV2EnvelopeBytesToAllPeers →
+            //     receiver is a central subscriber (not in getSnapshot
+            //     of sender, which holds *peripherals connected to us
+            //     as central*), so receiver NEVER GETS M2.
+            //   • Receiver's `finishHandshakeAsInitiator` never fires,
+            //     `transport[senderPID]` stays empty, every subsequent
+            //     decrypt fails → "🔒 [Encrypted message — could not
+            //     decrypt]" placeholder loop, exactly the user's bug.
+            //
+            // `broadcastV2FrameToAllPeers` (added with this round)
+            // fans out to BOTH central subscribers AND peripheral
+            // peers, closing the asymmetry.
+            Task { await self.broadcastV2FrameToAllPeers(padded) }
         }
 
         // Embedded payload (typically the actual chat text) → existing
@@ -3240,9 +3295,7 @@ extension BLEMeshEngine: CBPeripheralDelegate {
             }
         }
 
-        #if DEBUG
-        print("[mesh-v2-noise] processed M1 from \(deviceId); session established")
-        #endif
+        logger.debug("[mesh-v2-noise] processed M1 from \(deviceId, privacy: .private); session established")
     }
 
     @MainActor
@@ -3253,13 +3306,9 @@ extension BLEMeshEngine: CBPeripheralDelegate {
                 message2: envelope.payload,
                 peerID: peerID
             )
-            #if DEBUG
-            print("[mesh-v2-noise] processed M2 from \(deviceId); transport keys ready")
-            #endif
+            logger.debug("[mesh-v2-noise] processed M2 from \(deviceId, privacy: .private); transport keys ready")
         } catch {
-            #if DEBUG
-            print("[mesh-v2-noise] M2 process failed from \(deviceId): \(error)")
-            #endif
+            logger.debug("[mesh-v2-noise] M2 process failed from \(deviceId, privacy: .private): \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -3271,9 +3320,27 @@ extension BLEMeshEngine: CBPeripheralDelegate {
             ad: envelope.msgID,
             fromPeer: peerID
         ) else {
-            #if DEBUG
-            print("[mesh-v2-noise] transport decrypt failed from \(deviceId) — no session or AEAD failure")
-            #endif
+            logger.debug("[mesh-v2-noise] transport decrypt failed from \(deviceId, privacy: .private) - no session or AEAD failure")
+            // 🟥 CRITICAL FIX (2026-05-17) — receiver-side recovery for
+            // Noise transport failures.
+            //
+            // Without this, when our `transport[senderPID]` is empty
+            // (we lost the session on restart, app wipe, simulator
+            // reset, etc.) the sender keeps encrypting with their
+            // cached send-cipher and we silently drop EVERY message
+            // forever — the user sees the placeholder bubble loop
+            // they reported in the screenshot.
+            //
+            // Fix: resolve sender's userId from peerPID via the local
+            // peer cache and fire `triggerRehandshake` to broadcast
+            // a fresh M1.  The sender's `processInboundHandshake1`
+            // overwrites their stale `transport[receiverPID]`, M2
+            // comes back (via the now-correct dual-fanout path),
+            // we finalize → both sides converge on a matching session.
+            Task { [weak self] in
+                guard let self else { return }
+                await self.attemptRehandshake(forPeerPID: peerID, reason: "noise-transport-aead-fail")
+            }
             return
         }
         // Two shapes ride a Noise transport-mode payload:
@@ -3311,9 +3378,7 @@ extension BLEMeshEngine: CBPeripheralDelegate {
         do {
             signedPayload = try JSONDecoder().decode(SignedMeshPayload.self, from: data)
         } catch {
-            #if DEBUG
-            print("[mesh-v2-noise-native] SignedMeshPayload decode failed from \(deviceId): \(error)")
-            #endif
+            logger.debug("[mesh-v2-noise-native] SignedMeshPayload decode failed from \(deviceId, privacy: .private): \(error.localizedDescription, privacy: .public)")
             return
         }
         let messageId = signedPayload.envelope.clientMessageId
@@ -3322,18 +3387,14 @@ extension BLEMeshEngine: CBPeripheralDelegate {
 
             let isNew = await MeshDedupRepository.shared.isNewMessage(id: messageId)
             if !isNew {
-                #if DEBUG
-                print("[mesh-v2-noise-native] duplicate \(messageId.prefix(8)) — skipping")
-                #endif
+                logger.debug("[mesh-v2-noise-native] duplicate \(messageId, privacy: .private) - skipping")
                 return
             }
 
             let isValid = await MeshCryptoService.shared.verifySignature(signedPayload)
             guard isValid else {
                 await MeshDedupRepository.shared.unclaimMessage(id: messageId)
-                #if DEBUG
-                print("[mesh-v2-noise-native] signature verify failed from \(deviceId)")
-                #endif
+                logger.debug("[mesh-v2-noise-native] signature verify failed from \(deviceId, privacy: .private)")
                 return
             }
 
@@ -3388,10 +3449,9 @@ extension BLEMeshEngine: CBPeripheralDelegate {
         // of the original via a different path doesn't get re-sprayed.
         RUMRelayService.shared.markStopped(msgID: originalMsgID)
 
-        #if DEBUG
         let originalHex = originalMsgID.map { String(format: "%02x", $0) }.joined()
-        print("[mesh-v2] emitting STOP for \(originalHex.prefix(8))")
-        #endif
+        let prefixHex = originalHex.prefix(8)
+        logger.debug("[mesh-v2] emitting STOP for \(prefixHex, privacy: .private)")
 
         Task { await self.relayV2EnvelopeBytesToAllPeers(padded, except: "") }
     }
@@ -3478,9 +3538,7 @@ extension BLEMeshEngine: CBPeripheralManagerDelegate {
     func peripheralManagerDidUpdateState(_ peripheral: CBPeripheralManager) {
         let stateNames = ["unknown","resetting","unsupported","unauthorized","poweredOff","poweredOn"]
         let stateName = peripheral.state.rawValue < stateNames.count ? stateNames[peripheral.state.rawValue] : "??"
-        #if DEBUG
-        print("[C0] peripheral → \(stateName)")
-        #endif
+        logger.debug("[C0] peripheral -> \(stateName, privacy: .public)")
         if peripheral.state == .poweredOn {
             startAdvertising()
             // NOTE: Do NOT drain outbox here — peripheral manager powers on for
@@ -3498,20 +3556,14 @@ extension BLEMeshEngine: CBPeripheralManagerDelegate {
             messageCharacteristic = nil
             deviceInfoCharacteristic = nil
             subscribersLock.withLock { centralSubscribers.removeAll() }
-            #if DEBUG
-            print("⚠️ [BLE] Peripheral OFF → cleared advertising + GATT state")
-            #endif
+            logger.debug("Peripheral OFF - cleared advertising + GATT state")
         }
     }
-    
+
     // MARK: - Background State Restoration
-    
+
     func peripheralManager(_ peripheral: CBPeripheralManager, willRestoreState dict: [String: Any]) {
-        #if DEBUG
-        print("🔄 [BLE] ═══════════════════════════════════════")
-        print("🔄 [BLE] PERIPHERAL STATE RESTORATION")
-        print("🔄 [BLE] ═══════════════════════════════════════")
-        #endif
+        logger.debug("PERIPHERAL STATE RESTORATION")
         
         // Begin background task
         BackgroundMeshManager.shared.beginBackgroundTask(
@@ -3521,23 +3573,17 @@ extension BLEMeshEngine: CBPeripheralManagerDelegate {
         
         // Restore services and characteristics
         if let services = dict[CBPeripheralManagerRestoredStateServicesKey] as? [CBMutableService] {
-            #if DEBUG
-            print("🔄 [BLE] Restoring \(services.count) services")
-            #endif
+            logger.debug("Restoring \(services.count, privacy: .public) services")
             
             for service in services {
                 if let chars = service.characteristics as? [CBMutableCharacteristic] {
                     for char in chars {
                         if char.uuid == Self.messageCharacteristicUUID {
                             messageCharacteristic = char
-                            #if DEBUG
-                            print("🔄 [BLE] Restored message characteristic")
-                            #endif
+                            logger.debug("Restored message characteristic")
                         } else if char.uuid == Self.deviceInfoCharacteristicUUID {
                             deviceInfoCharacteristic = char
-                            #if DEBUG
-                            print("🔄 [BLE] Restored device info characteristic")
-                            #endif
+                            logger.debug("Restored device info characteristic")
                         }
                     }
                 }
@@ -3546,9 +3592,8 @@ extension BLEMeshEngine: CBPeripheralManagerDelegate {
         
         // Check if was advertising
         if let advertisementData = dict[CBPeripheralManagerRestoredStateAdvertisementDataKey] as? [String: Any] {
-            #if DEBUG
-            print("🔄 [BLE] Was advertising: \(advertisementData)")
-            #endif
+            let adDesc = String(describing: advertisementData)
+            logger.debug("Was advertising: \(adDesc, privacy: .public)")
             DispatchQueue.main.async { self.isAdvertising = true }
         }
         
@@ -3558,9 +3603,8 @@ extension BLEMeshEngine: CBPeripheralManagerDelegate {
     
     func peripheralManager(_ peripheral: CBPeripheralManager, central: CBCentral, didSubscribeTo characteristic: CBCharacteristic) {
         addSubscriber(central)
-        #if DEBUG
-        print("[C6] remote central subscribed (subs=\(subscriberCount))")
-        #endif
+        let subs = subscriberCount
+        logger.debug("[C6] remote central subscribed (subs=\(subs, privacy: .public))")
         
         // CRITICAL: Drain pending messages when central subscribes too!
         flushQueueIfNeeded()
@@ -3585,18 +3629,15 @@ extension BLEMeshEngine: CBPeripheralManagerDelegate {
     
     func peripheralManager(_ peripheral: CBPeripheralManager, central: CBCentral, didUnsubscribeFrom characteristic: CBCharacteristic) {
         removeSubscriber(central)
-        #if DEBUG
-        print("📴 [BLE] Central unsubscribed (\(subscriberCount) remaining)")
-        #endif
+        let subs = subscriberCount
+        logger.debug("Central unsubscribed (\(subs, privacy: .public) remaining)")
     }
-    
+
     /// Bug #2: Cleanup stale subscribers (call periodically)
     func cleanupStaleSubscribers() {
         let removed = removeStaleSubscribers()
         if removed > 0 {
-            #if DEBUG
-            print("🧹 [BLE] Cleaned \(removed) stale subscribers")
-            #endif
+            logger.debug("Cleaned \(removed, privacy: .public) stale subscribers")
         }
     }
     
@@ -3711,9 +3752,7 @@ extension BLEMeshEngine {
                     retries += 1
                 }
                 guard success else {
-                    #if DEBUG
-                    print("❌ [BLE] Failed to send non-chunked message after 15 retries. Aborting.")
-                    #endif
+                    logger.debug("Failed to send non-chunked message after 15 retries. Aborting.")
                     return
                 }
             }
@@ -3748,9 +3787,7 @@ extension BLEMeshEngine {
                     retries += 1
                 }
                 guard success else {
-                    #if DEBUG
-                    print("❌ [BLE] Failed to send chunk \(index)/\(chunks.count) after 15 retries. Aborting message.")
-                    #endif
+                    logger.debug("Failed to send chunk \(index, privacy: .public)/\(chunks.count, privacy: .public) after 15 retries. Aborting message.")
                     return
                 }
                 
@@ -3809,9 +3846,7 @@ extension BLEMeshEngine {
             // 🛡️ Ghost-loop guard: abort immediately if peer disconnected mid-transfer.
             // Without this, each remaining chunk waits 2s for timeout (250 chunks × 2s = 8 min hang).
             guard peer.peripheral.state == .connected else {
-                #if DEBUG
-                print("⚠️ [BLE] Peer disconnected mid-transfer at chunk \(index)/\(chunks.count). Aborting.")
-                #endif
+                logger.debug("Peer disconnected mid-transfer at chunk \(index, privacy: .public)/\(chunks.count, privacy: .public). Aborting.")
                 break
             }
 
@@ -3872,9 +3907,7 @@ extension BLEMeshEngine {
             let encoded = try RUMProtocolV2.encode(v2)
             return RUMProtocolV2.pad(encoded)
         } catch {
-            #if DEBUG
-            print("[mesh-v2] encode failed: \(error)")
-            #endif
+            logger.debug("[mesh-v2] encode failed: \(error.localizedDescription, privacy: .public)")
             return nil
         }
     }
@@ -3987,6 +4020,234 @@ extension BLEMeshEngine {
         return (try? RUMProtocolV2.encode(v2)).map(RUMProtocolV2.pad)
     }
 
+    /// 🔴 ROUND 26 (2026-05-17) — receiver-initiated re-handshake.
+    ///
+    /// PROBLEM: when receiver's Noise session for sender is gone but
+    /// sender's session is still cached, sender keeps sealing with
+    /// the stale session and every message fails to decrypt forever.
+    /// Local eviction (`NoiseSessionStore.evict`) doesn't help because
+    /// the sender never finds out their session is stale — they only
+    /// check `hasSession(for: peerPID)` on their OWN outbound, and
+    /// they have a session.
+    ///
+    /// FIX: when receiver hits a decrypt-fail, ACTIVELY broadcast a
+    /// fresh `noiseHandshake1` frame to the sender. When sender
+    /// receives it, `NoiseSessionStore.processInboundHandshake1`
+    /// (line 134) overwrites their existing transport entry with
+    /// the new session. Both sides end up with fresh keys.
+    ///
+    /// Called from `RAVENApp.handleMeshMessage` on the
+    /// `.decryptFailed` switch case.
+    ///
+    /// - Parameter senderUserId: the userId of the peer we couldn't
+    ///   decrypt from. We look up their X25519 pubkey from
+    ///   PeerKeyDirectory and broadcast an empty-payload handshake1
+    ///   frame addressed to them.
+    func triggerRehandshake(withSenderUserId senderUserId: String) async {
+        guard !senderUserId.isEmpty else { return }
+        // Resolve the sender's static X25519 pubkey — uses cache,
+        // falls back to a server-side prekey fetch on miss.
+        guard let agreementKey = await PeerKeyDirectory.shared.ensureAgreementKey(for: senderUserId),
+              agreementKey.count == 32 else {
+            #if DEBUG
+            print("⚠️ [Rehandshake] No agreement key for \(senderUserId.prefix(8)) — cannot send handshake1")
+            #endif
+            return
+        }
+        // Encode + broadcast an empty-payload handshake1 frame.
+        // The recipient runs `processInboundHandshake1` which
+        // OVERWRITES their stale session under the same peerPID
+        // (NoiseSessionStore:148-149), so both sides end up with
+        // fresh keys.
+        let stubMsgId = UUID().uuidString
+        guard let frame = await MainActor.run(body: {
+            self.encodeV2NoiseHandshake1FrameForPeer(
+                encryptedV1Payload: Data(),  // empty — this is a key-recovery handshake, not a payload
+                clientMessageID: stubMsgId,
+                peerAgreementKey: agreementKey,
+                hopCount: 0
+            )
+        }) else {
+            #if DEBUG
+            print("⚠️ [Rehandshake] Failed to encode handshake1 frame for \(senderUserId.prefix(8))")
+            #endif
+            return
+        }
+        // 🟥 CRITICAL FIX (2026-05-17) — was `broadcastPostData(frame)`,
+        // which writes to the v1 `messageCharacteristic`. Receivers route
+        // v1-char traffic into the JSON `packetProcessor`, which silently
+        // drops the binary RUMProtocolV2 envelope. Result: every rehandshake
+        // attempt was thrown away on arrival.  Route via the v2 broadcast
+        // helper so the frame lands on `RUMProtocolV2.messageCharacteristicUUID`
+        // and reaches `handleV2EnvelopePayload` → `handleInboundNoiseHandshake1`.
+        await broadcastV2FrameToAllPeers(frame)
+        #if DEBUG
+        print("🤝 [Rehandshake] Broadcast fresh handshake1 (v2 char) to \(senderUserId.prefix(8)) — sender's stale session will be overwritten.")
+        #endif
+    }
+
+    /// 🟥 ROUND 27 (2026-05-17) — peerPID-based rehandshake entry point.
+    ///
+    /// Called from `handleInboundNoiseTransport` on a decrypt failure
+    /// where all we have is the 16-byte sender peerPID (no userId in
+    /// the envelope). Reverses the SHA-256 mapping by checking each
+    /// userId in `PeerKeyDirectory.allKnownPeers()` against
+    /// `RUMProtocolV2.peerID(fromPublicKey:)`, then defers to the
+    /// userId-based `triggerRehandshake`.
+    ///
+    /// Deduplicates in-flight attempts via `rehandshakeInFlight` so
+    /// a burst of failed messages from one peer triggers ONE recovery,
+    /// not N (the recovery's M1 + M2 already fix all subsequent
+    /// messages by overwriting the session).
+    func attemptRehandshake(forPeerPID peerPID: Data, reason: String) async {
+        let peers = await PeerKeyDirectory.shared.allKnownPeers()
+        var resolvedUserId: String?
+        for userId in peers {
+            guard let pubKey = await PeerKeyDirectory.shared.agreementKey(for: userId),
+                  pubKey.count == 32 else { continue }
+            let candidate = RUMProtocolV2.peerID(fromPublicKey: pubKey)
+            if candidate == peerPID {
+                resolvedUserId = userId
+                break
+            }
+        }
+        guard let userId = resolvedUserId else {
+            #if DEBUG
+            let prefix = peerPID.prefix(4).map { String(format: "%02x", $0) }.joined()
+            print("⚠️ [Rehandshake/byPID] no userId mapping for peerPID=\(prefix) — can't recover (\(reason)).")
+            #endif
+            return
+        }
+        // Evict the stale local session first so the next outbound
+        // from us can't try to encrypt with the dead transport keys.
+        await MainActor.run {
+            NoiseSessionStore.shared.evict(peerID: peerPID)
+        }
+        #if DEBUG
+        print("🔄 [Rehandshake/byPID] reason=\(reason) — evicting + handshaking to \(userId.prefix(8)).")
+        #endif
+        await triggerRehandshake(withSenderUserId: userId)
+    }
+
+    /// 🔴 ROUND 27 (2026-05-17) — v2-channel broadcast helper.
+    ///
+    /// Companion to `broadcastPostData` / `broadcastDataChunked`, but
+    /// addresses the *v2* characteristic on every reachable transport:
+    ///   1. **Central subscribers** (we are peripheral) — via
+    ///      `sendDataChunkedToCentralV2`, which mirrors
+    ///      `sendDataChunkedToCentral` but writes to
+    ///      `v2MessageCharacteristic` instead of the v1 one.
+    ///   2. **Connected peripheral peers** (we are central) — via
+    ///      `sendDataChunkedToPeer` with v2 service+characteristic UUIDs,
+    ///      gated on `peerCapabilities[..].contains(.v2Protocol)`.
+    ///   3. **MPC** and **Wi-Fi Aware** — same fan-out pattern as
+    ///      `relayV2EnvelopeBytesToAllPeers` (receiver bloom-dedups
+    ///      cross-transport duplicates by `msg_id`).
+    ///
+    /// Used by `triggerRehandshake` so the receiver-initiated
+    /// `noiseHandshake1` actually reaches the v2 handler on the sender,
+    /// not the v1 JSON processor which would silently drop it.
+    func broadcastV2FrameToAllPeers(_ data: Data) async {
+        await withTaskGroup(of: Void.self) { group in
+            // Centrals subscribed to OUR v2 characteristic.
+            for sub in getSubscribers() {
+                group.addTask { await self.sendDataChunkedToCentralV2(data, central: sub.central) }
+            }
+            // Peripherals we discovered and connected to, gated on v2 cap.
+            for peer in getSnapshot() {
+                let caps = peerCapabilities[peer.id] ?? []
+                guard caps.contains(.v2Protocol) else { continue }
+                group.addTask {
+                    await self.sendDataChunkedToPeer(
+                        data,
+                        peer: peer,
+                        serviceUUID: RUMProtocolV2.serviceUUID,
+                        characteristicUUID: RUMProtocolV2.messageCharacteristicUUID
+                    )
+                }
+            }
+        }
+
+        // MPC fan-out — authenticated peers only.
+        for mpcPeer in MPCTransportService.shared.connectedPeerIds {
+            do {
+                try MPCTransportService.shared.sendBulkData(data, to: mpcPeer)
+            } catch {
+                logger.debug("[mesh-v2-broadcast] mpc send to \(mpcPeer.displayName, privacy: .private) failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+
+        // Wi-Fi Aware fan-out (iOS 26+).
+        await MainActor.run {
+            for waPeer in WiFiAwareTransport.shared.connectedPeerIds {
+                do {
+                    try WiFiAwareTransport.shared.sendBulkData(data, to: waPeer)
+                } catch {
+                    logger.debug("[mesh-v2-broadcast] wifi-aware send to \(waPeer.displayName, privacy: .private) failed: \(error.localizedDescription, privacy: .public)")
+                }
+            }
+        }
+    }
+
+    /// v2 sibling of `sendDataChunkedToCentral`. Identical chunking
+    /// protocol (1-byte header + optional hash/index for chunked),
+    /// but writes to `v2MessageCharacteristic` so receivers route
+    /// the payload through `handleV2EnvelopePayload` rather than the
+    /// v1 JSON packet processor.
+    private func sendDataChunkedToCentralV2(_ data: Data, central: CBCentral) async {
+        guard let v2Char = v2MessageCharacteristic else { return }
+        let maxUpdateLength = central.maximumUpdateValueLength
+        let centralMTU = max(maxUpdateLength - 1, 20)
+
+        if data.count <= centralMTU {
+            var packet = Data([0])  // 0 = not chunked
+            packet.append(data)
+            var success = peripheralManager?.updateValue(packet, for: v2Char, onSubscribedCentrals: [central]) ?? false
+            var retries = 0
+            while !success && retries < 15 {
+                if Task.isCancelled { return }
+                await waitForCentralReady()
+                success = peripheralManager?.updateValue(packet, for: v2Char, onSubscribedCentrals: [central]) ?? false
+                retries += 1
+            }
+            guard success else {
+                logger.debug("[mesh-v2-broadcast] non-chunked central write failed after 15 retries; central not subscribed to v2 char.")
+                return
+            }
+            return
+        }
+
+        let chunkPayloadSize = centralMTU - Self.headerSize
+        let chunks = splitIntoChunks(data, payloadSize: chunkPayloadSize)
+        guard chunks.count <= 255 else { return }
+
+        let messageHash = UInt32(truncatingIfNeeded: data.hashValue).littleEndian
+
+        for (index, chunk) in chunks.enumerated() {
+            var packet = Data([1])  // 1 = chunked
+            let hashBytes = withUnsafeBytes(of: messageHash) { Array($0) }
+            packet.append(contentsOf: hashBytes)
+            packet.append(UInt8(chunks.count))
+            packet.append(UInt8(index))
+            packet.append(chunk)
+
+            var success = peripheralManager?.updateValue(packet, for: v2Char, onSubscribedCentrals: [central]) ?? false
+            var retries = 0
+            while !success && retries < 15 {
+                if Task.isCancelled { return }
+                await waitForCentralReady()
+                success = peripheralManager?.updateValue(packet, for: v2Char, onSubscribedCentrals: [central]) ?? false
+                retries += 1
+            }
+            guard success else {
+                logger.debug("[mesh-v2-broadcast] chunk \(index, privacy: .public)/\(chunks.count, privacy: .public) failed after 15 retries; aborting.")
+                return
+            }
+
+            try? await Task.sleep(nanoseconds: 15_000_000)
+        }
+    }
+
     /// "12345678-1234-…" → 16 raw bytes for the v2 envelope's `msg_id`.
     private func uuidStringToBytes(_ s: String) -> Data? {
         guard let u = UUID(uuidString: s) else { return nil }
@@ -4033,9 +4294,7 @@ extension BLEMeshEngine {
             do {
                 try MPCTransportService.shared.sendBulkData(bytes, to: mpcPeer)
             } catch {
-                #if DEBUG
-                print("[mesh-v2-relay] mpc send to \(mpcPeer.displayName) failed: \(error)")
-                #endif
+                logger.debug("[mesh-v2-relay] mpc send to \(mpcPeer.displayName, privacy: .private) failed: \(error.localizedDescription, privacy: .public)")
             }
         }
 
@@ -4049,9 +4308,7 @@ extension BLEMeshEngine {
                 do {
                     try WiFiAwareTransport.shared.sendBulkData(bytes, to: waPeer)
                 } catch {
-                    #if DEBUG
-                    print("[mesh-v2-relay] wifi-aware send to \(waPeer.displayName) failed: \(error)")
-                    #endif
+                    logger.debug("[mesh-v2-relay] wifi-aware send to \(waPeer.displayName, privacy: .private) failed: \(error.localizedDescription, privacy: .public)")
                 }
             }
         }
@@ -4155,9 +4412,7 @@ extension BLEMeshEngine {
             return true
         }
         guard canExchange else {
-            #if DEBUG
-            print("📦 [INV] Skipping exchange with \(peerDeviceId.prefix(8)) — too recent")
-            #endif
+            logger.debug("[INV] Skipping exchange with \(peerDeviceId, privacy: .private) - too recent")
             return
         }
         
@@ -4182,23 +4437,17 @@ extension BLEMeshEngine {
         )
         
         guard let data = try? JSONEncoder().encode(frame) else {
-            #if DEBUG
-            print("❌ [INV] Failed to encode InvBloom frame")
-            #endif
+            logger.debug("[INV] Failed to encode InvBloom frame")
             return
         }
-        
+
         // Find the target peer and send ONLY to them (not broadcast).
         guard let peer = getSnapshot().first(where: { $0.deviceId == peerDeviceId }) else {
-            #if DEBUG
-            print("⚠️ [INV] Peer \(peerDeviceId.prefix(8)) not in snapshot — skipping")
-            #endif
+            logger.debug("[INV] Peer \(peerDeviceId, privacy: .private) not in snapshot - skipping")
             return
         }
-        
-        #if DEBUG
-        print("📦 [INV] Sending Bloom (\(cappedIds.count) items, \(data.count)B) to \(peerDeviceId.prefix(8))")
-        #endif
+
+        logger.debug("[INV] Sending Bloom (\(cappedIds.count, privacy: .public) items, \(data.count, privacy: .public)B) to \(peerDeviceId, privacy: .private)")
         
         // Use chunked send to avoid exceeding BLE MTU (~185 bytes).
         // The old code sent a single unchunked packet that would silently fail
@@ -4218,9 +4467,7 @@ extension BLEMeshEngine {
                 if let idx = self.connectedPeers.firstIndex(where: { $0.deviceId == actualPeerId || $0.deviceId == peerDeviceId }) {
                     self.connectedPeers[idx].userId = userId
                     self.syncSnapshot()
-                    #if DEBUG
-                    print("🔑 [INV] Learned userId \(userId.prefix(8)) for peer \(actualPeerId)")
-                    #endif
+                    logger.debug("[INV] Learned userId \(userId, privacy: .private) for peer \(actualPeerId, privacy: .private)")
                 }
             }
             // Immediately poll server for messages destined to this now-identified peer
@@ -4243,13 +4490,9 @@ extension BLEMeshEngine {
         // If peer has everything we have, also send our own Bloom for reciprocal exchange
         // (they may have things we don't)
         if missingForPeer.isEmpty {
-            #if DEBUG
-            print("📦 [INV] Peer \(peerDeviceId.prefix(8)) has all our messages — sending our Bloom for reciprocal check")
-            #endif
+            logger.debug("[INV] Peer \(peerDeviceId, privacy: .private) has all our messages - sending our Bloom for reciprocal check")
         } else {
-            #if DEBUG
-            print("📦 [INV] Peer \(peerDeviceId.prefix(8)) missing \(missingForPeer.count) messages — telling them")
-            #endif
+            logger.debug("[INV] Peer \(peerDeviceId, privacy: .private) missing \(missingForPeer.count, privacy: .public) messages - telling them")
         }
         
         // Send WANT frame telling peer what THEY should request from US
@@ -4268,9 +4511,7 @@ extension BLEMeshEngine {
                     let envelope = msg.toMeshEnvelope()
                     if let peer = getSnapshot().first(where: { $0.deviceId == peerDeviceId }) {
                         await send(envelope, to: peer)
-                        #if DEBUG
-                        print("📦 [INV] Sent missing message \(messageId.prefix(8)) to \(peerDeviceId.prefix(8))")
-                        #endif
+                        logger.debug("[INV] Sent missing message \(messageId, privacy: .private) to \(peerDeviceId, privacy: .private)")
                     }
                 }
             }
@@ -4286,9 +4527,7 @@ extension BLEMeshEngine {
         guard !frame.wantedIds.isEmpty else { return }
         
         let capped = Array(frame.wantedIds.prefix(20))  // Safety cap
-        #if DEBUG
-        print("📦 [INV] Peer \(peerDeviceId.prefix(8)) wants \(capped.count) messages")
-        #endif
+        logger.debug("[INV] Peer \(peerDeviceId, privacy: .private) wants \(capped.count, privacy: .public) messages")
         
         for messageId in capped {
             if let rows = try? await MessageRepository.shared.getMessageByClientId(messageId),
@@ -4402,15 +4641,12 @@ extension BLEMeshEngine {
         // 🛑 FIX: If we have no routing context at all (no peers nearby AND no
         // location), skip polling to prevent downloading messages we can't deliver.
         if peerUserIds.isEmpty && myGeohash == nil {
-            #if DEBUG
-            print("  [Bridge Downlink] No routing context available. Skipped to prevent global flood.")
-            #endif
+            logger.debug("[Bridge Downlink] No routing context available. Skipped to prevent global flood.")
             return
         }
-        
-        #if DEBUG
-        print("  [Bridge Downlink] Polling with SMART Context (Peers: \(peerUserIds.count), Geo: \(myGeohash ?? "nil"))")
-        #endif
+
+        let geoForLog = myGeohash ?? "nil"
+        logger.debug("[Bridge Downlink] Polling with SMART Context (Peers: \(peerUserIds.count, privacy: .public), Geo: \(geoForLog, privacy: .private))")
         
         do {
             let request = SmartBridgeDownlinkRequest(
@@ -4427,9 +4663,7 @@ extension BLEMeshEngine {
                     body: request
                 )
             } catch {
-                #if DEBUG
-                print("  [Bridge Downlink] Smart poll failed (\(error.localizedDescription)), trying legacy fallback...")
-                #endif
+                logger.debug("[Bridge Downlink] Smart poll failed (\(error.localizedDescription, privacy: .public)), trying legacy fallback")
                 do {
                     let legacyRequest = BridgeDownlinkRequest(peerUserIds: peerUserIds)
                     response = try await NetworkService.shared.post(
@@ -4437,17 +4671,19 @@ extension BLEMeshEngine {
                         body: legacyRequest
                     )
                 } catch {
-                    #if DEBUG
-                    print("  [Bridge Downlink] Legacy poll also failed: \(error.localizedDescription)")
-                    #endif
+                    logger.debug("[Bridge Downlink] Legacy poll also failed: \(error.localizedDescription, privacy: .public)")
                 }
             }
             
-            guard let validResponse = response, validResponse.count > 0 else { return }
-            
-            #if DEBUG
-            print("  [Bridge Downlink] Got \(validResponse.count) messages to relay via BLE")
-            #endif
+            // Round 47: even when count==0, the response may still
+            // carry group lifecycle events that we need to materialize
+            // + re-broadcast. Don't bail out on count==0 alone — only
+            // when BOTH messages AND group_events are empty.
+            guard let validResponse = response else { return }
+            let hasLifecycleEvents = !(validResponse.groupEvents ?? []).isEmpty
+            guard validResponse.count > 0 || hasLifecycleEvents else { return }
+
+            logger.debug("[Bridge Downlink] Got \(validResponse.count, privacy: .public) messages + \((validResponse.groupEvents ?? []).count, privacy: .public) group events to relay via BLE")
             
             // UIDevice.current is MainActor-isolated; read the vendor ID from
             // there in one explicit hop instead of in a nonisolated autoclosure.
@@ -4482,7 +4718,17 @@ extension BLEMeshEngine {
                 //   Direct Hit  → hop_limit=1, spray=1
                 //   Social Mule → spray=0 (carry-only, no BLE spreading)
                 //   Geo Match   → spray=meshSprayBudget (full city coverage)
-                let envelope = MeshEnvelope(
+                //
+                // 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — stamp
+                // group context onto the bridge-downlinked envelope.
+                // For group messages the server merges them into the
+                // `messages` array with `is_group:true` + `group_id`
+                // + `group_key_version`. Without these stamped onto
+                // the mesh envelope, A (offline) would receive the
+                // re-broadcast and either route it as 1:1 (wrong
+                // thread) or fail to decrypt the AES-GCM ciphertext.
+                let envelopeIsGroup = msg.isGroup == true
+                var envelope = MeshEnvelope(
                     clientMessageId: msg.id,
                     roomId: msg.roomId ?? msg.senderId ?? "",
                     senderId: msg.senderId ?? "",
@@ -4509,7 +4755,47 @@ extension BLEMeshEngine {
                     replyToSenderName: msg.replyToSenderName,
                     isBridged: true
                 )
-                
+                if envelopeIsGroup {
+                    envelope.isGroup = true
+                    // For groups, recipientId on the wire should be the
+                    // group_id (so receivers route via group thread, not
+                    // a single peer). Server's `recipient_id` in the
+                    // group_results dict is the FIRST undelivered peer
+                    // — useful for relay targeting but wrong for the
+                    // envelope's group identity.
+                    if let gid = msg.groupId, !gid.isEmpty {
+                        envelope = MeshEnvelope(
+                            clientMessageId: envelope.clientMessageId,
+                            roomId: gid,
+                            senderId: envelope.senderId,
+                            senderName: envelope.senderName,
+                            recipientId: gid,
+                            type: envelope.type,
+                            text: envelope.text,
+                            timestamp: envelope.timestamp,
+                            sprayCounter: envelope.sprayCounter,
+                            hopCount: envelope.hopCount,
+                            hopLimit: envelope.hopLimit,
+                            routePath: envelope.routePath,
+                            originDeviceId: envelope.originDeviceId,
+                            needsForwarding: envelope.needsForwarding,
+                            ttlSeconds: envelope.ttlSeconds,
+                            mediaUrl: envelope.mediaUrl,
+                            thumbnailUrl: envelope.thumbnailUrl,
+                            fileName: envelope.fileName,
+                            mimeType: envelope.mimeType,
+                            fileSize: envelope.fileSize,
+                            audioDuration: envelope.audioDuration,
+                            replyToMessageId: envelope.replyToMessageId,
+                            replyToTextPreview: envelope.replyToTextPreview,
+                            replyToSenderName: envelope.replyToSenderName,
+                            isBridged: true
+                        )
+                        envelope.isGroup = true
+                    }
+                    envelope.groupKeyVersion = msg.groupKeyVersion
+                }
+
                 // Broadcast via BLE to peers (goes through sign+encrypt pipeline)
                 await enqueueForBroadcast(envelope)
                 
@@ -4517,17 +4803,110 @@ extension BLEMeshEngine {
                 addToRelayQueue(envelope)
                 
                 relayedCount += 1
-                #if DEBUG
-                print("  [Bridge Downlink] ✅ Relayed \(msg.id.prefix(8)) from \(msg.senderId?.prefix(8) ?? "?") → \(msg.recipientId?.prefix(8) ?? "?")")
-                #endif
+                let senderForLog = msg.senderId ?? "?"
+                let recipForLog = msg.recipientId ?? "?"
+                logger.debug("[Bridge Downlink] Relayed \(msg.id, privacy: .private) from \(senderForLog, privacy: .private) -> \(recipForLog, privacy: .private)")
             }
-            
+
             if relayedCount > 0 {
-                #if DEBUG
-                print("  [Bridge Downlink] ════ Relayed \(relayedCount)/\(validResponse.count) messages via BLE ════")
-                #endif
+                logger.debug("[Bridge Downlink] Relayed \(relayedCount, privacy: .public)/\(validResponse.count, privacy: .public) messages via BLE")
             }
-            
+
+            // ═══════════════════════════════════════════════════════════
+            // 🟦 ROUND 47 (2026-05-17) — group lifecycle event relay.
+            // ═══════════════════════════════════════════════════════════
+            // The server now surfaces recently-created groups in the
+            // downlink response. For each group_create event:
+            //   1. Materialize the group locally via the standard
+            //      mesh-receive path (handleGroupSyncMeshMessage) so
+            //      our own UI knows the group.
+            //   2. Mesh-broadcast a fresh group_create envelope so
+            //      our BLE-only neighbours (e.g. C in the canonical
+            //      "A on internet, B online+BLE, C BLE-only" test)
+            //      can materialize too.
+            // Dedup keys are scoped per-(group_id, event-type) so we
+            // never re-broadcast the same lifecycle event within the
+            // dedup TTL. The mesh-side BloomDedup also catches it
+            // a second time if any signal slips through.
+            let groupEvents = validResponse.groupEvents ?? []
+            if !groupEvents.isEmpty {
+                logger.debug("[Bridge Downlink] +\(groupEvents.count, privacy: .public) group lifecycle event(s) from server")
+                for evt in groupEvents {
+                    guard evt.type == "group_create" else {
+                        logger.debug("[Bridge Downlink] Unknown group event type=\(evt.type, privacy: .public) — skipping")
+                        continue
+                    }
+                    // Build a synthetic dedup key so we don't re-broadcast
+                    // the same lifecycle event every 15-second poll.
+                    let evtDedupKey = "groupEvt-\(evt.type)-\(evt.groupId)"
+                    let isNew = downlinkLock.withLock { () -> Bool in
+                        let now = Date()
+                        if let last = bridgeDownlinkRelayedAt[evtDedupKey],
+                           now.timeIntervalSince(last) < bridgeDownlinkRelayTTL {
+                            return false
+                        }
+                        bridgeDownlinkRelayedAt[evtDedupKey] = now
+                        return true
+                    }
+                    guard isNew else {
+                        logger.debug("[Bridge Downlink] group event \(evt.groupId.prefix(8), privacy: .private) within TTL — skip re-broadcast")
+                        continue
+                    }
+
+                    // Translate the wire shape into the in-process
+                    // GroupSyncPayload + ChatGroup shapes so we can
+                    // reuse the existing materialize + broadcast
+                    // helpers (DRY with the direct-mesh path).
+                    let iso = ISO8601DateFormatter()
+                    iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                    let isoNoFrac = ISO8601DateFormatter()
+                    isoNoFrac.formatOptions = [.withInternetDateTime]
+                    func parseDate(_ s: String?) -> Date {
+                        guard let s, !s.isEmpty else { return Date() }
+                        return iso.date(from: s) ?? isoNoFrac.date(from: s) ?? Date()
+                    }
+
+                    let members = (evt.members ?? []).map {
+                        GroupMember(
+                            userId: $0.userId,
+                            username: $0.username ?? "",
+                            avatarUrl: $0.avatarUrl,
+                            role: $0.role ?? "member",
+                            joinedAt: parseDate($0.joinedAt)
+                        )
+                    }
+                    let group = ChatGroup(
+                        id: evt.groupId,
+                        name: evt.groupName ?? "Group",
+                        avatarUrl: evt.avatarUrl,
+                        description: evt.description,
+                        createdBy: evt.createdBy ?? "",
+                        creatorUsername: evt.creatorUsername,
+                        createdAt: parseDate(evt.createdAt),
+                        memberCount: evt.memberCount ?? members.count,
+                        members: members,
+                        syncStatus: .synced
+                    )
+
+                    // 1. Materialize locally (idempotent — SQL upsert).
+                    do {
+                        try await GroupRepository().upsert(group)
+                        try? await ConversationRepository.shared.createGroupConversation(group: group)
+                        // Promote any messages parked in limbo for this group.
+                        let parked = await PendingGroupMessageRepository.shared.promoteMessages(forGroup: group.id)
+                        for env in parked {
+                            await AppDelegate.handleMeshMessage(env)
+                        }
+                        logger.info("[Bridge Downlink] 🟦 Materialized group \(group.id.prefix(8), privacy: .private) name='\(group.name, privacy: .private)' from server lifecycle event (promoted \(parked.count, privacy: .public) parked msgs)")
+                    } catch {
+                        logger.debug("[Bridge Downlink] Failed to upsert group from lifecycle event: \(error.localizedDescription, privacy: .public)")
+                    }
+
+                    // 2. Re-broadcast over mesh for BLE-only neighbours.
+                    await MeshGroupBroadcaster.broadcastCreate(group)
+                }
+            }
+
             // Cleanup is now handled inline by the TTL filter above — no
             // separate eviction needed. The map self-trims on every poll.
         }
@@ -4556,7 +4935,25 @@ extension BLEMeshEngine {
         let sprayCounter: Int
         let bridgeSignature: String
         let bridgePublicKey: String
-        
+
+        // 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — GROUP routing
+        // fields. Pre-fix the struct lacked `isGroup` and `groupId`,
+        // so the server's BridgeMessageRequest defaulted to
+        // `is_group=False, group_id=None`. The server then
+        // routed every bridged GROUP envelope into the 1:1
+        // Message table with `recipient_id = group_id` (which is
+        // not a real user id) — WS push went nowhere AND the
+        // recipient client treated the message as a DM from the
+        // original sender, dropping group replies into the
+        // sender's PV chat instead of the group thread (the
+        // exact "reply mire toye PV" user report). Now the
+        // bridge upload always declares whether the envelope
+        // targets a group so the server invokes
+        // `_bridge_group_message` and fans out to every member.
+        let isGroup: Bool?
+        let groupId: String?
+        let groupMemberIds: [String]?
+
         let roomId: String?
         let mediaUrl: String?
         let thumbnailUrl: String?
@@ -4564,26 +4961,78 @@ extension BLEMeshEngine {
         let mimeType: String?
         let fileSize: Int?
         let audioDurationSeconds: Int?
-        
+
         let replyToMessageId: String?
         let replyToTextPreview: String?
         let replyToSenderName: String?
+
+        // Round 21 (2026-05-16) — hacker-audit Bridge F1 + F2.
+        //
+        // `groupKeyVersion`: when the bridged message is a group send,
+        // the `content` field is now the ORIGINAL AES-GCM ciphertext
+        // (not decrypted plaintext). Receivers fetching via the
+        // online path need to know which group-key version to use
+        // for decrypt. The server stores + fans this version
+        // unchanged.
+        //
+        // `originalSignerPublicKey` + `originalSignature`: carry the
+        // sender's Ed25519 signature over the original envelope so a
+        // future server-side verifier can confirm authorship. With
+        // these in place, even a malicious bridge can't spoof
+        // `originalSenderId` — the signature wouldn't validate. The
+        // server-side verify is a follow-up; shipping these fields
+        // now lets that land server-side without another client
+        // release.
+        let groupKeyVersion: Int?
+        let originalSignerPublicKey: String?
+        let originalSignature: String?
     }
 
     /// Forward a mesh message to the server API
     @discardableResult
     func forwardMeshMessageToServer(_ message: ChatMessage) async -> Bool {
-        #if DEBUG
-        print("  [Bridge] Forwarding mesh message to server: \(message.id.prefix(8))")
-        #endif
-        
+        logger.debug("[Bridge] Forwarding mesh message to server: \(message.id, privacy: .private)")
+
+        // 🟥 Defense in depth (2026-05-17): the caller in
+        // RAVENApp.handleMeshMessage already gates this on
+        // "not the recipient" + "not a placeholder", but a future
+        // caller could forget. Re-check here so we never ship the
+        // local decryption-failure placeholder to the server even
+        // by accident — that would silently corrupt the
+        // server-side conversation history.
+        let text = message.text ?? ""
+        if text.hasPrefix("🔒 [Encrypted message") {
+            logger.debug("[Bridge] REFUSED to forward decrypt-failure placeholder \(message.id, privacy: .private) — would corrupt server-side conversation.")
+            return false
+        }
+
+        // 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — refuse to
+        // bridge a ChatMessage with an empty sender/recipient. The
+        // modernATSAM strict-strip on the envelope leaves
+        // senderId/recipientId blank; `ChatMessage.fromMeshEnvelope`
+        // copies those blanks verbatim and the ChatMessage has no
+        // senderIdHash field to resolve from. The legacy forwarder
+        // would then sign `relay:msgId::` and the server's
+        // verify_bridge_signature would 403. The envelope-based
+        // forwarder (`bridgeMeshMessageToServer` above) is the
+        // correct path for stripped envelopes — it resolves the
+        // hashes before signing — so just return false here and
+        // let the caller route through the envelope path.
+        if message.senderId.isEmpty || message.recipientId.isEmpty {
+            #if DEBUG
+            print("⏭️ [Bridge] ChatMessage forwarder refused — sender/recipient empty (likely modernATSAM strip). " +
+                  "Route through envelope-based bridge instead. mid=\(message.id.prefix(8))")
+            #endif
+            return false
+        }
+
         let relayData = "relay:\(message.id):\(message.senderId):\(message.recipientId)".data(using: .utf8) ?? Data()
         let bridgeSig = DeviceIdentityService.shared.sign(relayData)?.base64EncodedString() ?? ""
         let bridgePubKey = DeviceIdentityService.shared.publicKeyBase64 ?? ""
-        
+
         // CRITICAL FIX: Only add room_id if it is an ACTUAL group chat.
         let isGroupRoom = message.roomId != nil && !message.roomId!.isEmpty && message.roomId != message.recipientId && message.roomId != message.senderId
-        
+
         let request = MeshUplinkRequest(
             recipientId: message.recipientId,
             content: message.text ?? "",
@@ -4600,6 +5049,13 @@ extension BLEMeshEngine {
             sprayCounter: message.sprayCounter,
             bridgeSignature: bridgeSig,
             bridgePublicKey: bridgePubKey,
+            // 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — see
+            // bridgeMeshMessageToServer for the rationale: signals
+            // the server bridge handler to route to
+            // `_bridge_group_message` and fan out per-member.
+            isGroup: isGroupRoom ? true : nil,
+            groupId: isGroupRoom ? message.roomId : nil,
+            groupMemberIds: nil,
             roomId: isGroupRoom ? message.roomId : nil,
             mediaUrl: message.attachmentUrl,
             thumbnailUrl: message.thumbnailUrl,
@@ -4608,73 +5064,263 @@ extension BLEMeshEngine {
             fileSize: message.fileSize,
             audioDurationSeconds: message.audioDurationSeconds,
             replyToMessageId: message.replyToMessageId,
-            replyToTextPreview: message.replyToTextPreview,
-            replyToSenderName: message.replyToSenderName
+            // Round 14 + 21 — Bridge F1: never ship reply preview
+            // in cleartext.
+            replyToTextPreview: nil,
+            replyToSenderName: message.replyToSenderName,
+            // Round 21 — Bridge F1/F2: ChatMessage path doesn't
+            // carry these explicitly (they're set on the on-wire
+            // envelope), so we leave them nil here. The newer
+            // envelope-based path above is what bridge code
+            // normally uses; this overload is the legacy
+            // ChatMessage forwarder, kept for back-compat callers.
+            groupKeyVersion: nil,
+            originalSignerPublicKey: nil,
+            originalSignature: nil
         )
-        
+
+        // 🟥 FIX (2026-05-17) — was a `/uplink` → 405 → `/bridge`
+        // fallback chain.  `/uplink` doesn't exist on the server;
+        // hit `/bridge` directly to skip the wasted 405 round-trip.
+        struct EmptyResp: Decodable {}
+
+        // 🟢 ROUND 72 (2026-05-24) — mirror the retry-with-backoff
+        // pattern from `bridgeMeshMessageToServer`. Cloud Run cold
+        // starts and Wi-Fi handoffs were silently losing this leg
+        // of bridging too. Same 3-attempt / 500ms / 1500ms cadence;
+        // only TRANSIENT errors (5xx, 408, 429, network drops) get
+        // retried — permanent errors short-circuit so the
+        // 404→proxy-create branch still fires on the first attempt.
+        let isTransientBridgeError: (Error) -> Bool = { error in
+            if let api = error as? APIError {
+                switch api {
+                case .serverError, .rateLimited:
+                    return true
+                case .networkError(let underlying):
+                    if let urlErr = underlying as? URLError {
+                        switch urlErr.code {
+                        case .timedOut, .cannotConnectToHost,
+                             .networkConnectionLost, .notConnectedToInternet,
+                             .dnsLookupFailed, .cannotFindHost,
+                             .resourceUnavailable:
+                            return true
+                        default:
+                            return false
+                        }
+                    }
+                    return false
+                case .httpError(let code, _):
+                    return code >= 500 || code == 408 || code == 429
+                default:
+                    return false
+                }
+            }
+            if let urlErr = error as? URLError {
+                switch urlErr.code {
+                case .timedOut, .cannotConnectToHost,
+                     .networkConnectionLost, .notConnectedToInternet,
+                     .dnsLookupFailed, .cannotFindHost:
+                    return true
+                default:
+                    return false
+                }
+            }
+            return false
+        }
+        func postBridgeWithRetry() async throws {
+            let maxAttempts = 3
+            let backoffMs: [UInt64] = [500, 1500]
+            var lastError: Error?
+            for attempt in 1...maxAttempts {
+                if attempt > 1 {
+                    let delay = backoffMs[min(attempt - 2, backoffMs.count - 1)]
+                    try? await Task.sleep(nanoseconds: delay * 1_000_000)
+                    #if DEBUG
+                    print("🔁 [Bridge-Legacy] retry attempt=\(attempt)/\(maxAttempts) mid=\(message.id.prefix(8)) after \(delay)ms backoff")
+                    #endif
+                }
+                do {
+                    let _: EmptyResp = try await NetworkService.shared.post(
+                        path: "/api/messages/bridge",
+                        body: request,
+                        idempotencyKey: message.id
+                    )
+                    return
+                } catch {
+                    lastError = error
+                    if attempt < maxAttempts, isTransientBridgeError(error) {
+                        #if DEBUG
+                        print("⚠️ [Bridge-Legacy] transient error attempt=\(attempt) — will retry: \(error.localizedDescription)")
+                        #endif
+                        continue
+                    }
+                    throw error
+                }
+            }
+            throw lastError ?? APIError.serverError
+        }
+
         do {
-            struct EmptyResp: Decodable {}
-            let _: EmptyResp = try await NetworkService.shared.post(
-                path: "/api/messages/uplink",
-                body: request,
-                idempotencyKey: message.id
-            )
+            try await postBridgeWithRetry()
             return true
-        } catch {
+        } catch APIError.notFound where isGroupRoom && (message.roomId?.hasPrefix("local_") ?? false) {
+            // 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — mirror the
+            // proxy-create fallback from `bridgeMeshMessageToServer`
+            // so the legacy ChatMessage forwarder path also recovers
+            // when the server doesn't know about an offline-created
+            // group_id. See the envelope-based bridge for full
+            // rationale + security analysis.
+            #if DEBUG
+            print("🌉 [Bridge-Legacy] 404 on group \(message.roomId?.prefix(8) ?? "?") — attempting proxy-sync")
+            #endif
+            guard let gid = message.roomId else { return false }
+            let groupRepo = GroupRepository()
+            let localGroup: ChatGroup?
             do {
-                struct EmptyResp: Decodable {}
-                let _: EmptyResp = try await NetworkService.shared.post(
-                    path: "/api/messages/bridge",
-                    body: request,
-                    idempotencyKey: message.id
+                localGroup = try await groupRepo.get(groupId: gid)
+            } catch {
+                localGroup = nil
+            }
+            let myUserId = await KeychainService.shared.getUserId() ?? ""
+            let isLocalMember = (localGroup?.members ?? []).contains { $0.userId == myUserId }
+            guard let g = localGroup, isLocalMember else { return false }
+            let memberIds = (g.members ?? [])
+                .map { $0.userId }
+                .filter { $0 != myUserId }
+            let createReq = CreateGroupRequest(
+                name: g.name,
+                memberIds: memberIds,
+                avatarUrl: g.avatarUrl,
+                description: g.description,
+                clientId: g.id
+            )
+            struct CreateResp: Decodable { let id: String }
+            do {
+                let _: CreateResp = try await NetworkService.shared.post(
+                    path: "/api/groups",
+                    body: createReq,
+                    idempotencyKey: "proxy-create-\(g.id)"
                 )
-                return true
             } catch {
                 #if DEBUG
-                print("  [Bridge] Failed to forward mesh payload to server: \(error)")
+                print("🌉 [Bridge-Legacy] Proxy-create FAILED for \(g.id.prefix(8)): \(error.localizedDescription)")
                 #endif
                 return false
             }
+            do {
+                // 🟢 ROUND 72 — reuse retry-with-backoff helper for
+                // the post-proxy-create retry on the legacy path too.
+                try await postBridgeWithRetry()
+                return true
+            } catch {
+                #if DEBUG
+                print("🌉 [Bridge-Legacy] Retry after proxy-create FAILED: \(error.localizedDescription)")
+                #endif
+                return false
+            }
+        } catch {
+            logger.debug("[Bridge] Failed to forward mesh payload to server: \(error.localizedDescription, privacy: .public)")
+            return false
         }
     }
     
     /// Bridge a mesh message to the server on behalf of the original sender.
     ///
-    /// ⚡ Scale fix — probabilistic bridge election:
-    /// In a dense BLE cluster, multiple online relays would otherwise all
-    /// POST the same envelope to the server. Server-side idempotency on
-    /// `messageId` deduplicates writes, but the redundant POSTs still cost
-    /// bandwidth + battery + server CPU. Each relay now elects itself with
-    /// probability `1 / max(1, connectedPeerCount)` so on average exactly
-    /// one device in the cluster bridges. The election is deterministic per
-    /// (envelope, device): we hash `clientMessageId + myDeviceId` and bridge
-    /// only when the hash falls in the elected slice — predictable and
-    /// jitter-free across attempts.
+    /// 🟥 ROUND 37 (2026-05-17) — election removed.
+    ///
+    /// PREVIOUS BEHAVIOUR (broken):
+    ///   Multiple online relays in a BLE cluster all hashed
+    ///   `clientMessageId + myDeviceId` with Swift's `Hasher` and
+    ///   bridged when `hash % (peerCount + 1) == 0`.  The intent was
+    ///   "on average exactly one device bridges" so the server isn't
+    ///   spammed.
+    ///
+    /// THE BUG:
+    ///   Swift's `Hasher` uses a per-process random seed (anti-
+    ///   collision-attack hardening; the API contract is explicitly
+    ///   "do not persist these values").  Each device computes an
+    ///   INDEPENDENT random slot, so the elections were uncorrelated.
+    ///   With N devices each rolling an independent 1/N chance:
+    ///       P(no one elected)  =  ((N-1)/N)^N
+    ///       N=2  → 25 % drop
+    ///       N=4  → 31.6 % drop   ← user's "peers=4 — skipping" case
+    ///       N=5  → 32.8 % drop
+    ///       N=10 → 34.9 % drop
+    ///   So roughly ONE THIRD of every bridgeable message was
+    ///   silently dropped — never POSTed to the server, never
+    ///   delivered to the offline recipient.  Exactly what the user
+    ///   reported with: "[BRIDGE] Not elected for C290F86C (peers=4)
+    ///   — skipping" while message ended up undelivered.
+    ///
+    /// THE FIX:
+    ///   Bridge unconditionally.  The server already has idempotency
+    ///   on `messageId` (messages.py:771 `if existing: return
+    ///   {"status": "duplicate"}`), so redundant POSTs from a dense
+    ///   cluster cost a tiny amount of bandwidth + a HEAD-level DB
+    ///   check, NOT a duplicate write.  The bandwidth trade-off is
+    ///   worth it for the 1-in-3 reliability win.
+    ///
+    ///   The ServerReceipt gossip layer (`gossipReceipt`, called
+    ///   below on success) further suppresses redundant POSTs: once
+    ///   one device gets a receipt, it broadcasts to mesh peers
+    ///   which can then skip their own bridge attempt — but that
+    ///   gossip is best-effort, not a hard election, so we no
+    ///   longer rely on it for correctness.
     @discardableResult
     func bridgeMeshMessageToServer(_ envelope: MeshEnvelope) async -> Bool {
-        // ── Bridge election ──────────────────────────────────────────────
-        let peerCount = await MainActor.run { self.connectedPeers.count }
-        let myDevice = DeviceIdentityService.shared.fingerprint ?? ""
-        let hashSeed = "\(envelope.clientMessageId)|\(myDevice)"
-        var hasher = Hasher()
-        hasher.combine(hashSeed)
-        let hashSlot = abs(hasher.finalize())
-        // Slot count = peerCount + 1 (this device + each connected peer).
-        // We bridge if our slot == 0 (deterministic per envelope).
-        let slots = max(1, peerCount + 1)
-        let elected = (hashSlot % slots) == 0
-        if !elected {
+        // 🟦 ROUND 46 (2026-05-17) — defensive guard against bridging
+        // group-lifecycle envelopes to the server. These carry a
+        // `GroupSyncPayload` in `text` (NOT a chat-message body); the
+        // server already owns the group canonical state via its own
+        // /api/groups endpoint, so bridging would either be a no-op
+        // or actively corrupt the messages table by storing a JSON
+        // metadata blob as if it were a chat body. Caller in
+        // RAVENApp.handleMeshMessage early-intercepts these envelopes
+        // so this guard should never fire in practice — kept as
+        // belt-and-braces for future callers that might forget the
+        // intercept.
+        if let kind = envelope.payloadKind, !kind.isEmpty {
             #if DEBUG
-            print("  [BRIDGE] 🗳️ Not elected for \(envelope.clientMessageId.prefix(8)) (peers=\(peerCount)) — skipping")
+            print("🟦 [BRIDGE] SKIP — payloadKind=\(kind) is a lifecycle event, not a chat message. mid=\(envelope.clientMessageId.prefix(8))")
             #endif
-            return false
+            return true   // Report success: nothing to do; not an error.
         }
+
+        let peerCount = await MainActor.run { self.connectedPeers.count }
         #if DEBUG
-        print("  [BRIDGE] Bridging mesh -> server for recipient: \(envelope.recipientId.prefix(8)) (peers=\(peerCount))")
+        print("🌉 [BRIDGE] ENTER bridgeMeshMessageToServer mid=\(envelope.clientMessageId.prefix(8)) recipient=\(envelope.recipientId.prefix(8)) peers=\(peerCount) isGroup=\(envelope.isGroup.map(String.init) ?? "nil") textLen=\(envelope.text?.count ?? 0)")
         #endif
+        logger.debug("[BRIDGE] Bridging mesh -> server for recipient: \(envelope.recipientId, privacy: .private) (peers=\(peerCount, privacy: .public))")
 
+        // 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — RESOLVE FIRST,
+        // SIGN SECOND. The bridge_signature is verified server-side
+        // against `relay:{msg_id}:{sender_id}:{recipient_id}` using
+        // the SAME values the server sees on the upload — i.e. the
+        // resolved real userIds. If we sign with the raw stripped-
+        // empty envelope fields here (modernATSAM strip nulls them
+        // to "") and upload with the resolved real ids below, the
+        // server reconstructs `relay:msgId:resolvedSender:resolvedRecip`
+        // which never matches the signed `relay:msgId::` (empty
+        // sender + recipient). Result: every bridge from a stripped
+        // envelope hits the 403 "Invalid bridge signature" gate at
+        // messages.py:967 — the actual production symptom of
+        // "bridge doesn't work" reported by the user.
+        //
+        // Fix: resolve hashes first, then sign over the resolved ids.
+        var bridgeResolvedSenderId: String = envelope.senderId
+        if bridgeResolvedSenderId.isEmpty,
+           let hash = envelope.senderIdHash,
+           let real = await MeshIdentityResolver.shared.resolve(hash: hash) {
+            bridgeResolvedSenderId = real
+        }
+        var bridgeResolvedRecipientId: String = envelope.recipientId
+        if bridgeResolvedRecipientId.isEmpty,
+           let hash = envelope.recipientIdHash,
+           let real = await MeshIdentityResolver.shared.resolve(hash: hash) {
+            bridgeResolvedRecipientId = real
+        }
 
-        let relayData = "relay:\(envelope.clientMessageId):\(envelope.senderId):\(envelope.recipientId)".data(using: .utf8) ?? Data()
+        let relayData = "relay:\(envelope.clientMessageId):\(bridgeResolvedSenderId):\(bridgeResolvedRecipientId)".data(using: .utf8) ?? Data()
         let bridgeSig = DeviceIdentityService.shared.sign(relayData)?.base64EncodedString() ?? ""
         let bridgePubKey = DeviceIdentityService.shared.publicKeyBase64 ?? ""
 
@@ -4682,43 +5328,117 @@ extension BLEMeshEngine {
         // instead of string comparison which misidentifies 1:1 chats as groups
         let isGroupRoom = envelope.isGroup == true
 
-        // 🔐 GROUP-MESH BRIDGE PLAINTEXT FIX
+        // 🔴 ROUND 21 — hacker-audit Bridge F1 CRITICAL fix.
         //
-        // For GROUP messages, `envelope.text` is the AES-GCM ciphertext blob
-        // (per-group symmetric key, version `envelope.groupKeyVersion`). If we
-        // forward that blob as-is to /api/messages/uplink, the server stores
-        // ciphertext and EVERY downstream member who fetches via the regular
-        // /api/groups/{id}/messages route sees garbage base64 — they never
-        // decrypt because the online-fetch code path doesn't run group-key
-        // unwrap (only the BLE receive path does).
+        // Previously the bridge node decrypted the group AES-GCM
+        // ciphertext (using the per-group symmetric key it holds as
+        // a group member) and uploaded PLAINTEXT to the server.
+        // That meant:
+        //   • The server (and any admin / compromised infra / DB
+        //     dump) read every group message body in cleartext,
+        //     even though E2EE was supposed to keep them opaque.
+        //   • The "encryption-at-rest" Fernet wrap on the server
+        //     side gave a false sense of security — it's encrypted
+        //     to a SERVER-held key, not the group key.
         //
-        // Fix: as a bridge we ARE a group member (we have the key), so decrypt
-        // here and send PLAINTEXT to the server. The server's at-rest
-        // `encrypt_text` then handles confidentiality on the DB; downstream
-        // members get plaintext on fetch like any normal group send.
-        var contentForServer = envelope.text ?? ""
-        if isGroupRoom, let version = envelope.groupKeyVersion, !contentForServer.isEmpty {
-            if let plain = await GroupKeyService.shared.decrypt(
-                contentForServer, groupId: envelope.recipientId, version: version
-            ) {
-                contentForServer = plain
-                #if DEBUG
-                print("  [BRIDGE] 🔓 Decrypted group cipher (v\(version)) → sending plaintext to server")
-                #endif
-            } else {
-                #if DEBUG
-                print("  [BRIDGE] ⚠️ Could not decrypt group cipher (v\(version)) — bridging blob as fallback (recipients may see garbage)")
-                #endif
-            }
+        // The fix: forward the ORIGINAL ciphertext + the group key
+        // version unchanged. Downstream members receive the opaque
+        // blob via the WS push / inbox poll and decrypt locally
+        // using the same `GroupKeyService.decrypt` that the BLE
+        // receive path uses. The server never sees plaintext, and
+        // the group key never leaves the members' devices.
+        //
+        // Both `MessageStore.fetchMessages` and the WS handler
+        // already call `GroupKeyService.decrypt` when they see a
+        // `group_key_version` field; the server-side fan-out only
+        // needs to pass that field through.
+        let contentForServer = envelope.text ?? ""
+
+        // 🔍 ROUND 43 (2026-05-17) — diagnostic for the "empty
+        // bridge content after A↔B verification" bug.  Print
+        // exactly what we're about to ship to the server so we
+        // can see if envelope.text was lost somewhere upstream
+        // (sender-side seal-to-wrong-recipient, BLE-layer
+        // decrypt-and-discard, etc.).
+        #if DEBUG
+        let contentPrefix = contentForServer.prefix(40)
+        print("🔍 [BRIDGE-CONTENT] mid=\(envelope.clientMessageId.prefix(8)) recipient=\(envelope.recipientId.prefix(8)) sender=\(envelope.senderId.prefix(8)) contentLen=\(contentForServer.count) contentPrefix='\(contentPrefix)' isEmpty=\(contentForServer.isEmpty)")
+        #endif
+
+        // 🟥 ROUND 39 (2026-05-17) — drop originalSignature on bridge POST.
+        //
+        // PROBLEM (from user log, smoking gun):
+        //   The server returns HTTP 403 "Invalid original-sender
+        //   signature" on EVERY bridge upload that includes the
+        //   originalSignature field.
+        //
+        // ROOT CAUSE — signing-target mismatch between client + server:
+        //   • iOS signs the envelope's `signingData()` (mesh canonical
+        //     form: 17+ "|"-delimited fields including clientMessageId,
+        //     roomId, senderId, senderName, recipientId, type, nonce,
+        //     senderPublicKey, timestamp, originDeviceId, text, the
+        //     six media fields, mediaSealed, etc.).  See
+        //     `SecureMeshEnvelope.signingData()` in
+        //     MeshCryptoService.swift:563.
+        //   • iOS-to-iOS verify re-derives that same signingData and
+        //     verifies — consistent.
+        //   • Server's `verify_message_signature` (mesh_crypto.py:94)
+        //     verifies signature over just `content.encode("utf-8")`.
+        //     The comment says "iOS client signs the raw content
+        //     bytes" — but the iOS client actually signs the full
+        //     signingData, NOT raw content.  The server hardening
+        //     (round-22 audit Server-F3) was specced for a content-
+        //     only signature that the iOS side never shipped.
+        //
+        // Effect: every bridge POST that carries an originalSignature
+        // is rejected.  Server check (messages.py:723–738) fires the
+        // 403 and the bridge fails.
+        //
+        // Fix (this round): pass `nil` for originalSignature so the
+        // server-side gate (line 723) is skipped — the server
+        // (messages.py:749–758) accepts the bridge with a logged
+        // warning about missing attestation.  Trade-off: we lose
+        // the audit Server-F3 protection against forging-bridge
+        // attacks, but the alternative is "no bridge works at all"
+        // which is worse for the user.
+        //
+        // 🔴 ROUND 71 phase 3 (2026-05-24) — forward the envelope's
+        // own `originalSignature` instead of hardcoding nil. The
+        // round-26 envelope schema already preserves the original
+        // sender's Ed25519 signature + pubkey through every relay
+        // hop (see BLEMeshEngine:2126-2127 + 2167-2168); the
+        // bridge code was simply dropping them. With the server's
+        // R71 p3 relax (messages.py:bridge_message accepts
+        // attribution_verified=false for cross-user uploads), even
+        // an envelope WITHOUT a signature now gets through —
+        // forwarding what we have when we have it gives the
+        // receiver the strongest provenance the network can
+        // currently offer.
+        let originalSig: String? = envelope.originalSignature
+        let originalSigKey: String? = envelope.originalSignerPublicKey
+
+        // Reuse the resolved ids computed BEFORE the bridge_signature
+        // was signed (round-71 phase 3 follow-up — see the
+        // `bridgeResolvedSenderId` block at the top of this function).
+        // Signing and uploading must use the SAME ids or the server's
+        // `verify_bridge_signature` reconstructs different bytes and
+        // 403s.
+        #if DEBUG
+        if envelope.senderId.isEmpty {
+            print("🔍 [BRIDGE] resolved empty senderId via hash → \(bridgeResolvedSenderId.prefix(8))")
         }
+        if envelope.recipientId.isEmpty {
+            print("🔍 [BRIDGE] resolved empty recipientId via hash → \(bridgeResolvedRecipientId.prefix(8))")
+        }
+        #endif
 
         let request = MeshUplinkRequest(
-            recipientId: envelope.recipientId,
+            recipientId: bridgeResolvedRecipientId,
             content: contentForServer,
             messageType: MessageType.from(index: envelope.type).rawValue,
             messageId: envelope.clientMessageId,
             bridgedFrom: DeviceIdentityService.shared.fingerprint ?? "unknown",
-            originalSenderId: envelope.senderId,
+            originalSenderId: bridgeResolvedSenderId,
             originalSenderName: envelope.senderName,
             isBridged: true,
             createdAt: PerformanceConstants.iso8601.string(from: Date(timeIntervalSince1970: envelope.timestamp)),
@@ -4728,6 +5448,16 @@ extension BLEMeshEngine {
             sprayCounter: envelope.sprayCounter,
             bridgeSignature: bridgeSig,
             bridgePublicKey: bridgePubKey,
+            // 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — declare
+            // group context to the server. `isGroup=true` switches
+            // the server bridge handler from the 1:1 path (which
+            // would store the row with `recipient_id=group_id` —
+            // not a real user — and fail to deliver) to
+            // `_bridge_group_message`, which writes a GroupMessage
+            // row and fans out to every group member's WS push.
+            isGroup: isGroupRoom ? true : nil,
+            groupId: isGroupRoom ? envelope.recipientId : nil,
+            groupMemberIds: nil,  // Server resolves members from the GroupMember table.
             roomId: isGroupRoom ? envelope.roomId : nil,
             mediaUrl: envelope.mediaUrl,
             thumbnailUrl: envelope.thumbnailUrl,
@@ -4736,39 +5466,235 @@ extension BLEMeshEngine {
             fileSize: envelope.fileSize,
             audioDurationSeconds: envelope.audioDuration,
             replyToMessageId: envelope.replyToMessageId,
-            replyToTextPreview: envelope.replyToTextPreview,
-            replyToSenderName: envelope.replyToSenderName
+            replyToTextPreview: nil,    // Round 14 + 19 — never leak preview cleartext.
+            replyToSenderName: envelope.replyToSenderName,
+            // Round 21 — Bridge F1: tell the server which group-key
+            // version the receiver needs to use for decrypt.
+            groupKeyVersion: envelope.groupKeyVersion,
+            originalSignerPublicKey: originalSigKey,
+            originalSignature: originalSig
         )
         
+        // 🟥 FIX (2026-05-17) — was a two-step try-/uplink-then-/bridge
+        // fallback chain.  `/api/messages/uplink` doesn't exist on the
+        // FastAPI router (only `/bridge` and `/bridge-downlink` do —
+        // see server/routers/messages.py:665 + 2139), so every bridge
+        // burned a wasted POST → HTTP 405 → log noise before falling
+        // through to the real endpoint.  Hit `/bridge` directly.
+        #if DEBUG
+        print("🌉 [BRIDGE] POSTing /api/messages/bridge mid=\(envelope.clientMessageId.prefix(8)) bridgeSig.len=\(bridgeSig.count) origSig.set=\(originalSig != nil)")
+        #endif
         var success = false
+        struct EmptyResp: Decodable {}
+
+        // 🟢 ROUND 72 (2026-05-24) — bridge stability: retry-with-backoff.
+        //
+        // User report: "bebein bridge group chat kheili begir nagir
+        // dare, mitone stable taresh koni?" — the bridge POST was
+        // dropping intermittent calls (Cloud Run cold-starts, Wi-Fi
+        // hand-offs, BLE radio contention on the bridge node).
+        // Without retries a single 503/timeout silently lost the
+        // bridge for the whole envelope — receivers never get it.
+        //
+        // Fix: 3 attempts with 500ms / 1500ms exponential backoff
+        // for TRANSIENT errors only (5xx, 408, 429, network drops).
+        // Permanent errors (401/403/404/4xx-validation) skip retries
+        // and fail fast so the existing 404→proxy-create path still
+        // fires. Each attempt reuses the same `idempotencyKey`, so
+        // server-side dedup absorbs duplicates if a retry races a
+        // late success on the server end (server returns
+        // `{"status":"duplicate"}` for any re-POST of the same id).
+        let isTransientBridgeError: (Error) -> Bool = { error in
+            if let api = error as? APIError {
+                switch api {
+                case .serverError, .rateLimited:
+                    return true
+                case .networkError(let underlying):
+                    if let urlErr = underlying as? URLError {
+                        switch urlErr.code {
+                        case .timedOut, .cannotConnectToHost,
+                             .networkConnectionLost, .notConnectedToInternet,
+                             .dnsLookupFailed, .cannotFindHost,
+                             .resourceUnavailable:
+                            return true
+                        default:
+                            return false
+                        }
+                    }
+                    return false
+                case .httpError(let code, _):
+                    return code >= 500 || code == 408 || code == 429
+                default:
+                    return false
+                }
+            }
+            if let urlErr = error as? URLError {
+                switch urlErr.code {
+                case .timedOut, .cannotConnectToHost,
+                     .networkConnectionLost, .notConnectedToInternet,
+                     .dnsLookupFailed, .cannotFindHost:
+                    return true
+                default:
+                    return false
+                }
+            }
+            return false
+        }
+
+        // Reusable POST helper: retries transient errors, throws the
+        // last error on exhaustion. Permanent errors short-circuit
+        // immediately so the outer 404→proxy-create branch still
+        // catches them on the first attempt.
+        func postBridgeWithRetry() async throws {
+            let maxAttempts = 3
+            let backoffMs: [UInt64] = [500, 1500]
+            var lastError: Error?
+            for attempt in 1...maxAttempts {
+                if attempt > 1 {
+                    let delay = backoffMs[min(attempt - 2, backoffMs.count - 1)]
+                    try? await Task.sleep(nanoseconds: delay * 1_000_000)
+                    #if DEBUG
+                    print("🔁 [BRIDGE] retry attempt=\(attempt)/\(maxAttempts) mid=\(envelope.clientMessageId.prefix(8)) after \(delay)ms backoff")
+                    #endif
+                }
+                do {
+                    let _: EmptyResp = try await NetworkService.shared.post(
+                        path: "/api/messages/bridge",
+                        body: request,
+                        idempotencyKey: envelope.clientMessageId
+                    )
+                    return
+                } catch {
+                    lastError = error
+                    if attempt < maxAttempts, isTransientBridgeError(error) {
+                        #if DEBUG
+                        print("⚠️ [BRIDGE] transient error attempt=\(attempt) — will retry: \(error.localizedDescription)")
+                        #endif
+                        continue
+                    }
+                    throw error
+                }
+            }
+            throw lastError ?? APIError.serverError
+        }
+
         do {
-            struct EmptyResp: Decodable {}
-            let _: EmptyResp = try await NetworkService.shared.post(
-                path: "/api/messages/uplink",
-                body: request,
-                idempotencyKey: envelope.clientMessageId
-            )
+            try await postBridgeWithRetry()
             success = true
-        } catch {
+            #if DEBUG
+            print("✅ [BRIDGE] POST /api/messages/bridge SUCCESS mid=\(envelope.clientMessageId.prefix(8))")
+            #endif
+        } catch APIError.notFound where isGroupRoom && envelope.recipientId.hasPrefix("local_") {
+            // 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — bridge
+            // proxy-sync for offline-only groups.
+            //
+            // SCENARIO (user-reported 2026-05-24):
+            //   "on device ke faghat be bluetooth vasle... payam hash
+            //    mire az tarigh mesh be device B vali be Device C ke
+            //    bayad bridge beshe nemire payam"
+            //   ≈ A (BLE-only) creates a group + sends. B (online)
+            //   receives via mesh and bridges to server. Server 404s
+            //   because A never synced "local_xxxx" → C (online but
+            //   out of BLE range with A) never sees the message.
+            //
+            // ROOT CAUSE: server only adopts client_id from the
+            // ORIGINAL creator. A is offline forever (or until they
+            // eventually go online), so no one ever registers
+            // "local_xxxx" → bridge stays broken for the duration.
+            //
+            // FIX: if we (the bridger) have the group materialized
+            // locally and we're a current member, proxy-register it
+            // server-side using the cached metadata. We become the
+            // server-side creator (A loses admin role), but messages
+            // start flowing to all online members immediately. When
+            // A eventually comes online, syncPendingGroups will hit
+            // the idempotency branch (existing group, same client_id)
+            // and adopt the server's row without overwriting it.
+            //
+            // 🛡️ SECURITY:
+            //   - Bounded to groups we have locally — can't be used
+            //     to spam arbitrary group_ids on the server.
+            //   - Member list comes from our local cache (which
+            //     itself was authenticated via the signed
+            //     group_create mesh envelope), not the bridger's
+            //     untrusted input.
+            //   - Server-side creator-only client_id branch already
+            //     enforces "can't claim someone else's existing
+            //     client_id" (groups.py:159-168).
+            //   - E2EE unchanged — server still sees ciphertext only.
+            #if DEBUG
+            print("🌉 [BRIDGE] 404 on group \(envelope.recipientId.prefix(8)) — attempting proxy-sync of offline-only group")
+            #endif
+
+            let groupRepo = GroupRepository()
+            let localGroup: ChatGroup?
             do {
-                struct EmptyResp: Decodable {}
-                let _: EmptyResp = try await NetworkService.shared.post(
-                    path: "/api/messages/bridge",
-                    body: request,
-                    idempotencyKey: envelope.clientMessageId
-                )
-                success = true
+                localGroup = try await groupRepo.get(groupId: envelope.recipientId)
             } catch {
+                localGroup = nil
+            }
+            let myUserId = await KeychainService.shared.getUserId() ?? ""
+            let isLocalMember = (localGroup?.members ?? []).contains { $0.userId == myUserId }
+
+            if let g = localGroup, isLocalMember {
+                let memberIds = (g.members ?? [])
+                    .map { $0.userId }
+                    .filter { $0 != myUserId }
+                let createReq = CreateGroupRequest(
+                    name: g.name,
+                    memberIds: memberIds,
+                    avatarUrl: g.avatarUrl,
+                    description: g.description,
+                    clientId: g.id
+                )
+                struct CreateResp: Decodable { let id: String }
+                let created: Bool
+                do {
+                    let _: CreateResp = try await NetworkService.shared.post(
+                        path: "/api/groups",
+                        body: createReq,
+                        idempotencyKey: "proxy-create-\(g.id)"
+                    )
+                    created = true
+                    #if DEBUG
+                    print("🌉 [BRIDGE] Proxy-created group \(g.id.prefix(8)) on server — retrying bridge")
+                    #endif
+                } catch {
+                    created = false
+                    #if DEBUG
+                    print("🌉 [BRIDGE] Proxy-create FAILED for \(g.id.prefix(8)): \(error.localizedDescription)")
+                    #endif
+                }
+                if created {
+                    do {
+                        // 🟢 ROUND 72 — reuse retry-with-backoff so the
+                        // post-proxy-create retry also rides out Cloud
+                        // Run cold-start hiccups.
+                        try await postBridgeWithRetry()
+                        success = true
+                        #if DEBUG
+                        print("✅ [BRIDGE] Retry after proxy-create SUCCESS mid=\(envelope.clientMessageId.prefix(8))")
+                        #endif
+                    } catch {
+                        #if DEBUG
+                        print("❌ [BRIDGE] Retry after proxy-create FAILED mid=\(envelope.clientMessageId.prefix(8)) error=\(error.localizedDescription)")
+                        #endif
+                    }
+                }
+            } else {
                 #if DEBUG
-                print("  [BRIDGE] Failed to bridge payload to server: \(error)")
+                print("🌉 [BRIDGE] Skipping proxy-sync — no local group OR not a member")
                 #endif
             }
-        }
-        
-        if success {
+        } catch {
             #if DEBUG
-            print("  [BRIDGE] Successfully bridged mesh -> server!")
+            print("❌ [BRIDGE] POST /api/messages/bridge FAILED mid=\(envelope.clientMessageId.prefix(8)) error=\(error.localizedDescription)")
             #endif
+            logger.debug("[BRIDGE] Failed to bridge payload to server: \(error.localizedDescription, privacy: .public)")
+        }
+
+        if success {
+            logger.debug("[BRIDGE] Successfully bridged mesh -> server")
             
             let receipt = ServerReceipt(
                 messageId: envelope.clientMessageId,
@@ -4806,6 +5732,36 @@ private struct BridgeDownlinkRequest: Encodable {
 private struct BridgeDownlinkResponse: Decodable {
     let messages: [BridgeDownlinkMessage]
     let count: Int
+    /// Round 47 — group lifecycle events the bridge must re-broadcast
+    /// over BLE so mesh-only peers can materialize the group locally.
+    /// Optional + defaulted to `[]` so older server builds (which
+    /// don't include this field in their response) still decode.
+    let groupEvents: [BridgeDownlinkGroupEvent]?
+}
+
+/// Round 47 — payload of a group lifecycle event surfaced by the
+/// server's bridge-downlink. Mirrors `GroupSyncPayload` fields so the
+/// bridge can re-emit the metadata as a `payloadKind=group_create`
+/// mesh envelope without further server round-trips.
+private struct BridgeDownlinkGroupEvent: Decodable {
+    let type: String          // "group_create" (future: "group_update", etc.)
+    let groupId: String
+    let groupName: String?
+    let avatarUrl: String?
+    let description: String?
+    let createdBy: String?
+    let creatorUsername: String?
+    let createdAt: String?    // ISO8601
+    let memberCount: Int?
+    let members: [BridgeDownlinkGroupMember]?
+}
+
+private struct BridgeDownlinkGroupMember: Decodable {
+    let userId: String
+    let username: String?
+    let avatarUrl: String?
+    let role: String?
+    let joinedAt: String?     // ISO8601
 }
 
 private struct BridgeDownlinkMessage: Decodable {
@@ -4835,7 +5791,17 @@ private struct BridgeDownlinkMessage: Decodable {
     let hopLimit: Int?
     let sprayCounter: Int?
     let ttlSeconds: Int?
-    
+    // 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — group context.
+    // Server's bridge-downlink merges group_messages into the
+    // top-level `messages` array with `is_group:true, group_id:...
+    // group_key_version:N`. Pre-fix the iOS decoder dropped these
+    // → the mesh envelope built from this row had no isGroup/gkv
+    // → A could neither route nor decrypt. Now decoded + stamped
+    // onto the envelope before re-broadcasting.
+    let isGroup: Bool?
+    let groupId: String?
+    let groupKeyVersion: Int?
+
     /// Convenience: server uses audioDurationSeconds, normalize to single field
     var resolvedAudioDuration: Int? { audioDuration ?? audioDurationSeconds }
 }

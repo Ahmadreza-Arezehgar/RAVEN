@@ -196,7 +196,16 @@ struct PostCard: View {
                     onVideoTimestampTap: hasVideoMedia ? { seconds in
                         Haptics.selection()
                         videoTimestampJump = seconds
-                    } : nil
+                    } : nil,
+                    // 🔴 Bug fix (2026-05-15): inline web links open the
+                    // in-app capsule SafariSheet (same liquid-glass
+                    // viewer the chat surface uses) instead of bouncing
+                    // out to system Safari.
+                    onLinkTap: { url in
+                        Haptics.light()
+                        detectedURL = url
+                        showLinkBrowser = true
+                    }
                 )
                 .lineLimit(nil)
                 .multilineTextAlignment(.leading)
@@ -585,7 +594,31 @@ struct PostCard: View {
         // bookmark icon after a tap (UserDefaults isn't @Published).
         let _ = bookmarkBumper
         let isBookmarked = feedStore.isBookmarked(postId: post.id)
-        return HStack(spacing: 14) {
+        // 🟥 ROUND 35 (2026-05-17) — action-bar horizontal squish fix.
+        //
+        // User report: "icon-haye like repost yekhorde be ham
+        // chasbidan ke on addad dorost neshon nemidan" — the
+        // like / repost / comment pills were colliding into each
+        // other and the count numbers were getting clipped on
+        // iPhone 17 Pro normal size (390 pt wide).
+        //
+        // Root causes:
+        //   1. statPill used `Text("\(count)")` (raw int), so a
+        //      4-digit like count rendered as "1234" — ~60 pt
+        //      wide per pill, which overflowed when summed across
+        //      4 pills + bookmark + view count on a 390 pt screen.
+        //   2. `HStack(spacing: 14)` between pills + `.padding(.horizontal, 12)`
+        //      inside each pill made each pill 24 pt wider than it
+        //      needed to be.
+        //   3. No `.fixedSize(horizontal: true)` → SwiftUI's layout
+        //      proportionally squished pills under width pressure
+        //      and clipped the count text instead of truncating
+        //      cleanly.
+        //
+        // Fixes below: tighter spacing (8 not 14), tighter pill
+        // padding (10 not 12), formatCount everywhere, fixedSize
+        // so pills shrink-wrap their content.
+        return HStack(spacing: 8) {
             // Comment
             statPill(
                 icon: "bubble.left.fill",
@@ -661,16 +694,112 @@ struct PostCard: View {
             }
             .buttonStyle(.borderless)
 
+            // Forward to RAVEN contacts — dedicated icon for the
+            // in-app "send to friend" action. Long-press on the Repost
+            // pill (above) also triggers this, but discoverability
+            // matters: a Twitter/X/Mastodon user expects Repost to
+            // actually repost (which it now does) and a separate
+            // Forward icon for DM-handoff. This is that icon.
+            //
+            // 🔴 ROUND 30 (2026-05-18) — plain gray utility circle.
+            // Matches the Bookmark + Share style: small icon, .secondary
+            // tint, secondaryLabel-opacity background, clipped to a
+            // circle. Forward + Share now read as a matched pair of
+            // plain utility buttons rather than one glowing capsule
+            // pulling focus from the rest of the action row.
+            if onForward != nil {
+                Button {
+                    Haptics.light()
+                    onForward?()
+                } label: {
+                    Image(systemName: "arrowshape.turn.up.right")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .padding(8)
+                        .background(
+                            Color(.secondaryLabel).opacity(0.08)
+                        )
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Forward to RAVEN contacts")
+            }
+
+            // Share — public HTTPS link via the iOS share sheet.
+            // Apple Liquid Glass capsule (ultraThinMaterial + thin
+            // gradient stroke + soft purple bloom) so it reads as the
+            // "outside the app" action, distinct from the tinted
+            // engagement pills next to it.
+            shareButton
+
             Spacer()
 
-            // View count - subtle right-aligned
+            // View count - subtle right-aligned.
+            // 🟥 VIEW-COUNT FIX (2026-05-22) — on iPhone SE the
+            // count vanished, leaving a bare eye icon. This HStack
+            // holds a flexible Text and sits right after a Spacer()
+            // in the action bar; without .fixedSize, SwiftUI lets
+            // the greedy Spacer win the flexible-space competition
+            // and starves the Text to zero width. The stat pills
+            // already carry the same .fixedSize for this reason.
             HStack(spacing: 4) {
                 Image(systemName: "eye")
                     .font(.system(size: 12, weight: .medium))
                 Text(formatCount(currentViewCount))
                     .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .lineLimit(1)
             }
             .foregroundStyle(.tertiary)
+            .fixedSize(horizontal: true, vertical: false)
+        }
+    }
+
+    // MARK: - Share Button (Apple Liquid Glass capsule)
+    //
+    // Builds a `RavenShareKind.post(...)` carrying the post's id +
+    // author + excerpt — the excerpt rides the share URL as a `?excerpt=`
+    // hint so the unfurl card on iMessage / WhatsApp / Telegram /
+    // Discord shows the actual quote and byline (see
+    // `api/og.js` on the website).
+    private var shareKind: RavenShareKind {
+        .post(
+            postId: post.id,
+            authorUsername: post.authorUsername,
+            excerpt: post.content
+        )
+    }
+
+    @ViewBuilder
+    private var shareButton: some View {
+        if let url = RavenShareLink.url(for: shareKind) {
+            ShareLink(
+                item: url,
+                subject: Text(RavenShareLink.subject(for: shareKind)),
+                message: Text(RavenShareLink.message(for: shareKind))
+            ) {
+                Image(systemName: "square.and.arrow.up")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .padding(8)
+                    .background(
+                        Color(.secondaryLabel).opacity(0.08)
+                    )
+                    .clipShape(Circle())
+                    // 🔴 ROUND 30 (2026-05-18) — plain gray utility
+                    // circle matching Bookmark + Forward. Previously
+                    // Share carried a Liquid Glass treatment with a
+                    // bright purple bloom that made it stand out from
+                    // every other button on the row. Per design
+                    // direction: all three utility buttons
+                    // (Bookmark / Forward / Share) now use the same
+                    // small `.secondaryLabel` circle — visually
+                    // unified, no single button pulls focus.
+            }
+            .buttonStyle(.borderless)
+            .simultaneousGesture(
+                TapGesture().onEnded { Haptics.selection() }
+            )
+            .accessibilityLabel("Share post")
         }
     }
 
@@ -712,17 +841,28 @@ struct PostCard: View {
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            HStack(spacing: 6) {
+            HStack(spacing: 4) {
                 Image(systemName: icon)
                     .font(.system(size: 14, weight: .medium))
                     .foregroundStyle(isActive ? activeColor : .secondary)
-                
-                Text("\(count)")
-                    .font(.system(size: 14, weight: .semibold, design: .rounded))
-                    .foregroundStyle(isActive ? activeColor : .primary)
+
+                // 🟥 ROUND 35 (2026-05-17) — count rendering.
+                //   • Use `formatCount` so 1234 renders as "1.2K",
+                //     not the 4-character "1234" that overflows
+                //     the pill width on iPhone 17 Pro / SE.
+                //   • Hide the number entirely at count=0 — empty
+                //     pills are visually cleaner and free up
+                //     horizontal space on iPhone SE where every
+                //     pixel matters.
+                if count > 0 {
+                    Text(formatCount(count))
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .foregroundStyle(isActive ? activeColor : .primary)
+                        .lineLimit(1)
+                }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
             .background(
                 Capsule()
                     .fill(isActive ? activeColor.opacity(0.12) : Color.secondary.opacity(0.08))
@@ -731,6 +871,13 @@ struct PostCard: View {
                 Capsule()
                     .strokeBorder(isActive ? activeColor.opacity(0.2) : Color.clear, lineWidth: 1)
             )
+            // Shrink-wrap content so 4 pills + bookmark + view
+            // count don't get proportionally squished under width
+            // pressure on small iPhones.  Without this the layout
+            // engine truncates the count text mid-character when
+            // it can't fit (root cause of the user-reported
+            // "addad dorost neshon nemidan").
+            .fixedSize(horizontal: true, vertical: false)
         }
         .buttonStyle(.borderless)
     }

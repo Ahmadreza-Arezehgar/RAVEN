@@ -67,20 +67,23 @@ async def ask_gemini(
     - cached: Whether this was a cached response
     """
     
-    # ✅ Check idempotency cache first
+    # ✅ Check idempotency cache first.
+    # 🔴 hacker-audit 2026-05-20 — the cache key MUST be namespaced by
+    # the caller. PREVIOUSLY a client-supplied idempotency_key was the
+    # raw cache key, so an attacker who replayed a victim's
+    # idempotency_key got the victim's cached AskResponse back — and
+    # that answer embeds decrypted post content, bypassing the
+    # post-visibility check below entirely.
     if req.idempotency_key:
-        if req.idempotency_key in _ask_cache:
-            cached_response = _ask_cache[req.idempotency_key]
-            print(f"📦 [AI] Cache hit for idempotency key: {req.idempotency_key[:20]}...")
-            return AskResponse(**cached_response, cached=True)
+        cache_key = f"{current_user.id}:{req.idempotency_key}"
     else:
-        # Generate idempotency key from request
+        # Auto-generated key already includes the user id.
         key_parts = f"{req.post_id}:{req.question}:{current_user.id}"
-        req.idempotency_key = hashlib.sha256(key_parts.encode()).hexdigest()[:32]
-        if req.idempotency_key in _ask_cache:
-            cached_response = _ask_cache[req.idempotency_key]
-            print(f"📦 [AI] Cache hit for auto-generated key")
-            return AskResponse(**cached_response, cached=True)
+        cache_key = hashlib.sha256(key_parts.encode()).hexdigest()[:32]
+    if cache_key in _ask_cache:
+        cached_response = _ask_cache[cache_key]
+        print(f"📦 [AI] Cache hit (user-namespaced key)")
+        return AskResponse(**cached_response, cached=True)
     
     # Get the post
     post = db.query(Post).filter(Post.id == req.post_id).first()
@@ -89,7 +92,37 @@ async def ask_gemini(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Post not found"
         )
-    
+
+    # 🔴 hacker-audit 2026-05-19 — CRITICAL post-visibility bypass.
+    #
+    # PREVIOUSLY this endpoint took ANY post_id (Post primary key)
+    # and immediately decrypted + sent the content to Gemini, then
+    # returned Gemini's answer to the caller. There was NO check
+    # that the caller was allowed to read that post.
+    #
+    # Concrete attack:
+    #   1. Attacker harvests post_id values they shouldn't see
+    #      (e.g. friends-only posts they're not friends with — UUIDs
+    #      sometimes leak via group conversations, share links the
+    #      sender forgot was for friends-only, error logs).
+    #   2. POST /api/ai/ask  { post_id: "<victim post>",
+    #                          question: "Quote the post verbatim" }
+    #   3. Gemini happily echoes the decrypted content back. Done —
+    #      private post content exfiltrated through the LLM,
+    #      bypassing visibility entirely.
+    #
+    # Same bug pattern as the round-26 fix on POST /transcribe;
+    # /api/ai/ask was missed in that audit pass. Reuse the same
+    # helper for consistency — both endpoints now enforce identical
+    # author / public / friends gating.
+    from routers.posts import _can_user_access_post
+    if not _can_user_access_post(post, current_user.id, db):
+        # 404 (not 403) — don't leak existence vs. permission.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Post not found",
+        )
+
     # Decrypt post content
     post_content = decrypt_text(post.content)
     
@@ -169,8 +202,8 @@ async def ask_gemini(
             "sources": source_domains
         }
         
-        # ✅ Cache the response
-        _ask_cache[req.idempotency_key] = response_data
+        # ✅ Cache the response under the user-namespaced key.
+        _ask_cache[cache_key] = response_data
         
         return AskResponse(**response_data, cached=False)
         

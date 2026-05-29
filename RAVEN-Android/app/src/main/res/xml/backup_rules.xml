@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Legacy auto-backup rules (Android 11 and below). Same posture as
+     data_extraction_rules.xml: nothing leaves the device. -->
+<full-backup-content>
+    <exclude domain="root" />
+    <exclude domain="database" />
+    <exclude domain="sharedpref" />
+    <exclude domain="external" />
+    <exclude domain="file" />
+</full-backup-content>

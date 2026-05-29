@@ -26,6 +26,14 @@ class RealtimeEngine: @unchecked Sendable {
     private var pollingTimer: Timer?
     private var foregroundObserver: NSObjectProtocol?
     private var backgroundObserver: NSObjectProtocol?
+    private var networkStatusObserver: NSObjectProtocol?
+    /// Tracks the last seen online state so we only fire a sync on
+    /// the actual offline→online transition (not on every probe tick).
+    private var wasOnline: Bool = false
+    /// Coalesces simultaneous reconnects (NWPath + probe both fire
+    /// `networkStatusChanged`) so we don't kick off two parallel
+    /// `syncNow()`s within milliseconds of each other.
+    private var reconnectSyncInFlight: Bool = false
     private var lastInboxTimestamp: String?
     private var isPollingInFlight = false  // Prevent overlapping polls
     
@@ -67,13 +75,107 @@ class RealtimeEngine: @unchecked Sendable {
         ) { [weak self] _ in
             self?.onEnterForeground()
         }
-        
+
         backgroundObserver = NotificationCenter.default.addObserver(
             forName: UIApplication.didEnterBackgroundNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
             self?.onEnterBackground()
+        }
+
+        // 🟢 ROUND 73 (2026-05-24) — full inbox sync on network restore.
+        //
+        // USER REPORT: "vaghty ke app be internet vaskl mishe bayad
+        // tamam message haro toye hafeze save kone va download kone
+        // ke message ha hamishe bashan" — when the app reconnects
+        // to internet, it should download and persist all messages
+        // so they're always available.
+        //
+        // BEFORE: sync only fired on app start + foreground.
+        // Mid-session offline→online transitions (Wi-Fi handoff,
+        // tunnel exit, airplane mode toggle) did NOT trigger a
+        // catch-up sync. Anything pushed by the server while we
+        // were offline waited until the next periodic 30s poll
+        // (or the user backgrounded + foregrounded the app to
+        // force one), which felt like "messages are missing".
+        //
+        // FIX: subscribe to `.networkStatusChanged` and run
+        // `syncNow()` exactly once per offline→online edge. The
+        // `wasOnline` cache prevents re-firing on every server-
+        // probe tick (which also posts the notification when
+        // `serverReachable` flips). The `reconnectSyncInFlight`
+        // gate coalesces races between NWPath and probe.
+        networkStatusObserver = NotificationCenter.default.addObserver(
+            forName: .networkStatusChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.onNetworkStatusChanged()
+        }
+        // Prime the wasOnline cache so the FIRST observation doesn't
+        // count as an offline→online edge (we sync on start() anyway).
+        wasOnline = NetworkMonitor.shared.isOnline
+    }
+
+    /// Called whenever NetworkMonitor posts `.networkStatusChanged`
+    /// (NWPath transition OR backend-probe success/failure flip).
+    /// Fires `syncNow()` only on the actual offline→online edge.
+    private func onNetworkStatusChanged() {
+        let nowOnline = NetworkMonitor.shared.isOnline
+        let prevOnline = wasOnline
+        wasOnline = nowOnline
+
+        // Only act on the offline→online transition. The other
+        // observers (OutboxManager, GroupService, etc.) handle the
+        // online→offline edge separately.
+        guard nowOnline, !prevOnline else { return }
+
+        // Guard against duplicate sync kickoffs from coalesced
+        // notifications (NWPath fires once, the first probe success
+        // can fire again ~immediately).
+        guard !reconnectSyncInFlight else {
+            #if DEBUG
+            print("🔁 [RealtimeEngine] Network restored — sync already in flight; coalescing")
+            #endif
+            return
+        }
+        reconnectSyncInFlight = true
+
+        #if DEBUG
+        print("🌐 [RealtimeEngine] Network RESTORED — triggering full sync")
+        #endif
+
+        // Don't sync if not fully authenticated — same readiness check
+        // that `onEnterForeground` uses.
+        let auth = AuthService.shared
+        let isReady = MainActor.assumeIsolated {
+            auth.isAuthenticated &&
+            (auth.isEmailVerified || auth.currentUser?.authMethod != .password) &&
+            auth.currentUser?.username != nil
+        }
+        guard isReady else {
+            #if DEBUG
+            print("⚠️ [RealtimeEngine] Network restored but user not fully verified — skipping sync")
+            #endif
+            reconnectSyncInFlight = false
+            return
+        }
+
+        // Reconnect WebSocket immediately so push channel is live
+        // alongside the catch-up sync.
+        Task { @MainActor in
+            connectWebSocketOrPoll()
+        }
+
+        // Heavy sync on a background task so the main thread stays
+        // responsive. `syncNow()` already does the right thing:
+        //   1. ConversationStore.fetchConversations(forceFull:false)
+        //   2. pollInbox() — incremental fetch with `since=` cursor
+        //   3. NotificationsService.pollNotifications()
+        Task.detached(priority: .userInitiated) { [weak self] in
+            await self?.syncNow()
+            await MainActor.run { self?.reconnectSyncInFlight = false }
         }
     }
     
@@ -355,10 +457,10 @@ class RealtimeEngine: @unchecked Sendable {
         case .string(let text):
             guard let data = text.data(using: .utf8) else { return }
             processWebSocketData(data)
-            
+
         case .data(let data):
             processWebSocketData(data)
-            
+
         @unknown default:
             break
         }
@@ -466,20 +568,83 @@ class RealtimeEngine: @unchecked Sendable {
                    let typeStr = json["type"] as? String {
                     switch typeStr {
                     case "message_edited":
-                        Task { @MainActor in
-                            var info: [String: Any] = [:]
-                            info["messageId"] = json["message_id"] as? String ?? ""
-                            info["content"] = json["content"] as? String ?? ""
-                            if let ts = json["edited_at"] as? String,
-                               let date = PerformanceConstants.iso8601Fractional.date(from: ts)
-                                    ?? PerformanceConstants.iso8601.date(from: ts) {
-                                info["editedAt"] = date
+                        // 🔴 ROUND 19 — hacker-audit Server F3 / Bridge F5.
+                        // The WS-pushed edit used to deliver
+                        // attacker-controlled `content` straight into
+                        // the bubble. We now hop to a Task that
+                        // unseals the envelope before posting the
+                        // NotificationCenter event the chat surface
+                        // consumes. If the server's WS payload
+                        // doesn't carry a `sender_id`, the unseal
+                        // returns nil for sealed envelopes (no key
+                        // resolvable) and we fall back to the raw
+                        // content marker — the per-bubble badge will
+                        // surface "sealedButFailed" so the user sees
+                        // the suspicious render.
+                        let messageId = json["message_id"] as? String ?? ""
+                        let rawContent = json["content"] as? String ?? ""
+                        let senderId = json["sender_id"] as? String
+                        // 🔴 ROUND 71 phase 3 follow-up (2026-05-24) —
+                        // Swift 6 strict-concurrency: `let` capture
+                        // instead of `var` so the cross-actor Task
+                        // doesn't trip the "captured var in
+                        // concurrently-executing code" diagnostic.
+                        // Compute the optional once via a closure
+                        // (`PerformanceConstants.iso8601*` are
+                        // thread-safe) so the resulting value is
+                        // immutable across the capture boundary.
+                        let editedAt: Date? = {
+                            guard let ts = json["edited_at"] as? String else { return nil }
+                            return PerformanceConstants.iso8601Fractional.date(from: ts)
+                                ?? PerformanceConstants.iso8601.date(from: ts)
+                        }()
+                        Task {
+                            // 🔴 ROUND 71 phase 3 follow-up — compute
+                            // `unsealedText` as a `let` so the Task
+                            // body holds no mutable captured state.
+                            let unsealedText: String
+                            if rawContent.isEmpty {
+                                unsealedText = rawContent
+                            } else if let unsealed = await MessageContentSealer.unseal(
+                                encoded: rawContent,
+                                senderUserId: senderId,
+                                senderAgreementPubKey: nil,
+                                msgId: messageId
+                            ) {
+                                unsealedText = unsealed.plaintext
+                                switch unsealed.reason {
+                                case .noiseTransport, .atsamHybrid:
+                                    await MessageEncryptionStatusStore.shared
+                                        .record(.sealed, for: messageId)
+                                case .explicitPlaintext:
+                                    await MessageEncryptionStatusStore.shared
+                                        .record(.plaintextExplicit, for: messageId)
+                                case .legacy:
+                                    await MessageEncryptionStatusStore.shared
+                                        .record(.plaintextLegacy, for: messageId)
+                                case .decryptFailed:
+                                    await MessageEncryptionStatusStore.shared
+                                        .record(.sealedButFailed, for: messageId)
+                                case .noSenderKey:
+                                    break
+                                }
+                            } else {
+                                // nil = garbage / unparseable.
+                                unsealedText = ""
+                                await MessageEncryptionStatusStore.shared
+                                    .record(.sealedButFailed, for: messageId)
                             }
-                            NotificationCenter.default.post(
-                                name: Notification.Name("MessageEditedRemote"),
-                                object: nil,
-                                userInfo: info
-                            )
+                            await MainActor.run {
+                                var info: [String: Any] = [:]
+                                info["messageId"] = messageId
+                                info["content"] = unsealedText
+                                if let editedAt = editedAt { info["editedAt"] = editedAt }
+                                NotificationCenter.default.post(
+                                    name: Notification.Name("MessageEditedRemote"),
+                                    object: nil,
+                                    userInfo: info
+                                )
+                            }
                         }
                         return
 
@@ -546,6 +711,32 @@ class RealtimeEngine: @unchecked Sendable {
                                     bridgedAt: Date()
                                 )
                             }
+                        }
+                        return
+
+                    case "added_to_group":
+                        // 🟦 ROUND 47 (2026-05-17) — server-pushed group
+                        // lifecycle event. Materialize the group locally
+                        // AND re-broadcast it over mesh so BLE-only
+                        // neighbours can also see the new group.
+                        //
+                        // Payload shape (set by server/routers/groups.py
+                        // POST handler):
+                        //   {
+                        //     "type": "added_to_group",
+                        //     "group_id": "...",
+                        //     "group_name": "...",
+                        //     "added_by": "...",
+                        //     "added_by_id": "...",
+                        //     "group": {
+                        //       "id", "name", "avatar_url", "description",
+                        //       "created_by", "creator_username",
+                        //       "created_at", "member_count",
+                        //       "members": [{user_id, username, ...}]
+                        //     }
+                        //   }
+                        Task {
+                            await Self.handleAddedToGroupWS(json: json)
                         }
                         return
 
@@ -772,9 +963,76 @@ class RealtimeEngine: @unchecked Sendable {
                 lastInboxTimestamp = PerformanceConstants.iso8601.string(from: latest)
             }
             
+            // 🔴 ROUND 19 — hacker-audit Server F3 CRITICAL.
+            // 🔴 ROUND 21 — hacker-audit Bridge F1 follow-up.
+            //
+            // Two layers of receive-side decrypt:
+            //   1. If `groupKeyVersion` is set, the body is the
+            //      AES-GCM ciphertext that the bridge node refused
+            //      to decrypt (round 21 fix). We run it through
+            //      `GroupKeyService.decrypt` using the version
+            //      index the server pass-through preserved.
+            //   2. Otherwise (1:1 path, or legacy bridges), we run
+            //      it through `MessageContentSealer.unseal`.
+            //
+            // Either way, garbage payloads land as empty + tagged
+            // `sealedButFailed` so the bubble surfaces the warning
+            // instead of rendering attacker bytes.
+            var unsealedMessages: [ChatMessage] = []
+            unsealedMessages.reserveCapacity(messages.count)
+            for var m in messages {
+                if let wire = m.text, !wire.isEmpty {
+                    if let version = m.groupKeyVersion,
+                       let roomId = m.roomId, !roomId.isEmpty {
+                        // Group ciphertext path (Bridge F1).
+                        if let plain = await GroupKeyService.shared.decrypt(
+                            wire, groupId: roomId, version: version
+                        ) {
+                            m.text = plain
+                            await MessageEncryptionStatusStore.shared
+                                .record(.sealed, for: m.id)
+                        } else {
+                            m.text = ""
+                            await MessageEncryptionStatusStore.shared
+                                .record(.sealedButFailed, for: m.id)
+                        }
+                    } else if let result = await MessageContentSealer.unseal(
+                        encoded: wire,
+                        senderUserId: m.senderId,
+                        senderAgreementPubKey: nil,
+                        msgId: m.id
+                    ) {
+                        m.text = result.plaintext
+                        switch result.reason {
+                        case .noiseTransport, .atsamHybrid:
+                            await MessageEncryptionStatusStore.shared
+                                .record(.sealed, for: m.id)
+                        case .explicitPlaintext:
+                            await MessageEncryptionStatusStore.shared
+                                .record(.plaintextExplicit, for: m.id)
+                        case .legacy:
+                            await MessageEncryptionStatusStore.shared
+                                .record(.plaintextLegacy, for: m.id)
+                        case .decryptFailed:
+                            await MessageEncryptionStatusStore.shared
+                                .record(.sealedButFailed, for: m.id)
+                        case .noSenderKey:
+                            break
+                        }
+                    } else {
+                        // Server returned garbage / non-Base64.
+                        // Don't render attacker bytes.
+                        m.text = ""
+                        await MessageEncryptionStatusStore.shared
+                            .record(.sealedButFailed, for: m.id)
+                    }
+                }
+                unsealedMessages.append(m)
+            }
+
             // Handle new messages
-            if !messages.isEmpty {
-                await ConversationStore.shared.handleIncomingMessages(messages)
+            if !unsealedMessages.isEmpty {
+                await ConversationStore.shared.handleIncomingMessages(unsealedMessages)
             }
             
         } catch let apiError as APIError {
@@ -884,18 +1142,108 @@ class RealtimeEngine: @unchecked Sendable {
     }
     
     // MARK: - Toast Notification
-    
+
+    /// 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — annotated
+    /// `@MainActor` so the body can directly touch
+    /// `ConversationStore.shared` / `NotificationPipeline.shared`
+    /// (both main-actor isolated). Pre-fix the function was
+    /// nonisolated which compiled under Swift 5 but became a
+    /// hard error under Swift 6 strict-concurrency. Only caller
+    /// (`handlePushNotification`) already wraps the invocation
+    /// in `MainActor.run`, so the annotation has no runtime cost.
+    @MainActor
     private func showToast(for payload: [String: Any]) {
         guard let type = payload["type"] as? String else { return }
-        
+
+        // 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — name lookup
+        // is shared by every toast case below so the banner ALWAYS
+        // gets a display name. Tries `sender_username` first (modern
+        // path), then `sender_name`, then aps.alert.title (APNs
+        // foreground payload), then the conversation peer cache,
+        // then "Someone" as last resort. Pre-fix the message case
+        // hard-required `sender_username` and silently dropped the
+        // whole toast when missing — the "empty banner" user
+        // complaint.
+        let resolveSenderName: (String?) -> String = { fallbackRoomId in
+            if let s = payload["sender_username"] as? String, !s.isEmpty, !s.looksEncrypted {
+                return s
+            }
+            if let s = payload["sender_name"] as? String, !s.isEmpty, !s.looksEncrypted {
+                return s
+            }
+            if let aps = payload["aps"] as? [String: Any],
+               let alert = aps["alert"] as? [String: Any],
+               let title = alert["title"] as? String, !title.isEmpty {
+                return title
+            }
+            if let roomId = fallbackRoomId,
+               let conv = ConversationStore.shared.conversations.first(where: { $0.roomId == roomId }) {
+                return conv.isGroup ? (conv.groupName ?? conv.peer.displayName) : conv.peer.displayName
+            }
+            return "Someone"
+        }
+        let resolveAvatarURL: () -> URL? = {
+            let raw = (payload["sender_avatar"] as? String)
+                ?? (payload["sender_avatar_url"] as? String)
+                ?? (payload["avatar_url"] as? String)
+                ?? (payload["sender_avatar_path"] as? String)
+                ?? (payload["requester_avatar"] as? String)
+            guard let raw, !raw.isEmpty else { return nil }
+            return AppConfig.mediaURL(from: raw)
+        }
+
         switch type {
-        case "message":
-            if let senderName = payload["sender_username"] as? String,
-               let preview = payload["preview"] as? String,
-               let roomId = payload["room_id"] as? String {
-                // Don't show toast if user is already in this chat
-                guard !DeepLinkRouter.shared.isInChat(roomId: roomId) else { return }
+        case "message", "group_message", "dm_message":
+            // 🔴 ROUND 71 phase 3 — accept the message even when
+            // sender_username is missing. Resolves to peer-cache
+            // display name or "Someone"; preview falls through
+            // MessagePreviewFormatter which always returns at least
+            // a type-aware label ("📷 Photo", "🎤 Voice", etc.).
+            let roomId = (payload["room_id"] as? String) ?? (payload["sender_id"] as? String) ?? ""
+            if !roomId.isEmpty {
+                let senderName = resolveSenderName(roomId)
+                // 🔴 Bug fix (2026-05-15): the WS toast path was
+                // dropping the body to whatever the server's `preview`
+                // string contained — for images/voice/video that's
+                // empty or just a filename, so the in-app banner
+                // showed only the sender's name. Run the metadata
+                // through `MessagePreviewFormatter` so we land on
+                // "📷 Photo", "🎤 Voice (0:12)", etc., the same way
+                // the APNs path does (PushNotificationService:633).
+                let rawPreview = payload["preview"] as? String
+                let messageType = (payload["message_type"] as? String)
+                    ?? (payload["type"] as? String)
+                let durationRaw = payload["audio_duration_seconds"]
+                    ?? payload["voice_duration"]
+                    ?? payload["duration"]
+                let audioDuration: Int? = {
+                    if let i = durationRaw as? Int { return i }
+                    if let d = durationRaw as? Double { return Int(d) }
+                    if let s = durationRaw as? String { return Int(s) }
+                    return nil
+                }()
+                let fileName = (payload["file_name"] as? String)
+                    ?? (payload["attachment_name"] as? String)
+                let preview = MessagePreviewFormatter.format(
+                    messageType: messageType,
+                    body: rawPreview,
+                    audioDurationSeconds: audioDuration,
+                    fileName: fileName
+                )
+
+                // (2026-05-15 — round 7) Don't show toast if user is
+                // already in this chat. The strict `roomId == current`
+                // check covers groups perfectly, but DM payloads have
+                // historically used a few different `room_id` formats
+                // (peer user-id alone vs. canonical room-id). Belt-
+                // and-braces: also suppress when the sender id matches
+                // the active chat's peer id, so a self-notification
+                // can never sneak through a format mismatch.
                 let senderId = payload["sender_id"] as? String ?? ""
+                let activeRoom = DeepLinkRouter.shared.currentChatRoomId
+                if activeRoom == roomId || (activeRoom != nil && activeRoom == senderId) {
+                    return
+                }
                 let messageId = (payload["message_id"] as? String)
                     ?? (payload["client_message_id"] as? String)
                     ?? (payload["id"] as? String)
@@ -912,32 +1260,379 @@ class RealtimeEngine: @unchecked Sendable {
                             return
                         }
                     }
+                    // (2026-05-15 — round 6) Surface the sender's
+                    // avatar in the in-app toast — the user reported
+                    // banners arrived without one. Server payload may
+                    // carry the URL under several keys depending on
+                    // which microservice produced the push, so we
+                    // try them in order.
+                    let avatarRaw = (payload["sender_avatar"] as? String)
+                        ?? (payload["sender_avatar_url"] as? String)
+                        ?? (payload["avatar_url"] as? String)
+                        ?? (payload["sender_avatar_path"] as? String)
+                    let avatarURL: URL? = {
+                        guard let raw = avatarRaw, !raw.isEmpty else { return nil }
+                        return AppConfig.mediaURL(from: raw)
+                    }()
+                    let isGroupChat = (payload["is_group"] as? Bool) ?? false
+                    // 🔴 ROUND 71 phase 3 follow-up #4 (2026-05-24) —
+                    // pass group name + messageId + server
+                    // notification id through to the toast so the
+                    // banner can render "<sender> · <group>" and
+                    // the tap handler can mark the correct row
+                    // read on the server. Group name resolution
+                    // mirrors the message-store path: try payload
+                    // fields first, fall back to ConversationStore
+                    // by roomId.
+                    let groupNameFromPayload =
+                        (payload["group_name"] as? String)
+                            ?? (payload["groupName"] as? String)
+                    let resolvedGroupName: String? = {
+                        if let g = groupNameFromPayload, !g.isEmpty { return g }
+                        if isGroupChat,
+                           let conv = ConversationStore.shared.conversations.first(where: { $0.roomId == roomId }),
+                           let g = conv.groupName, !g.isEmpty {
+                            return g
+                        }
+                        return nil
+                    }()
+                    let serverNotifId = (payload["notification_id"] as? String)
+                        ?? (payload["notif_id"] as? String)
                     let toast = ToastItem.message(
                         senderName: senderName,
                         preview: preview,
+                        avatarURL: avatarURL,
                         chatId: roomId,
-                        senderId: senderId
+                        senderId: senderId,
+                        isGroup: isGroupChat,
+                        groupName: resolvedGroupName,
+                        serverNotificationId: serverNotifId,
+                        messageId: messageId
                     )
                     NotificationPipeline.shared.enqueue(toast)
                 }
             }
             
         case "friend_request":
+            // 🔴 ROUND 71 phase 3 — accept/decline-correct toast.
+            //   Pre-fix this branch passed `userId` as `requestId`,
+            //   so the accept/decline buttons on the toast and on
+            //   the notification row hit `/api/users/friend-request/
+            //   {userId}/accept` — which 404s because the path
+            //   expects the friend-request ROW id, not the
+            //   requester's user id. Avatar was also dropped on
+            //   the floor; the toast rendered initials only even
+            //   when the server had a URL.
+            //
+            //   New behavior: pull `request_id` + `requester_avatar`
+            //   from the payload (server sends both since R71 p3),
+            //   fall back to the prior shape for back-compat with
+            //   older servers. Also enqueue an unread-count bump so
+            //   the badge reflects the new pending request without
+            //   waiting for the next /api/notifications poll.
             if let username = payload["requester_username"] as? String,
                let userId = payload["requester_id"] as? String {
+                let requestId = (payload["request_id"] as? String) ?? userId
+                let avatarRaw = payload["requester_avatar"] as? String
+                let avatarURL: URL? = {
+                    guard let raw = avatarRaw, !raw.isEmpty else { return nil }
+                    return AppConfig.mediaURL(from: raw)
+                }()
                 Task { @MainActor in
                     let toast = ToastItem.friendRequest(
                         fromName: username,
+                        avatarURL: avatarURL,
                         senderId: userId,
-                        requestId: userId
+                        requestId: requestId
                     )
                     NotificationPipeline.shared.enqueue(toast)
+                    // Friend requests are NEVER auto-cleared by the
+                    // poll-side mark-all-read sweep; bump the badge
+                    // so the bell flashes right away.
+                    NotificationPipeline.shared.unreadCount += 1
+                    // 🟢 ROUND 75 (2026-05-24) — broadcast a refresh
+                    // signal so NotificationsListView re-fetches
+                    // /api/notifications immediately (otherwise the
+                    // user opens the bell and sees an empty list
+                    // until the 30s polling cycle). Cheap, idempotent,
+                    // posted only on actual WS arrival.
+                    NotificationCenter.default.post(
+                        name: Notification.Name("FriendRequestWSReceived"),
+                        object: nil
+                    )
                 }
             }
             
+        // 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — handle every
+        // other notification type the server may push so the in-app
+        // banner actually shows real info (was: silent default-break
+        // for like/comment/mention/group_message/audio_room/etc.,
+        // leaving the user with no idea anything happened).
+        case "like":
+            let userName = resolveSenderName(nil)
+            let postId = (payload["post_id"] as? String) ?? (payload["postId"] as? String) ?? ""
+            Task { @MainActor in
+                NotificationPipeline.shared.enqueue(ToastItem.like(
+                    userName: userName,
+                    avatarURL: resolveAvatarURL(),
+                    postId: postId
+                ))
+            }
+
+        case "comment":
+            let userName = resolveSenderName(nil)
+            let postId = (payload["post_id"] as? String) ?? (payload["postId"] as? String) ?? ""
+            var preview = (payload["preview"] as? String) ?? (payload["body"] as? String) ?? ""
+            if preview.looksEncrypted || preview.isEmpty { preview = "commented on your post" }
+            Task { @MainActor in
+                NotificationPipeline.shared.enqueue(ToastItem.comment(
+                    userName: userName,
+                    preview: preview,
+                    avatarURL: resolveAvatarURL(),
+                    postId: postId
+                ))
+            }
+
+        case "mention":
+            let userName = resolveSenderName(nil)
+            let postId = (payload["post_id"] as? String) ?? (payload["postId"] as? String) ?? ""
+            var preview = (payload["preview"] as? String) ?? (payload["body"] as? String) ?? ""
+            if preview.looksEncrypted || preview.isEmpty { preview = "mentioned you" }
+            Task { @MainActor in
+                NotificationPipeline.shared.enqueue(ToastItem.comment(
+                    userName: userName,
+                    preview: preview,
+                    avatarURL: resolveAvatarURL(),
+                    postId: postId
+                ))
+            }
+
+        case "audio_room", "audio_room_join":
+            let host = resolveSenderName(nil)
+            let title = (payload["room_title"] as? String) ?? "Voice Room"
+            let action = type == "audio_room_join" ? "joined" : "started"
+            Task { @MainActor in
+                NotificationPipeline.shared.enqueue(ToastItem.appUpdate(
+                    title: "🎙 \(title)",
+                    message: "\(host) \(action) the room"
+                ))
+            }
+
+        case "added_to_group", "group_invite":
+            let inviter = resolveSenderName(nil)
+            let groupName = (payload["group_name"] as? String) ?? "a group"
+            let groupId = (payload["group_id"] as? String) ?? (payload["room_id"] as? String) ?? ""
+            Task { @MainActor in
+                NotificationPipeline.shared.enqueue(ToastItem.groupInvite(
+                    groupName: groupName,
+                    inviterName: inviter,
+                    avatarURL: resolveAvatarURL(),
+                    groupId: groupId
+                ))
+            }
+
+        case "vault_access":
+            let viewer = resolveSenderName(nil)
+            Task { @MainActor in
+                NotificationPipeline.shared.enqueue(ToastItem.security(
+                    title: "🔓 Vault opened",
+                    message: "\(viewer) viewed your vault attachment"
+                ))
+            }
+
+        case "security_alert", "security":
+            let title = (payload["title"] as? String) ?? "Security Alert"
+            let body = (payload["preview"] as? String) ?? (payload["body"] as? String) ?? "New activity detected"
+            Task { @MainActor in
+                NotificationPipeline.shared.enqueue(ToastItem.security(title: title, message: body))
+            }
+
+        case "new_post", "post":
+            let author = resolveSenderName(nil)
+            var preview = (payload["preview"] as? String) ?? (payload["post_preview"] as? String) ?? "New post"
+            if preview.looksEncrypted || preview.isEmpty { preview = "shared a new post" }
+            Task { @MainActor in
+                NotificationPipeline.shared.enqueue(ToastItem.comment(
+                    userName: author,
+                    preview: preview,
+                    avatarURL: resolveAvatarURL(),
+                    postId: (payload["post_id"] as? String) ?? ""
+                ))
+            }
+
         default:
+            #if DEBUG
+            print("🍞 [RealtimeEngine] showToast — no banner case for type='\(type)' (add to switch if user-facing)")
+            #endif
             break
         }
+    }
+
+    // MARK: - Added-to-Group WebSocket Handler (Round 47)
+    //
+    // 🟦 ROUND 47 (2026-05-17) — group lifecycle WS push.
+    //
+    // When the server-side `POST /api/groups` handler creates a group,
+    // it now WS-pushes `{type: "added_to_group", group: {...}}` to every
+    // online member. iOS materializes the group locally AND re-broadcasts
+    // it via mesh so any BLE-only neighbours of the receiver also see it.
+    //
+    // This is the "instant" path. The bridge-downlink-based path serves
+    // as a periodic safety net (every ~15s poll) — both converge to the
+    // same `GroupRepository.upsert` + `MeshGroupBroadcaster.broadcastCreate`
+    // call, and both are idempotent.
+    static func handleAddedToGroupWS(json: [String: Any]) async {
+        guard let groupDict = json["group"] as? [String: Any],
+              let groupId = groupDict["id"] as? String,
+              !groupId.isEmpty else {
+            // Without the inline `group` payload we'd need a follow-up
+            // /api/groups/{id} fetch. Older server builds (pre-R47) didn't
+            // include it — degrade gracefully by triggering a fetchMyGroups
+            // so the user at least sees the group eventually.
+            #if DEBUG
+            print("🟦 [WS] added_to_group missing inline group payload — falling back to fetchMyGroups()")
+            #endif
+            _ = try? await GroupService.shared.fetchMyGroups()
+            return
+        }
+
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let isoNoFrac = ISO8601DateFormatter()
+        isoNoFrac.formatOptions = [.withInternetDateTime]
+        func parseDate(_ s: String?) -> Date {
+            guard let s = s, !s.isEmpty else { return Date() }
+            return iso.date(from: s) ?? isoNoFrac.date(from: s) ?? Date()
+        }
+
+        let name = (groupDict["name"] as? String) ?? "Group"
+        let avatarUrl = groupDict["avatar_url"] as? String
+        let description = groupDict["description"] as? String
+        let createdBy = (groupDict["created_by"] as? String) ?? ""
+        let creatorUsername = groupDict["creator_username"] as? String
+        let createdAt = parseDate(groupDict["created_at"] as? String)
+        let memberCount = (groupDict["member_count"] as? Int) ?? 0
+
+        let memberDicts = (groupDict["members"] as? [[String: Any]]) ?? []
+        let members: [GroupMember] = memberDicts.compactMap { md in
+            guard let uid = md["user_id"] as? String, !uid.isEmpty else { return nil }
+            return GroupMember(
+                userId: uid,
+                username: (md["username"] as? String) ?? "",
+                avatarUrl: md["avatar_url"] as? String,
+                role: (md["role"] as? String) ?? "member",
+                joinedAt: parseDate(md["joined_at"] as? String)
+            )
+        }
+
+        let group = ChatGroup(
+            id: groupId,
+            name: name,
+            avatarUrl: avatarUrl,
+            description: description,
+            createdBy: createdBy,
+            creatorUsername: creatorUsername,
+            createdAt: createdAt,
+            memberCount: memberCount > 0 ? memberCount : members.count,
+            members: members,
+            syncStatus: .synced
+        )
+
+        // 1. Materialize locally (SQL UPSERT — safe to re-run).
+        do {
+            try await GroupRepository().upsert(group)
+            try? await ConversationRepository.shared.createGroupConversation(group: group)
+            // Promote any limbo messages for this group_id — those are
+            // chat messages that arrived BEFORE we knew about the group
+            // (mesh out-of-order). Promote re-runs the full receive path.
+            let parked = await PendingGroupMessageRepository.shared.promoteMessages(forGroup: group.id)
+            for env in parked {
+                await AppDelegate.handleMeshMessage(env)
+            }
+            await ConversationStore.shared.loadFromDB()
+            #if DEBUG
+            print("🟦 [WS] added_to_group ✅ materialized group \(group.id.prefix(8)) name='\(group.name)' members=\(members.count) promoted=\(parked.count)")
+            #endif
+        } catch {
+            #if DEBUG
+            print("🟦 [WS] added_to_group ❌ GroupRepository.upsert failed: \(error.localizedDescription)")
+            #endif
+        }
+
+        // 2. Re-broadcast over mesh for BLE-only neighbours that aren't
+        // online and so can't be reached via the server-side WS push.
+        //
+        // 🔴 ROUND 40 (2026-05-19) — mesh-amplification fix.
+        //
+        // PREVIOUSLY: every `added_to_group` WS event fired an
+        // unconditional `MeshGroupBroadcaster.broadcastCreate(group)`.
+        // A compromised or TLS-stripped WS could spam this event 1k
+        // times in a second and the client would dutifully blast 1k
+        // group-create envelopes onto BLE — saturating every nearby
+        // neighbour's radio and battery. A misbehaving server (bug,
+        // not malice) had the same effect.
+        //
+        // FIX: per-process sliding-window dedup keyed on group.id.
+        // Once we've broadcast a group-create for a given groupId we
+        // skip subsequent broadcasts for 5 minutes. The local
+        // `GroupRepository.upsert` above is already idempotent, so
+        // missing a mesh re-broadcast costs us nothing — BLE-only
+        // peers will see the group on the next legitimate event for
+        // it (rename, member add, etc.) or via a friend's hop.
+        if await Self.shouldBroadcastGroupCreate(groupId: group.id) {
+            await MeshGroupBroadcaster.broadcastCreate(group)
+            // 🟢 ROUND 74 (2026-05-24) — also broadcast the group's
+            // AES-GCM key so BLE-only members can decrypt. We just
+            // got added to this group via WS, which means the server
+            // already minted v1; `prefetchAndBroadcast` will fetch
+            // it (cached or live), and on a fresh fetch ALSO mesh-
+            // broadcast it to neighbours. Same 5-min dedup applies
+            // to the group_create broadcast; the key broadcast is
+            // idempotent at the receiver (same key+version is a no-
+            // op), so re-broadcasting on every added_to_group is
+            // safe — duplicate keys are deduped at ingest time.
+            Task { await GroupKeyService.shared.prefetchAndBroadcast(groupId: group.id) }
+        } else {
+            #if DEBUG
+            print("🟦 [WS] added_to_group mesh-rebroadcast suppressed (within 5-min window) for \(group.id.prefix(8))")
+            #endif
+        }
+    }
+
+    // Per-process dedup cache for `added_to_group` mesh re-broadcast.
+    // Keyed on groupId → timestamp of last broadcast. 5-min TTL.
+    //
+    // 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — moved from a
+    // bare `NSLock().lock()/.unlock()` pair to an actor so we don't
+    // call NSLock's blocking lock/unlock from an `async` function.
+    // Swift 6 strict-concurrency marks NSLock's lock/unlock as
+    // unavailable in async contexts (they can deadlock if the
+    // continuation hops to another thread holding the lock). An
+    // actor gives us the same mutual-exclusion guarantee with no
+    // blocking and async-safe scoping.
+    private actor BroadcastDedup {
+        private var lastBroadcastByGroup: [String: Date] = [:]
+        private let ttl: TimeInterval
+
+        init(ttl: TimeInterval) { self.ttl = ttl }
+
+        func shouldBroadcast(groupId: String) -> Bool {
+            let now = Date()
+            // GC stale entries so the dict doesn't grow unbounded.
+            lastBroadcastByGroup = lastBroadcastByGroup.filter { now.timeIntervalSince($0.value) < ttl }
+            if let last = lastBroadcastByGroup[groupId],
+               now.timeIntervalSince(last) < ttl {
+                return false
+            }
+            lastBroadcastByGroup[groupId] = now
+            return true
+        }
+    }
+
+    private static let broadcastDedup = BroadcastDedup(ttl: 5 * 60)
+
+    private static func shouldBroadcastGroupCreate(groupId: String) async -> Bool {
+        await broadcastDedup.shouldBroadcast(groupId: groupId)
     }
 }
 

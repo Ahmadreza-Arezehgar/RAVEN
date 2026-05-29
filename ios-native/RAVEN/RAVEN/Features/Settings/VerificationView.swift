@@ -109,7 +109,7 @@ struct VerificationView: View {
         "Afghanistan", "Albania", "Algeria", "Argentina", "Australia", "Austria",
         "Belgium", "Brazil", "Canada", "China", "Colombia", "Denmark", "Egypt",
         "Finland", "France", "Germany", "Greece", "India", "Indonesia", "Iran",
-        "Iraq", "Ireland", "Israel", "Italy", "Japan", "Jordan", "Kenya",
+        "Iraq", "Ireland", "Italy", "Japan", "Jordan", "Kenya",
         "Lebanon", "Malaysia", "Mexico", "Morocco", "Netherlands", "New Zealand",
         "Nigeria", "Norway", "Pakistan", "Philippines", "Poland", "Portugal",
         "Qatar", "Romania", "Russia", "Saudi Arabia", "South Africa", "South Korea",

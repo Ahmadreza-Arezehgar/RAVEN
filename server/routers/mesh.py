@@ -31,6 +31,7 @@ from sqlalchemy.orm import Session
 from auth import get_current_user
 from database import get_db, Base
 from models import User
+from routers.admin import verify_admin_secret
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/mesh", tags=["mesh"])
@@ -170,15 +171,77 @@ def pending_bridges(
     Used on app foreground / reconnect: the client passes the timestamp
     of its last bridge sync, and gets back any envelopes received since.
     Each envelope is tried-decrypt; clients keep what they can decrypt.
+
+    🔴 ROUND 26 (2026-05-16) — hacker-mode audit MEDIA-HIGH-12 hardening.
+
+    PREVIOUSLY: ANY authenticated user got up to 500 envelopes from the
+    last 24h on every call, with NO rate limit. An attacker polled
+    once a second and harvested the full mesh corpus — non-decryptable
+    envelopes are still useful for traffic analysis (sender pubkey,
+    timestamps, sizes), and pre-round-26 envelopes carry plaintext
+    `mediaUrl`/`thumbnailUrl`/`fileName`/`mimeType`/`fileSize`/`audioDuration`
+    in the JSON header (see MeshMediaSealer.swift comment lines 5-22).
+
+    DEFENSE-IN-DEPTH (this round):
+      1. Rate limit: 10 GETs per user per minute, 60-second lockout
+         when exceeded. Polling-storm attacker hits the wall fast.
+      2. Result cap: 50 envelopes max (was 500). Caps the per-call
+         exfil bandwidth by 10x.
+      3. Default window: last 1 hour, not 24h. Bounds the per-call
+         backlog. Clients that sync hourly are unaffected.
+
+    The full architectural fix — adding a `recipient_id_hash` column
+    populated via MeshIdentityToken on the upload path so we can
+    filter `WHERE recipient_id_hash = current_user.id_hash` — is
+    tracked separately. Until that lands, these three defenses make
+    bulk harvesting impractical.
     """
+    # 1. Rate limit (10/min, 60s lockout). Per-user identifier.
+    #
+    # 🔴 hacker-audit 2026-05-19: the previous `except Exception: pass`
+    # made the comment's "fail-closed" claim a lie — any import or
+    # transient error silently turned the rate limit OFF, which is the
+    # exact opposite of fail-closed. An attacker who DoS'd the Redis
+    # backend (or hit it during deploy) would then get unrestricted
+    # polling and could resume bulk-harvesting envelopes for traffic
+    # analysis. Now: HTTPException from the limiter is re-raised
+    # (legitimate rate-limit hit). An import error fails the request
+    # (503) so the operator notices instead of silently degrading. Any
+    # other unexpected error also fails the request (defence in depth).
+    from fastapi import status as _status
+    try:
+        from middleware.rate_limit import rate_limiter
+        rate_limiter.check_rate_limit(
+            identifier=f"pending_bridges:{user.id}",
+            max_attempts=10,
+            window_minutes=1,
+            lockout_minutes=1,
+        )
+    except HTTPException:
+        raise
+    except ImportError:
+        logger.error("mesh /pending-bridges: rate_limiter module unavailable — fail closed")
+        raise HTTPException(
+            status_code=_status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="rate limiter unavailable",
+        )
+    except Exception as e:
+        logger.error("mesh /pending-bridges: rate limit check crashed: %s — fail closed", e)
+        raise HTTPException(
+            status_code=_status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="rate limiter error",
+        )
+
+    # 3. Tighten the default window from 24h → 1h. A client that's
+    #    been offline for >1h re-syncs explicitly via since=...
     if since is None:
-        since = datetime.now(timezone.utc) - BRIDGE_RETENTION
+        since = datetime.now(timezone.utc) - timedelta(hours=1)
 
     rows = (
         db.query(BridgeEnvelope)
         .filter(BridgeEnvelope.bridged_at >= since)
         .order_by(BridgeEnvelope.bridged_at.desc())
-        .limit(500)
+        .limit(50)  # round 26 — was 500
         .all()
     )
     return PendingBridgesResponse(
@@ -199,10 +262,19 @@ def pending_bridges(
     include_in_schema=False,
 )
 def cleanup_expired(
-    user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    _admin: bool = Depends(verify_admin_secret),
 ) -> dict:
-    """Admin-only cleanup of expired bridge envelopes. Cron-safe."""
+    """Admin-only cleanup of expired bridge envelopes. Cron-safe.
+
+    🔴 hacker-audit 2026-05-19: the docstring claimed "Admin-only" but
+    the previous gate was `Depends(get_current_user)` — ANY logged-in
+    user could call /api/mesh/cleanup and prematurely delete envelopes
+    in the BRIDGE_RETENTION window. Worst case: an attacker scripts a
+    deletion loop that wipes recently-bridged envelopes before their
+    offline recipients reconnect, dropping messages on the floor.
+    Now gated on X-Admin-Secret, same as every other admin op.
+    """
     cutoff = datetime.now(timezone.utc) - BRIDGE_RETENTION
     deleted = (
         db.query(BridgeEnvelope)

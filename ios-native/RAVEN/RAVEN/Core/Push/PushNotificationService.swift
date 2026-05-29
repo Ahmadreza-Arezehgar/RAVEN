@@ -64,10 +64,16 @@ actor PushNotificationService {
         let center = UNUserNotificationCenter.current()
         
         // ── MESSAGE: Reply + Mark Read ──
+        // Round 16 (audit N8): REPLY sends an authenticated message
+        // attributed to the local user — a spoofed push payload that
+        // got past iOS's `aps-environment` check could otherwise
+        // exfiltrate the user's identity into an unintended chat
+        // with one quick-reply tap. `.authenticationRequired` makes
+        // iOS demand Face/Touch/passcode unlock before invoking.
         let replyAction = UNTextInputNotificationAction(
             identifier: "REPLY",
             title: "Reply",
-            options: [],
+            options: [.authenticationRequired],
             textInputButtonTitle: "Send",
             textInputPlaceholder: "Type a reply..."
         )
@@ -82,8 +88,12 @@ actor PushNotificationService {
             intentIdentifiers: [],
             options: [.customDismissAction]
         )
-        
+
         // ── FRIEND_REQUEST: Accept + Decline ──
+        // Round 16 (audit N8): DECLINE is irreversible (denying a
+        // legitimate request loses the social connection); bump it
+        // to the same auth gate ACCEPT already had so a spoofed
+        // push can't trick the user into denying a real friend.
         let acceptAction = UNNotificationAction(
             identifier: "ACCEPT",
             title: "Accept",
@@ -92,7 +102,7 @@ actor PushNotificationService {
         let declineAction = UNNotificationAction(
             identifier: "DECLINE",
             title: "Decline",
-            options: [.destructive]
+            options: [.authenticationRequired, .destructive]
         )
         let friendRequestCategory = UNNotificationCategory(
             identifier: "FRIEND_REQUEST",
@@ -263,6 +273,120 @@ actor PushNotificationService {
             options: [.customDismissAction]
         )
 
+        // ── (2026-05-15 — round 8) New notification categories ──
+        // Six additions covering the high-value events the user
+        // specifically asked for. Each one ships with one or two
+        // long-press actions — biometric-gated where state-changing,
+        // foreground-opening for read-only navigation.
+
+        // VAULT_ACCESS — recipient opened a Vault attachment.
+        let openChatActionVault = UNNotificationAction(
+            identifier: "OPEN_CHAT",
+            title: "Open chat",
+            options: [.foreground]
+        )
+        let revokeAccessAction = UNNotificationAction(
+            identifier: "REVOKE_VAULT",
+            title: "Revoke access",
+            options: [.destructive, .authenticationRequired]
+        )
+        let vaultAccessCategory = UNNotificationCategory(
+            identifier: "VAULT_ACCESS",
+            actions: [openChatActionVault, revokeAccessAction],
+            intentIdentifiers: [],
+            options: [.customDismissAction]
+        )
+
+        // MESH_PEER_NEARBY — a paired peer just appeared on BLE.
+        let startChatAction = UNNotificationAction(
+            identifier: "START_CHAT",
+            title: "Start chat",
+            options: [.foreground]
+        )
+        let verifyKeysAction = UNNotificationAction(
+            identifier: "VERIFY_KEYS",
+            title: "Verify",
+            options: [.foreground, .authenticationRequired]
+        )
+        let meshPeerNearbyCategory = UNNotificationCategory(
+            identifier: "MESH_PEER_NEARBY",
+            actions: [startChatAction, verifyKeysAction],
+            intentIdentifiers: [],
+            options: []
+        )
+
+        // BACKUP_DONE — encrypted backup finished.
+        let viewBackupAction = UNNotificationAction(
+            identifier: "VIEW_BACKUP",
+            title: "View",
+            options: [.foreground]
+        )
+        let restoreBackupAction = UNNotificationAction(
+            identifier: "RESTORE_BACKUP",
+            title: "Restore now",
+            options: [.foreground, .authenticationRequired]
+        )
+        let backupDoneCategory = UNNotificationCategory(
+            identifier: "BACKUP_DONE",
+            actions: [viewBackupAction, restoreBackupAction],
+            intentIdentifiers: [],
+            options: []
+        )
+
+        // TWO_FA_REQUEST — sign-in approval request from another device.
+        let approveAction = UNNotificationAction(
+            identifier: "APPROVE_2FA",
+            title: "Approve",
+            options: [.authenticationRequired, .foreground]
+        )
+        let denyAction = UNNotificationAction(
+            identifier: "DENY_2FA",
+            title: "Deny",
+            options: [.destructive, .authenticationRequired]
+        )
+        let twoFaRequestCategory = UNNotificationCategory(
+            identifier: "TWO_FA_REQUEST",
+            actions: [approveAction, denyAction],
+            intentIdentifiers: [],
+            options: [.customDismissAction]
+        )
+
+        // DISASTER_MODE — disaster-mode flipped on for the user's region.
+        let openDisasterMapAction = UNNotificationAction(
+            identifier: "OPEN_DISASTER_MAP",
+            title: "Open map",
+            options: [.foreground]
+        )
+        let safetyCheckInAction = UNNotificationAction(
+            identifier: "SAFETY_CHECK_IN",
+            title: "I'm safe",
+            options: [.foreground]
+        )
+        let disasterModeCategory = UNNotificationCategory(
+            identifier: "DISASTER_MODE",
+            actions: [openDisasterMapAction, safetyCheckInAction],
+            intentIdentifiers: [],
+            options: []
+        )
+
+        // AUDIO_ROOM_MENTION — your name appeared in a live transcript.
+        let replayMentionAction = UNNotificationAction(
+            identifier: "REPLAY_MENTION",
+            title: "Replay",
+            options: [.foreground]
+        )
+        let joinRoomAction = UNNotificationAction(
+            identifier: "JOIN_ROOM",
+            title: "Join now",
+            options: [.foreground]
+        )
+        let audioRoomMentionCategory = UNNotificationCategory(
+            identifier: "AUDIO_ROOM_MENTION",
+            actions: [replayMentionAction, joinRoomAction],
+            intentIdentifiers: [],
+            options: []
+        )
+
         center.setNotificationCategories([
             messageCategory,
             friendRequestCategory,
@@ -277,11 +401,18 @@ actor PushNotificationService {
             contactSharedCategory,
             profileViewCategory,
             screenshotProfileCategory,
-            screenshotChatCategory
+            screenshotChatCategory,
+            // Round 8 additions
+            vaultAccessCategory,
+            meshPeerNearbyCategory,
+            backupDoneCategory,
+            twoFaRequestCategory,
+            disasterModeCategory,
+            audioRoomMentionCategory
         ])
-        
+
         #if DEBUG
-        print("[Push] ✅ Registered 14 notification categories (MESSAGE, FRIEND_REQUEST, LIKE, COMMENT, MENTION, NEW_POST, AUDIO_ROOM, SECURITY_ALERT, LIVE_LOCATION, REACTION, CONTACT_SHARED, PROFILE_VIEW, SCREENSHOT_PROFILE, SCREENSHOT_CHAT)")
+        print("[Push] Registered 20 notification categories (14 baseline + 6 round-8: VAULT_ACCESS, MESH_PEER_NEARBY, BACKUP_DONE, TWO_FA_REQUEST, DISASTER_MODE, AUDIO_ROOM_MENTION)")
         #endif
     }
     
@@ -471,8 +602,15 @@ actor PushNotificationService {
         
         switch payload.type {
         case .message, .groupMessage:
-            let isInChat = await MainActor.run { DeepLinkRouter.shared.isInChat(roomId: payload.chatId ?? "") }
-            if isInChat { return }
+            // (2026-05-15 — round 7) Strict roomId check + sender-id
+            // fallback. DM pushes from older server builds still ship
+            // `chat_id == sender_id`, which doesn't always equal the
+            // local conversation.roomId. The fallback prevents a
+            // self-notification from sneaking through that mismatch.
+            let active = await MainActor.run { DeepLinkRouter.shared.currentChatRoomId }
+            let activeMatches = active == payload.chatId
+                || (active != nil && active == payload.senderId)
+            if activeMatches { return }
             
             // Check group mute settings before showing banner
             if payload.type == .groupMessage, let chatId = payload.chatId {
@@ -491,14 +629,18 @@ actor PushNotificationService {
             await MainActor.run {
                 var userName = payload.senderName ?? "Someone"
                 if userName.looksEncrypted { userName = "Someone" }
+                // 🟦 ROUND 52 — pipe the sender's avatar through. Before
+                // this round, the in-app banner always showed initials
+                // because no caller passed avatarURL.
                 let toast = ToastItem.friendRequest(
                     fromName: userName,
+                    avatarURL: AppConfig.mediaURL(from: payload.senderAvatar),
                     senderId: payload.senderId ?? "",
                     requestId: payload.senderId ?? ""
                 )
                 NotificationPipeline.shared.enqueue(toast)
             }
-            
+
         case .security:
             await MainActor.run {
                 var safePreview = payload.preview ?? "New activity detected"
@@ -506,45 +648,45 @@ actor PushNotificationService {
                 let toast = ToastItem.security(title: "Security Alert", message: safePreview)
                 NotificationPipeline.shared.enqueue(toast)
             }
-            
+
         case .like, .comment, .mention:
             await MainActor.run {
                 var userName = payload.senderName ?? "Someone"
                 if userName.looksEncrypted { userName = "Someone" }
-                
+
                 let defaultAction: String
                 if payload.type == .like { defaultAction = "liked your post" }
                 else if payload.type == .mention { defaultAction = "mentioned you" }
                 else { defaultAction = "commented on your post" }
-                
+
                 var safePreview = payload.preview ?? defaultAction
                 if safePreview.looksEncrypted { safePreview = defaultAction }
-                
+
                 let toast = ToastItem.comment(
                     id: UUID().uuidString,
                     userName: userName,
                     preview: safePreview,
-                    avatarURL: nil,
+                    avatarURL: AppConfig.mediaURL(from: payload.senderAvatar),  // R52
                     postId: payload.chatId ?? ""
                 )
                 NotificationPipeline.shared.enqueue(toast)
             }
-            
+
         case .addedToGroup, .audioRoom, .audioRoomJoin:
             await MainActor.run {
                 let title = (payload.type == .audioRoom || payload.type == .audioRoomJoin) ? "Voice Room" : "Group Update"
-                
+
                 var safeName = payload.senderName ?? "Someone"
                 if safeName.looksEncrypted { safeName = "Someone" }
-                
+
                 let defaultPreview: String
                 if payload.type == .audioRoom { defaultPreview = "\(safeName) started an audio room" }
                 else if payload.type == .audioRoomJoin { defaultPreview = "\(safeName) joined the audio room" }
                 else { defaultPreview = "\(safeName) invited you" }
-                
+
                 var safePreview = payload.preview ?? defaultPreview
                 if safePreview.looksEncrypted { safePreview = defaultPreview }
-                
+
                 let toast = ToastItem.appUpdate(
                     id: UUID().uuidString,
                     title: title,
@@ -552,32 +694,33 @@ actor PushNotificationService {
                 )
                 NotificationPipeline.shared.enqueue(toast)
             }
-            
+
         case .postComment, .postLike:
             await MainActor.run {
                 var userName = payload.senderName ?? "Someone"
                 if userName.looksEncrypted { userName = "Someone" }
-                
+
                 let defaultAction = payload.type == .postLike ? "liked your post" : "commented on your post"
                 var safePreview = payload.preview ?? defaultAction
                 if safePreview.looksEncrypted { safePreview = defaultAction }
-                
+
                 let toast = ToastItem.comment(
                     id: UUID().uuidString,
                     userName: userName,
                     preview: safePreview,
-                    avatarURL: nil,
+                    avatarURL: AppConfig.mediaURL(from: payload.senderAvatar),  // R52
                     postId: payload.postId ?? ""
                 )
                 NotificationPipeline.shared.enqueue(toast)
             }
-            
+
         case .followRequest, .follow:
             await MainActor.run {
                 var userName = payload.senderName ?? "Someone"
                 if userName.looksEncrypted { userName = "Someone" }
                 let toast = ToastItem.friendRequest(
                     fromName: userName,
+                    avatarURL: AppConfig.mediaURL(from: payload.senderAvatar),  // R52
                     senderId: payload.senderId ?? "",
                     requestId: payload.senderId ?? ""
                 )
@@ -626,7 +769,22 @@ actor PushNotificationService {
     private func enqueueMessageToast(_ payload: PushPayload, chatId: String) {
         if let conversation = ConversationStore.shared.conversations.first(where: { $0.roomId == chatId }) {
             let isGroup = conversation.isGroup
-            let senderName = isGroup ? (conversation.groupName ?? "Group") : conversation.peer.displayName
+            // 🔴 ROUND 71 phase 3 follow-up #4 (2026-05-24) — title
+            // should always be the SENDER, never the group name.
+            // Pre-fix the group branch used
+            // `senderName = conversation.groupName ?? "Group"`
+            // which showed the group name as the title and the
+            // actual sender disappeared. With `groupName` now
+            // carried as a separate field, the toast renderer
+            // composes "<sender> · <group>" — the user sees both.
+            let resolvedSenderName: String = {
+                if let n = payload.senderName, !n.isEmpty, !n.looksEncrypted { return n }
+                if !isGroup { return conversation.peer.displayName }
+                // Group + no sender name in payload — fall back to
+                // a generic "Member" rather than masquerading the
+                // group name as the sender.
+                return "Member"
+            }()
             // Type-aware preview — use the existing conversation
             // last-message metadata if we have it, otherwise format
             // straight from the push payload.
@@ -635,13 +793,22 @@ actor PushNotificationService {
                 body: conversation.lastMessage?.preview ?? payload.preview
             )
 
+            // 🟦 ROUND 52 (2026-05-17) — fix broken avatar resolution.
+            // Use `AppConfig.mediaURL(from:)` which prepends the
+            // server base URL when needed.
+            let avatarURL = AppConfig.mediaURL(from: conversation.peer.avatarPath)
+                ?? AppConfig.mediaURL(from: payload.senderAvatar)
+
             let toast = ToastItem.message(
-                senderName: senderName,
+                senderName: resolvedSenderName,
                 preview: preview,
-                avatarURL: conversation.peer.avatarPath.flatMap { URL(string: $0) },
+                avatarURL: avatarURL,
                 chatId: chatId,
                 senderId: payload.senderId ?? "",
-                isGroup: isGroup
+                isGroup: isGroup,
+                groupName: isGroup ? conversation.groupName : nil,
+                serverNotificationId: nil,
+                messageId: payload.messageId
             )
             NotificationPipeline.shared.enqueue(toast)
         } else {
@@ -653,12 +820,19 @@ actor PushNotificationService {
                 body: payload.preview
             )
 
+            // 🟦 ROUND 52 — pipe through the push-payload avatar when
+            // the chat isn't in the store yet. This is the first-
+            // message-from-stranger path (just-added friend, etc.).
             let toast = ToastItem.message(
                 senderName: safeName,
                 preview: safePreview,
+                avatarURL: AppConfig.mediaURL(from: payload.senderAvatar),
                 chatId: chatId,
                 senderId: payload.senderId ?? "",
-                isGroup: payload.type == .groupMessage
+                isGroup: payload.type == .groupMessage,
+                groupName: nil,
+                serverNotificationId: nil,
+                messageId: payload.messageId
             )
             NotificationPipeline.shared.enqueue(toast)
         }
@@ -837,7 +1011,17 @@ actor PushNotificationService {
                 "room_id": payload.chatId ?? ""
             ]
         }
-        
+
+        // Round 13 (2026-05-16) — hacker-audit finding N7.
+        // Strip bidi-override / zero-width / control characters from
+        // anything that ends up on the lock screen, and hard-cap the
+        // length so an oversized server-pushed body can't crash
+        // SpringBoard or spoof a banner via RTL-override tricks.
+        // Apply once at the end of the switch so every case is
+        // covered without changing each branch.
+        content.title = content.title.sanitizedForPush(maxLength: 64)
+        content.body = content.body.sanitizedForPush(maxLength: 256)
+
         // FIX: Set categoryIdentifier so iOS shows lock screen actions
         // (Reply, Accept/Decline, View, Join) on locally-scheduled notifications.
         switch payload.type {
@@ -894,6 +1078,22 @@ actor PushNotificationService {
         // Fallback to .message for unknown types so they aren't silently dropped
         let type = PushType(rawValue: typeStr) ?? .message
         
+        // 🟦 ROUND 52 (2026-05-17) — read sender avatar from any of the
+        // several keys different microservices use. The server side
+        // isn't consistent: messages.py uses `sender_avatar`, the
+        // friend-request push uses `requester_avatar`, the comment
+        // push uses `commenter_avatar` / `actor_avatar`, etc. We
+        // fall through them in order of how common each is.
+        let avatarRaw = (userInfo["sender_avatar"] as? String)
+            ?? (userInfo["sender_avatar_url"] as? String)
+            ?? (userInfo["avatar_url"] as? String)
+            ?? (userInfo["sender_avatar_path"] as? String)
+            ?? (userInfo["requester_avatar"] as? String)
+            ?? (userInfo["commenter_avatar"] as? String)
+            ?? (userInfo["liker_avatar"] as? String)
+            ?? (userInfo["actor_avatar"] as? String)
+            ?? (userInfo["author_avatar"] as? String)
+
         return PushPayload(
             type: type,
             chatId: userInfo["chat_id"] as? String ?? userInfo["room_id"] as? String ?? userInfo["chatId"] as? String ?? userInfo["group_id"] as? String ?? userInfo["groupId"] as? String,
@@ -905,7 +1105,8 @@ actor PushNotificationService {
             commentId: userInfo["comment_id"] as? String ?? userInfo["commentId"] as? String,
             messageId: userInfo["message_id"] as? String
                        ?? userInfo["client_message_id"] as? String
-                       ?? userInfo["messageId"] as? String
+                       ?? userInfo["messageId"] as? String,
+            senderAvatar: avatarRaw
         )
     }
 }
@@ -945,6 +1146,15 @@ struct PushPayload {
     /// key in `NotificationDedupCache` so APNs + mesh deliveries of
     /// the same message don't double-display.
     let messageId: String?
+    /// 🟦 ROUND 52 (2026-05-17) — sender avatar for in-app toast.
+    /// User reported "in-app banners show empty box without avatar".
+    /// Root cause: the parser threw away the server's avatar field
+    /// and every toast factory was called with `avatarURL: nil`.
+    /// May be a relative path (`/uploads/avatars/abc.jpg`) or full
+    /// URL; the call sites pass it through `AppConfig.mediaURL(from:)`
+    /// before handing to AsyncImage. Nil is still valid (toast
+    /// falls back to a coloured initials avatar).
+    let senderAvatar: String?
 }
 
 // MARK: - Push Token Registration

@@ -1,0 +1,153 @@
+name: RAVEN
+options:
+  bundleIdPrefix: app.raven.macos
+  deploymentTarget:
+    macOS: "13.0"
+  developmentLanguage: en
+  createIntermediateGroups: true
+  defaultConfig: Debug
+
+settings:
+  base:
+    PRODUCT_NAME: RAVEN
+    PRODUCT_BUNDLE_IDENTIFIER: app.raven.macos
+    MACOSX_DEPLOYMENT_TARGET: "13.0"
+    SWIFT_VERSION: "5.0"
+    # Automatic signing with the local Apple Development cert. Required
+    # for Sign-in-with-Apple to actually be honored at runtime: the OS
+    # checks that the build's signature carries the
+    # `com.apple.developer.applesignin` entitlement, which ad-hoc signing
+    # can't provide. Xcode auto-provisions the bundle id under the team
+    # the first time you build (you may need to open the .xcodeproj in
+    # Xcode once if xcodebuild can't reach the developer portal).
+    # Manual signing with the universal "Apple Development" cert (the only
+    # local identity, SHA1 238A3B20B49CEA45DB465F1DEB41FCA3F2CA1262).
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "238A3B20B49CEA45DB465F1DEB41FCA3F2CA1262"
+    "CODE_SIGN_IDENTITY[sdk=macosx*]": "238A3B20B49CEA45DB465F1DEB41FCA3F2CA1262"
+    CODE_SIGNING_REQUIRED: "YES"
+    CODE_SIGNING_ALLOWED: "YES"
+    ENABLE_HARDENED_RUNTIME: "YES"
+    GENERATE_INFOPLIST_FILE: "NO"
+    INFOPLIST_FILE: RAVEN/Info.plist
+    CODE_SIGN_ENTITLEMENTS: RAVEN/Resources/RAVEN.entitlements
+    ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    # 10-character Apple Developer Team ID. This is the personal team tied
+    # to the local "Apple Development" certificate. For App Store
+    # distribution, switch to the paid team that ships the iOS RAVEN
+    # build (72QQ5Q324C) and add `app.raven.macos` to its bundle ids.
+    DEVELOPMENT_TEAM: "86L46Z294A"
+    OTHER_SWIFT_FLAGS: "-warn-concurrency -enable-actor-data-race-checks"
+
+packages:
+  GoogleSignIn:
+    url: https://github.com/google/GoogleSignIn-iOS
+    from: "9.1.0"
+
+targets:
+  RAVEN:
+    type: application
+    platform: macOS
+    sources:
+      - RAVEN/RAVENMacApp.swift
+      - RAVEN/Models
+      - RAVEN/Services
+      - RAVEN/Core
+      - RAVEN/Views
+      # Asset catalog — must NOT be a folder reference, otherwise xcodebuild
+      # skips the actool step and `Image("RavenLogo")` finds nothing at
+      # runtime. xcodegen detects the .xcassets extension automatically.
+      - RAVEN/Resources/Assets.xcassets
+    dependencies:
+      - package: GoogleSignIn
+        product: GoogleSignIn
+    info:
+      path: RAVEN/Info.plist
+      properties:
+        CFBundleDisplayName: RAVEN
+        CFBundlePackageType: APPL
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "1"
+        LSApplicationCategoryType: public.app-category.social-networking
+        LSMinimumSystemVersion: "13.0"
+        NSHumanReadableCopyright: "© 2026 ASH Robotic Industry. All rights reserved."
+        NSPrincipalClass: NSApplication
+        # Shown in the system mic-permission dialog the first time the
+        # user taps the chat composer's record button.
+        NSMicrophoneUsageDescription: "RAVEN uses the microphone to record voice messages you send in chats."
+        # Surfaced when CoreBluetooth first asks the OS to power on /
+        # advertise. The mesh engine waits for `.poweredOn` before doing
+        # anything, so the user sees this string on first chat open.
+        NSBluetoothAlwaysUsageDescription: "RAVEN uses Bluetooth to discover nearby RAVEN devices and exchange end-to-end encrypted messages over the local mesh, so chats keep working even when the internet is down."
+        NSBluetoothPeripheralUsageDescription: "RAVEN advertises itself over Bluetooth so other RAVEN users nearby can find this device and exchange messages with it."
+        # Bonjour-based service discovery is part of the offline pairing
+        # path — Apple wants a usage string for any local-network access.
+        NSLocalNetworkUsageDescription: "RAVEN connects to nearby RAVEN devices on your local network for offline mesh messaging."
+        # MultipeerConnectivity service registration. Without this entry
+        # the OS silently blocks the advertiser (no error, just zero
+        # peer discoveries). Service type matches the iOS build's
+        # `_raven-mesh._tcp/._udp` so iOS↔Mac MPC sessions interop.
+        NSBonjourServices:
+          - "_raven-mesh._tcp"
+          - "_raven-mesh._udp"
+        # Google Sign-In: client id + reverse-client-id URL scheme. The id below
+        # is the one the iOS-native build uses; for the App Store macOS build
+        # (`app.raven.macos`) a separate macOS OAuth client should be created
+        # in Google Cloud Console and substituted here. The URL scheme MUST
+        # match the prefix of GIDClientID, reversed.
+        GIDClientID: "516053629173-teh5np0h3i3ar6b25sd78d6o8ft1qhg9.apps.googleusercontent.com"
+        CFBundleURLTypes:
+          - CFBundleTypeRole: Editor
+            CFBundleURLName: Google Sign In
+            CFBundleURLSchemes:
+              - "com.googleusercontent.apps.516053629173-teh5np0h3i3ar6b25sd78d6o8ft1qhg9"
+    entitlements:
+      path: RAVEN/Resources/RAVEN.entitlements
+      properties:
+        # App Sandbox is required for the App Store distribution.
+        com.apple.security.app-sandbox: true
+        # Outbound HTTPS to the FastAPI backend.
+        com.apple.security.network.client: true
+        # Inbound BLE GATT writes — peripherals on the mesh need to be
+        # able to write to our characteristic, which the sandbox treats
+        # as a server role.
+        com.apple.security.network.server: true
+        # User-selected file read access — needed so NSOpenPanel can hand
+        # the avatar-picker the picked image data inside the sandbox.
+        com.apple.security.files.user-selected.read-only: true
+        # Microphone access — needed for voice messages in chat.
+        com.apple.security.device.audio-input: true
+        # Bluetooth — required for the BLE peripheral mesh. The Mac App
+        # Store edition advertises itself, scans for peers, and exchanges
+        # E2E-encrypted envelopes over GATT in the foreground. Background
+        # scanning isn't allowed in the App Sandbox so the mesh pauses
+        # when the user quits or sleeps the Mac. The FastAPI bridge picks
+        # up the slack via /api/mesh/pending-bridges on resume.
+        com.apple.security.device.bluetooth: true
+        # NOTE: `com.apple.developer.applesignin` is intentionally OMITTED
+        # in the local Debug build because xcodebuild can only honor it
+        # when the signing identity has a provisioning profile that lists
+        # the Sign-in-with-Apple capability — and the personal team
+        # (86L46Z294A) doesn't, which makes the build fail outright. To
+        # enable Apple Sign-in:
+        #   1. Open `RAVEN.xcodeproj` in Xcode.
+        #   2. Sign in with your Apple ID under Settings ▸ Accounts.
+        #   3. In RAVEN target → Signing & Capabilities, click "+ Capability"
+        #      and add "Sign in with Apple" — Xcode auto-registers the
+        #      bundle id in the developer portal and provisions the
+        #      profile.
+        #   4. Re-add the `com.apple.developer.applesignin` array entry
+        #      back into this file (or this `entitlements.properties`
+        #      block) and rebuild.
+        # The Apple button in the UI stays wired up; until the entitlement
+        # is honored at runtime, clicking it surfaces the friendly error
+        # message we added in AuthLandingView.
+    settings:
+      base:
+        # Sandbox + network entitlement come from RAVEN.entitlements; we
+        # leave team blank so xcodegen produces a project that builds with
+        # ad-hoc signing for local testing. Distribution to the App Store
+        # requires opening the generated .xcodeproj in Xcode and setting
+        # the team / capabilities through Signing & Capabilities.
+        SKIP_INSTALL: "NO"
+        DEAD_CODE_STRIPPING: "YES"

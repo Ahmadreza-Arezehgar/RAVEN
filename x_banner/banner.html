@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  @font-face { font-family:'Jura'; src:url('Jura-Medium.ttf') format('truetype'); font-weight:500; }
+  @font-face { font-family:'Outfit'; src:url('Outfit-Regular.ttf') format('truetype'); font-weight:400; }
+  @font-face { font-family:'GeistMono'; src:url('GeistMono-Regular.ttf') format('truetype'); font-weight:400; }
+
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:1500px; height:500px; background:#0a0a0f; }
+
+  .banner{
+    position:relative; width:1500px; height:500px; overflow:hidden;
+    background:#0a0a0f;                       /* RAVEN wallpaper dark base */
+  }
+
+  /* RAVEN's default chat wallpaper — the doodle pattern */
+  .wallpaper{ position:absolute; inset:0; width:1500px; height:500px; }
+
+  .vignette{
+    position:absolute; inset:0; pointer-events:none;
+    background:
+      radial-gradient(1280px 780px at 50% 46%, rgba(0,0,0,0) 56%, rgba(2,2,5,0.78) 100%),
+      linear-gradient(180deg, rgba(0,0,0,0) 66%, rgba(2,2,5,0.55) 100%);
+  }
+  .topline{
+    position:absolute; top:0; left:0; right:0; height:1.6px;
+    background:linear-gradient(90deg,
+      rgba(120,60,240,0) 0%, rgba(150,100,255,0.5) 38%,
+      rgba(120,235,245,0.6) 52%, rgba(150,100,255,0.5) 66%,
+      rgba(120,60,240,0) 100%);
+    filter:drop-shadow(0 0 7px rgba(130,90,250,0.65));
+  }
+
+  .content{
+    position:absolute; left:750px; top:250px; transform:translate(-50%,-50%);
+    display:flex; flex-direction:column; align-items:center;
+  }
+  .lockup{ display:flex; align-items:center; gap:26px; }
+  .logo{
+    height:128px; width:auto; display:block;
+    filter:drop-shadow(0 0 12px rgba(150,150,255,0.55)) drop-shadow(0 0 30px rgba(120,90,240,0.4));
+  }
+  .wordmark{
+    font-family:'Jura',sans-serif; font-weight:500;
+    font-size:78px; letter-spacing:0.345em;
+    padding-left:0.345em;
+    color:#f4f5fc;
+    text-shadow:0 0 28px rgba(150,110,255,0.5), 0 0 4px rgba(255,255,255,0.3);
+  }
+  .tagline{
+    margin-top:27px;
+    font-family:'Outfit',sans-serif; font-size:25px; font-weight:400;
+    letter-spacing:0.018em; color:#a6abc6;
+    text-shadow:0 1px 12px rgba(0,0,0,0.85);
+  }
+  .tagline b{ color:#e7e3fb; font-weight:400; }
+
+  .chips{ display:flex; gap:14px; margin-top:30px; }
+  .chip{
+    display:inline-flex; align-items:center; gap:9px;
+    padding:9px 18px 10px;
+    border:1px solid rgba(128,72,238,0.45);
+    border-radius:100px;
+    background:rgba(120,60,232,0.14);
+    box-shadow:inset 0 0 18px rgba(120,60,232,0.12);
+  }
+  .dot{
+    width:5px; height:5px; border-radius:50%;
+    background:#6fe9f2; box-shadow:0 0 7px 1px rgba(111,233,242,0.85);
+  }
+  .chip span{
+    font-family:'GeistMono',monospace; font-size:13px; font-weight:400;
+    letter-spacing:0.135em; text-transform:uppercase; color:#cdc8ee;
+  }
+
+  .url{
+    position:absolute; right:42px; bottom:30px;
+    font-family:'GeistMono',monospace; font-size:12.5px;
+    letter-spacing:0.12em; color:rgba(159,164,196,0.6);
+  }
+</style>
+</head>
+<body>
+  <div class="banner">
+    <canvas class="wallpaper" id="wp" width="3000" height="1000"></canvas>
+    <div class="vignette"></div>
+    <div class="topline"></div>
+  </div>
+
+<script>
+/* ── RAVEN default chat wallpaper, ported 1:1 from RavenChatWallpaper.swift ──
+   A dense hex-lattice of ~30 single-stroke brand doodles. */
+(function(){
+  var cv = document.getElementById('wp');
+  var ctx = cv.getContext('2d');
+  ctx.scale(2,2);                                  // canvas is 2x; draw in 1500x500 logical
+  var W = 1500, H = 500;
+  var cell = 46, iconSize = 30;
+  var D = Math.PI/180;
+
+  function fract(x){ return x - Math.floor(x); }
+  function el(x,y,w,h){ ctx.beginPath(); ctx.ellipse(x+w/2,y+h/2,w/2,h/2,0,0,6.2832); ctx.stroke(); }
+  function rc(x,y,w,h){ ctx.beginPath(); ctx.rect(x,y,w,h); ctx.stroke(); }
+  function rr(x,y,w,h,r){ ctx.beginPath(); ctx.roundRect(x,y,w,h,r); ctx.stroke(); }
+  function ar(cx,cy,r,d0,d1){ ctx.beginPath(); ctx.arc(cx,cy,r,d0*D,d1*D); ctx.stroke(); }
+
+  function drawIcon(k, s){
+    var w=s, h=s;
+    switch(k){
+      case 0: // ravenFlying
+        ctx.beginPath(); ctx.moveTo(w*0.10,h*0.55);
+        ctx.quadraticCurveTo(w*0.30,h*0.30,w*0.50,h*0.45);
+        ctx.quadraticCurveTo(w*0.70,h*0.30,w*0.90,h*0.55); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(w*0.45,h*0.48);
+        ctx.quadraticCurveTo(w*0.50,h*0.58,w*0.55,h*0.48); ctx.stroke(); break;
+      case 1: // ravenPerched
+        el(w*0.22,h*0.20,w*0.55,h*0.55);
+        ctx.beginPath(); ctx.moveTo(w*0.74,h*0.38); ctx.lineTo(w*0.90,h*0.42); ctx.lineTo(w*0.74,h*0.46); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(w*0.40,h*0.75); ctx.lineTo(w*0.40,h*0.90); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(w*0.58,h*0.75); ctx.lineTo(w*0.58,h*0.90); ctx.stroke(); break;
+      case 2: // feather
+        ctx.beginPath(); ctx.moveTo(w*0.30,h*0.85);
+        ctx.quadraticCurveTo(w*0.45,h*0.40,w*0.75,h*0.20); ctx.stroke();
+        for(var i=1;i<=3;i++){ var t=i/4, ax=w*(0.30+0.45*t), ay=h*(0.85-0.65*t);
+          ctx.beginPath(); ctx.moveTo(ax,ay);
+          ctx.lineTo(ax+w*0.18*Math.cos(Math.PI*0.6),ay-h*0.10); ctx.stroke(); } break;
+      case 3: // star4
+        ctx.beginPath(); ctx.moveTo(w*0.50,h*0.10);
+        ctx.lineTo(w*0.55,h*0.45); ctx.lineTo(w*0.90,h*0.50); ctx.lineTo(w*0.55,h*0.55);
+        ctx.lineTo(w*0.50,h*0.90); ctx.lineTo(w*0.45,h*0.55); ctx.lineTo(w*0.10,h*0.50);
+        ctx.lineTo(w*0.45,h*0.45); ctx.closePath(); ctx.stroke(); break;
+      case 4: // star5
+        ctx.beginPath();
+        var cx=w*0.5, cy=h*0.5, outer=Math.min(w,h)*0.42, inner=outer*0.4;
+        for(var j=0;j<10;j++){ var a=-Math.PI/2+j*Math.PI/5, r=(j%2===0)?outer:inner;
+          var px=cx+Math.cos(a)*r, py=cy+Math.sin(a)*r;
+          j===0?ctx.moveTo(px,py):ctx.lineTo(px,py); }
+        ctx.closePath(); ctx.stroke(); break;
+      case 5: // sparkle
+        ctx.beginPath();
+        ctx.moveTo(w*0.50,h*0.10); ctx.lineTo(w*0.50,h*0.90);
+        ctx.moveTo(w*0.10,h*0.50); ctx.lineTo(w*0.90,h*0.50);
+        ctx.moveTo(w*0.25,h*0.25); ctx.lineTo(w*0.75,h*0.75);
+        ctx.moveTo(w*0.75,h*0.25); ctx.lineTo(w*0.25,h*0.75); ctx.stroke(); break;
+      case 6: // crescentMoon
+        ar(w*0.55,h*0.50,w*0.32,55,305); break;
+      case 7: // fullMoon
+        el(w*0.18,h*0.18,w*0.64,h*0.64);
+        el(w*0.35,h*0.30,w*0.12,h*0.12);
+        el(w*0.55,h*0.55,w*0.10,h*0.10); break;
+      case 8: // planet
+        el(w*0.20,h*0.22,w*0.60,h*0.60);
+        ctx.beginPath(); ctx.moveTo(w*0.22,h*0.55);
+        ctx.quadraticCurveTo(w*0.50,h*0.40,w*0.78,h*0.55); ctx.stroke(); break;
+      case 9: // saturn
+        el(w*0.28,h*0.32,w*0.45,h*0.45);
+        ctx.beginPath(); ctx.moveTo(w*0.05,h*0.62);
+        ctx.quadraticCurveTo(w*0.50,h*0.10,w*0.95,h*0.42); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(w*0.95,h*0.42);
+        ctx.quadraticCurveTo(w*0.50,h*0.95,w*0.05,h*0.62); ctx.stroke(); break;
+      case 10: // ufo
+        el(w*0.10,h*0.50,w*0.80,h*0.20);
+        ctx.beginPath(); ctx.moveTo(w*0.30,h*0.55);
+        ctx.quadraticCurveTo(w*0.50,h*0.25,w*0.70,h*0.55); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(w*0.38,h*0.72); ctx.lineTo(w*0.30,h*0.95); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(w*0.62,h*0.72); ctx.lineTo(w*0.70,h*0.95); ctx.stroke(); break;
+      case 11: // comet
+        el(w*0.65,h*0.30,w*0.20,h*0.20);
+        ctx.beginPath(); ctx.moveTo(w*0.62,h*0.45); ctx.lineTo(w*0.20,h*0.80); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(w*0.55,h*0.50); ctx.lineTo(w*0.25,h*0.72); ctx.stroke(); break;
+      case 12: // shootingStar
+        el(w*0.65,h*0.18,w*0.18,h*0.18);
+        ctx.beginPath(); ctx.moveTo(w*0.65,h*0.35); ctx.lineTo(w*0.20,h*0.85); ctx.stroke(); break;
+      case 13: // satellite
+        rc(w*0.40,h*0.40,w*0.20,h*0.20);
+        ctx.beginPath(); ctx.moveTo(w*0.40,h*0.50); ctx.lineTo(w*0.12,h*0.50); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(w*0.60,h*0.50); ctx.lineTo(w*0.88,h*0.50); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(w*0.50,h*0.40); ctx.lineTo(w*0.50,h*0.18); ctx.stroke();
+        el(w*0.46,h*0.10,w*0.08,h*0.08); break;
+      case 14: // antenna
+        ctx.beginPath(); ctx.moveTo(w*0.50,h*0.80); ctx.lineTo(w*0.50,h*0.40); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(w*0.35,h*0.80); ctx.lineTo(w*0.50,h*0.40); ctx.lineTo(w*0.65,h*0.80); ctx.stroke();
+        ar(w*0.50,h*0.40,w*0.18,200,340);
+        ar(w*0.50,h*0.40,w*0.30,210,330); break;
+      case 15: // wifi
+        for(var wi=0;wi<3;wi++){ ar(w*0.50,h*0.80,w*(0.16+0.12*wi),210,330); }
+        el(w*0.45,h*0.75,w*0.10,h*0.10); break;
+      case 16: // lockClosed
+        rc(w*0.28,h*0.45,w*0.44,h*0.40);
+        ar(w*0.50,h*0.40,w*0.16,180,360); break;
+      case 17: // key
+        el(w*0.15,h*0.38,w*0.25,h*0.25);
+        ctx.beginPath(); ctx.moveTo(w*0.40,h*0.50); ctx.lineTo(w*0.88,h*0.50); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(w*0.78,h*0.50); ctx.lineTo(w*0.78,h*0.65); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(w*0.65,h*0.50); ctx.lineTo(w*0.65,h*0.60); ctx.stroke(); break;
+      case 18: // envelope
+        rc(w*0.15,h*0.30,w*0.70,h*0.40);
+        ctx.beginPath(); ctx.moveTo(w*0.15,h*0.30); ctx.lineTo(w*0.50,h*0.55); ctx.lineTo(w*0.85,h*0.30); ctx.stroke(); break;
+      case 19: // speechBubble
+        rr(w*0.15,h*0.20,w*0.70,h*0.50,w*0.14);
+        ctx.beginPath(); ctx.moveTo(w*0.35,h*0.70); ctx.lineTo(w*0.30,h*0.86); ctx.lineTo(w*0.50,h*0.70); ctx.stroke(); break;
+      case 20: // microphone
+        rr(w*0.38,h*0.18,w*0.24,h*0.40,w*0.12);
+        ar(w*0.50,h*0.50,w*0.20,20,160);
+        ctx.beginPath(); ctx.moveTo(w*0.50,h*0.70); ctx.lineTo(w*0.50,h*0.85); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(w*0.35,h*0.85); ctx.lineTo(w*0.65,h*0.85); ctx.stroke(); break;
+      case 21: // headphones
+        ar(w*0.50,h*0.55,w*0.35,200,340);
+        rr(w*0.12,h*0.50,w*0.16,h*0.28,w*0.06);
+        rr(w*0.72,h*0.50,w*0.16,h*0.28,w*0.06); break;
+      case 22: // musicNote
+        el(w*0.18,h*0.62,w*0.22,h*0.18);
+        ctx.beginPath(); ctx.moveTo(w*0.40,h*0.70); ctx.lineTo(w*0.40,h*0.20);
+        ctx.quadraticCurveTo(w*0.70,h*0.10,w*0.75,h*0.40); ctx.stroke(); break;
+      case 23: // heart
+        ctx.beginPath(); ctx.moveTo(w*0.50,h*0.85);
+        ctx.bezierCurveTo(w*0.25,h*0.75,w*0.05,h*0.55,w*0.10,h*0.40);
+        ctx.arc(w*0.30,h*0.32,w*0.22,180*D,0*D);
+        ctx.arc(w*0.70,h*0.32,w*0.22,180*D,0*D);
+        ctx.bezierCurveTo(w*0.95,h*0.55,w*0.75,h*0.75,w*0.50,h*0.85); ctx.stroke(); break;
+      case 24: // diamond
+        ctx.beginPath();
+        ctx.moveTo(w*0.50,h*0.10); ctx.lineTo(w*0.90,h*0.40);
+        ctx.lineTo(w*0.50,h*0.90); ctx.lineTo(w*0.10,h*0.40); ctx.closePath();
+        ctx.moveTo(w*0.10,h*0.40); ctx.lineTo(w*0.90,h*0.40);
+        ctx.moveTo(w*0.30,h*0.20); ctx.lineTo(w*0.50,h*0.40); ctx.lineTo(w*0.70,h*0.20);
+        ctx.stroke(); break;
+      case 25: // lightning
+        ctx.beginPath();
+        ctx.moveTo(w*0.58,h*0.10); ctx.lineTo(w*0.25,h*0.50); ctx.lineTo(w*0.48,h*0.50);
+        ctx.lineTo(w*0.32,h*0.90); ctx.lineTo(w*0.75,h*0.42); ctx.lineTo(w*0.52,h*0.42);
+        ctx.closePath(); ctx.stroke(); break;
+      case 26: // coffeeCup
+        rr(w*0.25,h*0.40,w*0.40,h*0.40,w*0.04);
+        ar(w*0.70,h*0.58,w*0.12,-90,90);
+        ctx.beginPath(); ctx.moveTo(w*0.35,h*0.30);
+        ctx.quadraticCurveTo(w*0.42,h*0.20,w*0.35,h*0.10); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(w*0.50,h*0.30);
+        ctx.quadraticCurveTo(w*0.43,h*0.20,w*0.50,h*0.10); ctx.stroke(); break;
+      case 27: // mountain
+        ctx.beginPath();
+        ctx.moveTo(w*0.05,h*0.80); ctx.lineTo(w*0.32,h*0.40); ctx.lineTo(w*0.50,h*0.60);
+        ctx.lineTo(w*0.68,h*0.30); ctx.lineTo(w*0.95,h*0.80); ctx.closePath(); ctx.stroke();
+        el(w*0.18,h*0.15,w*0.16,h*0.16); break;
+      case 28: // leaf
+        ctx.beginPath(); ctx.moveTo(w*0.50,h*0.10);
+        ctx.quadraticCurveTo(w*0.10,h*0.55,w*0.50,h*0.90);
+        ctx.quadraticCurveTo(w*0.90,h*0.45,w*0.50,h*0.10);
+        ctx.moveTo(w*0.50,h*0.10); ctx.lineTo(w*0.50,h*0.90); ctx.stroke(); break;
+      case 29: // compass
+        el(w*0.12,h*0.12,w*0.76,h*0.76);
+        ctx.beginPath();
+        ctx.moveTo(w*0.50,h*0.20); ctx.lineTo(w*0.40,h*0.50);
+        ctx.lineTo(w*0.50,h*0.80); ctx.lineTo(w*0.60,h*0.50); ctx.closePath(); ctx.stroke(); break;
+    }
+  }
+
+  ctx.strokeStyle = 'rgba(255,255,255,0.12)';   // dark-mode wallpaper stroke, lifted for banner
+  ctx.lineWidth = 1.0;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  var cols = Math.ceil(W/cell) + 1;
+  var rows = Math.ceil(H/cell) + 1;
+  for(var row=0; row<rows; row++){
+    for(var col=0; col<cols; col++){
+      var xOff = (row % 2 === 0) ? 0 : cell/2;
+      var cxp = col*cell + xOff;
+      var cyp = row*cell;
+      var seed = row*73 + col*31 + (row+col);
+      var iconIndex = Math.floor(fract(Math.sin(seed*12.9898)*43758.5453) * 30) % 30;
+      var rotation = (fract(Math.sin(seed*5.13)*99.0) - 0.5) * 0.35;
+      var jitterX = (fract(Math.sin(seed*17.7)*9999.0) - 0.5) * cell * 0.10;
+      var jitterY = (fract(Math.sin(seed*41.3)*9999.0) - 0.5) * cell * 0.10;
+      ctx.save();
+      ctx.translate(cxp + jitterX, cyp + jitterY);
+      ctx.rotate(rotation);
+      ctx.translate(-iconSize/2, -iconSize/2);
+      drawIcon(iconIndex, iconSize);
+      ctx.restore();
+    }
+  }
+})();
+</script>
+</body>
+</html>

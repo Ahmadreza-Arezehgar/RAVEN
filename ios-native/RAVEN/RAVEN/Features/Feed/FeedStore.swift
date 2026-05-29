@@ -561,6 +561,30 @@ final class FeedStore: ObservableObject {
                 }
             }
 
+            // 🔴 Bug fix (2026-05-16): even the GPS-on branch can
+            // end up empty when the user is in a region with no
+            // public-visibility posts (common in test envs). The
+            // friends tab is full but Local stays "No posts yet"
+            // forever. Final safety net BELOW the first backfill so
+            // it fires even when existingServerPosts has stale entries:
+            // if finalRaw still ends up effectively empty, fetch the
+            // friends feed inline and surface those in Local.
+            #if DEBUG
+            print("📡 [FeedStore] After backfill: finalRaw=\(finalRaw.count) combined=\(combinedRawPosts.count) existing=\(existingServerPosts.count)")
+            #endif
+            let nonPendingFinal = finalRaw.filter { !($0.id.first?.isUppercase == true) }
+            if nonPendingFinal.isEmpty {
+                if friendsPosts.isEmpty {
+                    await fetchFriendsFeed()
+                }
+                if !friendsPosts.isEmpty {
+                    #if DEBUG
+                    print("📡 [FeedStore] All paths empty → backfilling Local with \(friendsPosts.count) friends posts")
+                    #endif
+                    finalRaw = trulyPendingPosts + friendsPosts.map { $0.withSource(.forYou) }
+                }
+            }
+
             // 🌟 Single RavenRank™ pass on the fully-merged set (was 2 passes before) 🌟
             let rankedPosts = await RavenRankEngine.shared.rankLocalFeed(
                 posts: finalRaw,
@@ -808,15 +832,68 @@ final class FeedStore: ObservableObject {
                 result = pendingPosts + result
             }
 
+            // 🔴 Bug fix (2026-05-16): the recommended endpoint only
+            // returns posts with `visibility == 'public'`. New accounts
+            // / fresh test environments where everyone posts as
+            // 'friends' still saw "No posts yet" forever even though
+            // the Friends tab was full. Final-resort: if the
+            // recommended fallback comes back empty, fetch friends
+            // posts INLINE and surface them in the Local tab so the
+            // user is never staring at a void. The post-source tag
+            // stays `.forYou` so the existing chip in the bubble
+            // correctly reads "For You" rather than misleadingly
+            // claiming "Nearby".
+            if posts.isEmpty {
+                // Pull friends posts inline — friendsPosts may not be
+                // loaded yet because Home opened on Local tab first.
+                if friendsPosts.isEmpty {
+                    await fetchFriendsFeed()
+                }
+                if !friendsPosts.isEmpty {
+                    #if DEBUG
+                    print("🎯 Recommended is empty → backfilling Local with \(friendsPosts.count) friends posts")
+                    #endif
+                    let friendsTagged = friendsPosts.map { $0.withSource(.forYou) }
+                    result = (pendingPosts + friendsTagged)
+                }
+            }
+
             mergedLocalPosts = deduplicateByID(result)
             #if DEBUG
-            print("🎯 GPS off → Loaded \(posts.count) ForYou posts as fallback")
+            print("🎯 GPS off → Loaded \(posts.count) ForYou posts as fallback, surfaced \(mergedLocalPosts.count)")
             #endif
         } catch {
-            errorMessage = "Failed to load feed: \(error.localizedDescription)"
-            #if DEBUG
-            print("❌ ForYou fallback error: \(error)")
-            #endif
+            // 🔴 ROUND 23 — swallow benign cancellations.
+            //
+            // The previous version surfaced *every* error — including
+            // URLError.cancelled (Code -999), which the user just
+            // hit in production. Cancellation happens routinely on
+            // this path:
+            //   • SwiftUI's `.task` modifier cancels the inflight
+            //     fetch when the parent re-renders (tab switch,
+            //     keyboard appears, scenePhase change).
+            //   • A second `.refresh()` supersedes the first.
+            //   • The CooperativeTaskExecutor reaps an unowned
+            //     handle when the user backgrounds.
+            //
+            // Treating that as "Failed to load feed: cancelled"
+            // showed a scary toast for what's a normal lifecycle
+            // event — the next render kicks off a fresh fetch
+            // anyway.
+            if let urlError = error as? URLError, urlError.code == .cancelled {
+                #if DEBUG
+                print("[FeedStore] ForYou fallback cancelled — benign, next render will refetch.")
+                #endif
+            } else if error is CancellationError {
+                #if DEBUG
+                print("[FeedStore] ForYou fallback Task cancelled — benign.")
+                #endif
+            } else {
+                errorMessage = "Failed to load feed: \(error.localizedDescription)"
+                #if DEBUG
+                print("❌ ForYou fallback error: \(error)")
+                #endif
+            }
         }
         isLoadingLocal = false
         // BUG FIX (2026-05-14): The GPS-off fallback path used to
@@ -1012,6 +1089,13 @@ final class FeedStore: ObservableObject {
             return updated
         }
 
+        // 🔴 ROUND 26 — unified user-action telemetry (haptic + bg server log).
+        UserActionTelemetry.shared.record(
+            initialLiked ? .unlike : .like,
+            targetId: serverId,
+            targetType: .post
+        )
+
         // Step 2 — Coalesce concurrent taps. If a worker is already
         // running, it'll observe the new optimistic state on its next
         // iteration; bail out so we don't spawn a second one.
@@ -1097,6 +1181,13 @@ final class FeedStore: ObservableObject {
 
         // Quote reposts mint a new post each time — never debounce.
         if quote != nil {
+            // 🔴 ROUND 26 — telemetry: quote reposts are always a fresh repost.
+            UserActionTelemetry.shared.record(
+                .repost,
+                targetId: serverId,
+                targetType: .post,
+                metadata: ["quote": true]
+            )
             await runRepostQuoteOnce(serverId: serverId, quote: quote)
             return
         }
@@ -1350,6 +1441,13 @@ final class FeedStore: ObservableObject {
         let wasSaved = isBookmarked(postId: serverId)
         let nowSaved = !wasSaved
 
+        // 🔴 ROUND 26 — unified user-action telemetry (haptic + bg server log).
+        UserActionTelemetry.shared.record(
+            nowSaved ? .bookmark : .unbookmark,
+            targetId: serverId,
+            targetType: .post
+        )
+
         // Mirror cache flip
         var saved = Set(UserDefaults.standard.stringArray(forKey: Self.bookmarksKey) ?? [])
         if nowSaved { saved.insert(serverId) } else { saved.remove(serverId) }
@@ -1463,7 +1561,20 @@ final class FeedStore: ObservableObject {
             recommendedPosts[idx] = transform(recommendedPosts[idx])
         }
     }
-    
+
+    /// 🔴 fix 2026-05-20 — adjust a post's visible comment count by
+    /// `delta` across every loaded feed array, so the feed card's
+    /// comment pill updates immediately after a comment is posted or
+    /// deleted instead of waiting for the next feed refresh.
+    /// `postId` must be the post's serverId (the `-loop-`-stripped id).
+    func adjustCommentCount(postId: String, delta: Int) {
+        updatePostInFeeds(postId: postId) { post in
+            var updated = post
+            updated.comments = max(0, post.comments + delta)
+            return updated
+        }
+    }
+
     // MARK: - ♾️ Twitter/X-Style Recommended Backfill
     
     /// When local organic posts run out, seamlessly backfill with algorithmic recommendations.

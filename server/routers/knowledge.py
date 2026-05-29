@@ -14,7 +14,13 @@ import os
 import json
 
 from database import get_db
-from auth import get_current_user_optional as get_current_user
+# 🔴 hacker-audit 2026-05-20 — use the STRICT get_current_user.
+# PREVIOUSLY this imported get_current_user_optional (returns None
+# instead of raising), so every knowledge endpoint accepted
+# anonymous callers — unmetered Gemini calls on /verify and a
+# crash-or-leak on the facts endpoints. Knowledge endpoints now
+# require a valid token.
+from auth import get_current_user
 from models import User
 
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
@@ -268,11 +274,25 @@ async def upload_fact(
     Used when device has internet connectivity.
     """
     print(f"📤 [Knowledge] Received fact: {fact.title} from user {current_user.id}")
-    
+
+    # 🔴 hacker-audit 2026-05-20 — server-authoritative author + write-IDOR guard.
+    # PREVIOUSLY the client-supplied fact.author_id was stored verbatim
+    # and ANY caller could overwrite ANY fact.id (the only check was a
+    # newer updated_at) — allowing both author spoofing and the
+    # poisoning/erasing of other users' facts. Now the author is
+    # always the authenticated caller, and an existing fact can only
+    # be updated by its original author.
+    fact.author_id = current_user.id
+
     # Check if fact exists
     existing = _facts_db.get(fact.id)
-    
+
     if existing:
+        if existing.get("author_id") != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="This fact belongs to another user",
+            )
         # Update if newer
         existing_updated = existing.get("updated_at", "")
         if fact.updated_at > existing_updated:
@@ -318,7 +338,19 @@ async def get_facts(
     
     # Limit
     facts = facts[:limit]
-    
+
+    # 🔴 hacker-audit 2026-05-20 — honor privacy_mode on sync.
+    # The facts wiki is shared, but a fact uploaded with
+    # privacy_mode != "showName" must not expose its author's id or
+    # display name to other users. Redact author identity on the way
+    # out (build copies — never mutate the stored dicts).
+    safe_facts = []
+    for f in facts:
+        if f.get("privacy_mode", "showName") != "showName":
+            f = {**f, "author_id": None, "author_display_name": None}
+        safe_facts.append(f)
+    facts = safe_facts
+
     print(f"📥 [Knowledge] Returning {len(facts)} facts to user {current_user.id}")
-    
+
     return {"facts": facts, "count": len(facts)}

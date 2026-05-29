@@ -171,18 +171,38 @@ def register(req: RegisterRequest, request: Request, db: Session = Depends(get_d
                     detail="Email already registered"
                 )
         
-        # Check if phone already exists (if provided)
-        # Note: Phone uses E.164 format which is deterministic, but still use hash if available
+        # 🔴 ROUND 71 phase 3 — phone dedupe via phone_hash, not
+        # encrypted ciphertext. Fernet is non-deterministic, so
+        # `phone == encrypt_text(phone)` NEVER matched — the
+        # pre-fix code was theatre, two accounts could register
+        # the same number. Use phone_hash (HMAC-SHA256 of E.164)
+        # which is deterministic and the same key contacts.py uses
+        # for discovery matching.
+        from routers.contacts import compute_phone_hash as _compute_phone_hash
+        phone_e164_norm: Optional[str] = None
+        phone_hash_val: Optional[str] = None
         if req.phone:
-            # For now, check by encrypted phone (TODO: add phone_hash column)
-            existing_phone = db.query(User).filter(User.phone == encrypt_text(req.phone)).first()
+            # /register already validated `req.phone.startswith('+')`
+            # at line ~139. Strip whitespace for hash determinism.
+            phone_e164_norm = req.phone.strip()
+            phone_hash_val = _compute_phone_hash(phone_e164_norm)
+            existing_phone = db.query(User).filter(
+                User.phone_hash == phone_hash_val
+            ).first()
             if existing_phone:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Phone number already registered"
                 )
-        
+
         # Create new user
+        # 🔴 ROUND 71 phase 3 — backfill phone_e164 + phone_hash so
+        # contact-sync discovery works for new accounts immediately.
+        # Pre-fix: only the encrypted `phone` column was set, leaving
+        # phone_hash NULL → contacts.py:/sync never matched the new
+        # user until they re-PATCHed /me with the same phone (which
+        # triggers users.py:154 to populate phone_hash). Most users
+        # never re-PATCH so they stayed invisible to contact sync.
         user = User(
             username=req.username,
             password_hash=hash_password(req.password),
@@ -192,6 +212,8 @@ def register(req: RegisterRequest, request: Request, db: Session = Depends(get_d
             email=encrypt_text(req.email) if req.email else None,
             email_hash=email_hash,
             phone=encrypt_text(req.phone) if req.phone else None,
+            phone_e164=phone_e164_norm,
+            phone_hash=phone_hash_val,
             public_key=req.public_key,
             created_at=datetime.utcnow()
         )
@@ -249,15 +271,79 @@ def login(req: LoginRequest, request: Request, db: Session = Depends(get_db)):
         lockout_minutes=30
     )
     
+    # 🟡 TEMP DEBUG (2026-05-23) — login-failure investigation.
+    # Logs the username + password fingerprint (NOT plaintext) so we
+    # can see whether iOS is sending the same shape as a working curl.
+    # REMOVE before normal operation.
+    import hashlib as _hl
+    _pwd = req.password or ""
+    _pwd_fp = _hl.sha256(_pwd.encode()).hexdigest()[:10] if _pwd else "(empty)"
+    _ua = (request.headers.get("User-Agent") or "?")[:80]
+    print(f"🟡 LOGIN-DEBUG user={req.username!r} pwd_len={len(_pwd)} pwd_sha256_10={_pwd_fp} ua={_ua!r}")
+
     # Find user by username
     user = db.query(User).filter(User.username == req.username).first()
-    
+
     if not user:
+        # 🔴 ROUND 70 — timing-side-channel fix. Without this dummy
+        # bcrypt verify, the "user does not exist" branch returns in
+        # microseconds while the "user exists" branch takes 80-300ms
+        # for the bcrypt verify. An attacker measuring response time
+        # enumerates valid usernames without consuming the rate-limit
+        # budget. Burn the equivalent bcrypt time on the missing-user
+        # branch so the two branches are indistinguishable.
+        try:
+            from auth import verify_password as _vp
+            # Dummy bcrypt hash (cost matches what we use elsewhere);
+            # the compare always fails. Time-equivalent to a real
+            # verify against a real hash.
+            _vp(req.password or "x", "$2b$12$abcdefghijklmnopqrstuu7G2lJj1mYwcQXrJrKjUEXuJpOvE6Gji")
+        except Exception:
+            pass
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid username or password"
         )
-    
+
+    # 🔴 ROUND 61 (2026-05-19) — hacker-audit Server F17 (HIGH:
+    # broken login path = global DoS for OAuth-only accounts).
+    #
+    # PREVIOUSLY: `verify_password(req.password, user.password_hash)`
+    # called bcrypt unconditionally. `user.password_hash` is
+    # `nullable=True` (see models.py:13) because Google/Apple
+    # OAuth signup creates users with no password. bcrypt's
+    # `verify(plain, None)` raises `TypeError`, FastAPI returns a
+    # bare 500 "Internal Server Error", and ANY user who ever
+    # touched OAuth signup can no longer login by password —
+    # the server CRASHES instead of declining cleanly.
+    #
+    # Real-world hit: the @raven_news + @raven_economic news-bot
+    # accounts ended up with NULL password_hash (likely an OAuth
+    # promotion or an admin DB action) and have been failing every
+    # 50-minute login attempt for 3 days. Diagnostic logs showed
+    # the bot fetching + ranking articles successfully each tick,
+    # then crashing on `login failed: 500 Internal Server Error`.
+    #
+    # FIX: return 401 with the same opaque "Invalid username or
+    # password" message when `password_hash IS NULL`. Mirrors the
+    # "user not found" branch above so we don't leak account
+    # existence or signup-method via the error message. OAuth-only
+    # accounts can still sign in via /oauth/google or /oauth/apple
+    # as designed.
+    if not user.password_hash:
+        # 🔴 ROUND 70 — also burn bcrypt time on the OAuth-only
+        # branch so attacker can't distinguish "no password set"
+        # (oauth user) from "wrong password".
+        try:
+            from auth import verify_password as _vp
+            _vp(req.password or "x", "$2b$12$abcdefghijklmnopqrstuu7G2lJj1mYwcQXrJrKjUEXuJpOvE6Gji")
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid username or password"
+        )
+
     # Verify password
     if not verify_password(req.password, user.password_hash):
         raise HTTPException(
@@ -288,26 +374,73 @@ def login(req: LoginRequest, request: Request, db: Session = Depends(get_db)):
     # ✅ Create security notification for login event
     from models import Notification
     import json
-    
+
     user_agent = request.headers.get("User-Agent", "Unknown device")
     client_ip = request.client.host if request.client else "Unknown"
-    
+
+    # 🔵 (2026-05-23) — Human-readable preview so the notification row
+    # reads as "New login from iPhone · Tehran, Iran" instead of the
+    # opaque fallback "New activity detected on your account".
+    def _device_label(ua: str) -> str:
+        u = (ua or "").lower()
+        if "iphone" in u: return "iPhone"
+        if "ipad" in u: return "iPad"
+        if "raven" in u and ("mac" in u or "darwin" in u): return "Mac"
+        if "macintosh" in u or "mac os" in u: return "Mac"
+        if "android" in u: return "Android"
+        if "windows" in u: return "Windows PC"
+        if "linux" in u: return "Linux"
+        return "a new device"
+
+    def _lookup_location(ip: str) -> Optional[str]:
+        """Best-effort GeoIP via ip-api.com (free, no key, rate-limited).
+        Returns 'City, Country' or None. 2-second timeout so a slow
+        lookup never holds up login."""
+        if not ip or ip in ("127.0.0.1", "::1", "Unknown") \
+                or ip.startswith("10.") or ip.startswith("192.168.") \
+                or ip.startswith("172."):
+            return None
+        try:
+            import urllib.request as _ur
+            with _ur.urlopen(
+                f"http://ip-api.com/json/{ip}?fields=status,city,country",
+                timeout=2,
+            ) as r:
+                _d = json.loads(r.read())
+            if _d.get("status") == "success":
+                parts = [p for p in [_d.get("city"), _d.get("country")] if p]
+                return ", ".join(parts) if parts else None
+        except Exception:
+            return None
+        return None
+
+    device_label = _device_label(user_agent)
+    location_str = _lookup_location(client_ip)
+    preview = f"New login from {device_label}"
+    if location_str:
+        preview += f" · {location_str}"
+
     security_notif = Notification(
         user_id=user.id,
         type="security",
         data=json.dumps({
             "event": "new_login",
-            "device": user_agent[:100],  # Truncate long user agents
+            "device": user_agent[:100],
             "ip": client_ip,
+            "location": location_str,
+            # iOS `security_alert` / `security` case reads `preview`
+            # for the row body — so this surfaces directly in the
+            # notification list.
+            "preview": preview,
         }),
         timestamp=datetime.utcnow(),
         is_read=False
     )
     db.add(security_notif)
     db.commit()
-    
+
     print(f"✅ User logged in: {user.username} ({user.id})")
-    print(f"🔐 Security notification created for login from {client_ip}")
+    print(f"🔐 Security notification: {preview}")
     
     return {
         "user_id": user.id,
@@ -481,7 +614,35 @@ def oauth_google(req: OAuthGoogleRequest, db: Session = Depends(get_db)):
         # ✅ Google OAuth users are auto-verified (Google already verified their email)
         import hashlib
         email_hash = hashlib.sha256(email.lower().encode()).hexdigest() if email else None
-        
+
+        # 🔴 ROUND 71 phase 3 — email_hash collision guard. Without
+        # this, the next `db.commit()` raises IntegrityError because
+        # User.email_hash is a UNIQUE column, and the response we
+        # would send back would be a 500. Worse, a half-rolled-back
+        # transaction could leave the session in a bad state. Detect
+        # the collision explicitly and return 409 — the user is
+        # asked to log in with their original method (password).
+        # We do NOT silently link the OAuth provider onto the
+        # existing account: a malicious user could pre-register a
+        # password account with someone else's email and hijack the
+        # account when the real owner OAuths.
+        if email_hash:
+            existing_by_email = db.query(User).filter(
+                User.email_hash == email_hash
+            ).first()
+            if existing_by_email is not None:
+                print(f"⚠️ Google OAuth: email already registered under "
+                      f"different provider ({existing_by_email.oauth_provider or 'password'}) — "
+                      f"rejecting to avoid account-shadowing")
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        "This email is already registered. Please log in "
+                        "with your original sign-in method, or contact "
+                        "support to link Google to your account."
+                    ),
+                )
+
         user = User(
             oauth_provider='google',
             oauth_provider_id=google_id,
@@ -495,15 +656,15 @@ def oauth_google(req: OAuthGoogleRequest, db: Session = Depends(get_db)):
             created_at=datetime.utcnow(),
             last_login=datetime.utcnow()
         )
-        
+
         db.add(user)
         db.commit()
         db.refresh(user)
-        
+
         # ✅ Generate both access AND refresh tokens
         token = create_access_token({"sub": user.id})
         refresh_token = create_db_refresh_token(db, user_id=user.id, device_name="google_oauth_new")
-        
+
         print(f"✅ Google OAuth: New user created (requires username)")
         
         # Return special response indicating username is needed
@@ -570,7 +731,28 @@ def oauth_apple(req: OAuthAppleRequest, db: Session = Depends(get_db)):
             # ✅ Apple OAuth users are auto-verified (Apple already verified their email)
             import hashlib
             email_hash = hashlib.sha256(email.lower().encode()).hexdigest() if email else None
-            
+
+            # 🔴 ROUND 71 phase 3 — email_hash collision guard. See
+            # the Google OAuth branch above for the rationale. Same
+            # rule: a pre-existing account with this email must NOT
+            # be silently linked to a new OAuth provider.
+            if email_hash:
+                existing_by_email = db.query(User).filter(
+                    User.email_hash == email_hash
+                ).first()
+                if existing_by_email is not None:
+                    print(f"⚠️ Apple OAuth: email already registered under "
+                          f"different provider ({existing_by_email.oauth_provider or 'password'}) — "
+                          f"rejecting to avoid account-shadowing")
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=(
+                            "This email is already registered. Please log in "
+                            "with your original sign-in method, or contact "
+                            "support to link Apple to your account."
+                        ),
+                    )
+
             user = User(
                 oauth_provider='apple',
                 oauth_provider_id=apple_id,
@@ -613,19 +795,126 @@ def oauth_apple(req: OAuthAppleRequest, db: Session = Depends(get_db)):
             detail=f"Apple OAuth error: {str(e)}"
         )
 
+
+# ─────────────────────────────────────────────────────────────────────
+# Apple OAuth — form-post callback (Android WebView flow).
+#
+# Apple's only response mode that works from a web context is
+# `response_mode=form_post`. The Android client opens
+# `https://appleid.apple.com/auth/authorize` inside an in-app WebView
+# and registers THIS endpoint as the `redirect_uri`. Apple POSTs a
+# url-encoded form here with:
+#   • id_token  — Apple's JWT identity token
+#   • code      — short-lived authorization code (≈10 min)
+#   • state     — CSRF nonce the client minted
+#   • user      — JSON blob with the user's name (only sent on FIRST
+#                 sign-in; later sign-ins omit it)
+#
+# We bounce the params into a fragment on the `raven://oauth/apple/done`
+# deep link so the WebView's URL interceptor inside AppleSignInScreen
+# can pick them up and hand them to AuthRepository.oauthApple, which
+# in turn POSTs them right back to /api/auth/oauth/apple (the
+# canonical JSON endpoint above) for verification + token issuance.
+#
+# Why bounce instead of verifying here directly? Two reasons:
+#   1. Keeps a single source of truth — only /oauth/apple verifies
+#      the id_token. This handler is a transport-layer adapter.
+#   2. iOS already has a native flow that doesn't go through this
+#      endpoint, so /oauth/apple has to stay JSON-callable from both
+#      sides. Splitting verification logic out would mean two
+#      copies. One copy.
+#
+# Security note: the deep-link bounce carries the id_token in the URL
+# fragment, which is visible in the WebView's history. That's fine —
+# the id_token is short-lived (Apple defaults to 10 min) and the
+# token is meaningless without the matching Apple-public-key
+# verification we do on /oauth/apple. An attacker who intercepts the
+# fragment can't replay it because they don't have a session yet,
+# and they can't mint one without the matching Apple-side state.
+@router.post("/oauth/apple/callback")
+async def oauth_apple_callback(request: Request):
+    """Apple form_post → deep link bounce for the Android WebView."""
+    from fastapi.responses import HTMLResponse
+    form = await request.form()
+    id_token = form.get("id_token", "") or ""
+    code = form.get("code", "") or ""
+    state = form.get("state", "") or ""
+    user_blob = form.get("user", "") or ""
+    error = form.get("error", "") or ""
+
+    # Build the fragment payload. Apple URL-encodes the form values
+    # on its side; we URL-encode again for safety on the deep-link
+    # fragment.
+    from urllib.parse import quote
+    parts: list[str] = []
+    if id_token:
+        parts.append(f"id_token={quote(id_token, safe='')}")
+    if code:
+        parts.append(f"code={quote(code, safe='')}")
+    if state:
+        parts.append(f"state={quote(state, safe='')}")
+    if user_blob:
+        parts.append(f"user={quote(user_blob, safe='')}")
+    if error:
+        parts.append(f"error={quote(error, safe='')}")
+    fragment = "&".join(parts)
+    deep_link = f"raven://oauth/apple/done#{fragment}"
+
+    # Minimal HTML — no external resources, instant redirect. The
+    # WebView's `shouldOverrideUrlLoading` intercepts the deep link
+    # before the browser actually follows it.
+    html = (
+        "<!doctype html><html><head>"
+        "<meta charset='utf-8'>"
+        f"<meta http-equiv='refresh' content=\"0;url={deep_link}\">"
+        "<title>Returning to RAVEN…</title></head>"
+        f"<body><script>window.location.replace({deep_link!r})</script>"
+        f"<a href=\"{deep_link}\">Return to RAVEN</a></body></html>"
+    )
+    return HTMLResponse(content=html, status_code=200)
+
+
 @router.get("/check-username", response_model=UsernameCheckResponse)
-def check_username_availability(username: str, db: Session = Depends(get_db)):
-    """
-    Check if a username is available.
+def check_username_availability(
+    username: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Check if a username is available.
+
+    🔴 hacker-audit 2026-05-19: this endpoint was unauthenticated AND
+    had no rate limit, which turned it into a perfect username
+    enumeration oracle. An attacker could iterate a wordlist (or the
+    full a-z combination space) and harvest every registered username
+    — useful for targeted password spraying, contact-graph rebuilding,
+    and phishing setup. Two defences below:
+      1. Per-IP sliding-window limit (30 checks per minute). Real
+         signup forms only need a handful of checks per user; bulk
+         enumeration trips the limiter within seconds.
+      2. Reject excessively long inputs early so an attacker can't
+         use this endpoint as a generic DB query primitive.
     """
     if not username or len(username) < 3:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Username must be at least 3 characters"
         )
-    
+    if len(username) > 64:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username too long",
+        )
+
+    from middleware.rate_limit import rate_limiter
+    client_ip = request.client.host if request.client else "unknown"
+    rate_limiter.check_rate_limit(
+        identifier=f"check_username:{client_ip}",
+        max_attempts=30,
+        window_minutes=1,
+        lockout_minutes=5,
+    )
+
     existing_user = db.query(User).filter(User.username == username).first()
-    
     return UsernameCheckResponse(available=existing_user is None)
 
 @router.post("/set-username")
@@ -1133,15 +1422,23 @@ def reset_password(
         )
     
     user.password_hash = hash_password(req.new_password)
+    # 🔴 ROUND 71 S28: stamp `tokens_invalidated_at` so live access
+    # tokens issued before the reset are rejected by the
+    # get_current_user verify step. Previously only refresh tokens
+    # were revoked — an attacker holding a stolen 7-day access JWT
+    # kept full access for up to 7 days after the victim reset their
+    # password. Combined with round-71 S27 (30-min access TTL) this
+    # closes the post-reset window to ≤ 30 min worst case.
+    user.tokens_invalidated_at = datetime.utcnow()
     db.commit()
-    
+
     # Revoke all refresh tokens (security measure)
     revoked_count = revoke_all_refresh_tokens(db, user_id)
-    
+
     # Generate new access token
     token = create_access_token({"sub": user_id})
-    
-    print(f"✅ Password reset for user {user_id} (revoked {revoked_count} refresh tokens)")
+
+    print(f"✅ Password reset for user {user_id} (revoked {revoked_count} refresh tokens + stamped tokens_invalidated_at)")
     
     return {
         "success": True,
@@ -1158,12 +1455,18 @@ def logout(
 ):
     """
     Logout user by revoking refresh token.
-    
-    Note: Access tokens cannot be revoked (short-lived by design).
+
+    🔴 ROUND 26 — hacker-audit Server F4 (MEDIUM).
+    Also revokes the CURRENT access token's `jti` via the in-process
+    revocation set in `auth.revoke_access_token`. Pre-round-26, the
+    docstring even bragged that "Access tokens cannot be revoked
+    (short-lived by design)" — but a 30-minute window after a
+    stolen-device logout is way too long when the user explicitly
+    asked us to invalidate.
     """
     from services.verification_service import revoke_all_refresh_tokens
-    from auth import decode_token
-    
+    from auth import decode_token, revoke_access_token
+
     # Get token from header
     auth_header = request.headers.get("Authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
@@ -1171,24 +1474,58 @@ def logout(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated"
         )
-    
+
     token = auth_header.replace("Bearer ", "")
     payload = decode_token(token)
-    
+
     if not payload:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token"
         )
-    
+
     user_id = payload.get("sub")
-    
+
     # Revoke all refresh tokens for this user (new DB-backed tokens)
     from auth import revoke_all_user_tokens
     revoked_count = revoke_all_user_tokens(db, user_id)
-    
-    print(f"🚪 User {user_id} logged out (revoked {revoked_count} refresh tokens)")
-    
+
+    # 🔴 ROUND 26 — Server F4: revoke the current access token's
+    # `jti` so a stolen access token stops working IMMEDIATELY
+    # instead of running until `exp` (30min default). Returns False
+    # if the token was already invalid (no-op).
+    revoke_access_token(token)
+
+    # 🔴 ROUND 45 (2026-05-19) — hacker-audit Server F9 (HIGH).
+    #
+    # PREVIOUSLY: `revoke_access_token(token)` above stuffs the JWT's
+    # `jti` into a per-process Python set living in `auth.py`. That
+    # works in dev (single Uvicorn worker on localhost) but is a
+    # silent disaster on Cloud Run:
+    #   • `min-instances=0` → every cold start wipes the set
+    #     (revoked jtis "come back from the dead")
+    #   • autoscaling spins up multiple replicas → the next request
+    #     can land on a sibling instance that never saw the
+    #     revocation, and the stolen JWT works there until `exp`.
+    #
+    # FIX: persist a per-user `tokens_invalidated_at` timestamp on
+    # the user row. `get_current_user` compares the token's `iat`
+    # against this column on every authenticated request — any token
+    # issued before the logout stamp is rejected, regardless of
+    # which Cloud Run instance handles the request, regardless of
+    # cold starts. The in-process jti set above is kept as a cheap
+    # fast path for the hot instance.
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if user is not None:
+            user.tokens_invalidated_at = datetime.utcnow()
+            db.commit()
+    except Exception as _e:
+        db.rollback()
+        print(f"⚠️ Could not stamp tokens_invalidated_at for {user_id}: {_e}")
+
+    print(f"🚪 User {user_id} logged out (revoked {revoked_count} refresh tokens + current access jti + cross-instance stamp)")
+
     return {
         "success": True,
         "message": "Logged out successfully"

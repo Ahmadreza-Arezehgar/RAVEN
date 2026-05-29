@@ -2,7 +2,11 @@ import SwiftUI
 import AVFoundation
 import AVKit
 import CoreLocation
+import CryptoKit
 import MapKit
+import os
+
+fileprivate let logger = Logger(subsystem: "app.raven.ios", category: "ChatView")
 
 // MARK: - Trust Level, TrustIndicator, TrustCalculator
 // Canonical definitions are in TrustIndicator.swift
@@ -54,6 +58,13 @@ struct ChatView: View {
     @State private var showSharedMedia = false
     @State private var showPaywall = false
     @State private var imageForEditor: UIImage? = nil // Media Editor integration
+    /// Round 18 (d): when set, a `VideoPreviewBeforeSendSheet`
+    /// presents over the chat so the user can watch / trim / cancel
+    /// before the video actually hits `sendFile(...)`. URL is
+    /// always inside the app's temporary directory (the exporter
+    /// already copied it out of PhotoKit), so cleanup on
+    /// cancel is safe.
+    @State private var pendingVideoPreviewURL: URL? = nil
     @State private var showMediaEditor = false
     @State private var attachmentFlowState: AttachmentFlowState = .idle
     
@@ -65,8 +76,27 @@ struct ChatView: View {
     
     
     // In-app viewer states
-    @State private var selectedImageURL: URL?
+    @State private var selectedImageURL: SelectedImageItem?
     @State private var selectedDocument: DocumentPreviewItem?
+    /// 🔴 Bug fix (2026-05-15 — round 3): video taps used to share
+    /// the `selectedDocument` channel which sent them through
+    /// QuickLook (slow cold start, default Apple chrome). Now they
+    /// open the post-feed-style `FullScreenVideoPlayer` with
+    /// `post: nil` so the like / comment / repost bar is hidden —
+    /// the user gets the fast Apple-native player without the
+    /// social chrome.
+    @State private var selectedChatVideo: ChatVideoPreviewItem?
+    /// (2026-05-15 — round 3) Sticky-for-the-attachment-sheet flag
+    /// set by `LiquidGlassAttachmentSheet`'s vault toggle. Read by
+    /// `sendImage` / `sendFile` to choose between the standard and
+    /// `VaultFileCrypto`-wrapped upload paths.
+    @State private var vaultModeForNextSend: Bool = false
+    /// (2026-05-15 — round 6) Bumped whenever ChatChromePreferences
+    /// emits a change for THIS room — forces `chatBackground` to
+    /// re-evaluate the wallpaper choice without rebuilding the
+    /// whole ChatView tree. Listening through a published int means
+    /// non-wallpaper updates don't churn the chat surface either.
+    @State private var wallpaperRefreshTick: Int = 0
     
     // 🚨 FIX: New global sheet states
     @State private var selectedLocationPayload: LocationPayload? = nil
@@ -118,6 +148,15 @@ struct ChatView: View {
     /// Message IDs that should be preceded by a Today/Yesterday/date header.
     /// Recomputed alongside `blockPositions` whenever the message list changes.
     @State private var dateHeaderIds: Set<String> = []
+
+    // 🔴 ROUND 26 — Telegram-style media albums.
+    // `albumGroups[messageId]` is the ORDERED list of siblings
+    // for the LEAD message in each album group. `albumSkipIds`
+    // holds every non-lead sibling so the ForEach can drop them
+    // (their tiles render inside the lead's AlbumBubbleView).
+    // Recomputed in sync with blockPositions / dateHeaderIds.
+    @State private var albumGroups: [String: [ChatMessage]] = [:]
+    @State private var albumSkipIds: Set<String> = []
 
     // 🆕 Reactions
     @State private var reactionStore = MessageReactionStore()
@@ -214,6 +253,10 @@ struct ChatView: View {
     @State private var lastScreenshotTime: Date?
     @State private var screenshotCount: Int = 0
     @State private var screenshotDebounceTask: Task<Void, Never>?
+    /// 🔴 2026-05-20 — sticky flag: true once any screenshot inside the
+    /// current 30s merge window was of a Vault photo, so the merged
+    /// system message uses the Vault-specific wording.
+    @State private var screenshotWindowHadVault: Bool = false
     
     // Error alert for file/image send failures
     @State private var errorMessage: String?
@@ -244,9 +287,7 @@ struct ChatView: View {
         self.conversation = conversation
         // ✨ Channels also use WebSocket and SQLite like groups
         self._messageStore = State(initialValue: MessageStore(roomId: conversation.roomId, isGroup: conversation.isGroup || conversation.isChannel))
-        #if DEBUG
-        print("🏠 [ChatView] Opening chat - roomId: \(conversation.roomId.prefix(8)), peerId: \(conversation.peer.userId.prefix(8)), isGroup: \(conversation.isGroup)")
-        #endif
+        logger.debug("Opening chat - roomId: \(conversation.roomId, privacy: .private), peerId: \(conversation.peer.userId, privacy: .private), isGroup: \(conversation.isGroup, privacy: .public)")
     }
     
     // MARK: - Message Request State (live from ConversationStore)
@@ -310,6 +351,13 @@ struct ChatView: View {
             // Background extends under container safe areas only (NOT keyboard)
             chatBackground
                 .ignoresSafeArea(.container)
+                .id(wallpaperRefreshTick)
+                .onReceive(NotificationCenter.default.publisher(for: ChatChromePreferences.didChangeNotification)) { note in
+                    if let changed = note.userInfo?["roomId"] as? String,
+                       changed == conversation.roomId {
+                        wallpaperRefreshTick &+= 1
+                    }
+                }
             
             // ✅ Floating composer layout — input bar overlays chat, no dark bottom panel
             ScrollViewReader { proxy in
@@ -361,125 +409,28 @@ struct ChatView: View {
                                     .padding(.vertical, 8)
                             }
 
-                            // System messages render as minimal centered chips,
-                            // NOT wrapped in MessageBubbleView (avoids bubble styling)
-                            Group {
-                                if message.type == .system {
-                                    SystemEventChip(
-                                        title: message.text ?? "Notification",
-                                        timestamp: message.timestamp
-                                    )
-                                } else {
-                                    VStack(spacing: 2) {
-                                        messageBubble(for: message, isFirstInBlock: pos.isFirst, isLastInBlock: pos.isLast)
-                                            .padding(.top, topPad)
-                                            // 🆕 Custom long-press: triggers our overlay
-                                            // instead of the system contextMenu (which
-                                            // wraps content in a white lifted card we
-                                            // can't disable). The frame is reported from
-                                            // INSIDE MessageBubbleView so we get the
-                                            // actual bubble's bounds, not the full row.
-                                            //
-                                            // 🐛 BUG FIX (2026-05-11) "haptic touch dorost
-                                            // kar nemikone": switched from the
-                                            // `.onLongPressGesture(minimumDuration:)`
-                                            // shortcut (which uses a strict 10pt
-                                            // maxDistance — finger drifts cancel it
-                                            // immediately) to the explicit
-                                            // `LongPressGesture(maximumDistance: 50)` form
-                                            // so subtle finger movement during the 400ms
-                                            // hold doesn't kill the gesture. Same pattern
-                                            // iMessage / Instagram use.
-                                            .gesture(
-                                                LongPressGesture(minimumDuration: 0.4, maximumDistance: 50)
-                                                    .onEnded { _ in
-                                                        guard message.type != .system else { return }
-                                                        let frame = bubbleFrames[message.id] ?? .zero
-                                                        guard frame.width > 0 else { return }
-                                                        let isFromMe = senderIsMe(message.senderId)
-                                                        Haptics.medium()
-                                                        bubbleActionContext = BubbleActionContext(
-                                                            message: message,
-                                                            isFromMe: isFromMe,
-                                                            bubbleFrame: frame
-                                                        )
-                                                    }
-                                            )
-                                            // Pulse highlight when this message is the target of a
-                                            // search hit or a reply-jump.
-                                            .background(
-                                                pulseMessageId == message.id
-                                                    ? Color.accentColor.opacity(0.18)
-                                                    : Color.clear,
-                                                in: RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                            )
-                                            .animation(.easeInOut(duration: 0.6), value: pulseMessageId)
-                                            // 🆕 Brief scale + shadow pulse the moment a reaction
-                                            // lands on this bubble — paired with the chip's
-                                            // scale-in transition to deliver "the emoji landed
-                                            // here" signal Instagram / Telegram both telegraph.
-                                            .scaleEffect(pulsingReactionMessageId == serverIdOrLocal(message) ? 1.04 : 1.0)
-                                            .shadow(
-                                                color: Color.accentColor.opacity(
-                                                    pulsingReactionMessageId == serverIdOrLocal(message) ? 0.45 : 0
-                                                ),
-                                                radius: pulsingReactionMessageId == serverIdOrLocal(message) ? 16 : 0
-                                            )
-                                            .animation(.spring(response: 0.28, dampingFraction: 0.45), value: pulsingReactionMessageId)
-
-                                        // Reaction chips (below the bubble, before the read-receipts)
-                                        let groups = reactionStore.grouped(
-                                            for: serverIdOrLocal(message),
-                                            currentUserId: AuthService.shared.currentUser?.id ?? ""
-                                        )
-                                        if !groups.isEmpty {
-                                            ReactionChipsRow(
-                                                groups: groups,
-                                                isFromMe: isFromMe,
-                                                onTap: { emoji in
-                                                    Task {
-                                                        await reactionStore.toggle(
-                                                            messageId: serverIdOrLocal(message),
-                                                            emoji: emoji,
-                                                            currentUserId: AuthService.shared.currentUser?.id ?? ""
-                                                        )
-                                                    }
-                                                },
-                                                onLongPress: conversation.isGroup ? { group in
-                                                    reactionReactorsTarget = ReactionReactorsTarget(
-                                                        emoji: group.emoji,
-                                                        userIds: group.userIds
-                                                    )
-                                                } : nil
-                                            )
-                                            .padding(.horizontal, 8)
-                                        }
-
-                                        // Read receipts (group chats only, below each sent message)
-                                        if conversation.isGroup && isFromMe {
-                                            SeenByAvatarsView(
-                                                seenBy: readReceiptStore.seenBy(for: message.id),
-                                                isFromMe: isFromMe,
-                                                onTap: {
-                                                    isInputFocused = false
-                                                    selectedSeenBy = readReceiptStore.seenBy(for: message.id)
-                                                }
-                                            )
-                                        }
-                                    }
-                                    .id(message.id)
-                                }
-                            }
-                            // ✨ Smoother new-message entry — slides up + fades from
-                            // the side (own / peer), with a snappier spring.
-                            // Old transition was a generic scale that produced an
-                            // awkward "pop" mid-list.
-                            .transition(.asymmetric(
-                                insertion: .move(edge: isFromMe ? .trailing : .leading)
-                                    .combined(with: .opacity)
-                                    .combined(with: .scale(scale: 0.96, anchor: isFromMe ? .bottomTrailing : .bottomLeading)),
-                                removal: .opacity.combined(with: .scale(scale: 0.96))
-                            ))
+                            // 🔴 ROUND 26 — Telegram-style media albums.
+                            // The four branches (album member skip,
+                            // album lead grouped bubble, system chip,
+                            // standard bubble row) all flow through a
+                            // single AnyView-returning helper so the
+                            // SwiftUI type checker never has to drill
+                            // into the giant conditional. The helper
+                            // keeps every existing gesture / pulse /
+                            // reaction / read-receipt behaviour.
+                            chatRowContent(
+                                message: message,
+                                isFromMe: isFromMe,
+                                posIsFirst: pos.isFirst,
+                                posIsLast: pos.isLast,
+                                topPad: topPad
+                            )
+                            // 🔴 ROUND 26 — the transition is now
+                            // applied INSIDE chatRowContent on each
+                            // branch (so it persists per-row when
+                            // AnyView erases the type). Removing it
+                            // here avoids stacking two transitions
+                            // on the same insertion.
                         }
 
                         // 🆕 Typing indicator parked below the last message,
@@ -596,8 +547,14 @@ struct ChatView: View {
                 .onChange(of: messageStore.messages.count) { oldCount, newCount in
                     blockPositions = precomputeBlockPositions(messages: messageStore.messages)
                     dateHeaderIds = precomputeDateHeaders(messages: messageStore.messages)
+                    // 🔴 ROUND 26 — recompute album groupings so a
+                    // freshly-arrived sibling collapses into the
+                    // right bubble immediately.
+                    let albumPass = Self.precomputeAlbumGroups(messages: messageStore.messages)
+                    albumGroups = albumPass.groups
+                    albumSkipIds = albumPass.skipIds
                     guard newCount > oldCount else { return }
-                    
+
                     let isMyMessage = senderIsMe(messageStore.messages.last?.senderId)
                     
                     // Fix: initial load (0→N) should NOT be treated as pagination
@@ -703,6 +660,10 @@ struct ChatView: View {
                 .onAppear {
                     blockPositions = precomputeBlockPositions(messages: messageStore.messages)
                     dateHeaderIds = precomputeDateHeaders(messages: messageStore.messages)
+                    // 🔴 ROUND 26 — first-paint album-grouping pass.
+                    let albumPass = Self.precomputeAlbumGroups(messages: messageStore.messages)
+                    albumGroups = albumPass.groups
+                    albumSkipIds = albumPass.skipIds
 
                     // 🆕 Capture the "first unread" anchor for the divider
                     // line. Frozen on entry so the marker stays put while
@@ -882,6 +843,15 @@ struct ChatView: View {
                         onCaptureTap: {
                             isInputFocused = false
                             isRecordingVoice = true
+                        },
+                        // (2026-05-15 — round 4) Surface the vault
+                        // flag right next to the + button so the
+                        // user always knows whether their next send
+                        // is encrypted. Long-press the + button to
+                        // toggle without opening the attachment sheet.
+                        vaultMode: vaultModeForNextSend,
+                        onToggleVault: {
+                            vaultModeForNextSend.toggle()
                         }
                     )
                     .focused($isInputFocused)
@@ -944,11 +914,36 @@ struct ChatView: View {
             if showAttachmentPicker {
                 LiquidGlassAttachmentSheet(
                     isPresented: $showAttachmentPicker,
+                    // 🔴 Bug fix (2026-05-15): single-image picks now go
+                    // through the MediaEditor preview (crop / draw /
+                    // caption) instead of being shoved straight to the
+                    // server. Multi-select + videos still use the
+                    // direct-send paths (`onSendImage` / `onSendFile`).
+                    onPickImage: { image in
+                        imageForEditor = image
+                        // Defer fullScreenCover trigger until the sheet
+                        // dismiss settles — avoids the SwiftUI
+                        // "presenting another view while dismissing" warning.
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                            if imageForEditor != nil { showMediaEditor = true }
+                        }
+                    },
                     onSendImage: { image in
                         sendImage(image)
                     },
                     onSendFile: { url in
-                        sendFile(url)
+                        // Round 18 — (d) preview-before-send: videos
+                        // route through a preview sheet so the user
+                        // can trim/cancel before the upload starts.
+                        // Non-video files (PDFs, docs) still go
+                        // straight to `sendFile` — they already have
+                        // a preview surface inside the chat once the
+                        // bubble lands.
+                        if Self.isVideoFileURL(url) {
+                            pendingVideoPreviewURL = url
+                        } else {
+                            sendFile(url)
+                        }
                     },
                     onOpenFiles: {
                         showDocumentPicker = true
@@ -964,6 +959,16 @@ struct ChatView: View {
                     },
                     onShareFriend: { friend in
                         shareFriend(friend)
+                    },
+                    // (2026-05-15 — round 3) Mirror the sheet's
+                    // vault-mode toggle into a ChatView state so
+                    // sendImage / sendFile pick the encrypted upload
+                    // path. State stays sticky inside the sheet's
+                    // lifecycle — closing + reopening the sheet
+                    // resets to OFF, which matches the user's mental
+                    // model of "vault is per-send, not per-chat".
+                    onVaultModeChange: { on in
+                        vaultModeForNextSend = on
                     }
                 )
                 .zIndex(999)
@@ -991,6 +996,44 @@ struct ChatView: View {
                 .transition(.opacity.animation(.easeInOut(duration: 0.2)))
             }
             
+
+            // ATSAM-not-active capsule (top-right). Visible only when
+            // the receive path has flagged the peer as a legacy /
+            // downlevel client this session. Auto-dismisses after 8s
+            // and remembers per-session dismissals so it doesn't keep
+            // popping back. Added 2026-05-16 at user request.
+            if !conversation.isGroup && !conversation.isChannel {
+                VStack {
+                    HStack {
+                        Spacer()
+                        ATSAMMismatchBanner(
+                            peerUserId: conversation.peer.userId,
+                            peerDisplayName: conversation.displayTitle
+                        )
+                        .padding(.trailing, 10)
+                        .padding(.top, 6)
+                    }
+                    Spacer()
+                }
+                .allowsHitTesting(true)
+                .zIndex(900)
+            }
+
+            // Round 15 — conversation-level encryption-health chip.
+            // Floats at the top-center, shows only when one or more
+            // bubbles currently on screen carry a non-sealed verdict.
+            // Tapping it opens the same explainer sheet the per-
+            // bubble badge does, keyed to the WORST verdict in view
+            // (sealedButFailed > plaintextLegacy > plaintextExplicit).
+            VStack {
+                ChatEncryptionSummaryChip(
+                    visibleMessageIds: Set(messageStore.messages.map { $0.id })
+                )
+                .padding(.top, 4)
+                Spacer()
+            }
+            .allowsHitTesting(true)
+            .zIndex(901)
 
             // Selection mode toolbar overlay
             if isSelectionMode {
@@ -1379,10 +1422,60 @@ struct ChatView: View {
             onSendFile: { sendFile($0) },
             onSendLocation: { sendCurrentLocation($0) },
             onStartLive: { dur, loc in startLiveLocation(duration: dur, initialLocation: loc) },
-            onDeleteMessages: { forEveryone in deleteSelectedMessages(forEveryone: forEveryone) }
+            onDeleteMessages: { forEveryone in deleteSelectedMessages(forEveryone: forEveryone) },
+            onScreenshot: { isVault in handleScreenshotDetected(isVaultPhoto: isVault) }
         ))
+        // 🔴 (2026-05-15 — round 3): video full-screen player lives
+        // outside `ChatSheetsModifier` because the modifier's body
+        // chain was already at the type-checker's complexity ceiling
+        // — adding one more `.fullScreenCover` inside it tipped the
+        // compiler into a 60-second timeout. Hoisting it out keeps
+        // the modifier compilation cheap.
+        .fullScreenCover(item: $selectedChatVideo) { video in
+            let media = PostMedia(
+                id: video.id.uuidString,
+                url: video.url.absoluteString,
+                orderIndex: 0,
+                mediaType: "video",
+                thumbnailUrl: nil,
+                topComments: nil
+            )
+            // 🔴 ROUND 70 — wrap chat-bubble video in the secure
+            // host so screen recording / AirPlay can't lift vault
+            // video frames. Detection: a vault video URL ends in
+            // `.vlt` (the upload renames the mp4 to `.vlt` for
+            // vault sends, see AttachmentService.sendFile / sendImage).
+            // Non-vault videos are unaffected because
+            // `vaultScreenshotProtected(false)` is a passthrough.
+            let isVaultVideo: Bool = {
+                let lower = video.url.absoluteString.lowercased()
+                return lower.hasSuffix(".vlt") || lower.contains(".vlt?")
+            }()
+            FullScreenVideoPlayer(
+                media: [media],
+                startIndex: 0,
+                startTime: .zero,
+                chapters: [],
+                post: nil
+            )
+            .vaultScreenshotProtected(isVaultVideo)
+        }
         .sheet(isPresented: $showVaultSheet) {
             VaultLockSheet(vaultLock: $pendingVaultLock)
+        }
+        // Round 18 (d): video preview-before-send. The picker hands
+        // us a temp-dir URL; we present this sheet so the user can
+        // preview, optionally trim via QLPreviewController, then
+        // hit Send. Cancel cleans up both the original temp file
+        // and any edited copy.
+        .fullScreenCover(item: $pendingVideoPreviewURL) { url in
+            VideoPreviewBeforeSendSheet(
+                sourceURL: url,
+                onSend: { toShip in
+                    sendFile(toShip)
+                },
+                onCancel: { /* no-op; cleanup happens inside the sheet */ }
+            )
         }
         .alert("Error", isPresented: $showErrorAlert) {
             Button("OK", role: .cancel) {}
@@ -1474,6 +1567,19 @@ struct ChatView: View {
                 await messageStore.loadFromDB()
             }
         }
+        // 🔴 ROUND 26 — Telegram-style grouped media album send.
+        // LiquidGlassAttachmentSheet posts this when the user
+        // multi-picks and hits Send; we hand the resolved items to
+        // AttachmentService.sendAlbum which stamps a shared
+        // albumGroupKey across every per-item send. Wired as a
+        // Notification (rather than the more natural closure
+        // param) because the sheet's init already has 9 closures
+        // and adding a 10th tips ChatView's SwiftUI body past its
+        // type-check budget. Same flow, different transport.
+        .onReceive(NotificationCenter.default.publisher(for: LiquidGlassAttachmentSheet.albumPickerDidSelect)) { note in
+            guard let items = note.userInfo?["items"] as? [AlbumPickerItem] else { return }
+            sendAlbumFromPicker(items)
+        }
         .onDisappear {
             // Clear current chat tracking
             DeepLinkRouter.shared.exitChat()
@@ -1495,36 +1601,15 @@ struct ChatView: View {
         // 📸 Allow screenshots in chat but send alert message (deduplicated)
         .allowScreenshots()
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.userDidTakeScreenshotNotification)) { _ in
-            let now = Date()
-            
-            // Within 30s window? Increment counter, reset debounce
-            if let last = lastScreenshotTime, now.timeIntervalSince(last) < 30 {
-                screenshotCount += 1
-            } else {
-                screenshotCount = 1
-            }
-            lastScreenshotTime = now
-            
-            // Cancel previous debounce
-            screenshotDebounceTask?.cancel()
-            
-            // Wait 2s before sending — allows merging rapid screenshots
-            screenshotDebounceTask = Task {
-                try? await Task.sleep(for: .seconds(2))
-                guard !Task.isCancelled else { return }
-                
-                let count = screenshotCount
-                let username = AuthService.shared.currentUser?.displayName ?? "User"
-                let text = count > 1
-                    ? "\(count) screenshots taken"
-                    : "\(username) took a screenshot"
-                
-                try? await messageStore.sendSystemMessage(text)
-                Haptics.light()
-                
-                // Reset
-                screenshotCount = 0
-            }
+            // 🔴 2026-05-20 — when a full-screen image viewer is up,
+            // `FullScreenImageViewer` owns the screenshot detection
+            // (it's the front-most view; this ChatView is COVERED by
+            // its `.fullScreenCover` so this listener fired only
+            // unreliably). It calls back into
+            // `handleScreenshotDetected(isVaultPhoto:)` with the
+            // Vault flag. Suppress here so we don't double-report.
+            guard selectedImageURL == nil else { return }
+            handleScreenshotDetected(isVaultPhoto: false)
         }
         // RAVEN+ upsell: show paywall when voice recording hits free-tier limit
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ShowPaywall"))) { _ in
@@ -1546,6 +1631,95 @@ struct ChatView: View {
         }
     }
     
+    /// 🔴 2026-05-20 — unified screenshot handler.
+    ///
+    /// Called from BOTH:
+    ///   • the chat surface's own `userDidTakeScreenshotNotification`
+    ///     listener (when no image viewer is up), and
+    ///   • `FullScreenImageViewer.onScreenshot` (which fires reliably
+    ///     for a Vault photo whose `.fullScreenCover` covers this
+    ///     chat — the chat's own listener can't be depended on there).
+    ///
+    /// Debounces + merges rapid screenshots over a 30s window, then
+    /// posts ONE system message both parties see. `isVaultPhoto`
+    /// selects Vault-specific wording so the sender knows their
+    /// Vault photo specifically was captured.
+    private func handleScreenshotDetected(isVaultPhoto: Bool) {
+        let now = Date()
+        if let last = lastScreenshotTime, now.timeIntervalSince(last) < 30 {
+            screenshotCount += 1
+        } else {
+            screenshotCount = 1
+            screenshotWindowHadVault = false
+        }
+        lastScreenshotTime = now
+        // Sticky for the whole merge window — if ANY screenshot in the
+        // burst was of a Vault photo, the merged message says so.
+        if isVaultPhoto { screenshotWindowHadVault = true }
+
+        screenshotDebounceTask?.cancel()
+        // Wait 2s before sending — allows merging rapid screenshots.
+        screenshotDebounceTask = Task {
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+
+            let count = screenshotCount
+            let wasVault = screenshotWindowHadVault
+            let username = AuthService.shared.currentUser?.displayName ?? "User"
+            let text: String
+            if wasVault {
+                text = count > 1
+                    ? "📸 \(username) took \(count) screenshots of a Vault photo"
+                    : "📸 \(username) took a screenshot of a Vault photo"
+            } else {
+                text = count > 1
+                    ? "\(count) screenshots taken"
+                    : "\(username) took a screenshot"
+            }
+
+            try? await messageStore.sendSystemMessage(text)
+            Haptics.light()
+
+            // 🔴 ROUND 70 — also notify the server's snap endpoint
+            // when a screenshot is captured of an ephemeralPhoto
+            // (Snap) message. Previously this notification only
+            // surfaced as an in-chat system message; the snap_messages
+            // server record was never marked as screenshot'd, so:
+            //   • the sender's "screenshot received" indicator never
+            //     lit on the sender's other devices,
+            //   • the server didn't invalidate the snap early, so
+            //     the underlying URL stayed live for its full 24h
+            //     window even after the recipient screen-grabbed it.
+            // Best-effort: collect the most recent ephemeralPhoto
+            // shown in this chat and POST to /api/snaps/{id}/screenshot.
+            // Failures are logged + ignored — the in-chat system
+            // message is still the primary user-facing signal.
+            if let recentSnapId = messageStore.messages
+                .filter({ $0.type == .ephemeralPhoto && !senderIsMe($0.senderId) })
+                .last?.serverId {
+                Task {
+                    do {
+                        let _: [String: String] = try await NetworkService.shared.post(
+                            path: "/api/snaps/\(recentSnapId)/screenshot",
+                            body: [String: String]()
+                        )
+                        #if DEBUG
+                        print("📸 [Snap] /screenshot notified for \(recentSnapId.prefix(8))")
+                        #endif
+                    } catch {
+                        #if DEBUG
+                        print("⚠️ [Snap] /screenshot POST failed: \(error.localizedDescription)")
+                        #endif
+                    }
+                }
+            }
+
+            // Reset the window.
+            screenshotCount = 0
+            screenshotWindowHadVault = false
+        }
+    }
+
     private func publishMessageToFeed(_ message: ChatMessage, visibility: String) async {
         let text = message.text ?? ""
         let clientPostId = UUID().uuidString
@@ -1594,7 +1768,20 @@ struct ChatView: View {
 
     // ✅ Chat Background (extends under safe areas - adaptive for light/dark)
     private var chatBackground: some View {
-        RavenChatWallpaper()
+        // (2026-05-15 — round 6) Honour the per-chat wallpaper
+        // selection from ChatDetailsView. When the user picks the
+        // default we fall back to the system Liquid Glass wallpaper
+        // so chats without a custom selection stay on-brand.
+        let wp = ChatChromePreferences.shared.wallpaper(roomId: conversation.roomId)
+        if let stops = wp.gradientStops, stops.count == 2,
+           let top = ChatBackgroundColor.fromHex(stops[0]),
+           let bottom = ChatBackgroundColor.fromHex(stops[1]) {
+            return AnyView(
+                LinearGradient(colors: [top, bottom], startPoint: .top, endPoint: .bottom)
+                    .ignoresSafeArea()
+            )
+        }
+        return AnyView(RavenChatWallpaper())
     }
     
     // MARK: - Message Request Receiver Controls
@@ -1672,13 +1859,190 @@ struct ChatView: View {
         }
     }
     
+    // MARK: - Row dispatch (round 26)
+
+    /// 🔴 ROUND 26 — single dispatch point for every chat-list row.
+    /// Returns `AnyView` so each branch's complex view tree is type-
+    /// erased at the boundary — the SwiftUI compiler doesn't have
+    /// to reconcile a 4-way `_ConditionalContent<...>` inside the
+    /// outer LazyVStack. ChatView's body was already at its type-
+    /// check budget; that's why all earlier inline / @ViewBuilder
+    /// attempts pushed it over.
+    private func chatRowContent(
+        message: ChatMessage,
+        isFromMe: Bool,
+        posIsFirst: Bool,
+        posIsLast: Bool,
+        topPad: CGFloat
+    ) -> AnyView {
+        // Album member rows render nothing — their tile lives
+        // inside the lead's AlbumBubbleView.
+        if albumSkipIds.contains(message.id) {
+            return AnyView(EmptyView())
+        }
+        // Album lead → Telegram-style grouped bubble.
+        if let siblings = albumGroups[message.id] {
+            return AnyView(
+                HStack(spacing: 0) {
+                    if isFromMe { Spacer(minLength: 40) }
+                    AlbumBubbleView(
+                        messages: siblings,
+                        isFromMe: isFromMe,
+                        onTapTile: { tapped in
+                            isInputFocused = false
+                            if let local = tapped.localPath,
+                               !local.isEmpty,
+                               FileManager.default.fileExists(atPath: local) {
+                                selectedImageURL = SelectedImageItem(url: URL(fileURLWithPath: local), messageId: tapped.id, fileName: tapped.fileName)
+                            } else if let remote = AppConfig.mediaURL(from: tapped.attachmentUrl) {
+                                selectedImageURL = SelectedImageItem(url: remote, messageId: tapped.id, fileName: tapped.fileName)
+                            }
+                        }
+                    )
+                    .padding(.horizontal, 8)
+                    .padding(.top, topPad)
+                    if !isFromMe { Spacer(minLength: 40) }
+                }
+                .transition(.asymmetric(
+                    insertion: .move(edge: isFromMe ? .trailing : .leading)
+                        .combined(with: .opacity)
+                        .combined(with: .scale(scale: 0.96, anchor: isFromMe ? .bottomTrailing : .bottomLeading)),
+                    removal: .opacity.combined(with: .scale(scale: 0.96))
+                ))
+            )
+        }
+        // System chip (small centered notification).
+        if message.type == .system {
+            return AnyView(
+                SystemEventChip(
+                    title: message.text ?? "Notification",
+                    timestamp: message.timestamp
+                )
+                .transition(.asymmetric(
+                    insertion: .move(edge: isFromMe ? .trailing : .leading)
+                        .combined(with: .opacity)
+                        .combined(with: .scale(scale: 0.96, anchor: isFromMe ? .bottomTrailing : .bottomLeading)),
+                    removal: .opacity.combined(with: .scale(scale: 0.96))
+                ))
+            )
+        }
+        // Standard message row (bubble + reactions + read receipts).
+        return AnyView(standardBubbleRow(
+            message: message,
+            isFromMe: isFromMe,
+            posIsFirst: posIsFirst,
+            posIsLast: posIsLast,
+            topPad: topPad
+        ))
+    }
+
+    /// 🔴 ROUND 26 — extracted standard-bubble row so
+    /// `chatRowContent` stays small. The body here mirrors the
+    /// inline ForEach block from before round 26 verbatim.
+    @ViewBuilder
+    private func standardBubbleRow(
+        message: ChatMessage,
+        isFromMe: Bool,
+        posIsFirst: Bool,
+        posIsLast: Bool,
+        topPad: CGFloat
+    ) -> some View {
+        VStack(spacing: 2) {
+            messageBubble(for: message, isFirstInBlock: posIsFirst, isLastInBlock: posIsLast)
+                .padding(.top, topPad)
+                .gesture(
+                    LongPressGesture(minimumDuration: 0.4, maximumDistance: 50)
+                        .onEnded { _ in
+                            guard message.type != .system else { return }
+                            let frame = bubbleFrames[message.id] ?? .zero
+                            guard frame.width > 0 else { return }
+                            let isMine = senderIsMe(message.senderId)
+                            Haptics.medium()
+                            bubbleActionContext = BubbleActionContext(
+                                message: message,
+                                isFromMe: isMine,
+                                bubbleFrame: frame
+                            )
+                        }
+                )
+                .background(
+                    pulseMessageId == message.id
+                        ? Color.accentColor.opacity(0.18)
+                        : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+                )
+                .animation(.easeInOut(duration: 0.6), value: pulseMessageId)
+                .scaleEffect(pulsingReactionMessageId == serverIdOrLocal(message) ? 1.04 : 1.0)
+                .shadow(
+                    color: Color.accentColor.opacity(
+                        pulsingReactionMessageId == serverIdOrLocal(message) ? 0.45 : 0
+                    ),
+                    radius: pulsingReactionMessageId == serverIdOrLocal(message) ? 16 : 0
+                )
+                .animation(.spring(response: 0.28, dampingFraction: 0.45), value: pulsingReactionMessageId)
+
+            let groups = reactionStore.grouped(
+                for: serverIdOrLocal(message),
+                currentUserId: AuthService.shared.currentUser?.id ?? ""
+            )
+            if !groups.isEmpty {
+                ReactionChipsRow(
+                    groups: groups,
+                    isFromMe: isFromMe,
+                    onTap: { emoji in
+                        Task {
+                            await reactionStore.toggle(
+                                messageId: serverIdOrLocal(message),
+                                emoji: emoji,
+                                currentUserId: AuthService.shared.currentUser?.id ?? ""
+                            )
+                        }
+                    },
+                    onLongPress: conversation.isGroup ? { group in
+                        reactionReactorsTarget = ReactionReactorsTarget(
+                            emoji: group.emoji,
+                            userIds: group.userIds
+                        )
+                    } : nil
+                )
+                .padding(.horizontal, 8)
+            }
+
+            if conversation.isGroup && isFromMe {
+                SeenByAvatarsView(
+                    seenBy: readReceiptStore.seenBy(for: message.id),
+                    isFromMe: isFromMe,
+                    onTap: {
+                        isInputFocused = false
+                        selectedSeenBy = readReceiptStore.seenBy(for: message.id)
+                    }
+                )
+            }
+        }
+        .id(message.id)
+        .transition(.asymmetric(
+            insertion: .move(edge: isFromMe ? .trailing : .leading)
+                .combined(with: .opacity)
+                .combined(with: .scale(scale: 0.96, anchor: isFromMe ? .bottomTrailing : .bottomLeading)),
+            removal: .opacity.combined(with: .scale(scale: 0.96))
+        ))
+    }
+
     // Single-expression body, so the @ViewBuilder annotation buys nothing
     // and Swift warns about the explicit `return` disabling it.
     private func messageBubble(for message: ChatMessage, isFirstInBlock: Bool = true, isLastInBlock: Bool = true) -> some View {
         let isFromMe = senderIsMe(message.senderId)
-        let avatarUrl: String? = conversation.isGroup
-            ? groupMembers.first(where: { $0.userId == message.senderId })?.avatarUrl
+        // 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — resolve sender
+        // avatar + display name from groupMembers in one pass so the
+        // bubble can fall back to the member's username when the
+        // message's senderName was lost on the wire (offline-create,
+        // strict-strip, etc.). User reported: "esm afrad zaher
+        // nemishe faghat neveshte mishe (user)".
+        let memberRecord = conversation.isGroup
+            ? groupMembers.first(where: { $0.userId == message.senderId })
             : nil
+        let avatarUrl: String? = memberRecord?.avatarUrl
+        let senderFallback: String? = memberRecord?.username
 
         return MessageBubbleView(
             message: message,
@@ -1692,11 +2056,18 @@ struct ChatView: View {
             },
             onImageTap: { url in
                 isInputFocused = false // ⚡️ Dismiss keyboard before image viewer
-                selectedImageURL = url
+                selectedImageURL = SelectedImageItem(url: url, messageId: message.id, fileName: message.fileName)
             },
             onFileTap: { url, name in
                 isInputFocused = false // ⚡️ Dismiss keyboard before file preview
-                selectedDocument = DocumentPreviewItem(url: url, fileName: name)
+                // Round 32 — vault AAD bound to `message.id`; closing
+                // over the captured `message` lets the viewer rebuild
+                // the AAD on decrypt.
+                selectedDocument = DocumentPreviewItem(url: url, fileName: name, messageId: message.id)
+            },
+            onVideoTap: { url, name in
+                isInputFocused = false
+                selectedChatVideo = ChatVideoPreviewItem(url: url, fileName: name ?? "Video", messageId: message.id)
             },
             onLinkTap: { url in
                 isInputFocused = false // ⚡️ Dismiss keyboard before link
@@ -1814,6 +2185,7 @@ struct ChatView: View {
             isFirstInBlock: isFirstInBlock,
             isLastInBlock: isLastInBlock,
             senderAvatarUrl: avatarUrl,
+            senderDisplayNameFallback: senderFallback,
             avatarNamespace: avatarNamespace,
             isSelectionMode: isSelectionMode,
             isSelected: selectedMessageIds.contains(message.id),
@@ -1821,8 +2193,48 @@ struct ChatView: View {
         )
     }
     
+    // MARK: - Album Grouping Precompute (round 26)
+
+    /// 🔴 ROUND 26 — Telegram-style media albums.
+    /// Walk the message list and group consecutive items by
+    /// `albumGroupKey`. Returns:
+    ///   • `groups[leadId]` — ordered list of siblings for each
+    ///     unique album key. Keyed on the LEAD message's id (the
+    ///     smallest `albumIndex` seen for that key).
+    ///   • `skipIds` — every NON-lead sibling so the chat-list
+    ///     ForEach can short-circuit them (their tiles render
+    ///     inside the lead's AlbumBubbleView).
+    /// 1-item groups don't count as albums — they're plain media.
+    /// O(N) over the visible window.
+    ///
+    /// `static` + simple return tuple keeps the SwiftUI type-
+    /// checker happy when ChatView's body reads `albumGroups` /
+    /// `albumSkipIds` inside the ForEach.
+    static func precomputeAlbumGroups(messages: [ChatMessage]) -> (groups: [String: [ChatMessage]], skipIds: Set<String>) {
+        var byKey: [String: [ChatMessage]] = [:]
+        for msg in messages {
+            guard let key = msg.albumGroupKey else { continue }
+            byKey[key, default: []].append(msg)
+        }
+        var groups: [String: [ChatMessage]] = [:]
+        var skipIds: Set<String> = []
+        for (_, siblings) in byKey {
+            guard siblings.count >= 2 else { continue }
+            let sorted = siblings.sorted { a, b in
+                let ai = a.albumIndex ?? Int.max
+                let bi = b.albumIndex ?? Int.max
+                if ai != bi { return ai < bi }
+                return a.timestamp < b.timestamp
+            }
+            guard let lead = sorted.first else { continue }
+            groups[lead.id] = sorted
+            for s in sorted.dropFirst() { skipIds.insert(s.id) }
+        }
+        return (groups, skipIds)
+    }
+
     // MARK: - Block Position Helper
-    
+
     /// Determines if a message is first/last in a "sender block" (same sender, ≤2min gap, no system msgs)
     /// Pre-compute block positions for ALL messages in one O(N) pass.
     /// Returns a dictionary keyed by message.id → (isFirst, isLast).
@@ -1918,7 +2330,10 @@ struct ChatView: View {
                 },
                 onShowInfo: { selectedMessageForInfo = message },
                 onCopy: (message.text?.isEmpty == false) ? {
-                    UIPasteboard.general.string = message.text
+                    // Round 14 — S9: copy chat content with .localOnly +
+                    // 60 s expiry so Handoff and pasteboard pollers can't
+                    // siphon the message body.
+                    SecurePasteboard.copy(message.text ?? "")
                     Haptics.success()
                 } : nil,
                 onEdit: (isFromMe && message.type == .text) ? {
@@ -1940,7 +2355,18 @@ struct ChatView: View {
                     let peerId = message.senderId
                     PendingReplyStore.shared.setPending(forPeerId: peerId, message: message)
                     DeepLinkRouter.shared.route(to: .newChat(userId: peerId))
-                } : nil
+                } : nil,
+                // 🔴 ROUND 69 — vault attachments and any message the
+                // server marked unforwardable hide the Forward row.
+                // Vault detection mirrors MessageStore.generateReplyPreview
+                // and MessageService.forwardMessage.
+                isForwardAllowed: {
+                    let isVaultAttachment =
+                        message.attachmentUrl?.lowercased().hasSuffix(".vlt") == true ||
+                        message.attachmentUrl?.lowercased().contains(".vlt?") == true ||
+                        message.allowForward == false
+                    return !isVaultAttachment
+                }()
             ),
             activeReactionEmojis: active,
             isPinned: isPinned,
@@ -2193,11 +2619,33 @@ struct ChatView: View {
                     .filter { !senderIsMe($0.senderId) && $0.status != .read && $0.type != .ephemeralPhoto }
                     .map { $0.id }
             }
-            
+
             await messageStore.markAllAsRead()
-            
+
             if conversation.isGroup && !unseenByMe.isEmpty {
                 await ReadReceiptService.shared.sendSeenBatch(messageIds: unseenByMe, chatId: conversation.roomId)
+            }
+
+            // 🔴 Bug fix (2026-05-16): also clear any pending
+            // notifications for THIS room on the server — opening
+            // the chat IS the user "seeing" the underlying
+            // notifications, so the activity bell's badge should
+            // drop accordingly. Without this, the bell badge stayed
+            // pinned at the same number forever ("All [50]" never
+            // decreased even after every chat had been read).
+            //
+            // Endpoint: `POST /api/notifications/read-by-room/{room_id}`
+            // matches on `Notification.data.room_id` server-side
+            // (see notifications.py). Fire-and-forget — failures
+            // are non-fatal because the notification list does
+            // a fresh fetch on next bell-open anyway.
+            Task.detached {
+                struct EmptyBody: Encodable {}
+                struct EmptyResp: Decodable {}
+                _ = try? await NetworkService.shared.post(
+                    path: "/api/notifications/read-by-room/\(conversation.roomId)",
+                    body: EmptyBody()
+                ) as EmptyResp
             }
         }
     }
@@ -2368,17 +2816,50 @@ struct ChatView: View {
         }
     }
     
+    /// 🔴 ROUND 26 — Telegram-style grouped media album send.
+    /// Lifted out of the LiquidGlassAttachmentSheet's `onSendAlbum:`
+    /// closure so the parent ChatView init expression stays simple
+    /// (the closure inlined there pushed SwiftUI's type checker past
+    /// its budget for the entire view).
+    private func sendAlbumFromPicker(_ items: [AlbumPickerItem]) {
+        // Capture conversation context so the Task closure doesn't
+        // re-touch the view's main-actor state.
+        let roomId = conversation.roomId
+        let recipientId = conversation.peer.userId
+        let isGroup = conversation.isGroup
+        Task {
+            await AttachmentService.shared.sendAlbum(
+                items: items,
+                roomId: roomId,
+                recipientId: recipientId,
+                isGroup: isGroup,
+                replyTo: nil
+            )
+        }
+    }
+
     private func sendImage(_ image: UIImage) {
         let reply = replyingTo
         replyingTo = nil
-        
+        // Snapshot vault flag, then reset it so the next send goes
+        // back to the standard path unless the user re-enables it.
+        // (2026-05-15 — round 6) The "Always send as Vault" per-room
+        // toggle in ChatDetailsView ALSO forces vault on, regardless
+        // of the per-send pill state — without this wiring the
+        // toggle was decorative. Honour either source so the user
+        // can set vault as the default for sensitive contacts and
+        // forget about the pill.
+        let vault = vaultModeForNextSend
+            || ChatChromePreferences.shared.alwaysVault(roomId: conversation.roomId)
+        vaultModeForNextSend = false
+
         // ✅ Bug 4 fix: Await the detached task so loadFromDB runs AFTER the image
         // is compressed and inserted into the DB (not after an arbitrary 100ms guess)
         Task {
             let roomId = conversation.roomId
             let recipientId = conversation.peer.userId
             let isGroup = conversation.isGroup
-            
+
             do {
                 try await Task.detached(priority: .userInitiated) {
                     try await AttachmentService.shared.sendImage(
@@ -2386,7 +2867,8 @@ struct ChatView: View {
                         roomId: roomId,
                         recipientId: recipientId,
                         isGroup: isGroup,
-                        replyTo: reply
+                        replyTo: reply,
+                        vault: vault
                     )
                 }.value
             } catch let error as PremiumLimitError {
@@ -2421,12 +2903,21 @@ struct ChatView: View {
     private func sendVoice(_ url: URL, duration: Int) {
         let reply = replyingTo
         replyingTo = nil
-        
+        // 🔴 hacker-audit 2026-05-20 — voice was the one attachment
+        // type that ignored Vault entirely: with the per-send pill OR
+        // the per-room "Always send as Vault" toggle ON, the .m4a
+        // still uploaded as PLAINTEXT to /api/uploads/voice — a third
+        // party (server, anyone with the URL) could play it. Snapshot
+        // the vault flag exactly as sendImage / sendFile do.
+        let vault = vaultModeForNextSend
+            || ChatChromePreferences.shared.alwaysVault(roomId: conversation.roomId)
+        vaultModeForNextSend = false
+
         Task {
             let roomId = conversation.roomId
             let recipientId = conversation.peer.userId
             let isGroup = conversation.isGroup
-            
+
             do {
                 try await AttachmentService.shared.sendVoice(
                     audioURL: url,
@@ -2434,7 +2925,8 @@ struct ChatView: View {
                     roomId: roomId,
                     recipientId: recipientId,
                     isGroup: isGroup,
-                    replyTo: reply
+                    replyTo: reply,
+                    vault: vault
                 )
             } catch let error as PremiumLimitError {
                 // FIXED: MainActor.run to update UI on Main Thread
@@ -2468,11 +2960,27 @@ struct ChatView: View {
     // Voice recording is now handled by the shared VoiceRecordingBar component.
     // The bar manages its own recording state, gestures, preview, and cleanup.
     // It calls sendVoice(url, duration:) when the user swipes to send or taps send in preview.
-    
+
+    /// Round 18 (d): cheap extension-based heuristic for video file
+    /// URLs. Used to gate the preview-before-send sheet — only
+    /// videos go through the AVPlayer preview; other file types
+    /// already have their own preview surface in the chat bubble.
+    fileprivate static func isVideoFileURL(_ url: URL) -> Bool {
+        let ext = url.pathExtension.lowercased()
+        return ["mp4", "mov", "m4v", "qt", "avi", "mkv", "webm"].contains(ext)
+    }
+
     private func sendFile(_ url: URL) {
         let reply = replyingTo
         replyingTo = nil
-        
+        // Round 32 — same vault-snapshot pattern as `sendImage`.
+        // Without this the Vault toggle was decorative for files:
+        // the user could turn it ON for a PDF/document/video and
+        // the bytes would still ship to the server as PLAINTEXT.
+        let vault = vaultModeForNextSend
+            || ChatChromePreferences.shared.alwaysVault(roomId: conversation.roomId)
+        vaultModeForNextSend = false
+
         Task {
             do {
                 try await AttachmentService.shared.sendFile(
@@ -2480,7 +2988,8 @@ struct ChatView: View {
                     roomId: conversation.roomId,
                     recipientId: conversation.peer.userId,
                     isGroup: conversation.isGroup,
-                    replyTo: reply
+                    replyTo: reply,
+                    vault: vault
                 )
             } catch let error as PremiumLimitError {
                 await MainActor.run {
@@ -2573,6 +3082,21 @@ struct ChatView: View {
     
 }
 
+// (2026-05-15 — round 6) Tiny hex→Color helper used by ChatView's
+// wallpaper picker. Lives here so the existing `Color(hex:)`
+// throwing init elsewhere isn't disturbed.
+fileprivate enum ChatBackgroundColor {
+    static func fromHex(_ hex: String) -> Color? {
+        var s = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+        if s.hasPrefix("#") { s.removeFirst() }
+        guard s.count == 6, let v = UInt32(s, radix: 16) else { return nil }
+        let r = Double((v >> 16) & 0xFF) / 255.0
+        let g = Double((v >> 8) & 0xFF) / 255.0
+        let b = Double(v & 0xFF) / 255.0
+        return Color(.sRGB, red: r, green: g, blue: b, opacity: 1.0)
+    }
+}
+
 // MARK: - Message Bubble View
 struct MessageBubbleView: View {
     let message: ChatMessage
@@ -2582,6 +3106,11 @@ struct MessageBubbleView: View {
     var onForward: (() -> Void)? = nil
     var onImageTap: ((URL) -> Void)? = nil
     var onFileTap: ((URL, String?) -> Void)? = nil
+    /// 🔴 (2026-05-15 — round 3): videos no longer share `onFileTap`'s
+    /// QuickLook viewer — they get the post-feed-style fullscreen
+    /// player. Hand the resolved URL + display name back so ChatView
+    /// can drive its own `selectedChatVideo` sheet.
+    var onVideoTap: ((URL, String?) -> Void)? = nil
     var onLinkTap: ((URL) -> Void)? = nil
     var onLocationTap: ((LocationPayload) -> Void)? = nil // Expand map
     var onDelete: (() -> Void)? = nil  // Delete message
@@ -2606,6 +3135,16 @@ struct MessageBubbleView: View {
     var isFirstInBlock: Bool = true      // First message from this sender in block
     var isLastInBlock: Bool = true       // Last message from this sender in block
     var senderAvatarUrl: String? = nil   // Avatar URL for group sender
+    // 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — resolved sender
+    // username for group rendering. Pre-fix the bubble fell back to
+    // the literal "User" string when `message.senderName` was empty
+    // (offline-created group with synthesized member entries had
+    // username="" until the next /api/groups/{id} refetch landed).
+    // The user reported: "esm afrad zaher nemishe faghat neveshte
+    // mishe (user)". Now ChatView looks up the senderId in
+    // `groupMembers` and passes the resolved username here as a
+    // last-resort fallback BEFORE the "User" string.
+    var senderDisplayNameFallback: String? = nil
     var avatarNamespace: Namespace.ID? = nil  // For spring animation between blocks
     
     // Selection mode
@@ -2666,7 +3205,23 @@ struct MessageBubbleView: View {
             VStack(alignment: isFromMe ? .trailing : .leading, spacing: 4) {
                 // Group sender name (only first message in block, others only)
                 if isGroupChat && !isChannel && !isFromMe && isFirstInBlock {
-                    Text(message.senderName.isEmpty ? "User" : message.senderName)
+                    // 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — three-
+                    // step fallback for the group sender label:
+                    //   1. message.senderName (carried on the wire when
+                    //      the sender's client populated it)
+                    //   2. senderDisplayNameFallback (resolved by
+                    //      ChatView from groupMembers via senderId —
+                    //      catches the offline-create case where the
+                    //      synthesized member entry was empty)
+                    //   3. "User" string as the absolute last resort
+                    //      (still better than blank).
+                    let resolvedName: String = {
+                        if !message.senderName.isEmpty { return message.senderName }
+                        if let fallback = senderDisplayNameFallback,
+                           !fallback.isEmpty { return fallback }
+                        return "User"
+                    }()
+                    Text(resolvedName)
                         .font(.system(size: 13, weight: .bold))
                         .foregroundStyle(senderNameColor)
                         .padding(.leading, 4)
@@ -2722,7 +3277,7 @@ struct MessageBubbleView: View {
                             Text(message.timestamp, style: .time)
                                 .font(.caption2)
                                 .foregroundStyle(timestampColor)
-                            
+
                             // Status (only for my messages)
                             if isFromMe {
                                 HStack(spacing: 2) {
@@ -2730,12 +3285,22 @@ struct MessageBubbleView: View {
                                     Circle()
                                         .fill(deliveryColor)
                                         .frame(width: 4, height: 4)
-                                    
+
                                     statusIcon
                                 }
                                 .font(.caption2)
                             }
-                            
+
+                            // 2026-05-16 — round 12: per-message
+                            // encryption verdict. Renders nothing on
+                            // the happy path (sealed); only surfaces
+                            // when the body went over the wire as
+                            // RVNP1 plaintext or failed to decrypt.
+                            // Sits in the same metadata column as the
+                            // delivery checkmarks so it reads as part
+                            // of the message's status.
+                            MessageEncryptionBadge(messageId: message.id)
+
                             // ✅ Smart Expiry icon (glass style)
                             if let mode = message.expiryMode, mode != .none {
                                 Image(systemName: mode.icon)
@@ -2854,7 +3419,145 @@ struct MessageBubbleView: View {
             VStack(alignment: isFromMe ? .trailing : .leading, spacing: 6) {
                 // Message text - with mention highlighting
                 mentionHighlightedText
-                
+
+                // 🔴 ROUND 26 (2026-05-17) — tap-to-reset on decrypt-fail
+                //   placeholder. When Noise sessions diverge between
+                //   peers (one side evicted, the other still cached)
+                //   automatic recovery (BLEMeshEngine.triggerRehandshake)
+                //   relies on BLE round-trip with both sides running
+                //   the latest build. If that doesn't work, the user
+                //   needs a manual way to force a fresh handshake.
+                //
+                //   This tap-action appears ONLY when the bubble shows
+                //   the placeholder text. On tap, we evict the local
+                //   Noise session for the sender AND broadcast an
+                //   explicit handshake1 frame. After 1 round-trip
+                //   both sides have a fresh shared session and
+                //   subsequent messages decrypt.
+                if !isFromMe, (message.text ?? "").hasPrefix("🔒 [Encrypted") {
+                    Button {
+                        Task {
+                            let senderUserId = message.senderId
+                            // 🟥 ROUND 29 (2026-05-17) — NUCLEAR reset.
+                            //
+                            // Even my Round 28 PeerKeyDirectory reset
+                            // wasn't enough.  The actual encryption
+                            // SEND-side gets the peer's agreement key
+                            // from FriendDeviceRepository (the trusted
+                            // pairing DB), NOT from PeerKeyDirectory.
+                            // FriendDeviceRepository is pinned at QR-
+                            // pairing time and is never auto-refreshed.
+                            // If the peer reinstalls, FDR still has the
+                            // OLD pubkey forever → outbound seal keeps
+                            // encrypting with stale session keys →
+                            // other side can't decrypt → placeholder
+                            // loop survives Round 28's PKD reset.
+                            //
+                            // Round 29 wipes FDR too AND re-upserts a
+                            // fresh trusted FriendDevice record built
+                            // from the freshly-fetched server bundle.
+                            // After this, the next outbound seal
+                            // resolves to the peer's CURRENT keys.
+                            //
+                            // Full pipeline:
+                            //   1. Walk FDR.getTrustedDevices(peer);
+                            //      for each, derive peerPID from
+                            //      agreementPublicKey and evict the
+                            //      lingering NoiseSessionStore entry,
+                            //      then deleteDevice(fingerprint) to
+                            //      drop the stale FDR record.
+                            //   2. PKD.clearAgreementKey — wipes both
+                            //      the cached X25519 + Ed25519 pin so
+                            //      a legit rotation from the server
+                            //      can land.
+                            //   3. PKD.ensureAgreementKey — fresh
+                            //      server fetch.  Now both PKD.agg
+                            //      and PKD.identity hold CURRENT
+                            //      keys.
+                            //   4. Upsert a brand-new trusted
+                            //      FriendDevice with the fresh keys.
+                            //      Fingerprint mirrors the existing
+                            //      computation (base64(publicKey)
+                            //      prefix 16) so subsequent verify
+                            //      paths recognize it.
+                            //   5. Evict NoiseSessionStore for the
+                            //      NEW peerPID too (in case a half-
+                            //      built session from a prior recovery
+                            //      attempt is sitting there).
+                            //   6. triggerRehandshake against the
+                            //      fresh peerPID → M1 with our
+                            //      current static key → 1-RTT later
+                            //      both sides have matching keys.
+                            //
+                            // NOTE: the OTHER side also has the same
+                            // staleness on THEIR FDR.  The user MUST
+                            // tap this button on BOTH devices, then
+                            // send a new message.  No way around it
+                            // without bypassing the trust model.
+
+                            // Step 1: clean out old FDR trusted devices + their sessions.
+                            let oldDevices = await FriendDeviceRepository.shared.getTrustedDevices(forUser: senderUserId)
+                            for old in oldDevices {
+                                if let aggKey = old.agreementPublicKey {
+                                    let oldPeerPID = Data(SHA256.hash(data: aggKey).prefix(16))
+                                    await MainActor.run {
+                                        NoiseSessionStore.shared.evict(peerID: oldPeerPID)
+                                    }
+                                }
+                                try? await FriendDeviceRepository.shared.deleteDevice(old.fingerprint)
+                            }
+
+                            // Step 2: blow away the TOFU pin + neg cache.
+                            await PeerKeyDirectory.shared.clearAgreementKey(for: senderUserId)
+
+                            // Step 3: fresh fetch from server.
+                            let freshAgg = await PeerKeyDirectory.shared.ensureAgreementKey(for: senderUserId)
+                            let freshIdentity = await PeerKeyDirectory.shared.identityKey(for: senderUserId)
+
+                            // Step 4: re-upsert a trusted record from fresh keys.
+                            if let agg = freshAgg, let identity = freshIdentity {
+                                let fp = String(identity.base64EncodedString().prefix(16))
+                                let newDevice = FriendDevice(
+                                    friendUserId: senderUserId,
+                                    fingerprint: fp,
+                                    publicKey: identity,
+                                    agreementPublicKey: agg,
+                                    trustState: .trusted,
+                                    verifiedAt: Date(),
+                                    addedAt: Date(),
+                                    deviceName: "reset-\(Int(Date().timeIntervalSince1970))"
+                                )
+                                try? await FriendDeviceRepository.shared.upsert(newDevice)
+                            }
+
+                            // Step 5: evict NEW peerPID too.
+                            if let agg = freshAgg {
+                                let newPeerPID = Data(SHA256.hash(data: agg).prefix(16))
+                                await MainActor.run {
+                                    NoiseSessionStore.shared.evict(peerID: newPeerPID)
+                                }
+                            }
+
+                            // Step 6: handshake with fresh peerPID.
+                            await BLEMeshEngine.shared.triggerRehandshake(withSenderUserId: senderUserId)
+                            await MainActor.run { Haptics.success() }
+                            #if DEBUG
+                            print("🔄💣 [ResetEncryption-NUCLEAR] \(senderUserId.prefix(8)) — wiped \(oldDevices.count) FDR rows + PKD pin, fresh fetch \(freshAgg == nil ? "FAILED" : "OK"), rehandshake fired.")
+                            #endif
+                        }
+                    } label: {
+                        Label("Tap to reset encryption", systemImage: "arrow.triangle.2.circlepath.circle")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.blue)
+                            .padding(.vertical, 3)
+                            .padding(.horizontal, 8)
+                            .background(
+                                Capsule().fill(Color.blue.opacity(0.12))
+                            )
+                    }
+                    .buttonStyle(.plain)
+                }
+
                 // Link preview if URL detected (only if text is readable)
                 if !displayableText.starts(with: "[") && displayableText.count > 0,
                    let url = message.text?.firstURL {
@@ -2868,6 +3571,16 @@ struct MessageBubbleView: View {
             ImageMessageView(message: message, onTap: onImageTap)
             
         case .voice:
+            // 🔴 ROUND 70 — vault voice gets the secure-canvas
+            // wrapper too. Screen recording / AirPlay was capturing
+            // the playback UI (waveform, sender name, timestamp)
+            // even though the audio bytes themselves are vault-
+            // encrypted on disk and only briefly decrypted into a
+            // tmp file for AVPlayer.
+            let isVaultVoice: Bool = {
+                let lower = message.attachmentUrl?.lowercased() ?? ""
+                return lower.hasSuffix(".vlt") || lower.contains(".vlt?") || message.allowForward == false
+            }()
             VStack(alignment: isFromMe ? .trailing : .leading, spacing: 6) {
                 VoiceMessageView(
                     message: message,
@@ -2875,7 +3588,8 @@ struct MessageBubbleView: View {
                     deliveryAuthority: message.deliveryAuthority,
                     statusIcon: isFromMe ? statusIcon : nil
                 )
-                
+                .vaultScreenshotProtected(isVaultVoice)
+
                 // Transcription chip — glass style below capsule
                 if let serverId = message.serverId ?? (message.id.count > 8 ? message.id : nil) {
                     TranscriptPill(
@@ -2886,11 +3600,22 @@ struct MessageBubbleView: View {
             }
             
         case .file:
-            FileMessageView(message: message, isFromMe: isFromMe, onFileTap: onFileTap)
-            
+            // Legacy video bubbles sit in the DB as `type=.file` with
+            // a video MIME / `.mp4` filename. Sniff and route through
+            // VideoMessageView so they get the same play tile + fast
+            // fullscreen player as native `.video` rows.
+            if MessageVideoHeuristic.isVideo(message) {
+                VideoMessageView(message: message, isFromMe: isFromMe, onTap: { url in
+                    onVideoTap?(url, message.fileName ?? "Video")
+                })
+            } else {
+                FileMessageView(message: message, isFromMe: isFromMe, onFileTap: onFileTap)
+            }
+
         case .video, .videoNote, .ephemeralPhoto:
-            // These features have been removed — hide old messages
-            EmptyView()
+            VideoMessageView(message: message, isFromMe: isFromMe, onTap: { url in
+                onVideoTap?(url, message.fileName ?? "Video")
+            })
             
         case .location:
             LocationMessageView(message: message, isFromMe: isFromMe, onTap: onLocationTap)
@@ -2925,8 +3650,30 @@ struct MessageBubbleView: View {
     /// Whether this message is a media type that renders its own glass card (no outer bubble)
     private var isMediaType: Bool {
         message.type == .voice || message.type == .video || message.type == .videoNote || message.type == .ephemeralPhoto || message.type == .postShare || message.type == .contactCard
+            // (2026-05-15 — round 4): file-typed messages that the
+            // chat surface upgrades to a rich preview (video bubble
+            // with play tile, PDF bubble with first-page thumbnail)
+            // also need the wrapper bubble removed — otherwise the
+            // outer blue/gray fill draws a giant capsule around what
+            // is already its own self-contained card.
+            || isFileWithRichPreview
     }
-    
+
+    /// True for `.file` messages that `FileMessageView` upgrades to a
+    /// rich preview (video play tile, PDF page-1 card). These render
+    /// their own card chrome and don't want the outer message-bubble
+    /// fill underneath.
+    private var isFileWithRichPreview: Bool {
+        guard message.type == .file else { return false }
+        if MessageVideoHeuristic.isVideo(message) { return true }
+        // PDF heuristic mirrors `FileMessageView.isPDF` so the two
+        // stay in sync.
+        if message.mimeType?.lowercased() == "application/pdf" { return true }
+        if message.fileName?.lowercased().hasSuffix(".pdf") == true { return true }
+        if let url = message.attachmentUrl?.lowercased(), url.contains(".pdf") { return true }
+        return false
+    }
+
     var bubbleBackground: some ShapeStyle {
         // Media & image & location messages get clear background (styled separately)
         if message.type == .image || message.type == .location || message.type == .ephemeralPhoto || isMediaType {
@@ -3016,11 +3763,24 @@ struct MessageBubbleView: View {
     }
     
     private var senderInitialsCircle: some View {
-        Circle()
+        // 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — same three-
+        // step fallback the bubble's name label uses, so the
+        // initial circle shows the right letter (not "?") when
+        // senderName is empty.
+        let resolvedInitial: String = {
+            if !message.senderName.isEmpty {
+                return String(message.senderName.prefix(1)).uppercased()
+            }
+            if let fallback = senderDisplayNameFallback, !fallback.isEmpty {
+                return String(fallback.prefix(1)).uppercased()
+            }
+            return "?"
+        }()
+        return Circle()
             .fill(senderNameColor.opacity(0.2))
             .frame(width: 28, height: 28)
             .overlay {
-                Text(String(message.senderName.prefix(1)).uppercased())
+                Text(resolvedInitial)
                     .font(.system(size: 13, weight: .bold))
                     .foregroundColor(senderNameColor)
             }
@@ -3249,16 +4009,12 @@ struct ReplyBubbleView: View {
         let text = preview.trimmingCharacters(in: .whitespacesAndNewlines)
         
         // DEBUG: Log what we receive
-        #if DEBUG
-        print("🔍 [REPLY_BUBBLE] Received preview: '\(text.prefix(40))...' (len=\(text.count), type=\(type.rawValue))")
-        #endif
-        
+        logger.debug("REPLY_BUBBLE preview len=\(text.count, privacy: .public) type=\(type.rawValue, privacy: .public) text=\(text, privacy: .private)")
+
         // Defense-in-Depth: Filter encrypted content even if upstream missed it
         if text.hasPrefix("gAAAA") || text.hasPrefix("eyJ") {
             let fallback = typeFallback
-            #if DEBUG
-            print("🔍 [REPLY_BUBBLE] ⚠️ ENCRYPTED DETECTED! Using fallback: \(fallback)")
-            #endif
+            logger.debug("REPLY_BUBBLE ENCRYPTED DETECTED, using fallback: \(fallback, privacy: .public)")
             return fallback
         }
         
@@ -3512,6 +4268,16 @@ struct ChatInputBar: View {
 
     var scheduledAt: Date? = nil
     var onCancelSchedule: (() -> Void)? = nil
+
+    /// (2026-05-15 — round 4) When true, the next attachment will be
+    /// vault-encrypted (`VaultFileCrypto`). The bar surfaces a small
+    /// lock badge over the `+` button so the user can see the
+    /// indicator without having to re-open the attachment sheet —
+    /// addresses "where do I find the secure option" feedback.
+    var vaultMode: Bool = false
+    /// Tap handler that lets the user toggle vault mode without
+    /// opening the attachment sheet first. Hidden when nil.
+    var onToggleVault: (() -> Void)? = nil
     
 
     
@@ -3550,6 +4316,34 @@ struct ChatInputBar: View {
                 .buttonStyle(.plain)
                 .background(.ultraThinMaterial, in: Circle())
                 .overlay(Circle().stroke(Color.primary.opacity(0.10), lineWidth: 0.8))
+                // (2026-05-15 — round 4) Vault badge + long-press
+                // toggle. Shows a small accent lock circle in the
+                // top-right of the + button when the next send is
+                // vaulted. Long-press the + button to flip vault
+                // mode without opening the attachment sheet first.
+                .overlay(alignment: .topTrailing) {
+                    if vaultMode {
+                        ZStack {
+                            Circle()
+                                .fill(Color.accentColor)
+                                .frame(width: 16, height: 16)
+                            Image(systemName: "lock.fill")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(.white)
+                        }
+                        .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 1.5))
+                        .offset(x: 4, y: -4)
+                        .accessibilityLabel("Vault mode on for next attachment")
+                    }
+                }
+                .simultaneousGesture(
+                    LongPressGesture(minimumDuration: 0.4)
+                        .onEnded { _ in
+                            guard let onToggleVault else { return }
+                            Haptics.selection()
+                            onToggleVault()
+                        }
+                )
                 
                 // CENTER: Glass TextField Capsule
                 HStack(spacing: 8) {
@@ -3773,6 +4567,15 @@ struct ImageMessageView: View {
                                     RoundedRectangle(cornerRadius: 22, style: .continuous)
                                         .stroke(Color.primary.opacity(0.15), lineWidth: 1)
                                 )
+                                // 🔴 ROUND 20 — Bug C fix. Image bubbles
+                                // used to show only an indeterminate
+                                // SwiftUI spinner — the user reported
+                                // "on load o ta 100 ke bayad biyad nist"
+                                // (no 0..100 progress indicator). Overlay
+                                // a ring + percentage label while the
+                                // upload is in flight, same shape as the
+                                // video bubble's ring at line ~4302.
+                                .overlay(uploadProgressOverlay)
                         } placeholder: {
                             placeholderView(icon: "photo", showProgress: message.syncState == .uploading)
                         }
@@ -3805,19 +4608,97 @@ struct ImageMessageView: View {
                 if FileManager.default.fileExists(atPath: currentLocalURL.path) {
                     return currentLocalURL
                 }
+                // Some older bubbles persisted the literal absolute
+                // path; honour that too when the rebased path is gone.
+                if FileManager.default.fileExists(atPath: localPath) {
+                    return URL(fileURLWithPath: localPath)
+                }
             }
-            // Fallback: remote server
-            return AppConfig.mediaURL(from: message.attachmentUrl)
+            // Remote server URL
+            if let remote = AppConfig.mediaURL(from: message.attachmentUrl) {
+                return remote
+            }
+            // 🔴 Bug fix (2026-05-15): some incoming image messages
+            // route the URL through the text field instead of
+            // `attachmentUrl` (mesh-bridged sends + legacy server
+            // payloads). Try the text as a last resort so the bubble
+            // still renders instead of showing a gray placeholder.
+            if let body = message.text,
+               let detected = body.firstURL,
+               let scheme = detected.scheme?.lowercased(),
+               scheme == "http" || scheme == "https" {
+                return detected
+            }
+            return nil
         }.value
     }
     
+    /// Round 20 — Bug C. Ring + percentage overlay shown while the
+    /// image bubble is in `.uploading`. Sits on top of the resolved
+    /// image so the user sees "37% / black ring" over the actual
+    /// photo thumbnail as bytes ship. Hides itself the moment the
+    /// upload state flips off `.uploading`.
+    @ViewBuilder
+    private var uploadProgressOverlay: some View {
+        if message.syncState == .uploading,
+           let progress = message.uploadProgress,
+           progress < 1.0 {
+            ZStack {
+                // Scrim so the ring is legible on bright photos.
+                Color.black.opacity(0.35)
+                    .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                VStack(spacing: 8) {
+                    ZStack {
+                        Circle()
+                            .stroke(Color.white.opacity(0.25), lineWidth: 4)
+                            .frame(width: 54, height: 54)
+                        Circle()
+                            .trim(from: 0, to: CGFloat(max(0.02, progress)))
+                            .stroke(Color.white, style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                            .rotationEffect(.degrees(-90))
+                            .frame(width: 54, height: 54)
+                            .animation(.easeOut(duration: 0.2), value: progress)
+                    }
+                    Text("\(Int((progress * 100).rounded()))%")
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white)
+                        .monospacedDigit()
+                }
+            }
+            .transition(.opacity)
+        }
+    }
+
     @ViewBuilder
     private func placeholderView(icon: String, showProgress: Bool = false) -> some View {
         RoundedRectangle(cornerRadius: 22, style: .continuous)
             .fill(Color(.systemGray5))
             .frame(width: 200, height: 200)
             .overlay {
-                if showProgress {
+                if showProgress, let progress = message.uploadProgress, progress < 1.0 {
+                    // Round 20 — Bug C. Same ring + % shown on the
+                    // resolved-image overlay, but on the placeholder
+                    // path (used while the local thumbnail is still
+                    // being written to disk or before the remote
+                    // download starts).
+                    VStack(spacing: 6) {
+                        ZStack {
+                            Circle()
+                                .stroke(Color.secondary.opacity(0.25), lineWidth: 4)
+                                .frame(width: 48, height: 48)
+                            Circle()
+                                .trim(from: 0, to: CGFloat(max(0.02, progress)))
+                                .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                                .rotationEffect(.degrees(-90))
+                                .frame(width: 48, height: 48)
+                                .animation(.easeOut(duration: 0.2), value: progress)
+                        }
+                        Text("\(Int((progress * 100).rounded()))%")
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                } else if showProgress {
                     ProgressView()
                         .tint(.secondary)
                 } else {
@@ -3833,6 +4714,306 @@ struct ImageMessageView: View {
     }
 }
 
+// MARK: - Video heuristic
+//
+// Legacy bubbles sent before the AttachmentService video-tagging fix
+// live in the DB as `type=.file` with a video MIME or `.mp4` /
+// `.mov` filename. The chat surface uses this helper to decide
+// whether to route a `.file` row to `VideoMessageView` (thumbnail +
+// play button) or stick with `FileMessageView` (document pill).
+enum MessageVideoHeuristic {
+    static let videoExtensions: Set<String> = ["mp4", "mov", "m4v", "qt", "avi", "mkv", "webm"]
+
+    static func isVideo(_ message: ChatMessage) -> Bool {
+        if let mime = message.mimeType?.lowercased(), mime.hasPrefix("video/") {
+            return true
+        }
+        if let name = message.fileName?.lowercased(),
+           let dot = name.lastIndex(of: ".") {
+            let ext = String(name[name.index(after: dot)...])
+            if videoExtensions.contains(ext) { return true }
+        }
+        if let urlString = message.attachmentUrl?.lowercased() {
+            for ext in videoExtensions where urlString.hasSuffix(".\(ext)") || urlString.contains(".\(ext)?") {
+                return true
+            }
+        }
+        if let localPath = message.localPath?.lowercased() {
+            for ext in videoExtensions where localPath.hasSuffix(".\(ext)") {
+                return true
+            }
+        }
+        return false
+    }
+}
+
+// MARK: - VideoMessageView
+//
+// 🔴 Bug fix (2026-05-15 — round 3): the inline thumbnail Phase-4
+// approach left a big gray rectangle while AVAssetImageGenerator
+// chewed through the file; on slow networks or for legacy bubbles
+// where the URL was missing entirely, the bubble just stayed
+// visually empty. The user asked for the compact "Video · 21.8 MB"
+// pill back, and to use the post-feed-style fullscreen player on
+// tap (no like / comment / share — pure media). Bubble is now a
+// fast-to-render capsule; the heavy player only spins up on tap.
+//
+// Duration is still probed in the background so the pill picks up
+// the "0:42" badge as soon as it's available, but the bubble height
+// no longer waits on it.
+
+import AVFoundation
+
+struct VideoMessageView: View {
+    let message: ChatMessage
+    /// Whether the bubble belongs to the local user — controls the
+    /// background colour of the self-contained card so we still
+    /// match the chat's blue/grey "mine vs theirs" convention even
+    /// though the outer message bubble background was removed.
+    var isFromMe: Bool = false
+    var onTap: ((URL) -> Void)? = nil
+
+    @State private var resolvedURL: URL?
+    @State private var thumbnail: UIImage?
+    @State private var duration: TimeInterval = 0
+    @State private var isResolved = false
+
+    /// Display name pulled off the message; falls back to a generic
+    /// "Video" label so the pill never reads "Untitled".
+    private var displayLabel: String {
+        if let name = message.fileName, !name.isEmpty, !looksLikeUUID(name) {
+            return name
+        }
+        return "Video"
+    }
+
+    /// Detect the UUID-y filenames our `clientId.jpg` etc. pattern
+    /// produces so we don't surface them to the user.
+    private func looksLikeUUID(_ s: String) -> Bool {
+        let pattern = "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}"
+        return s.range(of: pattern, options: .regularExpression) != nil
+    }
+
+    /// Combined caption: duration if known, then file size.
+    /// "0:42 · 21.4 MB" / "Video · 21.4 MB" / "Video".
+    private var caption: String {
+        let durationPart: String? = duration > 0 ? formattedDuration : nil
+        let sizePart: String? = message.fileSize.map {
+            ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .file)
+        }
+        switch (durationPart, sizePart) {
+        case let (d?, s?): return "\(d) · \(s)"
+        case let (d?, nil): return d
+        case let (nil, s?): return "Video · \(s)"
+        case (nil, nil): return "Video"
+        }
+    }
+
+    /// (2026-05-16 — round 9) Caption that swaps to a live upload
+    /// indicator while the message is in the `.uploading` state.
+    /// Once the server confirms (or upload fails), it falls back
+    /// to the normal duration/size caption.
+    private var uploadAwareCaption: String {
+        if message.syncState == .uploading, let progress = message.uploadProgress, progress < 1.0 {
+            let pct = Int((progress * 100).rounded())
+            return "Uploading · \(pct)%"
+        }
+        return caption
+    }
+
+    private var formattedDuration: String {
+        let total = Int(duration.rounded())
+        let m = total / 60
+        let s = total % 60
+        return String(format: "%d:%02d", m, s)
+    }
+
+    var body: some View {
+        Button {
+            Haptics.light()
+            if let resolvedURL { onTap?(resolvedURL) }
+        } label: {
+            // (2026-05-15 — round 8 — REAL fix):
+            // ─────────────────────────────────────────────
+            // The previous attempts at `.fixedSize()` were eaten by
+            // the Button wrapper, so the secondary-system-background
+            // fill expanded all the way to the row's trailing edge
+            // (the user reported "gap bozorgi vojod dare"). The fix:
+            // wrap the content in an inner HStack that's painted +
+            // padded + clipped to an inline rounded rect, then push
+            // it to one side with a trailing/leading Spacer at the
+            // ROW level so SwiftUI lays out the bubble as a tight
+            // pill instead of a row-wide capsule.
+            HStack(spacing: 0) {
+                if isFromMe { Spacer(minLength: 0) }
+                HStack(spacing: 10) {
+                    // 56×56 play tile with optional first-frame
+                    // thumbnail underneath the play glyph.
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(Color.black.opacity(0.55))
+                            .frame(width: 56, height: 56)
+                        if let thumbnail {
+                            Image(uiImage: thumbnail)
+                                .resizable()
+                                .aspectRatio(contentMode: .fill)
+                                .frame(width: 56, height: 56)
+                                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                        .fill(Color.black.opacity(0.25))
+                                )
+                        }
+                        // (2026-05-16 — round 9) While the message is
+                        // uploading, paint a ring progress indicator
+                        // over the play tile. The play glyph still
+                        // shows underneath so the user knows it's a
+                        // playable video the moment upload finishes.
+                        if message.syncState == .uploading,
+                           let progress = message.uploadProgress, progress < 1.0 {
+                            Circle()
+                                .stroke(Color.white.opacity(0.25), lineWidth: 3)
+                                .frame(width: 44, height: 44)
+                            Circle()
+                                .trim(from: 0, to: CGFloat(progress))
+                                .stroke(Color.white, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                                .rotationEffect(.degrees(-90))
+                                .frame(width: 44, height: 44)
+                                .animation(.easeOut(duration: 0.2), value: progress)
+                        } else {
+                            Image(systemName: "play.fill")
+                                .font(.system(size: 20, weight: .bold))
+                                .foregroundStyle(.white)
+                                .shadow(color: .black.opacity(0.4), radius: 2)
+                                .offset(x: 1)
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(displayLabel)
+                            .font(.subheadline)
+                            .foregroundStyle(isFromMe ? .white : .primary)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: true)
+                        // (2026-05-16 — round 9) Uploading captions
+                        // read the live progress as "Uploading · 42%"
+                        // so the user has both the ring AND a textual
+                        // confirmation that the bubble is moving.
+                        Text(uploadAwareCaption)
+                            .font(.caption)
+                            .foregroundStyle(isFromMe ? .white.opacity(0.85) : .secondary)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: true)
+                            .contentTransition(.numericText())
+                    }
+                }
+                .padding(.vertical, 8)
+                .padding(.horizontal, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .fill(isFromMe ? Color.accentColor : Color(.secondarySystemBackground))
+                )
+                if !isFromMe { Spacer(minLength: 0) }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .task(id: message.id) {
+            guard !isResolved else { return }
+            let url = await resolveVideoURL()
+            await MainActor.run { self.resolvedURL = url }
+            if let url {
+                async let dur = extractDuration(from: url)
+                async let thumb = extractThumbnail(from: url)
+                let (d, t) = await (dur, thumb)
+                await MainActor.run {
+                    self.duration = d
+                    self.thumbnail = t
+                }
+            }
+            await MainActor.run { self.isResolved = true }
+        }
+    }
+
+    /// Pull a tiny first-frame thumbnail (max 168×168 since the tile
+    /// is 56pt @ ~3x). Cached in `ImageCache` so the same clip
+    /// rendered in two bubbles doesn't decode twice.
+    private func extractThumbnail(from url: URL) async -> UIImage? {
+        if let cached = ImageCache.shared.image(for: url) {
+            return cached
+        }
+        let asset: AVURLAsset
+        if url.isFileURL {
+            asset = AVURLAsset(url: url)
+        } else {
+            var headers: [String: String] = [:]
+            if let (token, _) = await KeychainService.shared.getToken(),
+               url.host == AppConfig.mediaURL(from: "/")?.host {
+                headers["Authorization"] = "Bearer \(token)"
+            }
+            asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
+        }
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: 168, height: 168)
+        generator.requestedTimeToleranceAfter = CMTime(seconds: 1, preferredTimescale: 600)
+        let probe = CMTime(seconds: 0.5, preferredTimescale: 600)
+        do {
+            let (cg, _) = try await generator.image(at: probe)
+            let img = UIImage(cgImage: cg)
+            ImageCache.shared.store(img, for: url)
+            return img
+        } catch {
+            // Try .zero as a fallback for very short clips.
+            if let (cg, _) = try? await generator.image(at: .zero) {
+                let img = UIImage(cgImage: cg)
+                ImageCache.shared.store(img, for: url)
+                return img
+            }
+            return nil
+        }
+    }
+
+    private func resolveVideoURL() async -> URL? {
+        return await Task.detached(priority: .userInitiated) {
+            if let localPath = message.localPath, !localPath.isEmpty {
+                let fileName = URL(fileURLWithPath: localPath).lastPathComponent
+                let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                let currentLocalURL = docs.appendingPathComponent("attachments").appendingPathComponent(fileName)
+                if FileManager.default.fileExists(atPath: currentLocalURL.path) {
+                    return currentLocalURL
+                }
+                if FileManager.default.fileExists(atPath: localPath) {
+                    return URL(fileURLWithPath: localPath)
+                }
+            }
+            return AppConfig.mediaURL(from: message.attachmentUrl)
+        }.value
+    }
+
+    private func extractDuration(from url: URL) async -> TimeInterval {
+        let asset: AVURLAsset
+        if url.isFileURL {
+            asset = AVURLAsset(url: url)
+        } else {
+            var headers: [String: String] = [:]
+            if let (token, _) = await KeychainService.shared.getToken(),
+               url.host == AppConfig.mediaURL(from: "/")?.host {
+                headers["Authorization"] = "Bearer \(token)"
+            }
+            asset = AVURLAsset(url: url, options: [
+                "AVURLAssetHTTPHeaderFieldsKey": headers
+            ])
+        }
+        do {
+            let d = try await asset.load(.duration)
+            return CMTimeGetSeconds(d).isFinite ? CMTimeGetSeconds(d) : 0
+        } catch {
+            return 0
+        }
+    }
+}
+
 struct VoiceMessageView<StatusIcon: View>: View {
     let message: ChatMessage
     let isFromMe: Bool
@@ -3841,7 +5022,14 @@ struct VoiceMessageView<StatusIcon: View>: View {
     
     // ⚡ Perf fix: Use @State to prevent @Observable from triggering re-renders on ALL voice views
     @State private var audioStore = AudioPlaybackStore.shared
-    @State private var waveformBars: [CGFloat] = (0..<20).map { _ in CGFloat.random(in: 0.15...1.0) }
+    // 🟢 ROUND 77 (2026-05-24) — pool of bar heights large enough to
+    // fill any reasonable bubble width. Pre-fix had 20 fixed bars at
+    // 2.5+2px each = ~90px total, so on a wide bubble the waveform
+    // visibly stopped half-way and left dead space before the
+    // duration label (user-reported, screenshot 2026-05-24).
+    // Now we seed 120 random heights upfront and the view picks the
+    // count it actually needs from GeometryReader.size.width.
+    @State private var waveformBars: [CGFloat] = (0..<120).map { _ in CGFloat.random(in: 0.15...1.0) }
     @State private var repairedUrl: String?
     @State private var isRepairAttempted = false
     
@@ -3909,14 +5097,24 @@ struct VoiceMessageView<StatusIcon: View>: View {
                 // in the shared AudioPlaybackStore, you can scrub the play
                 // head by tapping or dragging across the bars.
                 GeometryReader { geo in
-                    HStack(spacing: 2) {
-                        ForEach(0..<waveformBars.count, id: \.self) { index in
+                    // 🟢 ROUND 77 (2026-05-24) — dynamic bar count.
+                    // Bar width 2.5pt + spacing 2pt = 4.5pt per slot.
+                    // Compute how many fit into the available width so
+                    // the waveform always spans edge-to-edge. Capped
+                    // by the pool size to avoid out-of-bounds.
+                    let barWidth: CGFloat = 2.5
+                    let barSpacing: CGFloat = 2.0
+                    let slotWidth = barWidth + barSpacing
+                    let rawCount = Int(floor((geo.size.width + barSpacing) / slotWidth))
+                    let count = max(1, min(rawCount, waveformBars.count))
+                    HStack(spacing: barSpacing) {
+                        ForEach(0..<count, id: \.self) { index in
                             let barHeight = waveformBars[index]
-                            let isPlayed = CGFloat(index) / CGFloat(waveformBars.count) < CGFloat(localProgress)
+                            let isPlayed = CGFloat(index) / CGFloat(count) < CGFloat(localProgress)
 
                             RoundedRectangle(cornerRadius: 1.5)
                                 .fill(isPlayed ? accentColor : Color.secondary.opacity(0.25))
-                                .frame(width: 2.5, height: 18 * barHeight)
+                                .frame(width: barWidth, height: 18 * barHeight)
                                 .animation(.easeInOut(duration: 0.15), value: localProgress)
                         }
                     }
@@ -3955,12 +5153,36 @@ struct VoiceMessageView<StatusIcon: View>: View {
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
-            .background(.ultraThinMaterial, in: Capsule())
+            // 🟢 ROUND 76 (2026-05-24) — voice bubble background fix.
+            //
+            // PRE-FIX: only `.ultraThinMaterial` was applied. On the
+            // dark chat background (effectively black), the material
+            // has nothing to blur, so the capsule renders as nearly
+            // transparent — user saw the play button + waveform +
+            // duration "floating" without any bubble outline. Visible
+            // in the user-supplied screenshot.
+            //
+            // FIX: stack a SOLID translucent fill underneath the
+            // material so the bubble is always visible regardless of
+            // the chat background. From-me uses a tinted blue (to
+            // match the user's outbound bubble accent); from-them
+            // uses a neutral gray. The material on top preserves the
+            // glass look when there IS something to blur.
+            .background(
+                ZStack {
+                    Capsule()
+                        .fill(isFromMe
+                              ? Color.accentColor.opacity(0.22)
+                              : Color(.systemGray5).opacity(0.55))
+                    Capsule()
+                        .fill(.ultraThinMaterial)
+                }
+            )
             .overlay(
                 Capsule()
-                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+                    .strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.5)
             )
-            .shadow(color: .black.opacity(0.06), radius: 6, y: 3)
+            .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
             .animation(.spring(response: 0.28, dampingFraction: 0.85), value: isActivePlayback)
             
             // MARK: - Timestamp + Status pill (below capsule)
@@ -3992,10 +5214,13 @@ struct VoiceMessageView<StatusIcon: View>: View {
             if voiceUrlString == nil && !isRepairAttempted {
                 isRepairAttempted = true
                 #if DEBUG
+                // SECURITY (round 11): URL strings can carry signed
+                // tokens; message.text can carry private content.
+                // Log only metadata about presence, not the values.
                 print("🔧 [VoiceMessageView] No URL for \(message.id.prefix(8)), attempting repair...")
-                print("   message.attachmentUrl: \(message.attachmentUrl ?? "nil")")
-                print("   message.text: \(message.text?.prefix(80) ?? "nil")")
-                print("   message.localPath: \(message.localPath ?? "nil")")
+                print("   message.attachmentUrl: \(message.attachmentUrl == nil ? "nil" : "present")")
+                print("   message.text: \(message.text == nil ? "nil" : "present(\(message.text?.count ?? 0)b)")")
+                print("   message.localPath: \(message.localPath == nil ? "nil" : "present")")
                 print("   message.serverId: \(message.serverId ?? "nil")")
                 #endif
                 
@@ -4184,6 +5409,30 @@ struct FileMessageView: View {
         }
         return false
     }
+
+    /// 🔴 Bug fix (2026-05-15): videos picked from the gallery flow
+    /// through `sendFile` (mediaType="file") because the chat surface
+    /// has no `.video` renderer. Detect video MIME / extension here
+    /// so the bubble paints a film icon + "Video · 12.4 MB" caption
+    /// instead of the generic "Document" treatment that confused the
+    /// user when they sent a clip from their camera roll.
+    private var isVideo: Bool {
+        if let mime = message.mimeType?.lowercased(), mime.hasPrefix("video/") {
+            return true
+        }
+        let videoExtensions = ["mp4", "mov", "m4v", "qt", "avi", "mkv", "webm"]
+        if let name = message.fileName?.lowercased(),
+           let dot = name.lastIndex(of: ".") {
+            let ext = String(name[name.index(after: dot)...])
+            if videoExtensions.contains(ext) { return true }
+        }
+        if let urlString = (message.attachmentUrl ?? repairedUrl)?.lowercased() {
+            for ext in videoExtensions where urlString.contains(".\(ext)") {
+                return true
+            }
+        }
+        return false
+    }
     
     // ⚡ Perf fix: resolve file URL asynchronously to avoid sync FileManager.fileExists on main thread
     @State private var resolvedFileURL: URL?
@@ -4216,6 +5465,16 @@ struct FileMessageView: View {
         }.value
     }
     
+    /// Short human-readable label for video bubbles. Strips UUID-y
+    /// filenames so the user sees "Video" instead of
+    /// "AB12CD-3F-…mov". Used by the bubble caption.
+    private var videoDisplayLabel: String {
+        if let name = message.fileName, !name.isEmpty, !looksLikeUUID(name) {
+            return name
+        }
+        return "Video"
+    }
+
     private var displayFileName: String {
         // Try to get filename from message
         if let fileName = message.fileName, !fileName.isEmpty, !looksLikeUUID(fileName) {
@@ -4245,6 +5504,12 @@ struct FileMessageView: View {
         return str.range(of: uuidPattern, options: .regularExpression) != nil
     }
     
+    /// 🔴 (2026-05-15 — round 3): cached first-page render for PDF
+    /// bubbles. PDFKit's `PDFThumbnailView` is heavyweight; we render
+    /// the page once via `CGPDFDocument` at chat-bubble size and cache.
+    @State private var pdfThumbnail: UIImage? = nil
+    @State private var pdfThumbnailRequested = false
+
     var body: some View {
         Button {
             guard let url = resolvedFileURL else {
@@ -4253,39 +5518,25 @@ struct FileMessageView: View {
                 #endif
                 return
             }
-            
+
             let impact = UIImpactFeedbackGenerator(style: .light)
             impact.impactOccurred()
-            
+
             // QuickLook supports all document types (PDF, Office, images, video, zip, etc.)
             #if DEBUG
             print("📄 [FileMessageView] Opening document: \(url)")
             #endif
             onFileTap?(url, displayFileName)
         } label: {
-            HStack(spacing: 8) {
-                Image(systemName: isPDF ? "doc.richtext.fill" : "doc.fill")
-                    .font(.title2)
-                    .foregroundStyle(isFromMe ? .white : (isPDF ? .red : .blue))
-                
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(displayFileName)
-                        .font(.subheadline)
-                        .foregroundStyle(isFromMe ? .white : .primary)
-                        .lineLimit(1)
-                    
-                    if let size = message.fileSize {
-                        Text(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))
-                            .font(.caption)
-                            .foregroundStyle(isFromMe ? .white.opacity(0.7) : .secondary)
-                    } else if isPDF {
-                        Text("Tap to view")
-                            .font(.caption)
-                            .foregroundStyle(isFromMe ? .white.opacity(0.7) : .secondary)
-                    }
-                }
+            // 🔴 (2026-05-15 — round 3): PDF bubbles now lead with a
+            // first-page thumbnail card (240×140) so the recipient
+            // sees what's inside before tapping. Other file types
+            // keep the original compact pill layout.
+            if isPDF && pdfThumbnail != nil {
+                pdfThumbnailLayout
+            } else {
+                pdfPillLayout
             }
-            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .task(id: message.id) {
@@ -4298,15 +5549,7 @@ struct FileMessageView: View {
             // On-demand repair: if file message has no URL, fetch from server
             if resolvedFileURL == nil && !isRepairAttempted {
                 isRepairAttempted = true
-                #if DEBUG
-                print("🔧 [FileMessageView] No URL for file msg \(message.id.prefix(8)), attempting repair...")
-                print("   attachmentUrl: \(message.attachmentUrl ?? "nil")")
-                print("   localPath: \(message.localPath ?? "nil")")
-                print("   serverId: \(message.serverId ?? "nil")")
-                print("   roomId: \(message.roomId ?? "nil")")
-                print("   senderId: \(message.senderId)")
-                print("   recipientId: \(message.recipientId)")
-                #endif
+                logger.debug("FileMessageView no URL for file msg \(message.id, privacy: .private), attempting repair. attachmentUrl=\(message.attachmentUrl ?? "nil", privacy: .private) localPath=\(message.localPath ?? "nil", privacy: .private) serverId=\(message.serverId ?? "nil", privacy: .private) roomId=\(message.roomId ?? "nil", privacy: .private) senderId=\(message.senderId, privacy: .private) recipientId=\(message.recipientId, privacy: .private)")
                 
                 guard NetworkMonitor.shared.isOnline else {
                     #if DEBUG
@@ -4376,7 +5619,161 @@ struct FileMessageView: View {
                     #endif
                 }
             }
+
+            // 🔴 (2026-05-15 — round 3): kick off PDF first-page
+            // thumbnail render once the URL has settled. Cheap when
+            // the file is local; downloads when remote. Cached
+            // in-memory so re-scroll doesn't re-render.
+            if isPDF, !pdfThumbnailRequested, let url = resolvedFileURL {
+                pdfThumbnailRequested = true
+                pdfThumbnail = await Self.renderPDFFirstPage(at: url)
+            }
         }
+    }
+
+    // MARK: - PDF thumbnail card
+
+    /// Wide PDF card — first-page render on top, filename + size below.
+    /// (2026-05-15 — round 4): paints its own background now that
+    /// the outer message-bubble fill was stripped for rich-preview
+    /// file types (`isFileWithRichPreview`). The thumbnail itself
+    /// has rounded corners that match the card so the page render
+    /// reads as part of the bubble, not a floating image.
+    private var pdfThumbnailLayout: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if let pdfThumbnail {
+                Image(uiImage: pdfThumbnail)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 240, height: 320)
+                    .clipped()
+                    .clipShape(
+                        UnevenRoundedRectangle(
+                            topLeadingRadius: 12,
+                            bottomLeadingRadius: 0,
+                            bottomTrailingRadius: 0,
+                            topTrailingRadius: 12,
+                            style: .continuous
+                        )
+                    )
+                    .overlay(alignment: .topTrailing) {
+                        // Small "PDF" chip top-right so the user knows
+                        // why the thumbnail looks like a page.
+                        Text("PDF")
+                            .font(.system(size: 9, weight: .bold))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(.black.opacity(0.6), in: Capsule())
+                            .foregroundStyle(.white)
+                            .padding(8)
+                    }
+            }
+
+            HStack(spacing: 8) {
+                Image(systemName: "doc.richtext.fill")
+                    .font(.callout)
+                    .foregroundStyle(isFromMe ? .white : .red)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(displayFileName)
+                        .font(.subheadline)
+                        .foregroundStyle(isFromMe ? .white : .primary)
+                        .lineLimit(1)
+
+                    if let size = message.fileSize {
+                        Text(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))
+                            .font(.caption)
+                            .foregroundStyle(isFromMe ? .white.opacity(0.7) : .secondary)
+                    } else {
+                        Text("Tap to view")
+                            .font(.caption)
+                            .foregroundStyle(isFromMe ? .white.opacity(0.7) : .secondary)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+        }
+        .frame(width: 240)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(isFromMe ? Color.accentColor : Color(.secondarySystemBackground))
+        )
+        .contentShape(Rectangle())
+    }
+
+    /// Original compact pill layout, used for non-PDF documents and
+    /// for PDFs whose thumbnail hasn't rendered yet.
+    private var pdfPillLayout: some View {
+        HStack(spacing: 8) {
+            Image(systemName: isVideo ? "play.rectangle.fill" : (isPDF ? "doc.richtext.fill" : "doc.fill"))
+                .font(.title2)
+                .foregroundStyle(isFromMe ? .white : (isVideo ? .purple : (isPDF ? .red : .blue)))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(isVideo ? videoDisplayLabel : displayFileName)
+                    .font(.subheadline)
+                    .foregroundStyle(isFromMe ? .white : .primary)
+                    .lineLimit(1)
+
+                if let size = message.fileSize {
+                    let formatted = ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)
+                    Text(isVideo ? "Video · \(formatted)" : formatted)
+                        .font(.caption)
+                        .foregroundStyle(isFromMe ? .white.opacity(0.7) : .secondary)
+                } else if isVideo {
+                    Text("Video · Tap to play")
+                        .font(.caption)
+                        .foregroundStyle(isFromMe ? .white.opacity(0.7) : .secondary)
+                } else if isPDF {
+                    Text("Tap to view")
+                        .font(.caption)
+                        .foregroundStyle(isFromMe ? .white.opacity(0.7) : .secondary)
+                }
+            }
+        }
+        .contentShape(Rectangle())
+    }
+
+    /// Render page-1 of a PDF at chat-bubble size. Uses CoreGraphics
+    /// `CGPDFDocument` so we don't pull in the heavier `PDFKit`
+    /// rendering stack. Returns nil for non-PDFs / unreadable files.
+    static func renderPDFFirstPage(at url: URL) async -> UIImage? {
+        // Cache hit via shared ImageCache, keyed by URL.
+        if let cached = ImageCache.shared.image(for: url) { return cached }
+
+        return await Task.detached(priority: .userInitiated) {
+            // Resolve a CGPDFDocument from either local or remote.
+            let cgPDF: CGPDFDocument?
+            if url.isFileURL {
+                cgPDF = CGPDFDocument(url as CFURL)
+            } else {
+                // Remote PDF — download to temp first.
+                guard let data = try? Data(contentsOf: url),
+                      let provider = CGDataProvider(data: data as CFData) else {
+                    return nil as UIImage?
+                }
+                cgPDF = CGPDFDocument(provider)
+            }
+            guard let pdf = cgPDF, let page = pdf.page(at: 1) else { return nil }
+
+            let pageRect = page.getBoxRect(.mediaBox)
+            // Bubble width target: 480pt @2x → render at 480×640 max.
+            let targetWidth: CGFloat = 480
+            let scale = targetWidth / pageRect.width
+            let target = CGSize(width: targetWidth, height: pageRect.height * scale)
+            let renderer = UIGraphicsImageRenderer(size: target)
+            let image = renderer.image { ctx in
+                UIColor.white.setFill()
+                ctx.fill(CGRect(origin: .zero, size: target))
+                ctx.cgContext.translateBy(x: 0, y: target.height)
+                ctx.cgContext.scaleBy(x: scale, y: -scale)
+                ctx.cgContext.drawPDFPage(page)
+            }
+            ImageCache.shared.store(image, for: url)
+            return image
+        }.value
     }
 }
 
@@ -4724,7 +6121,7 @@ private struct MeshDeliveryBadge: View {
 struct ChatSheetsModifier: ViewModifier {
     @Binding var showSharedMedia: Bool
     @Binding var showGroupSettings: Bool
-    @Binding var selectedImageURL: URL?
+    @Binding var selectedImageURL: SelectedImageItem?
     @Binding var selectedDocument: DocumentPreviewItem?
     @Binding var selectedLinkURL: URL?
     @Binding var selectedLocationPayload: LocationPayload?
@@ -4749,7 +6146,14 @@ struct ChatSheetsModifier: ViewModifier {
     let onSendLocation: (CLLocation) -> Void
     let onStartLive: (TimeInterval, CLLocation) -> Void
     let onDeleteMessages: (Bool) -> Void
-    
+    let onScreenshot: (Bool) -> Void
+
+    /// Round 69 — vault-forward refusal alert. Set non-nil by the
+    /// forward Task when `forwardMessage` throws (e.g. user tried
+    /// to forward a vault attachment); the `.alert` modifier below
+    /// shows the message and clears the state on dismiss.
+    @State private var forwardErrorMessage: String?
+
     func body(content: Content) -> some View {
         content
             .sheet(isPresented: $showSharedMedia) {
@@ -4761,11 +6165,33 @@ struct ChatSheetsModifier: ViewModifier {
             .sheet(isPresented: $showGroupSettings) {
                 groupSettingsContent
             }
-            .fullScreenCover(item: $selectedImageURL) { url in
-                FullScreenImageViewer(imageURL: url)
+            .fullScreenCover(item: $selectedImageURL) { item in
+                // Round 32 — pass through messageId + filename so the
+                // viewer's `VaultPayloadResolver` rebuilds the
+                // AES-GCM AAD on vault payloads.
+                //
+                // 🔴 2026-05-20 — `onScreenshot` wires the viewer's
+                // own screenshot detection back into the chat's
+                // debounced screenshot handler. The viewer is the
+                // front-most view, so it catches a Vault-photo
+                // screenshot reliably; ChatView's own listener is
+                // suppressed while this cover is up.
+                FullScreenImageViewer(
+                    imageURL: item.url,
+                    messageId: item.messageId,
+                    originalFileName: item.fileName,
+                    onScreenshot: { isVault in
+                        onScreenshot(isVault)
+                    }
+                )
             }
             .sheet(item: $selectedDocument) { doc in
-                DocumentPreviewView(url: doc.url, fileName: doc.fileName)
+                // Round 32 — pass `messageId` through so the vault
+                // decrypt path can rebuild the AAD the sender bound
+                // into the AES-GCM seal.  Without this, every vault
+                // file failed AEAD verify and showed "Failed to load
+                // document".
+                DocumentPreviewView(url: doc.url, fileName: doc.fileName, messageId: doc.messageId)
             }
             // Intercept ALL link taps inside the chat tree. SwiftUI's
             // `Text(String)` auto-detects URLs and, by default, opens
@@ -4787,6 +6213,25 @@ struct ChatSheetsModifier: ViewModifier {
                 }
                 if url.scheme == "raven", url.host == "room", let slug = components.first {
                     DeepLinkRouter.shared.route(to: .audioRoom(slug: slug))
+                    return .handled
+                }
+                // 🔴 ROUND 71 phase 3 — scheme allowlist before
+                // routing to SafariSheet. Pre-fix any URL with any
+                // scheme (file:, data:, prefs:, facetime:, tel: —
+                // auto-dial, sms: — auto-send, attacker-app://) was
+                // passed to SafariSheet which forwards non-http(s)
+                // schemes to `UIApplication.shared.open`, letting a
+                // pasted/attacker-crafted message in a chat launch
+                // arbitrary registered handlers (FaceTime call,
+                // Settings deep-link, third-party app handoff) with
+                // a single tap. Only http(s) (web pages in
+                // SafariSheet) and `raven://` (handled above) are
+                // allowed; everything else is dropped silently.
+                let scheme = url.scheme?.lowercased() ?? ""
+                guard scheme == "http" || scheme == "https" else {
+                    #if DEBUG
+                    print("🔒 [ChatView] Refused to open URL with non-http(s) scheme: \(scheme)")
+                    #endif
                     return .handled
                 }
                 // The keyboard auto-dismisses when the SafariSheet
@@ -4892,15 +6337,35 @@ struct ChatSheetsModifier: ViewModifier {
                     let fwdId: String? = conversation.isChannel ? conversation.channelUsername : nil
                     let fwdName: String? = conversation.isChannel ? conversation.displayTitle : nil
                     Task {
-                        try? await MessageService.shared.forwardMessage(
-                            msg,
-                            to: targetId,
-                            isGroup: isGrp,
-                            forwardedFromChannelId: fwdId,
-                            forwardedFromChannelName: fwdName
-                        )
+                        // 🔴 ROUND 69 — surface vault-forward refusals
+                        // to the user instead of silently swallowing
+                        // them. `forwardMessage` throws when the
+                        // original is a vault attachment (see
+                        // MessageService.forwardMessage). Without this
+                        // alert the action button silently no-op'd.
+                        do {
+                            try await MessageService.shared.forwardMessage(
+                                msg,
+                                to: targetId,
+                                isGroup: isGrp,
+                                forwardedFromChannelId: fwdId,
+                                forwardedFromChannelName: fwdName
+                            )
+                        } catch {
+                            await MainActor.run {
+                                self.forwardErrorMessage = error.localizedDescription
+                            }
+                        }
                     }
                 }
+            }
+            .alert("Couldn't forward", isPresented: Binding(
+                get: { forwardErrorMessage != nil },
+                set: { if !$0 { forwardErrorMessage = nil } }
+            )) {
+                Button("OK") { forwardErrorMessage = nil }
+            } message: {
+                Text(forwardErrorMessage ?? "")
             }
             .confirmationDialog(
                 "Delete \(selectedMessageIds.count) message\(selectedMessageIds.count == 1 ? "" : "s")?",
@@ -4999,10 +6464,69 @@ struct SnapScreenshotResponse: Decodable {
 }
 
 // MARK: - Document Preview Item (for .sheet(item:))
+/// 🟥 ROUND 32 (2026-05-17) — vault-aware image presentation.
+///
+/// Replaces the bare `URL?` previously bound to `selectedImageURL`
+/// so the fullscreen image viewer can receive the message context
+/// it needs to rebuild the AES-GCM AAD on vault-encrypted images.
+/// Non-chat callers can construct with `messageId: nil` and the
+/// resolver will fall back to the empty-AAD path (legacy uploads).
+struct SelectedImageItem: Identifiable {
+    let id = UUID()
+    let url: URL
+    let messageId: String?
+    let fileName: String?
+
+    init(url: URL, messageId: String? = nil, fileName: String? = nil) {
+        self.url = url
+        self.messageId = messageId
+        self.fileName = fileName
+    }
+}
+
 struct DocumentPreviewItem: Identifiable {
     let id = UUID()
     let url: URL
     let fileName: String?
+    /// 🟥 ROUND 32 (2026-05-17) — vault AAD plumbing.
+    ///
+    /// The vault-file-encrypt path binds the sender's
+    /// `clientMessageId` into the AES-GCM AAD (see
+    /// `AttachmentService.swift` line ~215).  Until this round the
+    /// receive-side viewer called `decryptVaultPayload` with an EMPTY
+    /// AAD, so EVERY vault file decrypt failed AEAD and surfaced as
+    /// "Failed to load document" — the exact user-reported bug.
+    ///
+    /// Plumb the originating chat message's `id` through here so the
+    /// viewer can rebuild the matching AAD. `nil` is allowed for
+    /// callers that don't have a message context (e.g. legacy
+    /// pre-vault file URLs); in that case the viewer falls back to
+    /// empty AAD which keeps non-vault files working unchanged.
+    let messageId: String?
+
+    init(url: URL, fileName: String?, messageId: String? = nil) {
+        self.url = url
+        self.fileName = fileName
+        self.messageId = messageId
+    }
+}
+
+/// Routing payload for the in-chat fullscreen video player. Mirrors
+/// `DocumentPreviewItem`'s shape so callsites stay symmetrical.
+struct ChatVideoPreviewItem: Identifiable {
+    let id = UUID()
+    let url: URL
+    let fileName: String
+    /// Round 32 — same vault-AAD plumbing as `DocumentPreviewItem`.
+    /// Optional so non-chat callers (e.g. legacy preview paths) keep
+    /// compiling without churn.
+    let messageId: String?
+
+    init(url: URL, fileName: String, messageId: String? = nil) {
+        self.url = url
+        self.fileName = fileName
+        self.messageId = messageId
+    }
 }
 
 // ✅ Bug 5 fix: ViewModifier that conditionally applies .onScrollGeometryChange
@@ -6596,6 +8120,13 @@ struct BubbleOverlayActions {
     var onReact: (String) -> Void
     var onReactMore: () -> Void
     var onReplyPrivately: (() -> Void)?
+    /// Round 69 — hide the Forward row entirely when this is false.
+    /// Set false for vault attachments and any other message the
+    /// server marked `allow_forward = false`. Backstop is the
+    /// `MessageService.forwardMessage` throw, but hiding the row
+    /// removes the dead-end tap and matches the user's expectation
+    /// that a vault attachment is unforwardable.
+    var isForwardAllowed: Bool = true
 }
 
 struct BubbleActionOverlay: View {
@@ -6656,7 +8187,7 @@ struct BubbleActionOverlay: View {
             let visibleRowCount: Int = {
                 var n = 1                                      // Reply
                 if actions.onReplyPrivately != nil { n += 1 }
-                n += 1                                         // Forward
+                if actions.isForwardAllowed { n += 1 }         // Forward (round 69 — hidden for vault)
                 if actions.onCopy != nil { n += 1 }
                 n += 2                                         // Pin + Save
                 if actions.onEdit != nil { n += 1 }
@@ -6867,8 +8398,15 @@ struct BubbleActionMenu: View {
                     action: onReplyPrivately)
                 divider
             }
-            row("Forward", system: "arrowshape.turn.up.right", action: actions.onForward)
-            divider
+            // Round 69 — vault attachments are unforwardable; the
+            // server-side gate (allow_forward=false) and the
+            // MessageService throw both still fire if this row is
+            // ever shown, but hiding it here removes the misleading
+            // tap target entirely.
+            if actions.isForwardAllowed {
+                row("Forward", system: "arrowshape.turn.up.right", action: actions.onForward)
+                divider
+            }
             if let onCopy = actions.onCopy {
                 row("Copy", system: "doc.on.doc", action: onCopy)
                 divider

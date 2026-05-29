@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="utf-8"?>
+<UserControl
+    x:Class="RAVEN.Windows.Ui.WidgetsView"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:local="using:RAVEN.Windows.Ui">
+
+    <!--
+      Right-pane widgets stack — mirrors `RightPane.swift` WidgetsView
+      (L54). Search bar, "What's happening" trends card, "Get RAVEN+"
+      card, footer links. Pure-black backdrop matches the rest of the
+      shell.
+    -->
+    <ScrollView Background="{StaticResource RavenBg}">
+        <StackPanel Padding="16,22" Spacing="18">
+
+            <!-- Search bar (capsule, 5% white surface) -->
+            <Border CornerRadius="999" Padding="14,10"
+                    Background="{StaticResource RavenBgCard}">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE721;" FontSize="13"
+                              Foreground="{StaticResource RavenText3}"
+                              VerticalAlignment="Center"/>
+                    <TextBox PlaceholderText="Search RAVEN" BorderThickness="0"
+                             Background="Transparent" Foreground="{StaticResource RavenText}"
+                             FontSize="13" MinWidth="220"
+                             VerticalAlignment="Center"/>
+                </StackPanel>
+            </Border>
+
+            <!-- "What's happening" card -->
+            <Border Background="{StaticResource RavenBgCard}"
+                    CornerRadius="20" Padding="0">
+                <StackPanel Spacing="0">
+                    <TextBlock Text="What's happening"
+                               FontSize="18" FontWeight="ExtraBold"
+                               Foreground="{StaticResource RavenText}"
+                               Padding="16,14,16,8"/>
+                    <ItemsRepeater x:Name="TrendsList">
+                        <ItemsRepeater.Layout>
+                            <StackLayout/>
+                        </ItemsRepeater.Layout>
+                        <ItemsRepeater.ItemTemplate>
+                            <DataTemplate x:DataType="local:TrendVm">
+                                <Border Padding="16,12" Background="Transparent">
+                                    <StackPanel Spacing="2">
+                                        <TextBlock Text="Trending" FontSize="12"
+                                                   Foreground="{StaticResource RavenText3}"/>
+                                        <TextBlock Text="{x:Bind TagDisplay}"
+                                                   FontSize="15" FontWeight="Bold"
+                                                   Foreground="{StaticResource RavenText}"/>
+                                        <TextBlock Text="{x:Bind PostsLabel}"
+                                                   FontSize="12"
+                                                   Foreground="{StaticResource RavenText3}"/>
+                                    </StackPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsRepeater.ItemTemplate>
+                    </ItemsRepeater>
+                    <TextBlock x:Name="EmptyTrends"
+                               Text="No trends right now."
+                               FontSize="12"
+                               Foreground="{StaticResource RavenText3}"
+                               Padding="16,4,16,16"
+                               Visibility="Visible"/>
+                    <TextBlock Text="Show more"
+                               FontSize="14" FontWeight="SemiBold"
+                               Foreground="{StaticResource RavenLogoStartBrush}"
+                               Padding="16,8,16,14"/>
+                </StackPanel>
+            </Border>
+
+            <!-- "Get RAVEN+" upsell card -->
+            <Border Background="{StaticResource RavenBgCard}"
+                    CornerRadius="20" Padding="0">
+                <StackPanel Spacing="12" Padding="16,14,16,16">
+                    <TextBlock Text="Get RAVEN+"
+                               FontSize="18" FontWeight="ExtraBold"
+                               Foreground="{StaticResource RavenText}"/>
+                    <TextBlock Text="Bigger groups, encrypted backups, mesh-bridge priority — and a verified badge."
+                               TextWrapping="Wrap"
+                               FontSize="14" LineHeight="20"
+                               Foreground="{StaticResource RavenText2}"/>
+                    <Button HorizontalAlignment="Left" Padding="18,9"
+                            CornerRadius="999"
+                            Background="{StaticResource RavenBrandGradient}"
+                            BorderThickness="0">
+                        <TextBlock Text="Subscribe" FontSize="13" FontWeight="ExtraBold"
+                                   Foreground="White"/>
+                    </Button>
+                </StackPanel>
+            </Border>
+
+            <!-- Footer links -->
+            <StackPanel Orientation="Horizontal" Spacing="14">
+                <TextBlock Text="Terms" FontSize="12" Foreground="{StaticResource RavenText3}"/>
+                <TextBlock Text="Privacy" FontSize="12" Foreground="{StaticResource RavenText3}"/>
+                <TextBlock Text="Cookies" FontSize="12" Foreground="{StaticResource RavenText3}"/>
+                <TextBlock Text="Mesh status" FontSize="12" Foreground="{StaticResource RavenText3}"/>
+                <TextBlock Text="© 2026 ASH Robotic" FontSize="12" Foreground="{StaticResource RavenText3}"/>
+            </StackPanel>
+        </StackPanel>
+    </ScrollView>
+</UserControl>

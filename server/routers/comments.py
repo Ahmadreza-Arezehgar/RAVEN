@@ -111,20 +111,33 @@ def build_comment_tree(comments: List[Comment], current_user_id: str, db: Sessio
         ).first()
         my_vote = user_vote.vote if user_vote else 0
         
+        # 🔴 BUG FIX (2026-05-22) — one bad row used to 500 the WHOLE list.
+        # `is_verified` / `is_premium` (User) and `is_ai_generated` /
+        # `score` (Comment) are nullable DB columns whose Python-side
+        # `default=` never backfilled legacy / bootstrap rows — so the
+        # raw attribute is `None`. Passing `None` into a non-Optional
+        # `bool` / `int` Pydantic field raises ValidationError, which
+        # took down the entire `get_post_comments` response: the post
+        # card showed "N comments" but the sheet / detail view rendered
+        # empty ("the app says there's a comment but shows nothing").
+        # The `create` path already coerces these (see below); the tree
+        # builder did not. Coerce every non-Optional field here too so a
+        # single dirty row can never blank a whole post's comments.
+        author = comment.author
         comment_resp = CommentResponse(
             id=comment.id,
             post_id=comment.post_id,
             author_id=comment.author_id,
-            author_name=comment.author.username if comment.author else "Unknown",
-            author_avatar=comment.author.avatar_path if comment.author else None,
-            is_verified=comment.author.is_verified if comment.author and hasattr(comment.author, 'is_verified') else False,
-            is_premium=comment.author.is_premium if comment.author and hasattr(comment.author, 'is_premium') else False,
+            author_name=(author.username if author and author.username else "Unknown"),
+            author_avatar=author.avatar_path if author else None,
+            is_verified=bool(getattr(author, 'is_verified', None) or False),
+            is_premium=bool(getattr(author, 'is_premium', None) or False),
             parent_comment_id=comment.parent_comment_id,
             content=decrypt_text(comment.content),
             timestamp=comment.timestamp,
-            score=comment.score,
+            score=comment.score or 0,
             my_vote=my_vote,
-            is_ai_generated=comment.is_ai_generated,
+            is_ai_generated=bool(comment.is_ai_generated),
             comment_type=comment.comment_type or "text",
             media_url=comment.media_url,
             duration_sec=comment.duration_sec,
@@ -137,10 +150,36 @@ def build_comment_tree(comments: List[Comment], current_user_id: str, db: Sessio
             root_comments.append(comment_resp)
     
     # Build tree structure
+    #
+    # 🔴 BUG FIX (2026-05-21) — orphaned replies were silently dropped.
+    #
+    # THE BUG: a reply (`parent_comment_id` set) was only attached to
+    # the output if its parent was present in `comment_map`. But
+    # `comment_map` only holds the comments this query returned, and
+    # the list query excludes hidden comments (`is_hidden != True`).
+    # So if comment A is hidden / deleted and comment B is a reply to
+    # A, then B:
+    #   • is NOT a root (parent_comment_id is not None) → never added
+    #     to root_comments in the loop above, and
+    #   • its parent A is NOT in comment_map → never appended here.
+    # B therefore vanished from the returned tree entirely — even
+    # though the post's comment count still counted it. That is the
+    # exact "the app says there's a comment for this post but shows
+    # nothing" symptom: an orphaned reply whose parent was removed.
+    #
+    # FIX: when a reply's parent is missing from the visible set,
+    # promote the reply to a ROOT comment so it stays visible. Its
+    # own sub-replies still attach to it normally (it IS in
+    # comment_map), so reply chains under a hidden parent survive.
     for comment in comments:
-        if comment.parent_comment_id and comment.parent_comment_id in comment_map:
-            parent = comment_map[comment.parent_comment_id]
-            parent.replies.append(comment_map[comment.id])
+        if comment.parent_comment_id:
+            parent = comment_map.get(comment.parent_comment_id)
+            if parent is not None:
+                parent.replies.append(comment_map[comment.id])
+            else:
+                # Orphaned reply — parent hidden / deleted / filtered.
+                # Surface it at top level instead of dropping it.
+                root_comments.append(comment_map[comment.id])
     
     # ✅ Sort root comments based on sort mode
     if sort == "newest":
@@ -180,7 +219,32 @@ async def create_comment(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Post not found"
         )
-    
+
+    # 🔴 ROUND 71 S14: bidirectional block check + visibility gate
+    # for create_comment. Previously, a blocked user could comment
+    # on the blocker's post AND fire a notification to the blocker.
+    # Also no visibility gate — non-friend could comment on
+    # friends-only posts (round 70 only fixed the read-side list).
+    from models import Block
+    from sqlalchemy import or_ as _or, and_ as _and
+    block_exists = db.query(Block).filter(
+        _or(
+            _and(Block.blocker_id == current_user.id, Block.blocked_id == post.author_id),
+            _and(Block.blocker_id == post.author_id, Block.blocked_id == current_user.id),
+        )
+    ).first()
+    if block_exists:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Post not found"
+        )
+    from routers.posts import _can_user_access_post
+    if not _can_user_access_post(post, current_user.id, db):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Post not found"
+        )
+
     # Verify parent comment exists if specified
     if req.parent_comment_id:
         parent = db.query(Comment).filter(Comment.id == req.parent_comment_id).first()
@@ -188,6 +252,15 @@ async def create_comment(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Parent comment not found"
+            )
+        # 🔴 ROUND 71: also verify parent belongs to the SAME post
+        # (audit found you could attach a reply to a parent on a
+        # DIFFERENT post → orphan-promotion path surfaces it under
+        # the wrong post).
+        if parent.post_id != req.post_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Parent comment belongs to a different post",
             )
     
     # Validate comment type
@@ -248,11 +321,16 @@ async def create_comment(
         notif = Notification(
             user_id=post.author_id,
             type="comment",
+            # 🔵 (2026-05-23) — also include the commenter's avatar
+            # (row leading-edge) and the post thumbnail (row
+            # trailing-edge) for the Instagram-style cell.
             data=json.dumps({
                 "post_id": req.post_id,
                 "comment_id": comment.id,
                 "commenter_id": current_user.id,
                 "commenter_username": current_user.username,
+                "commenter_avatar": current_user.avatar_path,
+                "post_image_url": post.image_url,
                 "preview": (req.content or ("🎤 Voice" if comment_type == "voice" else "📷 Image"))[:100]
             }),
             timestamp=datetime.utcnow(),
@@ -335,12 +413,16 @@ async def create_comment(
             mention_notif = Notification(
                 user_id=entity.userId,
                 type="mention",
+                # 🔵 (2026-05-23) — Instagram-style cell needs the
+                # mentioner's avatar + the post thumbnail.
                 data=json.dumps({
                     "mention_type": "post_comment",
                     "post_id": req.post_id,
                     "comment_id": comment.id,
                     "mentioner_id": current_user.id,
                     "mentioner_username": current_user.username,
+                    "mentioner_avatar": current_user.avatar_path,
+                    "post_image_url": post.image_url,
                     "snippet": snippet,
                     "deep_link": deep_link
                 }),
@@ -389,11 +471,14 @@ async def create_comment(
                     mention_notif = Notification(
                         user_id=mentioned_user.id,
                         type="mention",
+                        # 🔵 (2026-05-23) — Instagram-style cell data.
                         data=json.dumps({
                             "post_id": req.post_id,
                             "comment_id": comment.id,
                             "mentioner_id": current_user.id,
                             "mentioner_username": current_user.username,
+                            "mentioner_avatar": current_user.avatar_path,
+                            "post_image_url": post.image_url,
                             "preview": req.content[:100]
                         }),
                         timestamp=datetime.utcnow(),
@@ -541,14 +626,22 @@ async def create_comment(
         entities_json = json_mod.dumps([e.dict() for e in req.entities])
     
     # Return created comment
+    # 🔴 BUG FIX (2026-05-20) — `is_verified` / `is_premium` come from
+    # Boolean DB columns that are nullable in practice. When the value
+    # is NULL (e.g., users created by the simulation bootstrap or any
+    # legacy row that pre-dates the column getting a default), the
+    # raw attribute is `None`, which fails Pydantic's `bool` validation
+    # and the endpoint returns 500 — AFTER the comment has already
+    # been committed. The poster sees their reply "fail" even though
+    # it landed. Coerce None → False before Pydantic sees it.
     return CommentResponse(
         id=comment.id,
         post_id=comment.post_id,
         author_id=comment.author_id,
         author_name=current_user.username,
         author_avatar=current_user.avatar_path,
-        is_verified=current_user.is_verified if hasattr(current_user, 'is_verified') else False,
-        is_premium=current_user.is_premium if hasattr(current_user, 'is_premium') else False,
+        is_verified=bool(getattr(current_user, 'is_verified', None) or False),
+        is_premium=bool(getattr(current_user, 'is_premium', None) or False),
         parent_comment_id=comment.parent_comment_id,
         content=decrypt_text(comment.content),
         timestamp=comment.timestamp,
@@ -572,8 +665,16 @@ def get_post_comments(
 ):
     """
     Get all comments for a specific post.
-    
+
     Returns hierarchical tree structure with nested replies.
+
+    🔴 ROUND 70 (2026-05-23) — hacker-audit COMMENTS-CRIT-1.
+    Previously this endpoint had ZERO post-visibility check, so a
+    non-friend could list every comment on a friends-only post by
+    guessing the post_id. That leaked: (1) the comment text, and
+    (2) the friend audience via commenter usernames. Now gated
+    behind `_can_user_access_post`, same predicate as the rest of
+    the post-action endpoints (round 70 fix).
     """
     # Verify post exists
     post = db.query(Post).filter(Post.id == post_id).first()
@@ -582,7 +683,17 @@ def get_post_comments(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Post not found"
         )
-    
+
+    # 🔴 ROUND 70 — visibility gate. Returns 404 (not 403) so a fishing
+    # attacker can't distinguish "post doesn't exist" from "private
+    # post you can't see".
+    from routers.posts import _can_user_access_post
+    if not _can_user_access_post(post, current_user.id, db):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Post not found"
+        )
+
     # Get all comments for this post
     comments = db.query(Comment).filter(
         Comment.post_id == post_id,
@@ -710,12 +821,18 @@ def delete_comment(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized to delete this comment"
         )
-    
-    db.delete(comment)
+
+    # 🔴 ROUND 71 S13: soft-delete instead of hard. Hard delete
+    # cascades to child replies via FK/SQL cascade, losing reply
+    # trees the orphan-promotion logic (line 174) is designed to
+    # preserve. Soft delete keeps the row + parent_id linkage intact
+    # so child replies stay accessible; the comment_tree builder
+    # already skips `is_hidden=True` rows.
+    comment.is_hidden = True
     db.commit()
-    
-    print(f"🗑️ Comment deleted by {current_user.username}")
-    
+
+    print(f"🗑️ Comment soft-deleted by {current_user.username}")
+
     return {"status": "success", "message": "Comment deleted"}
 
 
@@ -782,6 +899,33 @@ async def _run_comment_transcription(comment_id: str):
 from fastapi import BackgroundTasks as _CommentBT
 
 
+def _can_user_access_comment(comment: Comment, user_id: str, db: Session) -> bool:
+    """
+    🔴 ROUND 26 — hacker-mode audit MEDIA-CRIT-2.
+
+    Returns True only when the user is genuinely entitled to read
+    this comment's content (and therefore to trigger Gemini
+    transcription of its voice payload, which COSTS US MONEY and
+    DISCLOSES content the user might not even know exists).
+
+    Authorized parties:
+      • comment author
+      • parent post's author
+    Future work: friends/followers when post.visibility != 'public'.
+    Today we keep it strict: only the two principals above can
+    trigger or read voice-comment transcripts. Other viewers can
+    still browse the comment text via the normal list endpoint;
+    they just can't burn quota or invoke AI on someone else's
+    voice clip.
+    """
+    if comment.author_id == user_id:
+        return True
+    post = db.query(Post).filter(Post.id == comment.post_id).first()
+    if post is not None and post.author_id == user_id:
+        return True
+    return False
+
+
 @router.post("/{comment_id}/transcribe")
 async def transcribe_voice_comment(
     comment_id: str,
@@ -796,10 +940,20 @@ async def transcribe_voice_comment(
     comment = db.query(Comment).filter(Comment.id == comment_id).first()
     if not comment:
         raise HTTPException(status_code=404, detail="Comment not found")
-    
+
+    # 🔴 ROUND 26 — hacker-mode audit MEDIA-CRIT-2.
+    #   Was: any authenticated user could trigger Gemini transcription
+    #   of any voice comment they discovered the UUID for. Costs us
+    #   money + leaks voice content the user never authorised to
+    #   transcribe. Fix: gate on author / post-owner.
+    if not _can_user_access_comment(comment, current_user.id, db):
+        # 404 (not 403) so we don't leak existence of voice comments
+        # the attacker is fishing for.
+        raise HTTPException(status_code=404, detail="Comment not found")
+
     if comment.comment_type != "voice" or not comment.media_url:
         raise HTTPException(status_code=400, detail="Not a voice comment")
-    
+
     # Idempotent: return cached if ready
     if comment.transcript_status == "ready":
         return {
@@ -807,17 +961,17 @@ async def transcribe_voice_comment(
             "language": comment.transcript_language,
             "text": comment.transcript_text
         }
-    
+
     # Already pending/processing — don't re-queue
     if comment.transcript_status in ("pending", "processing"):
         return {"status": comment.transcript_status}
-    
+
     # Queue transcription
     comment.transcript_status = "pending"
     db.commit()
-    
+
     background_tasks.add_task(_run_comment_transcription, comment_id)
-    
+
     print(f"🎙️ Queued comment transcription: {comment_id[:8]}… by {current_user.username}")
     return {"status": "pending"}
 
@@ -832,9 +986,160 @@ def get_comment_transcript(
     comment = db.query(Comment).filter(Comment.id == comment_id).first()
     if not comment:
         raise HTTPException(status_code=404, detail="Comment not found")
-    
+
+    # 🔴 ROUND 26 — hacker-mode audit MEDIA-CRIT-2.
+    #   Same gate as /transcribe — transcript content is the same
+    #   sensitivity. Without this, an attacker who learned a comment
+    #   UUID could fetch transcribed content for any voice comment.
+    if not _can_user_access_comment(comment, current_user.id, db):
+        raise HTTPException(status_code=404, detail="Comment not found")
+
     return {
         "status": comment.transcript_status or "none",
         "language": comment.transcript_language,
         "text": comment.transcript_text
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 🔴 ROUND 26 — COMMENT EDIT + PIN / UNPIN
+#
+# iOS has been calling these for months but they 404'd on the server:
+#   PATCH /api/comments/{id}        — edit own comment
+#   POST  /api/comments/{id}/pin    — post author pins a comment to top
+#   POST  /api/comments/{id}/unpin  — undo
+#
+# Backing columns (`is_pinned`, `edited_at`) were added in this round —
+# see `models.Comment` and the migration in `main.py`.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class CommentEditRequest(BaseModel):
+    """Body for PATCH /api/comments/{id}."""
+    content: str
+
+
+@router.patch("/{comment_id}")
+def edit_comment(
+    comment_id: str,
+    req: CommentEditRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Edit the text of an existing comment. Author only."""
+    comment = db.query(Comment).filter(Comment.id == comment_id).first()
+    if not comment:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Comment not found"
+        )
+
+    if comment.author_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the author can edit this comment"
+        )
+
+    # 🔴 ROUND 71 S12: enforce 24h edit window (matches iOS UI hide
+    # at CommentRow.swift:167). Without this, server accepts edits
+    # forever; any curl can rewrite ancient comments.
+    from datetime import timedelta as _td
+    if comment.timestamp and (datetime.utcnow() - comment.timestamp) > _td(hours=24):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Edit window closed (24 hours)"
+        )
+
+    new_content = (req.content or "").strip()
+    if not new_content:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Comment cannot be empty"
+        )
+
+    # Length cap matches create endpoint (defensive even though we
+    # don't re-validate everything else from create).
+    if len(new_content) > 5000:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Comment too long"
+        )
+
+    # 🔴 ROUND 71 S12: bug — previously wrote RAW plaintext to
+    # `comment.content`. Every other write path encrypts (line 265,
+    # 572); next read called `decrypt_text` on plaintext and returned
+    # `[DECRYPT_FAILED]`, silently corrupting the edited comment.
+    comment.content = encrypt_text(new_content)
+    comment.edited_at = datetime.utcnow()
+    db.commit()
+
+    print(f"✏️ Comment {comment_id[:8]}… edited by {current_user.username}")
+    return {
+        "status": "ok",
+        "id": comment.id,
+        "edited_at": comment.edited_at.isoformat(),
+    }
+
+
+def _toggle_pin(comment_id: str, want_pinned: bool, current_user: User, db: Session):
+    """Shared implementation for /pin and /unpin."""
+    comment = db.query(Comment).filter(Comment.id == comment_id).first()
+    if not comment:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Comment not found"
+        )
+
+    # Only the POST AUTHOR (not the comment author) may pin a comment
+    # on their post — same rule as Instagram / YouTube.
+    post = db.query(Post).filter(Post.id == comment.post_id).first()
+    if not post:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Underlying post not found"
+        )
+    if post.author_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the post author can pin or unpin comments"
+        )
+
+    if want_pinned:
+        # Only one pinned comment per post — unpin everything else first.
+        db.query(Comment).filter(
+            Comment.post_id == comment.post_id,
+            Comment.is_pinned == True,
+            Comment.id != comment.id,
+        ).update({Comment.is_pinned: False}, synchronize_session=False)
+
+    comment.is_pinned = want_pinned
+    db.commit()
+
+    verb = "pinned" if want_pinned else "unpinned"
+    print(f"📌 Comment {comment_id[:8]}… {verb} by {current_user.username}")
+    return {
+        "status": "ok",
+        "id": comment.id,
+        "is_pinned": comment.is_pinned,
+    }
+
+
+@router.post("/{comment_id}/pin")
+def pin_comment(
+    comment_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Pin a comment to the top of its post. Post-author only.
+    Only one comment per post can be pinned at a time."""
+    return _toggle_pin(comment_id, want_pinned=True, current_user=current_user, db=db)
+
+
+@router.post("/{comment_id}/unpin")
+def unpin_comment(
+    comment_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Unpin a previously-pinned comment. Post-author only."""
+    return _toggle_pin(comment_id, want_pinned=False, current_user=current_user, db=db)

@@ -97,7 +97,6 @@ struct PhoneCollectionView: View {
         ("+98", "🇮🇷", "Iran"),
         ("+964", "🇮🇶", "Iraq"),
         ("+353", "🇮🇪", "Ireland"),
-        ("+972", "🇮🇱", "Israel"),
         ("+39", "🇮🇹", "Italy"),
         ("+1 876", "🇯🇲", "Jamaica"),
         ("+81", "🇯🇵", "Japan"),

@@ -201,11 +201,95 @@ class DeliveryJobRunner {
                     
                     // Trust verification happens on the receive side.
                     // Removing send-side trust gate to avoid 120s retry delays.
-                    
-                    let envelope = message.toMeshEnvelope()
-                    
 
-                    
+                    var envelope = message.toMeshEnvelope()
+
+                    // 🟢 ROUND 73 (2026-05-24) — group E2EE on JobRunner mesh path.
+                    //
+                    // Mirror MessageStore.sendViaMeshImmediate fix: if the
+                    // message is for a group AND not already sealed under
+                    // the group key, AES-GCM-encrypt with GroupKeyService
+                    // before broadcasting. Without this, the retry path
+                    // re-shipped plaintext on the BLE wire AND any
+                    // relayer that bridged it stored plaintext on the
+                    // server.
+                    //
+                    // Detect "is group" from the message's roomId: if
+                    // there's a local Group row matching roomId, treat
+                    // as group send. Fall back to message.roomId presence
+                    // when GroupRepository lookup fails (offline).
+                    var isGroupRetry = false
+                    if let rid = message.roomId, !rid.isEmpty {
+                        let groupRepo = GroupRepository()
+                        let groupExists = (try? await groupRepo.get(groupId: rid)) != nil
+                        if groupExists, let plain = message.text, !plain.isEmpty,
+                           message.groupKeyVersion == nil {
+                            if let (cipherB64, keyVersion) = await GroupKeyService.shared.encrypt(plain, groupId: rid) {
+                                envelope.text = cipherB64
+                                envelope.groupKeyVersion = keyVersion
+                                envelope.isGroup = true
+                                isGroupRetry = true
+                            } else {
+                                #if DEBUG
+                                print("🔒 [JobRunner] REFUSING to mesh-retry plaintext group message — group key unavailable for \(rid.prefix(8))")
+                                #endif
+                                // Skip this iteration — let the job stay
+                                // pending until the group key is available.
+                                continue
+                            }
+                        } else if groupExists {
+                            // Already sealed (likely a retry of a previously
+                            // sealed envelope) — preserve isGroup flag.
+                            envelope.isGroup = true
+                            if envelope.groupKeyVersion == nil {
+                                envelope.groupKeyVersion = message.groupKeyVersion
+                            }
+                            isGroupRetry = true
+                        }
+                    }
+
+                    // 🔐 ROUND 77 (2026-05-24) — 1:1 mesh-retry fail-closed sealer.
+                    //
+                    // BUG (audit Agent #1): when retrying a 1:1 mesh job,
+                    // the runner re-fetches `message.text` from the DB row
+                    // and re-builds the envelope. If the original send
+                    // shipped plaintext (because attemptDelivery's
+                    // `wrapOutgoing` silently fell back to plaintext when
+                    // no Double-Ratchet session existed), this retry
+                    // ALSO re-ships plaintext on every attempt.
+                    //
+                    // FIX: seal the body via `MessageContentSealer.seal`
+                    // before re-broadcasting. Skip the sealer when the
+                    // text is ALREADY wire-format (RVNS1/RVNA1/RVNP1
+                    // magic prefix) to avoid double-encryption. Refuse
+                    // the retry (skip via continue) if the sealer
+                    // can't guarantee encryption — outbox keeps the
+                    // job pending until ATSAM/Noise is available.
+                    if !isGroupRetry, let plain = message.text, !plain.isEmpty {
+                        let alreadySealed: Bool = {
+                            guard let data = Data(base64Encoded: plain),
+                                  data.count >= 8 else { return false }
+                            let s = String(data: data.prefix(5), encoding: .ascii) ?? ""
+                            return s == "RVNS1" || s == "RVNA1" || s == "RVNP1"
+                        }()
+                        if !alreadySealed {
+                            let sealed = await MessageContentSealer.seal(
+                                plaintext: plain,
+                                recipientUserId: message.recipientId,
+                                recipientAgreementPubKey: nil,
+                                msgId: message.id
+                            )
+                            guard sealed.isEncrypted, !sealed.base64.isEmpty else {
+                                #if DEBUG
+                                print("🔒 [JobRunner] REFUSING to mesh-retry 1:1 plaintext fallback (reason=\(sealed.reason)) for mid=\(message.id.prefix(8))")
+                                #endif
+                                // Keep job pending — back-off + retry later.
+                                continue
+                            }
+                            envelope.text = sealed.base64
+                        }
+                    }
+
                     await mesh.enqueueForBroadcast(envelope)
                     
                     // Note: We don't mark as delivered here
@@ -417,13 +501,32 @@ class DeliveryJobRunner {
                 recipientOnline: false
             )
         } else {
-            // 1:1 message: use regular endpoint
+            // 1:1 message: use regular endpoint.
+            // 🔴 SECURITY FIX (2026-05-16 — round 10): wrap the
+            // plaintext through `MessageContentSealer` so the server
+            // only ever sees opaque bytes when we have a Noise
+            // session, and a clearly-flagged plaintext envelope
+            // (RVNP1) otherwise. See OutboxManager for the matching
+            // change — this is the legacy retry path that used to
+            // bypass encryption entirely.
+            // Round 12: hand the userId in so the sealer can lazy-
+            // fetch + verify the recipient's prekey bundle on miss.
+            let sealed = await MessageContentSealer.seal(
+                plaintext: text,
+                recipientUserId: recipientId,
+                recipientAgreementPubKey: nil,
+                msgId: clientId
+            )
+            // Round 15 — mirror the seal verdict into the per-
+            // bubble status store so the sender's own bubble shows
+            // the lock badge whenever the body went up as RVNP1.
+            await MessageContentSealer.recordSealVerdict(sealed.reason, for: clientId)
             let response: SendMessageResponse = try await NetworkService.shared.post(
                 path: "/api/messages/send",
                 body: SendMessageRequest(
                     messageId: clientId,
                     recipientId: recipientId,
-                    content: text,
+                    content: sealed.base64,
                     messageType: row["type"] as? String ?? "text",
                     audioUrl: nil,
                     replyToMessageId: row["reply_to_message_id"] as? String

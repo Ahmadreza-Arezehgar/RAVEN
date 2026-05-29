@@ -8,7 +8,7 @@ This service handles:
 - Email/SMS sending (placeholder - connect to your provider)
 """
 
-import random
+import secrets  # 🔴 ROUND 47 — CSPRNG-backed OTP generation.
 import string
 from datetime import datetime, timedelta
 from typing import Optional, Tuple
@@ -19,16 +19,44 @@ from models import OTPCode, User
 
 class OTPService:
     """Service for generating and verifying OTP codes."""
-    
+
     OTP_LENGTH = 6
     OTP_EXPIRY_MINUTES = 5
     MAX_ATTEMPTS = 5
     RESEND_COOLDOWN_SECONDS = 60
-    
+
     @staticmethod
     def generate_code() -> str:
-        """Generate a 6-digit OTP code."""
-        return ''.join(random.choices(string.digits, k=OTPService.OTP_LENGTH))
+        """Generate a 6-digit OTP code.
+
+        🔴 ROUND 47 (2026-05-19) — hacker-audit Server F11 (CRITICAL).
+        PREVIOUSLY: used `random.choices(string.digits, k=6)`. Python's
+        `random` module is a Mersenne Twister — fast, fine for games,
+        DISQUALIFIED for security. With ~624 32-bit outputs an attacker
+        recovers the entire internal state and predicts every future
+        output. Concrete attack against RAVEN:
+          1. Attacker registers throwaway account A.
+          2. Attacker triggers `/forgot-password` on A every 60 s
+             (the RESEND_COOLDOWN floor) and sees the OTP delivered
+             to their own email.
+          3. Each 6-digit OTP burns ≈20 bits of MT state — repeat
+             until ≈624 32-bit ints worth of output is observed
+             (a few hours of harvesting, faster if other users'
+             OTPs interleave because the MT state is process-global).
+          4. With state recovered, attacker triggers
+             `/forgot-password` for any victim email and PREDICTS the
+             6-digit OTP the server will mail to the victim. Victim
+             never sees the email open / phishing attempt because the
+             OTP travels to the victim's real inbox — but attacker
+             only needs to enter it back through `/reset-password`
+             before the victim notices the mail.
+        Same family of bugs as the Linux kernel CVE-2019-2185 OTP
+        flaw and the classic Java SecureRandom-vs-Random mistake.
+
+        FIX: `secrets` is HMAC-DRBG / OS CSPRNG. Each digit is sampled
+        independently via `secrets.choice` — no state to leak.
+        """
+        return ''.join(secrets.choice(string.digits) for _ in range(OTPService.OTP_LENGTH))
     
     @staticmethod
     def create_otp(
@@ -109,8 +137,11 @@ class OTPService:
         if otp.attempts >= OTPService.MAX_ATTEMPTS:
             return False, 'Too many failed attempts. Please request a new code.'
         
-        # Verify code
-        if otp.code != code:
+        # Verify code (🔴 ROUND 47 — constant-time compare to avoid
+        # leaking which prefix bytes matched on early-exit; the 5-try
+        # cap below means timing alone is rarely exploitable, but
+        # `compare_digest` is the right primitive and costs nothing).
+        if not secrets.compare_digest(str(otp.code or ""), str(code or "")):
             otp.attempts += 1
             db.commit()
             remaining = OTPService.MAX_ATTEMPTS - otp.attempts

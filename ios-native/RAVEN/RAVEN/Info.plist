@@ -4,12 +4,6 @@
 <dict>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
-		<!-- 2026-05-10: removed `im.raven.sync` — it was declared
-		     but never registered (no `BGTaskScheduler.shared.register`
-		     handler exists for it), so submitting a request would
-		     throw `BGTaskSchedulerErrorDomain Code=1` and on iOS 26
-		     the launch-time auditor warns about unregistered
-		     identifiers. Re-add when a handler is wired. -->
 		<string>com.raven.mesh.refresh</string>
 		<string>com.raven.mesh.processing</string>
 	</array>
@@ -79,12 +73,12 @@
 	<string>RAVEN uses your location to find nearby users and improve message delivery.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>RAVEN needs microphone access for voice messages and audio rooms</string>
-	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>RAVEN uses on-device speech recognition to generate video captions. Audio never leaves your device.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>RAVEN needs permission to save photos and videos to your library.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>RAVEN needs photo library access to share images</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>RAVEN uses on-device speech recognition to generate video captions. Audio never leaves your device.</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>NSUserActivityTypes</key>
@@ -92,13 +86,43 @@
 		<string>INSendMessageIntent</string>
 		<string>INStartCallIntent</string>
 	</array>
+	<key>UIApplicationShortcutItems</key>
+	<array>
+		<dict>
+			<key>UIApplicationShortcutItemIconType</key>
+			<string>UIApplicationShortcutIconTypeCompose</string>
+			<key>UIApplicationShortcutItemTitle</key>
+			<string>New message</string>
+			<key>UIApplicationShortcutItemType</key>
+			<string>app.raven.shortcut.newMessage</string>
+		</dict>
+		<dict>
+			<key>UIApplicationShortcutItemIconType</key>
+			<string>UIApplicationShortcutIconTypeAdd</string>
+			<key>UIApplicationShortcutItemTitle</key>
+			<string>New post</string>
+			<key>UIApplicationShortcutItemType</key>
+			<string>app.raven.shortcut.newPost</string>
+		</dict>
+		<dict>
+			<key>UIApplicationShortcutItemIconType</key>
+			<string>UIApplicationShortcutIconTypeSearch</string>
+			<key>UIApplicationShortcutItemTitle</key>
+			<string>Search</string>
+			<key>UIApplicationShortcutItemType</key>
+			<string>app.raven.shortcut.search</string>
+		</dict>
+		<dict>
+			<key>UIApplicationShortcutItemIconType</key>
+			<string>UIApplicationShortcutIconTypeAudio</string>
+			<key>UIApplicationShortcutItemTitle</key>
+			<string>Voice note</string>
+			<key>UIApplicationShortcutItemType</key>
+			<string>app.raven.shortcut.voiceNote</string>
+		</dict>
+	</array>
 	<key>UIBackgroundModes</key>
 	<array>
-		<!-- 2026-05-10: removed `audio` background mode. App Store
-		     rejection 2.5.4 — no continuous-audio justification
-		     (voice messages play in foreground; no NowPlaying /
-		     remote-command center). Restore + wire NowPlaying when
-		     the audio-room feature ships. -->
 		<string>bluetooth-central</string>
 		<string>bluetooth-peripheral</string>
 		<string>remote-notification</string>

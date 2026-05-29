@@ -41,6 +41,34 @@ struct GroupSettingsView: View {
     @State private var actionError: String?
     @State private var showMuteSheet = false
     @State private var appeared = false
+
+    // (2026-05-15 — round 5) Group-flavour of the new chat-detail
+    // sections. Most things are admin-only (disappearing timer,
+    // always-vault, wallpaper applies to everyone). Member-level
+    // bits (verification, storage) stay per-user.
+    @StateObject private var prefs: ChatChromeObservable
+    @State private var totalCachedBytes: Int64 = 0
+    @State private var pinnedMessages: [ChatMessage] = []
+    @State private var showDisappearingPicker = false
+    @State private var showWallpaperPicker = false
+    @State private var showPinnedSheet = false
+    @State private var showStorageSheet = false
+    @State private var showEncryptionSheet = false
+
+    init(
+        groupId: String,
+        initialGroupName: String,
+        initialGroupAvatarUrl: String? = nil,
+        initialMembers: [GroupMember] = [],
+        onLeave: (() -> Void)? = nil
+    ) {
+        self.groupId = groupId
+        self.initialGroupName = initialGroupName
+        self.initialGroupAvatarUrl = initialGroupAvatarUrl
+        self.initialMembers = initialMembers
+        self.onLeave = onLeave
+        self._prefs = StateObject(wrappedValue: ChatChromeObservable(roomId: groupId))
+    }
     
     private var currentUserId: String { AuthService.shared.currentUser?.id ?? "" }
     private var isAdmin: Bool { displayMembers.first(where: { $0.userId == currentUserId })?.isAdmin ?? false }
@@ -57,24 +85,39 @@ struct GroupSettingsView: View {
                         // ── Hero Header ──
                         heroHeader
                             .padding(.top, DS.space8)
-                        
+
                         // ── Customize ──
                         customizeCard
-                        
+
                         // ── Notifications ──
                         notificationsCard
-                        
+
+                        // ── (2026-05-15 — round 5) Privacy & reach ──
+                        // Group flavour: skip per-peer safety number
+                        // (handled per-member via long-press), keep
+                        // disappearing + always-vault as group-wide
+                        // toggles. Admin gate is applied where it
+                        // matters (server-side rejection if non-admin
+                        // changes a group-wide setting once endpoint ships).
+                        privacyReachCard
+
                         // ── Members ──
                         membersCard
-                        
+
+                        // ── Customise (wallpaper, pinned) ──
+                        customiseExtrasCard
+
+                        // ── Storage / Encryption ──
+                        advancedCard
+
                         // ── Invite + Privacy (admin) ──
                         if isAdmin {
                             invitePrivacyCard
                         }
-                        
+
                         // ── Danger Zone ──
                         dangerCard
-                        
+
                         Spacer(minLength: 40)
                     }
                     .padding(.horizontal, DS.space16)
@@ -141,6 +184,42 @@ struct GroupSettingsView: View {
                     .presentationDetents([.height(320)])
                     .presentationDragIndicator(.visible)
             }
+            // (2026-05-15 — round 5) New chat-detail sheets for groups.
+            .sheet(isPresented: $showDisappearingPicker) {
+                DisappearingPickerSheet(
+                    selection: Binding(
+                        get: { prefs.disappearingTimer },
+                        set: { prefs.setDisappearingTimer($0) }
+                    )
+                )
+                .presentationDetents([.medium])
+            }
+            .sheet(isPresented: $showWallpaperPicker) {
+                WallpaperPickerSheet(
+                    selection: Binding(
+                        get: { prefs.wallpaper },
+                        set: { prefs.setWallpaper($0) }
+                    )
+                )
+            }
+            .sheet(isPresented: $showPinnedSheet) {
+                PinnedMessagesSheet(messages: pinnedMessages)
+            }
+            .sheet(isPresented: $showStorageSheet) {
+                StorageManageSheet(
+                    roomId: groupId,
+                    totalBytes: totalCachedBytes,
+                    onClearMedia: { /* TODO group cache wipe */ },
+                    onClearAll:   { /* TODO group cache wipe */ }
+                )
+                .presentationDetents([.medium])
+            }
+            .sheet(isPresented: $showEncryptionSheet) {
+                EncryptionDetailsSheet(
+                    peerName: displayName,
+                    peerIdentifier: groupId
+                )
+            }
             // MARK: - Confirmations
             .confirmationDialog("Remove Member", isPresented: .init(
                 get: { memberToKick != nil },
@@ -189,6 +268,9 @@ struct GroupSettingsView: View {
             }
             await loadNicknames()
             muteSettings = await GroupService.shared.getMuteSettings(groupId: groupId)
+            // (2026-05-15 — round 5) hydrate cache-size for the
+            // Storage row.
+            totalCachedBytes = await ChatDetailServices.totalCachedBytes(forRoomId: groupId)
             withAnimation(.easeOut(duration: 0.3)) { appeared = true }
         }
     }
@@ -290,9 +372,69 @@ struct GroupSettingsView: View {
     }
     
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // MARK: - (2026-05-15 — round 5) New chat-detail cards
+
+    /// Disappearing messages + always-vault. Both are stored locally
+    /// today; admin gating happens server-side once endpoint exists.
+    private var privacyReachCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionLabel("Privacy & reach")
+            VStack(spacing: 8) {
+                DisappearingMessagesRow(
+                    timer: prefs.disappearingTimer,
+                    onTap: { showDisappearingPicker = true }
+                )
+                AlwaysVaultRow(
+                    isOn: prefs.alwaysVault,
+                    onToggle: { prefs.setAlwaysVault($0) }
+                )
+                EncryptionDetailsRow(
+                    protocolLabel: "Group AES",
+                    pqcEnabled: false,
+                    onTap: { showEncryptionSheet = true }
+                )
+            }
+        }
+    }
+
+    /// Wallpaper + pinned messages. Both per-user (wallpaper is
+    /// rendered locally; pinned message list is server-shared but
+    /// the picker is launched per-user).
+    private var customiseExtrasCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionLabel("Customise")
+            VStack(spacing: 8) {
+                PinnedMessagesRow(
+                    pinnedCount: pinnedMessages.count,
+                    onTap: { showPinnedSheet = true }
+                )
+                WallpaperRow(
+                    current: prefs.wallpaper,
+                    onTap: { showWallpaperPicker = true }
+                )
+            }
+        }
+    }
+
+    /// Storage + export.
+    private var advancedCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionLabel("Advanced")
+            VStack(spacing: 8) {
+                StorageRow(
+                    bytes: totalCachedBytes,
+                    onManage: { showStorageSheet = true }
+                )
+                ExportChatRow(onTap: {
+                    // TODO(group-export): server work to bundle group history.
+                })
+            }
+        }
+    }
+
     // MARK: - Customize Card
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    
+
     @ViewBuilder
     private var customizeCard: some View {
         if isAdmin {

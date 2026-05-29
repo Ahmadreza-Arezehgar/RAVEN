@@ -12,6 +12,15 @@
 	<array>
 		<string>applinks:raven.app</string>
 		<string>webcredentials:raven.app</string>
+		<!--
+		Production share links live at raven-messager.com (see
+		Core/Push/DeepLinkRouter.swift + the public AASA file at
+		https://raven-messager.com/.well-known/apple-app-site-association).
+		Both apex and www so iMessage / WhatsApp / Telegram unfurls work
+		regardless of which form the user copies.
+		-->
+		<string>applinks:raven-messager.com</string>
+		<string>applinks:www.raven-messager.com</string>
 	</array>
 	<key>com.apple.developer.usernotifications.communication</key>
 	<true/>

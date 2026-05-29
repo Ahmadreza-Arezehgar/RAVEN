@@ -43,6 +43,13 @@ class CreateGroupRequest(BaseModel):
     member_ids: List[str]  # User IDs to add as members
     avatar_url: Optional[str] = None
     description: Optional[str] = None
+    # Round 47 — optional client-side UUID. When provided AND the
+    # server doesn't already have a group with this id, the server
+    # adopts it as the canonical group id (offline-first path —
+    # iOS may have created the group locally while offline and
+    # already keyed messages/conversations off this UUID; remapping
+    # at reconcile time is expensive + lossy).
+    client_id: Optional[str] = None
 
 
 class GroupMemberResponse(BaseModel):
@@ -98,33 +105,128 @@ class InviteLinkResponse(BaseModel):
 # ═══════════════════════════════════════════════════════════════════════════
 
 @router.post("", response_model=GroupResponse)
-def create_group(
+async def create_group(
     req: CreateGroupRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
     Create a new group chat.
-    
+
     - Creator is automatically added as admin
     - Member IDs must be valid user IDs
+
+    🟦 ROUND 47 (2026-05-17) — full lifecycle propagation.
+    Previously this handler:
+      1. Wrote `groups` + `group_members` rows
+      2. Wrote one `Notification(type="added_to_group")` row per member
+    But it never PUSHED anything. So:
+      • An online member ("B") learned about the new group only on
+        their next `/api/groups/mine` poll (could be 30s+ later).
+      • A mesh-only member ("C") connected to B via BLE never learned
+        about the group at all — the bridge-downlink handler returned
+        only chat messages, not lifecycle events. The user reported
+        this as "group never appears on C".
+
+    Fix:
+      1. Send WebSocket push `{type: "added_to_group", group: {...full
+         metadata + members...}}` to every member (other than creator)
+         so online clients react in real time.
+      2. The B-side iOS WS handler then materializes the group AND
+         mesh-broadcasts a `group_create` envelope to its BLE peers
+         (which gets the metadata to C via the spray network).
+      3. Independently, the bridge-downlink handler also surfaces
+         recently-created groups for the polling bridge's BLE peers —
+         see `/api/messages/bridge-downlink` for the safety-net path.
     """
     if not req.name or not req.name.strip():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Group name is required"
         )
-    
+
+    # Round 47: honour the optional client_id so an offline-first
+    # group keeps its locally-generated UUID after server reconcile —
+    # avoids the message-row remap that the previous server-assigns-new-id
+    # path required. iOS sends `clientId` (camelCase via Pydantic alias
+    # below or the snake-case alternative).
+    client_id = getattr(req, "client_id", None) or getattr(req, "clientId", None)
+
+    # Idempotency: if a group with this client_id already exists AND
+    # the caller is its creator OR a current member, return the
+    # existing group.
+    #
+    # 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — broaden from
+    # "creator-only" to "creator-or-member".
+    #
+    # SCENARIO: A creates a group offline (local_xxxx). B (online
+    # bridger) proxy-creates the server row on A's behalf when
+    # bridging A's first mesh message — see BLEMeshEngine.bridge
+    # MeshMessageToServer ROUND 71 p3 block. The server now has
+    # B as `created_by`. When A eventually comes online and calls
+    # syncPendingGroups with `client_id=local_xxxx`, pre-fix the
+    # creator-mismatch branch returned 409 → A's pending group
+    # stayed pending forever → A never reconciled.
+    #
+    # Now: if A is a current member of the existing row (which is
+    # always the case since B proxy-creates with A in the members
+    # list), treat as idempotent and return the existing group. A
+    # accepts B as the server-side creator (admin role swap is the
+    # trade-off documented in BLEMeshEngine). The 409 stays for
+    # the genuine collision case (different user, NOT a member —
+    # unlikely random UUID collision).
+    if client_id:
+        existing = db.query(Group).filter(Group.id == client_id).first()
+        if existing is not None:
+            is_creator = (existing.created_by == current_user.id)
+            is_member = db.query(GroupMember).filter(
+                GroupMember.group_id == existing.id,
+                GroupMember.user_id == current_user.id,
+            ).first() is not None
+            if not is_creator and not is_member:
+                # Different creator AND not a member — refuse rather
+                # than overwrite. The safe behaviour is to error out.
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="A group with that client_id already exists under a different creator",
+                )
+            existing_member_count = db.query(GroupMember).filter(
+                GroupMember.group_id == existing.id
+            ).count()
+            print(f"👥 [Groups] IDEMPOTENT — client_id={client_id[:8]} already exists "
+                  f"(is_creator={is_creator}, is_member={is_member}), returning existing group")
+            # Look up creator's username for the response so the
+            # caller (e.g. original creator A reconciling after a
+            # proxy-create by B) gets the real server-side creator
+            # name, not their own.
+            creator_user = db.query(User).filter(User.id == existing.created_by).first()
+            creator_username = creator_user.username if creator_user else current_user.username
+            return GroupResponse(
+                id=existing.id,
+                name=existing.name,
+                avatar_url=existing.avatar_url,
+                description=existing.description,
+                created_by=existing.created_by,
+                creator_username=creator_username,
+                created_at=existing.created_at,
+                member_count=existing_member_count,
+                is_frozen=existing.is_frozen or False,
+                frozen_by=existing.frozen_by,
+            )
+
     # Create the group
-    group = Group(
+    group_kwargs = dict(
         name=req.name.strip(),
         avatar_url=req.avatar_url,
         description=req.description,
-        created_by=current_user.id
+        created_by=current_user.id,
     )
+    if client_id:
+        group_kwargs["id"] = client_id
+    group = Group(**group_kwargs)
     db.add(group)
     db.flush()  # Get the group ID
-    
+
     # Add creator as admin
     creator_member = GroupMember(
         group_id=group.id,
@@ -132,13 +234,14 @@ def create_group(
         role="admin"
     )
     db.add(creator_member)
-    
+
     # Add other members
+    added_member_ids = [current_user.id]
     member_count = 1  # Creator
     for member_id in req.member_ids:
         if member_id == current_user.id:
             continue  # Skip creator (already added)
-        
+
         # Verify user exists
         user = db.query(User).filter(User.id == member_id).first()
         if user:
@@ -148,16 +251,48 @@ def create_group(
                 role="member"
             )
             db.add(member)
+            added_member_ids.append(member_id)
             member_count += 1
-    
+
     db.commit()
     db.refresh(group)
-    
+
+    # Build the full member list (with usernames + avatars) so the
+    # WS push carries enough info for online clients to materialize
+    # the group locally + mesh-broadcast immediately. Avoids a
+    # subsequent /api/groups/{id} fetch.
+    members_rows = db.query(GroupMember, User).join(
+        User, User.id == GroupMember.user_id
+    ).filter(GroupMember.group_id == group.id).all()
+
+    members_payload = [
+        {
+            "user_id": gm.user_id,
+            "username": u.username or "",
+            "avatar_url": u.avatar_path,
+            "role": gm.role or "member",
+            "joined_at": (gm.joined_at or group.created_at).isoformat() + "Z",
+        }
+        for gm, u in members_rows
+    ]
+
+    group_payload = {
+        "id": group.id,
+        "name": group.name,
+        "avatar_url": group.avatar_url,
+        "description": group.description,
+        "created_by": group.created_by,
+        "creator_username": current_user.username,
+        "created_at": (group.created_at or datetime.utcnow()).isoformat() + "Z",
+        "member_count": member_count,
+        "members": members_payload,
+    }
+
     # ✅ Create notification for each added member (so they know they were added)
     for member_id in req.member_ids:
         if member_id == current_user.id:
             continue  # Don't notify creator
-        
+
         notif = Notification(
             user_id=member_id,
             type="added_to_group",
@@ -166,15 +301,40 @@ def create_group(
                 "group_name": group.name,
                 "added_by": current_user.username,
                 "added_by_id": current_user.id,
+                # Round 47: full group payload so iOS handler can
+                # materialize the group WITHOUT a follow-up
+                # /api/groups/{id} fetch (avoids race on slow links).
+                "group": group_payload,
             }),
             is_read=False
         )
         db.add(notif)
-    
+
     db.commit()
     print(f"👥 [Groups] Created group '{group.name}' with {member_count} members by {current_user.username}")
     print(f"🔔 [Groups] Sent notifications to {member_count - 1} members")
-    
+
+    # 🟦 ROUND 47 — push the full group lifecycle event to every
+    # online member. The payload mirrors the `GroupSyncPayload`
+    # the iOS mesh receiver expects, so the WS handler can either:
+    #   • materialize the group locally directly from this payload,
+    #     skipping the /api/groups/{id} round-trip; AND/OR
+    #   • re-broadcast it over mesh as a `group_create` envelope
+    #     for its BLE-only neighbours.
+    ws_payload = {
+        "type": "added_to_group",
+        "group_id": group.id,
+        "group_name": group.name,
+        "added_by": current_user.username,
+        "added_by_id": current_user.id,
+        "group": group_payload,
+    }
+    for member_id in [m for m in added_member_ids if m != current_user.id]:
+        try:
+            await ws_manager.notify(member_id, ws_payload)
+        except Exception as e:
+            print(f"⚠️ [Groups] WS push failed for member {member_id[:8]}: {e}")
+
     return GroupResponse(
         id=group.id,
         name=group.name,
@@ -441,10 +601,22 @@ def leave_group(
         
         # Remove membership
         db.delete(membership)
+
+        # 🔴 hacker-audit 2026-05-19 — rotate key on voluntary leave too.
+        # A user who leaves had the key, so they could have shared it
+        # already. Rotating doesn't unring that bell, but it caps the
+        # damage at "messages sent before leave" instead of "every
+        # message forever." Same defensive posture as kick.
+        try:
+            from routers.group_keys import _mint_new_key
+            _mint_new_key(db, group_id)
+        except Exception as _key_err:
+            print(f"⚠️ [Groups] leave: group-key rotation failed for {group_id}: {_key_err}")
+
         db.commit()
-        
-        print(f"👥 [Groups] User {current_user.username} left group {group_id}")
-        
+
+        print(f"👥 [Groups] User {current_user.username} left group {group_id} (key rotated)")
+
         return {"success": True, "message": "Left group successfully"}
     
     except Exception as e:
@@ -483,6 +655,20 @@ class SendGroupMessageRequest(BaseModel):
     reply_to_type: Optional[str] = None
     entities: Optional[List[MentionEntityPayload]] = None  # Structured @mention entities
     bomb_duration_sec: Optional[int] = None  # Fun Pack: Time Bomb
+    # 🔴 ROUND 26 — Telegram-style media albums (group chats).
+    media_group_key: Optional[str] = None
+    media_group_index: Optional[int] = None
+    media_group_total: Optional[int] = None
+    # 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — group key version.
+    # When set, `content` is the AES-GCM ciphertext encrypted under
+    # the group's symmetric key at this version. The server stores
+    # the ciphertext as-is and fans `group_key_version` through to
+    # every member's WS payload so they can decrypt locally via
+    # GroupKeyService. Pre-fix this field didn't exist on the online
+    # group-send path; iOS shipped PLAINTEXT and the server saw
+    # cleartext content — violating the E2EE-everywhere directive
+    # ("on device vasati nabayad befahme aslan").
+    group_key_version: Optional[int] = None
 
 
 class GroupMessageResponse(BaseModel):
@@ -508,7 +694,19 @@ class GroupMessageResponse(BaseModel):
     status: str = "accepted"
     bomb_duration_sec: Optional[int] = None  # Fun Pack: Time Bomb countdown
     poll_id: Optional[str] = None  # Fun Pack: Poll reference
-    
+    # 🔴 ROUND 26 — album passthrough
+    media_group_key: Optional[str] = None
+    media_group_index: Optional[int] = None
+    media_group_total: Optional[int] = None
+    # 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — receivers need
+    # the AES-GCM group key version to decrypt the opaque ciphertext
+    # stored in `content`. Server stores it on the GroupMessage row
+    # (added by R71 p3 migration) but pre-fix the read endpoints
+    # never serialized it — so clients pulling history saw the
+    # ciphertext (Fernet-unwrapped to the raw GCM bytes) and the
+    # bubble rendered as base64 gibberish. Pass through unchanged.
+    group_key_version: Optional[int] = None
+
     class Config:
         from_attributes = True
 
@@ -581,7 +779,16 @@ async def send_group_message(
                 is_duplicate=True,
                 status="accepted",
                 bomb_duration_sec=existing.bomb_duration_sec,
-                poll_id=existing.poll_id
+                poll_id=existing.poll_id,
+                # 🔴 ROUND 26 — album passthrough on idempotency hit
+                media_group_key=existing.media_group_key,
+                media_group_index=existing.media_group_index,
+                media_group_total=existing.media_group_total,
+                # 🔴 ROUND 71 phase 3 follow-up — group-key version
+                # on idempotency hit so a retry from the original
+                # sender still knows which key the ciphertext was
+                # sealed under.
+                group_key_version=getattr(existing, 'group_key_version', None),
             )
     
     # Serialize entities to JSON if provided
@@ -590,11 +797,16 @@ async def send_group_message(
         entities_json = json.dumps([e.dict() for e in req.entities])
     
     # Create message
+    # 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — pass is_opaque
+    # when the client supplied a group_key_version so the at-rest
+    # encryption (Fernet) doesn't double-wrap the group AES-GCM
+    # ciphertext. Mirrors the bridge path at messages.py:1175.
+    _is_opaque = req.group_key_version is not None
     message = GroupMessage(
         id=req.message_id,  # Will use default UUID if None
         group_id=group_id,
         sender_id=current_user.id,
-        content=encrypt_text(req.content),
+        content=encrypt_text(req.content, is_opaque=_is_opaque),
         timestamp=datetime.utcnow(),
         message_type=req.message_type,
         audio_url=req.audio_url,
@@ -607,7 +819,13 @@ async def send_group_message(
         reply_to_sender_name=req.reply_to_sender_name,
         reply_to_type=req.reply_to_type,
         entities=entities_json,
-        bomb_duration_sec=req.bomb_duration_sec
+        bomb_duration_sec=req.bomb_duration_sec,
+        # 🔴 ROUND 26 — album passthrough on group send
+        media_group_key=req.media_group_key,
+        media_group_index=req.media_group_index,
+        media_group_total=req.media_group_total,
+        # 🔴 ROUND 71 phase 3 follow-up — group AES-GCM key version
+        group_key_version=req.group_key_version,
     )
     
     db.add(message)
@@ -626,25 +844,106 @@ async def send_group_message(
     db.commit()
     
     print(f"💬 [Groups] Message sent to group {group.name} by {current_user.username}")
-    
-    # ⚡ Instant WebSocket push to all group members
-    for uid in [m for m in all_member_ids if m != current_user.id]:
-        ws_manager.notify(uid)
-    
+
+    # ⚡ Instant WebSocket push to all group members.
+    #
+    # 🔴 ROUND 71 S24: `ws_manager.notify(uid)` was called with 1 arg
+    # (signature requires `(user_id, message_data)`) AND not awaited
+    # → every group send raised TypeError → real-time WS fanout to
+    # other members NEVER fired.
+    #
+    # 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — payload shape
+    # re-shaped to mirror the bridge-group WS push so both paths
+    # decode through the same iOS handler.
+    #
+    # 🔴 ROUND 71 phase 3 follow-up #2 (2026-05-24) — performance.
+    # Fan-out moved to `asyncio.gather(..., return_exceptions=True)`
+    # so the N member notifies happen concurrently instead of one-
+    # after-another. The previous sequential `await` per member made
+    # group send latency scale O(N * round-trip) — a 3-person group
+    # waited ~600ms before the sender saw `.sent`. With gather the
+    # whole fan-out finishes in ~1 round-trip.
+    base_ws_msg: dict = {
+        "id": message.id,
+        "sender_id": current_user.id,
+        "content": req.content,
+        "timestamp": message.timestamp.isoformat() + "Z" if message.timestamp else None,
+        "read_at": None,
+        "delivered_at": None,
+        "sender_username": current_user.username,
+        "sender_name": current_user.username,
+        "message_type": message.message_type or "text",
+        "room_id": group_id,
+        "audio_url": message.audio_url,
+        "audio_duration_seconds": getattr(message, 'audio_duration_seconds', None),
+        "file_name": message.file_name,
+        "file_size": message.file_size,
+        "mime_type": message.mime_type,
+        "reply_to_message_id": message.reply_to_message_id,
+        "reply_to_sender_name": message.reply_to_sender_name,
+        "reply_to_type": message.reply_to_type,
+        # 🔴 ROUND 71 phase 3 follow-up #4 (2026-05-24) — group
+        # context. iOS toast renderer needs `is_group` + `group_name`
+        # to compose "<sender> · <group>" in the banner title and
+        # to route the message into the group thread on tap.
+        "is_group": True,
+        "group_id": group_id,
+        "group_name": group.name,
+    }
+    if req.group_key_version is not None:
+        base_ws_msg["group_key_version"] = req.group_key_version
+
+    async def _push_one(target_uid: str) -> None:
+        _msg = dict(base_ws_msg)
+        _msg["recipient_id"] = target_uid
+        try:
+            await ws_manager.notify(target_uid, _msg)
+        except Exception as _ws_err:
+            print(f"⚠️ [Groups] WS notify failed for {target_uid[:8]}: {_ws_err}")
+
+    import asyncio as _asyncio
+    _ws_targets = [m for m in all_member_ids if m != current_user.id]
+    if _ws_targets:
+        await _asyncio.gather(
+            *[_push_one(uid) for uid in _ws_targets],
+            return_exceptions=True,
+        )
+
     # ========== IN-APP NOTIFICATION + PUSH FOR ALL MEMBERS ==========
-    # Same pattern as 1:1 send_message and _bridge_group_message
+    #
+    # 🔴 ROUND 71 phase 3 follow-up #2 (2026-05-24) — performance.
+    # APNs HTTP POSTs are slow (~150-400ms each). Doing them
+    # sequentially under the request handler made the sender's
+    # POST return only AFTER every member's push completed —
+    # user-perceived as "kheili kond" group send. Move the entire
+    # in-app-notification + APNs fan-out to a background task that
+    # fires after the response is returned. WS push (above) is the
+    # primary delivery; notifications/APNs are secondary.
     from models import Notification
     from services.apns_service import get_apns_service, APNsService
-    
+
     other_member_ids = [uid for uid in all_member_ids if uid != current_user.id]
     if other_member_ids:
         members_to_notify = db.query(User).filter(
             User.id.in_(other_member_ids)
         ).all()
-        
+        # Snapshot the User rows we need NOW (push tokens, push_platform,
+        # username, preferences) so the background task doesn't touch
+        # the request-scoped Session (which closes when we return).
+        member_snapshots = [
+            {
+                "id": m.id,
+                "username": m.username,
+                "push_token": m.push_token,
+                "push_platform": m.push_platform,
+                "show_message_previews": getattr(m, "show_message_previews", True),
+                "allow_message_notifications": getattr(m, "allow_message_notifications", True),
+            }
+            for m in members_to_notify
+        ]
+
         sender_display = APNsService.build_push_display_name(current_user)
-        
-        # Determine preview based on message type
+
         if req.message_type == "text":
             preview_text = req.content[:100] if req.content else "New message"
         elif req.message_type == "voice":
@@ -659,51 +958,74 @@ async def send_group_message(
             preview_text = "📍 Location"
         else:
             preview_text = "New message"
-        
-        for member in members_to_notify:
-            # In-app notification
-            notif = Notification(
-                user_id=member.id,
-                type="group_message",
-                data=json.dumps({
-                    "room_id": group_id,
-                    "group_id": group_id,
-                    "group_name": group.name,
-                    "sender_id": current_user.id,
-                    "sender_username": current_user.username,
-                    "preview": preview_text,
-                    "message_type": req.message_type
-                }),
-                is_read=False
-            )
-            db.add(notif)
-            
-            # Push notification (with preference check — same as 1:1)
-            if member.push_token and member.push_platform == "ios":
-                prefs = APNsService.should_send_push(member, "message")
-                if prefs["allowed"]:
+        notif_data_preview = (req.content or "")[:200]
+
+        group_name_snapshot = group.name
+        sender_id_snapshot = current_user.id
+        sender_username_snapshot = current_user.username
+        message_type_snapshot = req.message_type
+
+        async def _fanout_notifications():
+            from database import SessionLocal  # fresh session — request session closes when we return
+            bg_db = SessionLocal()
+            try:
+                # 1. In-app notification rows (cheap DB inserts).
+                for m in member_snapshots:
+                    bg_db.add(Notification(
+                        user_id=m["id"],
+                        type="group_message",
+                        data=json.dumps({
+                            "room_id": group_id,
+                            "group_id": group_id,
+                            "group_name": group_name_snapshot,
+                            "sender_id": sender_id_snapshot,
+                            "sender_username": sender_username_snapshot,
+                            "preview": notif_data_preview,
+                            "message_type": message_type_snapshot,
+                        }),
+                        is_read=False,
+                    ))
+                bg_db.commit()
+                # 2. APNs pushes — concurrent so the slowest one doesn't
+                # block the others.
+                async def _push_one_member(m: dict) -> None:
+                    if not (m["push_token"] and m["push_platform"] == "ios"):
+                        return
+                    # Re-fetch the User row inside the bg session so
+                    # APNsService.should_send_push has live preferences.
+                    bg_user = bg_db.query(User).filter(User.id == m["id"]).first()
+                    if not bg_user:
+                        return
+                    prefs = APNsService.should_send_push(bg_user, "message")
+                    if not prefs["allowed"]:
+                        return
                     display_preview = preview_text if prefs["show_preview"] else "New message"
-                    badge = APNsService.get_unread_badge_count(db, member.id)
+                    badge = APNsService.get_unread_badge_count(bg_db, m["id"])
                     try:
                         apns = get_apns_service()
-                        push_result = await apns.send_message_notification(
-                            device_token=member.push_token,
-                            sender_name=f"{sender_display} in {group.name}",
+                        await apns.send_message_notification(
+                            device_token=m["push_token"],
+                            sender_name=f"{sender_display} in {group_name_snapshot}",
                             message_preview=display_preview,
                             room_id=group_id,
-                            sender_id=current_user.id,
-                            message_type=req.message_type,
-                            badge=badge
+                            sender_id=sender_id_snapshot,
+                            message_type=message_type_snapshot,
+                            badge=badge,
                         )
-                        if push_result:
-                            print(f"📱 ✅ [Groups] Push sent to {member.username}")
                     except Exception as e:
-                        print(f"📱 ❌ [Groups] Push failed for {member.username}: {e}")
-                else:
-                    print(f"📱 ⏭️ [Groups] Push skipped for {member.username} (notifications disabled)")
-        
-        db.commit()
-        print(f"🔔 [Groups] Notifications sent to {len(members_to_notify)} members")
+                        print(f"📱 ❌ [Groups] Push failed for {m['username']}: {e}")
+                await _asyncio.gather(
+                    *[_push_one_member(m) for m in member_snapshots],
+                    return_exceptions=True,
+                )
+                print(f"🔔 [Groups-bg] Notifications fanned out to {len(member_snapshots)} members")
+            except Exception as _bg_err:
+                print(f"⚠️ [Groups-bg] Notification fan-out failed: {_bg_err}")
+            finally:
+                bg_db.close()
+
+        # Fire-and-forget so the sender's response returns immediately.
+        _asyncio.create_task(_fanout_notifications())
     
     # ========== MENTION PROCESSING ==========
     if req.entities:
@@ -827,7 +1149,15 @@ async def send_group_message(
         is_duplicate=False,
         status="accepted",
         bomb_duration_sec=message.bomb_duration_sec,
-        poll_id=message.poll_id
+        poll_id=message.poll_id,
+        # 🔴 ROUND 26 — album passthrough on group send response
+        media_group_key=message.media_group_key,
+        media_group_index=message.media_group_index,
+        media_group_total=message.media_group_total,
+        # 🔴 ROUND 71 phase 3 follow-up — group-key version so the
+        # sender's local store stamps the message row correctly on
+        # the POST ACK round-trip (mirrors WS push at line 829).
+        group_key_version=getattr(message, 'group_key_version', None),
     )
 
 
@@ -956,6 +1286,16 @@ def get_group_messages(
         responses = []
         for msg in messages:
             sender = senders.get(msg.sender_id)
+            # 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — if the
+            # message was stored opaque (`group_key_version is not
+            # None`), the Fernet wrap on disk is wrapping the GCM
+            # ciphertext; `decrypt_text` strips that and gives us
+            # back the base64 GCM blob the client encrypted. Pass
+            # the version through so the client knows which key to
+            # use to AES-GCM-decrypt. Without this passthrough the
+            # client received the ciphertext but had no idea it was
+            # group-sealed → bubble rendered raw base64.
+            _gkv = getattr(msg, 'group_key_version', None)
             responses.append(GroupMessageResponse(
                 id=msg.id,
                 group_id=msg.group_id,
@@ -977,7 +1317,13 @@ def get_group_messages(
                 entities=msg.entities,
                 status="accepted",
                 bomb_duration_sec=msg.bomb_duration_sec,
-                poll_id=msg.poll_id
+                poll_id=msg.poll_id,
+                # 🔴 ROUND 26 — album passthrough on group history
+                media_group_key=msg.media_group_key,
+                media_group_index=msg.media_group_index,
+                media_group_total=msg.media_group_total,
+                # 🔴 ROUND 71 phase 3 follow-up — group-key version.
+                group_key_version=_gkv,
             ))
         
         return responses
@@ -1011,7 +1357,7 @@ def _require_admin(db: Session, group_id: str, user_id: str) -> GroupMember:
 
 
 @router.post("/{group_id}/members/{user_id}/kick")
-def kick_member(
+async def kick_member(
     group_id: str,
     user_id: str,
     current_user: User = Depends(get_current_user),
@@ -1032,9 +1378,9 @@ def kick_member(
     
     target_user = db.query(User).filter(User.id == user_id).first()
     target_name = target_user.username if target_user else "Unknown"
-    
+
     db.delete(target)
-    
+
     # System message
     sys_msg = GroupMessage(
         id=str(uuid.uuid4()),
@@ -1045,10 +1391,74 @@ def kick_member(
         timestamp=datetime.utcnow()
     )
     db.add(sys_msg)
+
+    # 🔴 hacker-audit 2026-05-19 — forward secrecy on kick.
+    #
+    # group_keys.py's module docstring advertises "Forward secrecy on
+    # member-kick: bumping the version means a kicked member's cached
+    # key can't decrypt new messages." But the kick endpoint never
+    # actually called the key-rotation primitive — it only deleted the
+    # membership row. A kicked member's cached group_key (last fetched
+    # from GET /api/groups/{id}/key while still a member) thus stayed
+    # valid forever. Combined with the BLE-mesh broadcast architecture
+    # (any device in radio range hears every encrypted envelope), a
+    # kicked member could sit silently in radio range and keep reading
+    # every group message until an admin remembered to manually call
+    # POST /api/groups/{id}/key/rotate — which they almost never do.
+    #
+    # Server-side broadcast WS payloads also remain decryptable by the
+    # cached key, so the LAN/BLE caveat isn't even required for the
+    # attack to land.
+    #
+    # FIX: every kick mints a new key version atomically with the
+    # membership delete. Remaining members re-fetch on next GET /key
+    # (or on cache-miss when they receive a v+1 envelope they can't
+    # decrypt with v).
+    new_key_version = None
+    try:
+        from routers.group_keys import _mint_new_key
+        new_key = _mint_new_key(db, group_id)
+        new_key_version = getattr(new_key, "version", None) if new_key else None
+    except Exception as _key_err:
+        # Don't fail the kick if key minting somehow errors — log
+        # loudly so ops notices. The membership delete is the
+        # primary security boundary; key rotation is defence in
+        # depth on top of it.
+        print(f"⚠️ [Groups] kick: group-key rotation failed for {group_id}: {_key_err}")
+
     db.commit()
-    
-    print(f"🦶 [Groups] {current_user.username} kicked {target_name} from {group_id}")
-    return {"success": True, "message": f"{target_name} removed from group"}
+
+    # 🔴 ROUND 71 S23: WS-push `group_key_rotated` to all REMAINING
+    # members so each iOS client invalidates its `latest` cache and
+    # re-fetches the new version on the very next encrypt. Without
+    # this, remaining members kept encrypting with v(N-1) until they
+    # personally received a v+1 envelope they couldn't decrypt with v
+    # — meanwhile the kicked member (still cached v(N-1) and in BLE
+    # range) decrypted every supposedly-rotated message.
+    try:
+        remaining = db.query(GroupMember).filter(
+            GroupMember.group_id == group_id,
+            GroupMember.user_id != user_id,
+        ).all()
+        for _m in remaining:
+            try:
+                await ws_manager.notify(_m.user_id, {
+                    "type": "group_key_rotated",
+                    "group_id": group_id,
+                    "version": new_key_version,
+                })
+            except Exception:
+                pass
+    except Exception as _push_err:
+        print(f"⚠️ [Groups] kick: key-rotation WS push failed: {_push_err}")
+
+    print(f"🦶 [Groups] {current_user.username} kicked {target_name} from {group_id} "
+          f"(key rotated → v{new_key_version})")
+    return {
+        "success": True,
+        "message": f"{target_name} removed from group",
+        "new_key_version": new_key_version,
+    }
 
 
 @router.post("/{group_id}/members/{user_id}/promote")

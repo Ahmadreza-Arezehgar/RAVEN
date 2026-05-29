@@ -379,13 +379,21 @@ struct CreatePostView: View {
                 .foregroundColor(.secondary)
             
             // Text Editor with dynamic height
+            // 🔴 Bug fix (2026-05-15): the composer wrapped Persian /
+            // English at ~2 lines on a 390pt iPhone because the outer
+            // `.padding(12)` stacked on top of `TextEditor`'s own ~5pt
+            // internal insets PLUS the card's `.padding(.horizontal, 16)`
+            // — total ≈33pt of inset per side. Drop the outer pad to
+            // `.horizontal 4` / `.vertical 6` and align the placeholder
+            // so the cursor and the placeholder still overlap.
             ZStack(alignment: .topLeading) {
                 TextEditor(text: $content)
                     .font(.system(size: 16))
                     .foregroundColor(.primary)
                     .scrollContentBackground(.hidden)
                     .frame(minHeight: 120, maxHeight: 220)
-                    .padding(12)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 6)
                     // 🔔 @mention live-picker — fires on every keystroke,
                     // looks for "@…" tokens, debounces a /api/users/search
                     // and surfaces the picker overlay below the composer.
@@ -403,8 +411,8 @@ struct CreatePostView: View {
                     Text("Share your thoughts...")
                         .font(.system(size: 16))
                         .foregroundColor(.secondary.opacity(0.6))
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 20)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 14)
                         .allowsHitTesting(false)
                 }
 

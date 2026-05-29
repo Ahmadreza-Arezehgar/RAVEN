@@ -18,7 +18,7 @@ class AudioRoomActivityManager {
 
     private init() {}
 
-    func startActivity(roomId: String, roomTitle: String, state: AudioRoomAttributes.ContentState) {}
+    func startActivity(roomId: String, roomTitle: String, shareSlug: String?, state: AudioRoomAttributes.ContentState) {}
     func updateActivity(state: AudioRoomAttributes.ContentState) {}
     func endActivity() {}
 }
@@ -40,13 +40,13 @@ class AudioRoomActivityManager {
 
     // MARK: - Start
 
-    func startActivity(roomId: String, roomTitle: String, state: AudioRoomAttributes.ContentState) {
+    func startActivity(roomId: String, roomTitle: String, shareSlug: String?, state: AudioRoomAttributes.ContentState) {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
 
         // End any existing activity first
         endActivity()
 
-        let attributes = AudioRoomAttributes(roomId: roomId, roomTitle: roomTitle)
+        let attributes = AudioRoomAttributes(roomId: roomId, roomTitle: roomTitle, shareSlug: shareSlug)
         let content = ActivityContent(state: state, staleDate: nil)
 
         do {

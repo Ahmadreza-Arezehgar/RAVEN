@@ -55,6 +55,13 @@ actor MessageRepository {
         }
         
         // Step 1: Insert-or-Ignore (idempotent)
+        //
+        // 🔴 ROUND 26 — Telegram-style media albums: three new
+        // columns (media_group_key / _index / _total) bound to the
+        // tail of the INSERT so existing param ordering is
+        // unchanged for the older fields. Nil for single-media
+        // messages; the chat surface treats nil-key rows as
+        // standalone bubbles (the existing render path).
         let insertSQL = """
             INSERT OR IGNORE INTO messages (
                 client_message_id, server_id, room_id, sender_id, sender_name, recipient_id,
@@ -62,10 +69,11 @@ actor MessageRepository {
                 created_at, local_path, remote_url, thumbnail_url, file_name, mime_type,
                 file_size, audio_duration_seconds, upload_progress, last_error,
                 reply_to_message_id, reply_to_text_preview, reply_to_sender_name, reply_to_type,
-                entities_json, forwarded_from_channel, forwarded_from_channel_name
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                entities_json, forwarded_from_channel, forwarded_from_channel_name,
+                media_group_key, media_group_index, media_group_total, expires_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
-        
+
         try await db.execute(insertSQL, params: [
             message.id,
             message.serverId ?? NSNull(),
@@ -95,7 +103,11 @@ actor MessageRepository {
             message.replyToType?.rawValue ?? NSNull(),
             entitiesJson ?? NSNull(),
             message.forwardedFromChannelId ?? NSNull(),
-            message.forwardedFromChannelName ?? NSNull()
+            message.forwardedFromChannelName ?? NSNull(),
+            message.albumGroupKey ?? NSNull(),
+            message.albumIndex ?? NSNull(),
+            message.albumTotal ?? NSNull(),
+            message.expiresAt.map { SharedDateFormatters.formatISO8601($0) } ?? NSNull()
         ])
         
         // Step 2: Update columns that might have new data
@@ -113,6 +125,7 @@ actor MessageRepository {
                 entities_json = COALESCE(?, entities_json),
                 forwarded_from_channel = COALESCE(?, forwarded_from_channel),
                 forwarded_from_channel_name = COALESCE(?, forwarded_from_channel_name),
+                expires_at = COALESCE(?, expires_at),
                 updated_at = CURRENT_TIMESTAMP
             WHERE client_message_id = ?
         """
@@ -130,6 +143,7 @@ actor MessageRepository {
             entitiesJson ?? NSNull(),
             message.forwardedFromChannelId ?? NSNull(),
             message.forwardedFromChannelName ?? NSNull(),
+            message.expiresAt.map { SharedDateFormatters.formatISO8601($0) } ?? NSNull(),
             message.id
         ])
     }
@@ -202,8 +216,8 @@ actor MessageRepository {
                         created_at, local_path, remote_url, thumbnail_url, file_name, mime_type,
                         file_size, audio_duration_seconds, upload_progress, last_error,
                         reply_to_message_id, reply_to_text_preview, reply_to_sender_name, reply_to_type,
-                        entities_json, forwarded_from_channel, forwarded_from_channel_name
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        entities_json, forwarded_from_channel, forwarded_from_channel_name, expires_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """
                 
                 try db.execute(insertSQL, params: [
@@ -235,7 +249,8 @@ actor MessageRepository {
                     message.replyToType?.rawValue ?? NSNull(),
                     entitiesJson ?? NSNull(),
                     message.forwardedFromChannelId ?? NSNull(),
-                    message.forwardedFromChannelName ?? NSNull()
+                    message.forwardedFromChannelName ?? NSNull(),
+                    message.expiresAt.map { SharedDateFormatters.formatISO8601($0) } ?? NSNull()
                 ])
                 
                 // Update columns that might have new data
@@ -346,8 +361,21 @@ actor MessageRepository {
         try await db.execute(sql, params: params)
     }
     
+    // MARK: - Update Attachment Size
+    //
+    // (2026-05-16 — round 9) Patch the file_size column after a video
+    // has been compressed in place. Lets the chat bubble's "Video ·
+    // 12.4 MB" caption read the post-compression value instead of
+    // the original camera-roll size.
+    func updateAttachmentSize(clientMessageId: String, fileSize: Int) async throws {
+        try await db.execute(
+            "UPDATE messages SET file_size = ?, updated_at = CURRENT_TIMESTAMP WHERE client_message_id = ?",
+            params: [fileSize, clientMessageId]
+        )
+    }
+
     // MARK: - Update Server ID
-    
+
     func updateServerId(clientMessageId: String, serverId: String) async throws {
         try await db.execute(
             "UPDATE messages SET server_id = ?, status = 'sent', sent_via_server = 1, updated_at = CURRENT_TIMESTAMP WHERE client_message_id = ?",
@@ -616,7 +644,99 @@ actor MessageRepository {
             params: [messageId, messageId]
         )
     }
-    
+
+    /// 🔴 v1.8 — hard-delete every locally-cached message whose
+    /// disappearing-messages timer has elapsed. The server enforces
+    /// the same expiry server-side; this sweep keeps the on-device
+    /// SQLCipher cache consistent so an expired message is gone here
+    /// too. Best-effort — callers ignore failures.
+    ///
+    /// 🔴 ROUND 70 (2026-05-23) — hacker-audit EPHEMERAL-CRIT-1
+    /// (CRITICAL: ephemeral photo bytes survived "delete" forever).
+    ///
+    /// PREVIOUSLY this only ran `DELETE FROM messages …`. The cached
+    /// media file at `Documents/attachments/<msgId>.<ext>` (written
+    /// by MediaCacheService for every received image / video / voice
+    /// / vault attachment) was NEVER unlinked. So a "disappearing"
+    /// or "deleteAfterRead" or "ephemeralPhoto" message vanished
+    /// from the chat UI but its plaintext bytes (or decryptable
+    /// vault bytes) lived on disk indefinitely — recoverable via
+    /// jailbreak, forensic tools, or a backup snapshot.
+    ///
+    /// FIX: SELECT local_path + attachment_url for soon-to-be-deleted
+    /// rows BEFORE the DELETE, then unlink each file from disk after
+    /// the row is gone. Failure to unlink is logged but does not
+    /// roll back the DELETE — the row going away is the primary
+    /// privacy guarantee; the file unlink is the secondary defense.
+    func purgeExpiredMessages() async throws {
+        let nowISO = SharedDateFormatters.formatISO8601(Date())
+        // Snapshot the local file paths we need to unlink AFTER the
+        // DB row goes away.
+        let pathRows = (try? await db.query(
+            """
+            SELECT local_path, file_name, client_message_id, type, mime_type
+              FROM messages
+             WHERE expires_at IS NOT NULL AND expires_at <= ?
+            """,
+            params: [nowISO]
+        )) ?? []
+
+        // Build the list of files to nuke. Cover three patterns:
+        //   1. `local_path` set explicitly (sender-side post-upload
+        //      copies + receiver cached files written by
+        //      MediaCacheService).
+        //   2. The MediaCacheService synthesised name
+        //      `<msgId>.<ext>` under attachments/ — for receive-only
+        //      messages where the row may have lost its local_path
+        //      after a reload but the cached file still lives in
+        //      attachments/.
+        var pathsToUnlink: [URL] = []
+        let attachmentsDir = FileManager.default
+            .urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("attachments")
+        for row in pathRows {
+            if let local = row["local_path"] as? String, !local.isEmpty {
+                pathsToUnlink.append(URL(fileURLWithPath: local))
+                // Rebased path: MediaCacheService persists files with
+                // last-path-component-only relative resolution.
+                let basename = URL(fileURLWithPath: local).lastPathComponent
+                pathsToUnlink.append(attachmentsDir.appendingPathComponent(basename))
+            }
+            // Synthesised MediaCacheService name `<msgId>.<ext>`.
+            if let msgId = row["client_message_id"] as? String, !msgId.isEmpty {
+                // Try every common ext we might have written.
+                for ext in ["jpg", "jpeg", "png", "gif", "webp", "heic",
+                            "m4a", "mp3", "wav", "aac", "mp4", "mov",
+                            "pdf", "vlt", "bin"] {
+                    pathsToUnlink.append(attachmentsDir.appendingPathComponent("\(msgId).\(ext)"))
+                }
+            }
+        }
+
+        // Now run the DELETE.
+        try await db.execute(
+            "DELETE FROM messages WHERE expires_at IS NOT NULL AND expires_at <= ?",
+            params: [nowISO]
+        )
+
+        // Unlink files best-effort. Path may not exist — that's fine.
+        let fm = FileManager.default
+        for url in pathsToUnlink {
+            if fm.fileExists(atPath: url.path) {
+                do {
+                    try fm.removeItem(at: url)
+                    #if DEBUG
+                    print("🧹 [MessageRepository] purged expired cached file at \(url.lastPathComponent)")
+                    #endif
+                } catch {
+                    #if DEBUG
+                    print("⚠️ [MessageRepository] failed to unlink expired cached file \(url.lastPathComponent): \(error.localizedDescription)")
+                    #endif
+                }
+            }
+        }
+    }
+
     // MARK: - Pending Attachment Helpers (Duplicate Prevention)
     
     /// Check if there's a pending/sending attachment message of given type in this room

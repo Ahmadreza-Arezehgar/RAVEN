@@ -1,4 +1,7 @@
 import Foundation
+import os
+
+fileprivate let logger = Logger(subsystem: "app.raven.ios", category: "Chat.ReadReceipt")
 
 // MARK: - Read Receipt Service (API + Offline Queue)
 
@@ -44,9 +47,7 @@ class ReadReceiptService {
         // Send to server
         guard NetworkMonitor.shared.isOnline else {
             pendingSeenEvents.append((messageId: messageId, chatId: chatId))
-            #if DEBUG
-            print("📥 [ReadReceipt] Queued seen event (offline): \(messageId.prefix(8))")
-            #endif
+            logger.debug("Queued seen event (offline): \(messageId, privacy: .private)")
             return
         }
         
@@ -78,9 +79,7 @@ class ReadReceiptService {
                 seenAt: Date()
             )
         } catch {
-            #if DEBUG
-            print("❌ [ReadReceipt] Failed to store local seen: \(error)")
-            #endif
+            logger.debug("Failed to store local seen: \(error.localizedDescription, privacy: .public)")
         }
     }
     
@@ -92,14 +91,10 @@ class ReadReceiptService {
                 body: body,
                 idempotencyKey: "seen-\(messageId)"
             )
-            #if DEBUG
-            print("✅ [ReadReceipt] Sent seen: \(messageId.prefix(8))")
-            #endif
+            logger.debug("Sent seen: \(messageId, privacy: .private)")
         } catch {
             // Non-critical — don't crash, just log
-            #if DEBUG
-            print("⚠️ [ReadReceipt] Failed to send seen to server: \(error.localizedDescription)")
-            #endif
+            logger.debug("Failed to send seen to server: \(error.localizedDescription, privacy: .public)")
         }
     }
     
@@ -108,9 +103,7 @@ class ReadReceiptService {
         let events = pendingSeenEvents
         pendingSeenEvents.removeAll()
         
-        #if DEBUG
-        print("🔄 [ReadReceipt] Flushing \(events.count) pending seen events")
-        #endif
+        logger.debug("Flushing \(events.count, privacy: .public) pending seen events")
         for event in events {
             await sendToServer(messageId: event.messageId, chatId: event.chatId)
         }

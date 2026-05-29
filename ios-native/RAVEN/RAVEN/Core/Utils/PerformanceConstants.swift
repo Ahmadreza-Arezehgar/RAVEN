@@ -96,4 +96,66 @@ extension String {
 
         return false
     }
+
+    /// Sanitize a string for display on the lock screen / push
+    /// banner / in-app toast. Round 13 — hacker-audit finding N7.
+    ///
+    /// Push payloads come from the server but include attacker-
+    /// controlled chat content (sender names, message bodies). Two
+    /// classes of attack we close here:
+    ///
+    /// 1. **Bidi / control / zero-width hijacks**: characters like
+    ///    U+202E (RIGHT-TO-LEFT OVERRIDE) and U+200B (ZERO-WIDTH
+    ///    SPACE) let an attacker disguise a banner as something
+    ///    else (e.g. spoof a bank-confirmation prompt). We strip the
+    ///    entire Cn/Cc/Cf category EXCEPT line break / tab.
+    /// 2. **Oversized payload**: APNs caps at 4 KB total; a 3.9 KB
+    ///    body line crashes older SpringBoards or pushes the action
+    ///    buttons off-screen on the lock screen. We hard-cap to the
+    ///    `maxLength` the caller hands us.
+    ///
+    /// Use this at every `content.title = …` / `content.body = …`
+    /// assignment in `PushNotificationService` and on any
+    /// notification-derived toast text.
+    func sanitizedForPush(maxLength: Int = 256) -> String {
+        guard !self.isEmpty else { return self }
+
+        // Strip control / format / private-use scalars that aren't
+        // newline or tab. `\u{2066}` … `\u{2069}` (isolate),
+        // `\u{202A}` … `\u{202E}` (override), `\u{200B}` … `\u{200F}`
+        // (zero-width / bidi marks) all fall in .formatCharacter.
+        let filteredScalars = self.unicodeScalars.lazy.filter { scalar in
+            if scalar == "\n" || scalar == "\t" { return true }
+            let cat = scalar.properties.generalCategory
+            // Block Cc (control), Cf (format / bidi), Cs (surrogate),
+            // Co (private use). Keep everything else, including
+            // emoji + non-Latin scripts.
+            switch cat {
+            case .control, .format, .surrogate, .privateUse:
+                return false
+            default:
+                return true
+            }
+        }
+        var sanitized = String(String.UnicodeScalarView(filteredScalars))
+
+        // Collapse runs of whitespace so "  \n\t  hi" doesn't burn
+        // the visible space budget on indentation. Keep single
+        // spaces.
+        sanitized = sanitized.replacingOccurrences(
+            of: "\\s+",
+            with: " ",
+            options: .regularExpression
+        ).trimmingCharacters(in: .whitespaces)
+
+        // Hard cap on length. iOS truncates with an ellipsis past
+        // the visible bound anyway; doing it ourselves means the
+        // remaining payload doesn't sit in memory.
+        if sanitized.count > maxLength {
+            let endIndex = sanitized.index(sanitized.startIndex, offsetBy: maxLength)
+            sanitized = String(sanitized[..<endIndex]) + "…"
+        }
+
+        return sanitized
+    }
 }

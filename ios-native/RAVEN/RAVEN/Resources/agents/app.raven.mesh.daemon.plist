@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+╔══════════════════════════════════════════════════════════════════════╗
+║  RAVEN Mesh LaunchAgent                                              ║
+║                                                                      ║
+║  Per-user agent that keeps the BLE mesh listener alive even when     ║
+║  the main RAVEN.app window is closed. Without this, macOS suspends   ║
+║  the app a few minutes after the last window closes — your mesh      ║
+║  drops, friends can't bridge messages through your Mac, posts you    ║
+║  receive offline never reach the server.                             ║
+║                                                                      ║
+║  Installation (handled by RAVEN's first-launch onboarding sheet):    ║
+║    1. Copy this file to ~/Library/LaunchAgents/                      ║
+║    2. launchctl bootstrap gui/$UID ~/Library/LaunchAgents/app.raven.mesh.daemon.plist
+║    3. The agent boots RAVEN.app in `--mesh-daemon` mode (no window)  ║
+║       which then keeps CBPeripheralManager + central scanning alive  ║
+║       for ~16 hours per macOS power cycle.                           ║
+║                                                                      ║
+║  Uninstall (Settings → Background mesh → Disable):                   ║
+║    launchctl bootout gui/$UID ~/Library/LaunchAgents/app.raven.mesh.daemon.plist
+║    rm ~/Library/LaunchAgents/app.raven.mesh.daemon.plist             ║
+║                                                                      ║
+║  IMPORTANT: This agent runs ONLY while the user is logged in (gui/   ║
+║  domain). It does not run at boot or for other users — strictly      ║
+║  per-user, never a system daemon.                                    ║
+╚══════════════════════════════════════════════════════════════════════╝
+-->
+<plist version="1.0">
+<dict>
+    <!-- Reverse-DNS unique identifier — must match label everywhere -->
+    <key>Label</key>
+    <string>app.raven.mesh.daemon</string>
+
+    <!-- The app to launch. /Applications path because the DMG installer
+         drops RAVEN.app there. The `--mesh-daemon` flag tells the app to
+         start in headless mode: no window, just BLE + WebSocket. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Applications/RAVEN.app/Contents/MacOS/RAVEN</string>
+        <string>--mesh-daemon</string>
+    </array>
+
+    <!-- Start when the user logs in -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- If the daemon crashes, relaunch (with throttle so a crash loop
+         doesn't burn the CPU). -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+        <key>Crashed</key>
+        <true/>
+    </dict>
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
+    <!-- Hard cap on RSS so a leak in the daemon can't eat the user's RAM.
+         512 MB is plenty for a BLE listener + WS client. -->
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>ResidentSize</key>
+        <integer>536870912</integer>
+    </dict>
+
+    <!-- Logging — both stdout and stderr go to ~/Library/Logs/RAVEN/.
+         The directory is created on first launch by the daemon itself. -->
+    <key>StandardOutPath</key>
+    <string>/tmp/raven-mesh-daemon.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/raven-mesh-daemon.err.log</string>
+
+    <!-- Lower priority so the daemon never starves the foreground app -->
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <!-- macOS 13+: opt into the Energy-aware scheduler so the OS knows
+         this is a background helper and can defer it during Low Power. -->
+    <key>LowPriorityIO</key>
+    <true/>
+    <key>LowPriorityBackgroundIO</key>
+    <true/>
+</dict>
+</plist>

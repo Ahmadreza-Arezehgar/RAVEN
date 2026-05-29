@@ -101,7 +101,7 @@ final class AppSettings {
     
     /// Backing storage - these trigger @Observable updates
     private var _textSize: TextSize
-    private var _messageCornerStyle: MessageCornerStyle  
+    private var _messageCornerStyle: MessageCornerStyle
     private var _appearanceMode: AppearanceMode
     
     var textSize: TextSize {
@@ -176,5 +176,10 @@ final class AppSettings {
         } else {
             _appearanceMode = .system
         }
+
+        // Clean up any legacy "design_dynamicThemeSource" key from the
+        // earlier experimental full-app theme. The dynamic-logo feature
+        // that replaced it is settings-free.
+        UserDefaults.standard.removeObject(forKey: "design_dynamicThemeSource")
     }
 }

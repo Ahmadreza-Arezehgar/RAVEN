@@ -534,7 +534,9 @@ struct CommentRow: View {
             // 📋 Copy — always available for text comments.
             if (comment.commentType ?? "text") == "text" && !comment.content.isEmpty {
                 Button {
-                    UIPasteboard.general.string = comment.content
+                    // Round 14 — S9: comment body is user content,
+                    // use the privacy-preserving copy path.
+                    SecurePasteboard.copy(comment.content)
                     Haptics.light()
                 } label: {
                     Label("Copy", systemImage: "doc.on.doc")

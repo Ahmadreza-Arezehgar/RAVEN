@@ -107,6 +107,25 @@ def _get_my_friends(db: Session, user_id: str) -> set:
     return my_friends
 
 
+def _safe_display_name(u: models.User) -> str:
+    """Return either the decrypted real name (when profile is publicly
+    visible) or just the username otherwise. Mirrors the rich-vs-min
+    split /api/users/{id} now enforces. Keeps decryption out of the
+    hot loop when not needed.
+
+    `who_can_see_profile` canonically holds "public" | "friends", but
+    seed data / older rows store "everyone" — same intent as "public"
+    — so both values count as a publicly-visible profile."""
+    is_private = bool(getattr(u, "is_private", False))
+    who_can_see = (getattr(u, "who_can_see_profile", None) or "public").lower()
+    if is_private or who_can_see not in ("public", "everyone"):
+        return u.username or "Unknown"
+    first = decrypt_text(u.first_name) if u.first_name else ""
+    last = decrypt_text(u.last_name) if u.last_name else ""
+    display = f"{first} {last}".strip()
+    return display or (u.username or "Unknown")
+
+
 def _get_contact_suggestions(
     db: Session, user: models.User, excluded_ids: set,
     my_friends: set, limit: int = 5
@@ -115,11 +134,15 @@ def _get_contact_suggestions(
     Get suggestions from user's synced contacts.
     Matches users whose phone_hash is set and allow_contact_discovery is True.
     Prioritizes users with more mutual friends and recent activity.
+
+    🔴 hacker-audit 2026-05-19: also filters out is_private=True so
+    private users don't appear in random other users' suggestion feed.
     """
     query = db.query(models.User).filter(
         models.User.allow_contact_discovery == True,
         models.User.phone_hash.isnot(None),
         or_(models.User.status == 'active', models.User.status.is_(None)),
+        models.User.is_private == False,  # noqa: E712
         models.User.id.notin_(excluded_ids)
     )
 
@@ -154,11 +177,7 @@ def _get_contact_suggestions(
 
         score = 5 * mutual_count + recency
 
-        first = decrypt_text(u.first_name) if u.first_name else ""
-        last = decrypt_text(u.last_name) if u.last_name else ""
-        display_name = f"{first} {last}".strip()
-        if not display_name:
-            display_name = u.username or "Unknown"
+        display_name = _safe_display_name(u)
 
         reason = "From your contacts"
         if mutual_count > 0:
@@ -274,27 +293,26 @@ def _get_algorithmic_suggestions(
             candidates[cid]["mutual_groups"] += 1
 
     if not candidates:
-        # Fallback: recently active users
+        # Fallback: recently active users.
+        # 🔴 hacker-audit 2026-05-19: also exclude is_private=True so
+        # the fallback path can't be used to enumerate every active
+        # private account on the server.
         fallback_users = db.query(models.User).filter(
             or_(models.User.status == 'active', models.User.status.is_(None)),
+            models.User.is_private == False,  # noqa: E712
             models.User.id.notin_(all_excluded)
         ).order_by(
             models.User.last_login.desc().nullslast()
         ).limit(limit).all()
-        
+
         logger.info(f"📊 Discovery fallback: found {len(fallback_users)} users")
 
         results = []
         for u in fallback_users:
-            first = decrypt_text(u.first_name) if u.first_name else ""
-            last = decrypt_text(u.last_name) if u.last_name else ""
-            display_name = f"{first} {last}".strip()
-            if not display_name:
-                display_name = u.username or "Unknown"
             results.append(SuggestedUserItem(
                 user_id=u.id,
                 username=u.username or "",
-                display_name=display_name,
+                display_name=_safe_display_name(u),
                 avatar_url=u.avatar_path,
                 source="algorithm",
                 reason="Suggested for you",
@@ -310,9 +328,12 @@ def _get_algorithmic_suggestions(
     scored: list = []
     candidate_ids = list(candidates.keys())
 
-    # Fetch user objects for candidates
+    # Fetch user objects for candidates.
+    # 🔴 hacker-audit 2026-05-19: drop is_private candidates so they
+    # don't get scored + handed out as suggestions.
     candidate_users = db.query(models.User).filter(
         models.User.id.in_(candidate_ids),
+        models.User.is_private == False,  # noqa: E712
         or_(models.User.status == 'active', models.User.status.is_(None))
     ).all()
 
@@ -372,11 +393,7 @@ def _get_algorithmic_suggestions(
             reasons.append(f"{si} shared interest{'s' if si != 1 else ''}")
         reason = " · ".join(reasons) if reasons else "Suggested for you"
 
-        first = decrypt_text(u.first_name) if u.first_name else ""
-        last = decrypt_text(u.last_name) if u.last_name else ""
-        display_name = f"{first} {last}".strip()
-        if not display_name:
-            display_name = u.username or "Unknown"
+        display_name = _safe_display_name(u)
 
         scored.append((score, signals["source_type"], SuggestedUserItem(
             user_id=u.id,
@@ -408,7 +425,7 @@ def _get_algorithmic_suggestions(
 @router.get("/suggested", response_model=SuggestedFriendsResponse)
 async def get_suggested_friends(
     response: Response,
-    limit: int = Query(default=10, ge=1, le=200),
+    limit: int = Query(default=10, ge=1, le=50),
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
@@ -420,7 +437,24 @@ async def get_suggested_friends(
     - Second half: algorithmic (mutual friends, mutual groups, geo, interests, activity)
 
     Default limit=10 for the feed section.
-    Use limit=200 for the "See All" sheet.
+
+    🔴 hacker-audit 2026-05-19 — bulk-enumeration hardening.
+    PREVIOUSLY: `limit` accepted up to 200 AND when a brand-new
+    account had no friends/groups/contacts, the fallback branch
+    returned `limit` random recently-active users WITH DECRYPTED
+    `first_name + last_name` per row. An attacker who created an
+    account and iterated this endpoint could harvest the real-name
+    + username + avatar of every recently-active user on the server
+    in a couple of minutes. The is_private flag was also ignored
+    everywhere, so even "private" accounts appeared.
+    NOW:
+      • Hard cap `limit=50` (was 200). Real UI needs 10-20.
+      • Filter `is_private=True` out of every code path that
+        proposes a candidate.
+      • Only emit decrypted real name when the candidate's profile
+        is publicly visible (`who_can_see_profile == 'public'`);
+        otherwise we hand back the username only. This matches the
+        same predicate /api/users/{id} now enforces.
     """
     contact_limit = limit // 2
     algo_limit = limit - contact_limit

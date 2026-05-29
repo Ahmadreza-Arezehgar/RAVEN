@@ -15,13 +15,29 @@ struct ServerNotification: Codable, Identifiable {
     let data: NotificationData
     let timestamp: Date
     var isRead: Bool = false
-    
-    // Note: NetworkService uses .convertFromSnakeCase, so we only need custom CodingKey for isRead
+
+    // 🔴 ROUND 70 (2026-05-23) — BUG FIX: badge always shows 50.
+    //
+    // PREVIOUSLY this enum had `case isRead = "is_read"`. NetworkService's
+    // JSONDecoder uses `.convertFromSnakeCase`, which transforms every
+    // JSON key from `is_read` to `isRead` BEFORE the CodingKey lookup
+    // runs. With the explicit raw value `"is_read"`, the decoder looked
+    // for that LITERAL key — but the JSON had already been transformed
+    // to `isRead`, so the lookup MISSED on every single notification.
+    // `decodeIfPresent` then returned nil → `isRead` defaulted to false
+    // → every notification looked unread → badge counted all 50 in the
+    // server's response cap → badge always displayed "50" regardless
+    // of how many notifications the user actually read.
+    //
+    // FIX: drop the explicit `= "is_read"` raw value. The default raw
+    // value for `case isRead` is the case name string `"isRead"`, which
+    // is exactly the key the JSON arrives with after the snake-case
+    // conversion. With this fix `is_read` from the server is correctly
+    // honoured and the badge reflects the real unread count.
     enum CodingKeys: String, CodingKey {
-        case id, type, data, timestamp
-        case isRead = "is_read"
+        case id, type, data, timestamp, isRead
     }
-    
+
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(String.self, forKey: .id)
@@ -39,31 +55,35 @@ struct ServerNotification: Codable, Identifiable {
         let requesterId: String?
         let requesterUsername: String?
         let requesterAvatar: String?
-        
+
         // Post interaction specific (like/comment)
         let postId: String?
         let likerId: String?
         let likerUsername: String?
+        let likerAvatar: String?       // 🟦 R52 — was missing, banner had no avatar
         let commenterId: String?
         let commenterUsername: String?
-        
+        let commenterAvatar: String?   // 🟦 R52 — was missing
+
         // Generic
         let title: String?
         let message: String?
-        
+
         // Group notification fields
         let groupId: String?
         let groupName: String?
+        let groupAvatarUrl: String?    // 🟦 R52 — was missing
         let addedBy: String?
         let addedById: String?
-        
+
         // Group message notification fields
         let senderId: String?
         let senderUsername: String?
+        let senderAvatar: String?      // 🟦 R52 — was missing, banner showed initials
         let preview: String?
         let roomId: String?
         let messageType: String?
-        
+
         // Make all optional with default nil
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -74,30 +94,34 @@ struct ServerNotification: Codable, Identifiable {
             postId = try container.decodeIfPresent(String.self, forKey: .postId)
             likerId = try container.decodeIfPresent(String.self, forKey: .likerId)
             likerUsername = try container.decodeIfPresent(String.self, forKey: .likerUsername)
+            likerAvatar = try container.decodeIfPresent(String.self, forKey: .likerAvatar)
             commenterId = try container.decodeIfPresent(String.self, forKey: .commenterId)
             commenterUsername = try container.decodeIfPresent(String.self, forKey: .commenterUsername)
+            commenterAvatar = try container.decodeIfPresent(String.self, forKey: .commenterAvatar)
             title = try container.decodeIfPresent(String.self, forKey: .title)
             message = try container.decodeIfPresent(String.self, forKey: .message)
             // Group fields
             groupId = try container.decodeIfPresent(String.self, forKey: .groupId)
             groupName = try container.decodeIfPresent(String.self, forKey: .groupName)
+            groupAvatarUrl = try container.decodeIfPresent(String.self, forKey: .groupAvatarUrl)
             addedBy = try container.decodeIfPresent(String.self, forKey: .addedBy)
             addedById = try container.decodeIfPresent(String.self, forKey: .addedById)
             // Group message fields
             senderId = try container.decodeIfPresent(String.self, forKey: .senderId)
             senderUsername = try container.decodeIfPresent(String.self, forKey: .senderUsername)
+            senderAvatar = try container.decodeIfPresent(String.self, forKey: .senderAvatar)
             preview = try container.decodeIfPresent(String.self, forKey: .preview)
             roomId = try container.decodeIfPresent(String.self, forKey: .roomId)
             messageType = try container.decodeIfPresent(String.self, forKey: .messageType)
         }
-        
+
         enum CodingKeys: String, CodingKey {
             case requestId, requesterId, requesterUsername, requesterAvatar
-            case postId, likerId, likerUsername
-            case commenterId, commenterUsername
+            case postId, likerId, likerUsername, likerAvatar
+            case commenterId, commenterUsername, commenterAvatar
             case title, message
-            case groupId, groupName, addedBy, addedById
-            case senderId, senderUsername, preview, roomId, messageType
+            case groupId, groupName, groupAvatarUrl, addedBy, addedById
+            case senderId, senderUsername, senderAvatar, preview, roomId, messageType
         }
     }
 }
@@ -280,31 +304,65 @@ actor NotificationsService {
                 }
             }
             
-            var preview = notification.data.preview ?? notification.data.message ?? "Sent you a message"
+            // 🔴 ROUND 28 (2026-05-17) — empty preview hardening.
+            // PREVIOUSLY: `data.preview ?? data.message ?? "fallback"` —
+            // nil-coalescing doesn't catch empty strings, so a server
+            // payload with `"preview": ""` (which happens for media
+            // messages without captions) produced a banner whose
+            // second line was blank. Run the candidate strings through
+            // MessagePreviewFormatter so we land on a type-aware label
+            // ("💬 Message", "📷 Photo", etc.) instead.
+            let rawPreview = notification.data.preview ?? notification.data.message
+            var preview = MessagePreviewFormatter.format(
+                messageType: notification.data.messageType,
+                body: rawPreview
+            )
             if preview.looksEncrypted { preview = "Sent a secure message" }
             
+            // 🟦 ROUND 52 (2026-05-17) — resolve avatar from notification
+            // data first, fall back to local conversation cache. Was
+            // hard-coded nil before, so every banner showed initials.
+            let messageAvatarURL = AppConfig.mediaURL(from: notification.data.senderAvatar)
+                ?? conversations.first(where: { $0.roomId == roomId })
+                    .flatMap { AppConfig.mediaURL(from: $0.peer.avatarPath) }
+
             return ToastItem.message(
                 id: notification.id,
                 senderName: senderUsername,
                 preview: preview,
-                avatarURL: nil,
+                avatarURL: messageAvatarURL,
                 chatId: roomId,
                 senderId: notification.data.senderId ?? roomId,
                 isGroup: false
             )
-            
+
         case "friend_request":
-            guard var username = notification.data.requesterUsername,
-                  let senderId = notification.data.requesterId,
+            // 🔴 ROUND 71 phase 3 — only `senderId` + `requestId` are
+            // hard requirements. Pre-fix the guard ALSO required
+            // `requesterUsername`, so any legacy notification row
+            // with a nil username (the exact bug the server now
+            // fixes by populating via build_push_display_name) was
+            // silently dropped from the toast pipeline — no banner,
+            // no list-side hint, recipient never saw the request.
+            // Now we fall back to "Someone" so the toast still
+            // surfaces; the row-side renderer in NotificationsList
+            // can pull a better display name from ConversationStore
+            // peer cache when available.
+            guard let senderId = notification.data.requesterId,
                   let requestId = notification.data.requestId else {
                 return nil
             }
-            if username.looksEncrypted { username = "Someone" }
-            
+            var username = notification.data.requesterUsername ?? "Someone"
+            if username.isEmpty || username.looksEncrypted { username = "Someone" }
+
             return ToastItem.friendRequest(
                 id: notification.id,
                 fromName: username,
-                avatarURL: notification.data.requesterAvatar.flatMap { URL(string: $0) },
+                // 🟦 R52 — was `URL(string: $0)` direct, which produces
+                // a relative URL with no scheme that AsyncImage can't
+                // resolve. Use AppConfig.mediaURL to prepend the
+                // server host when the path is relative.
+                avatarURL: AppConfig.mediaURL(from: notification.data.requesterAvatar),
                 senderId: senderId,
                 requestId: requestId
             )
@@ -325,25 +383,27 @@ actor NotificationsService {
             return ToastItem.like(
                 id: notification.id,
                 userName: username,
-                avatarURL: nil,
+                // 🟦 R52 — avatar plumbing.
+                avatarURL: AppConfig.mediaURL(from: notification.data.likerAvatar),
                 postId: postId
             )
-            
+
         case "comment":
             guard var username = notification.data.commenterUsername,
                   let postId = notification.data.postId else {
                 return nil
             }
             if username.looksEncrypted { username = "Someone" }
-            
+
             var preview = notification.data.message ?? notification.data.preview ?? "commented on your post"
             if preview.looksEncrypted { preview = "commented on your post" }
-            
+
             return ToastItem.comment(
                 id: notification.id,
                 userName: username,
                 preview: preview,
-                avatarURL: nil,
+                // 🟦 R52 — avatar plumbing.
+                avatarURL: AppConfig.mediaURL(from: notification.data.commenterAvatar),
                 postId: postId
             )
             
@@ -395,7 +455,14 @@ actor NotificationsService {
             }
             
             var groupName = notification.data.groupName ?? "Group"
-            var preview = notification.data.preview ?? "New message"
+            // 🔴 ROUND 28 — same empty-string nil-coalescing trap as
+            // the 1-to-1 message path above. Route through the
+            // formatter so media-without-caption / empty-preview
+            // payloads still produce a useful banner body.
+            var preview = MessagePreviewFormatter.format(
+                messageType: notification.data.messageType,
+                body: notification.data.preview
+            )
             let senderId = notification.data.senderId ?? ""
             
             if senderUsername.looksEncrypted || groupName.looksEncrypted || groupName == "Group" {
@@ -410,30 +477,40 @@ actor NotificationsService {
             
             if preview.looksEncrypted { preview = "Secure message" }
             
+            // 🟦 R52 — prefer group avatar, fall back to sender avatar
+            // (some servers ship the sender's avatar on group_message
+            // pushes; the group avatar is more visually informative
+            // for a group context).
+            let groupMessageAvatarURL = AppConfig.mediaURL(from: notification.data.groupAvatarUrl)
+                ?? AppConfig.mediaURL(from: notification.data.senderAvatar)
+                ?? ConversationStore.shared.conversations.first(where: { $0.roomId == groupId })
+                    .flatMap { AppConfig.mediaURL(from: $0.groupAvatarUrl ?? $0.peer.avatarPath) }
+
             return ToastItem.message(
                 id: notification.id,
                 senderName: "\(senderUsername) in \(groupName)",
                 preview: preview,
-                avatarURL: nil,
+                avatarURL: groupMessageAvatarURL,
                 chatId: groupId,
                 senderId: senderId,
                 isGroup: true
             )
-            
+
         case "mention":
             guard var username = notification.data.commenterUsername,
                   let postId = notification.data.postId else { return nil }
-                  
+
             if username.looksEncrypted { username = "someone" }
-            
+
             var preview = notification.data.preview ?? "mentioned you"
             if preview.looksEncrypted { preview = "mentioned you" }
-            
+
             return ToastItem.comment(
                 id: notification.id,
                 userName: username,
                 preview: preview,
-                avatarURL: nil,
+                // 🟦 R52 — avatar plumbing.
+                avatarURL: AppConfig.mediaURL(from: notification.data.commenterAvatar),
                 postId: postId
             )
             

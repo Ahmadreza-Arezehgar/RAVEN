@@ -172,13 +172,20 @@ public sealed class KeyStore
     /// (only used in tests) we use a XOR with a hard-coded test entropy —
     /// **NEVER ship the non-Windows path in production**.
     /// </summary>
+    // 🔴 hacker-audit 2026-05-19 — fail hard on non-Windows release.
+    // See RAVEN-Windows/src/Network/TokenStore.cs for full rationale.
     private static byte[] Protect(byte[] data)
     {
 #if WINDOWS
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             return ProtectedData.Protect(data, optionalEntropy: null, scope: DataProtectionScope.CurrentUser);
 #endif
+#if DEBUG
         return TestOnlyXor(data);
+#else
+        throw new PlatformNotSupportedException(
+            "KeyStore requires Windows DPAPI. Refusing to fall back to test-only XOR in Release.");
+#endif
     }
 
     private static byte[] Unprotect(byte[] data)
@@ -187,7 +194,12 @@ public sealed class KeyStore
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             return ProtectedData.Unprotect(data, optionalEntropy: null, scope: DataProtectionScope.CurrentUser);
 #endif
+#if DEBUG
         return TestOnlyXor(data);
+#else
+        throw new PlatformNotSupportedException(
+            "KeyStore requires Windows DPAPI. Refusing to fall back to test-only XOR in Release.");
+#endif
     }
 
     /// <summary>Reversible XOR for non-Windows test runs only. NOT secure.</summary>

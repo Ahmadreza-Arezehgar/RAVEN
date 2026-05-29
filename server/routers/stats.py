@@ -16,12 +16,22 @@ router = APIRouter(prefix="/api/stats", tags=["stats"])
 logger = logging.getLogger(__name__)
 
 PROD_BASE = "https://raven-server-5iwa2y5n3a-ww.a.run.app"
-ADMIN_SECRET = os.getenv("ADMIN_SECRET", "RAVEN_ADMIN_2026")
+# 🔴 hacker-audit 2026-05-20 — no hardcoded admin-secret fallback.
+# PREVIOUSLY this defaulted to the in-source literal "RAVEN_ADMIN_2026";
+# anyone who read the repo could authenticate to every
+# X-Admin-Secret-gated admin endpoint. It now comes only from the
+# environment — unset means the cross-server admin call is skipped.
+ADMIN_SECRET = os.getenv("ADMIN_SECRET")
 IS_DEV = os.getenv("ENV", "development") == "development"
 
 
 async def _get_production_stats():
     """Fetch user count from production via admin API (server-side, no CORS)."""
+    # 🔴 hacker-audit 2026-05-20 — ADMIN_SECRET no longer has a
+    # hardcoded fallback; if it isn't configured, skip the
+    # cross-server admin call rather than sending a bogus header.
+    if not ADMIN_SECRET:
+        return None
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             # Get users with push tokens (gives us a list of active users)

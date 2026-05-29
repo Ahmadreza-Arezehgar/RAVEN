@@ -29,6 +29,35 @@ class APNsService:
     
     # Pre-compiled regex for detecting encrypted Fernet tokens in notification text
     _fernet_pattern = re.compile(r'gAAAAA[A-Za-z0-9_\-]{20,}')
+
+    @staticmethod
+    def push_token_for(user) -> Optional[str]:
+        """🔴 ROUND 70 — canonical push-token reader.
+
+        `user.push_token` may be either a legacy plaintext APNs/FCM
+        token OR a new Fernet-wrapped value (round-70 register_push).
+        This helper unwraps the new format and falls through to raw
+        for legacy rows, so every send-path can be migrated to it
+        in one place without coordinating across callers.
+        """
+        raw = getattr(user, "push_token", None)
+        if not raw:
+            return None
+        # New Fernet payloads start with `gAAAAA…` (the standard
+        # Fernet magic prefix). Cheap O(1) sniff before attempting
+        # the decrypt — saves a Fernet object construction on every
+        # send for the (still-large during migration) population of
+        # legacy plaintext tokens.
+        if raw.startswith("gAAAA"):
+            try:
+                from encryption import decrypt_text as _dec
+                return _dec(raw)
+            except Exception:
+                # Decrypt failure (key rotation, corrupted row) →
+                # treat as no token. Better to skip the push than
+                # ship a malformed token to APNs and get a 400.
+                return None
+        return raw  # legacy plaintext
     
     def __init__(self):
         self.key_id = os.getenv('APNS_KEY_ID')
@@ -258,14 +287,27 @@ class APNsService:
         if not self.is_configured:
             logger.warning("APNs not configured - skipping push")
             return False
-            
+
         token = self._get_token()
         if not token:
             logger.error("❌ APNs token generation failed - cannot send push")
             return False
-        
+
+        # 🔴 ROUND 70 — coerce-decrypt the device_token at entry so
+        # callers that still read `user.push_token` directly (vs the
+        # new `push_token_for(user)` helper) keep working after the
+        # at-rest Fernet wrap landed. Fernet payloads start with
+        # `gAAAA…` — cheap sniff before attempting decrypt.
+        if device_token and isinstance(device_token, str) and device_token.startswith("gAAAA"):
+            try:
+                from encryption import decrypt_text as _dec
+                device_token = _dec(device_token)
+            except Exception:
+                logger.warning("⚠️ failed to decrypt Fernet-wrapped push_token — skipping send")
+                return False
+
         notif_type = data.get('type', 'unknown') if data else 'unknown'
-        
+
         # 🛡️ Safety net: detect encrypted Fernet tokens leaking into notification text
         if self._fernet_pattern.search(title):
             logger.warning(f"⚠️ ENCRYPTED TEXT detected in push title! Replacing with fallback. Original: {title[:30]}...")
@@ -390,31 +432,61 @@ class APNsService:
         room_id: str,
         sender_id: str,
         message_type: str = "text",
-        badge: Optional[int] = None
+        badge: Optional[int] = None,
+        sender_avatar: Optional[str] = None,
+        is_group: bool = False,
+        group_name: Optional[str] = None,
     ) -> bool:
-        """Send push notification for a new message."""
-        
-        # Format notification based on message type
+        """Send push notification for a new message.
+
+        🔴 ROUND 71 phase 3 follow-up (2026-05-24) — payload now
+        carries `sender_username`, `sender_avatar`, `preview`, and
+        `is_group` so the foregrounded iOS app can paint a
+        rich in-app banner (real display name + avatar + type-aware
+        preview emoji) instead of falling back to the generic
+        "New message / 💬 Message" placeholder. Pre-fix the data
+        dict carried only {type, room_id, sender_id, message_type}
+        and `RealtimeEngine.showToast`'s `if let senderName =
+        payload["sender_username"]` guard early-returned because
+        the field was absent — every APNs-driven foreground toast
+        was silently dropped.
+        """
+        # Format notification body based on message type
         if message_type == "voice":
             body = "🎤 Voice message"
         elif message_type == "image":
             body = "📷 Image"
         elif message_type == "video":
             body = "🎬 Video"
+        elif message_type == "file":
+            body = "📎 File"
+        elif message_type == "location":
+            body = "📍 Location"
         else:
             # Truncate text preview
             body = message_preview[:100] if len(message_preview) > 100 else message_preview
-        
+
+        data: dict = {
+            'type': 'message',
+            'room_id': room_id,
+            'sender_id': sender_id,
+            'message_type': message_type,
+            # NEW: surface everything the in-app banner needs so we
+            # don't have to scrape it out of aps.alert.
+            'sender_username': sender_name,
+            'preview': body,
+            'is_group': is_group,
+        }
+        if sender_avatar:
+            data['sender_avatar'] = sender_avatar
+        if is_group and group_name:
+            data['group_name'] = group_name
+
         return await self.send_push(
             device_token=device_token,
             title=sender_name,
             body=body,
-            data={
-                'type': 'message',
-                'room_id': room_id,
-                'sender_id': sender_id,
-                'message_type': message_type
-            },
+            data=data,
             thread_id=f"chat_{room_id}",
             category='MESSAGE',
             mutable_content=True,
@@ -435,18 +507,32 @@ class APNsService:
         """
         if not self.is_configured:
             return False
-        
+
+        # 🔴 ROUND 71 S19: coerce-decrypt Fernet-wrapped push token
+        # at entry (mirror of round-70 fix in `send_push`). After
+        # round-70 push tokens are stored Fernet-wrapped; callers
+        # passing `user.push_token` directly into this helper would
+        # ship `gAAAAA…` as the APNs device id → 400 BadDeviceToken
+        # → silent bridge-push failure for every migrated user.
+        if device_token and isinstance(device_token, str) and device_token.startswith("gAAAA"):
+            try:
+                from encryption import decrypt_text as _dec
+                device_token = _dec(device_token)
+            except Exception:
+                logger.warning("⚠️ [BridgeWake] Fernet decrypt of push_token failed — skipping")
+                return False
+
         token = self._get_token()
         if not token:
             return False
-        
+
         payload = {
             "aps": {"content-available": 1},
             "type": "bridge_wake",
             "recipient_id": recipient_id,
             "message_count": message_count
         }
-        
+
         host = self.sandbox_host if self.use_sandbox else self.production_host
         url = f"{host}/3/device/{device_token}"
         
@@ -583,7 +669,27 @@ class APNsService:
             category='FRIEND_REQUEST',
             badge=badge
         )
-    
+
+    async def send_friend_accepted_notification(
+        self,
+        device_token: str,
+        accepter_name: str,
+        accepter_id: str,
+        badge: Optional[int] = None
+    ) -> bool:
+        """Send push notification when a friend request is accepted."""
+        return await self.send_push(
+            device_token=device_token,
+            title="Friend Request Accepted",
+            body=f"{accepter_name} accepted your friend request",
+            data={
+                'type': 'friend_accepted',
+                'accepter_id': accepter_id
+            },
+            category='FRIEND_REQUEST',
+            badge=badge
+        )
+
     async def send_mention_notification(
         self,
         device_token: str,

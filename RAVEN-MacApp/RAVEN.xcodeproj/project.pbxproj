@@ -1,0 +1,639 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		035E0BDD3E958F20EF95189F /* VoiceRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9976A355D37298E66D91267A /* VoiceRecorder.swift */; };
+		0BA145B1198B0D9B74660DCC /* FeedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D05477CF1893206624655CA8 /* FeedView.swift */; };
+		168A46AD4FA12211A2D1163D /* BLEMeshEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = B54451B21AB0F4E4F9D8E56E /* BLEMeshEngine.swift */; };
+		189FAB352699749D307D8EAE /* NetworkService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C11B6835A3A34ECA78132350 /* NetworkService.swift */; };
+		1A4FEB88B75982B1A3D8B829 /* HashtagFeedSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 186FB9B0A758CFE6EA974006 /* HashtagFeedSheet.swift */; };
+		1FA2830AB43760138C0E1DB3 /* ChatThreadView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08674C601AAE99AC56855B76 /* ChatThreadView.swift */; };
+		20E84EB1936CB01A790A8D60 /* ExploreColumn.swift in Sources */ = {isa = PBXBuildFile; fileRef = 60FF4A781159B80DED7B0B3B /* ExploreColumn.swift */; };
+		2CE245F03537DED543977252 /* LinkedDevicesSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5FFA568DEF43254E90C6DB89 /* LinkedDevicesSheet.swift */; };
+		30429DC52C25601AEEF1478A /* MeshCryptoService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 729195D205060278D3C21CC7 /* MeshCryptoService.swift */; };
+		312E929336758D97F2299F20 /* RUMProtocolV2.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31EF08CC201FE5E7A4CC76C9 /* RUMProtocolV2.swift */; };
+		35B72EC1D654F8576CB436E5 /* MeshLoginEnvelope.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA40A05B00ECC8E9C1FDADDF /* MeshLoginEnvelope.swift */; };
+		3DBC3B3FDF63F58FE995B2CC /* MeshError.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B679CBFC1EC0C9E15AF0420 /* MeshError.swift */; };
+		7ACE261004FB47B099E484E1 /* CoverTrafficEmitter.swift in Sources */ = {isa = PBXBuildFile; fileRef = CAA635A3EBA141CFAEE40D30 /* CoverTrafficEmitter.swift */; };
+		323AD254CBF44DEEA5CD8DEE /* DoubleRatchet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3939DB368D7D4136A7CD0492 /* DoubleRatchet.swift */; };
+		6219C958E1DE49C7BDE5BBC6 /* HopMACChain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C8F3ABE81F548FCB64CBBF9 /* HopMACChain.swift */; };
+		1F46D5E0E5A74FB6A5F7B92B /* PQNoiseSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD394F9C796A433E823CD03A /* PQNoiseSession.swift */; };
+		A5F722413E24458EB8BCF192 /* PeerIDRotator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 771D1CD770F54239B48711F9 /* PeerIDRotator.swift */; };
+		98F7058125D1434E81B7D567 /* SecurityConstants.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B607A2293C2464C9BA3DEDA /* SecurityConstants.swift */; };
+		413EEA415FC0E22CA6DD0E87 /* DeviceIdentityService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8832467BB7E17FC786E61669 /* DeviceIdentityService.swift */; };
+		4620CD29A674DBA4600965AC /* ChatSheets.swift in Sources */ = {isa = PBXBuildFile; fileRef = E62F80C488BB58156FE0DD0F /* ChatSheets.swift */; };
+		4CA59F9C55F9B34A638754C0 /* RAVENMacApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21B50D2DCD131ABDAD5B51C3 /* RAVENMacApp.swift */; };
+		4E7C82F5D4D334F5421B8E3E /* FriendRequestsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAA4A3FB34D774C1F5830E84 /* FriendRequestsSheet.swift */; };
+		519640C8E91243E100EA53A8 /* TransportTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC7794544B985D8909A14F54 /* TransportTypes.swift */; };
+		53D73DD1215E7C3E1CAAE240 /* UserProfileSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3B91F82D29BCC18C38E02A1 /* UserProfileSheet.swift */; };
+		58C0DEF5EBBA79BC8C7475B2 /* MacShellView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48EF6653E9C6F8438DB1D64A /* MacShellView.swift */; };
+		60BEB63C552984ABB70F29E1 /* GoogleSignInCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A5B7F54AC8552ED5FA57A00 /* GoogleSignInCoordinator.swift */; };
+		63246909E9712E4481FD3036 /* ComposeSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 532E9B6EAC78862B6B93D722 /* ComposeSheet.swift */; };
+		6931AA8A3B8BC1658CE1F930 /* RavenTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79A5D2B840C58EF0FFBFAD9F /* RavenTheme.swift */; };
+		6CD9F995B74C73D9FB1E54D7 /* AuthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4FCE01586EE0F65FA7E6375 /* AuthService.swift */; };
+		6E9AC13A39312AA9F0A60EE0 /* MainColumn.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02FAECA03C297F8CDAFB8D54 /* MainColumn.swift */; };
+		74536E8133F3A7076653A952 /* ChatListColumn.swift in Sources */ = {isa = PBXBuildFile; fileRef = 573B5E9A242924D22173E153 /* ChatListColumn.swift */; };
+		7C88B7C3C8B805082EDD8A85 /* KeychainService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E403F765DDDAF1923FA4CB05 /* KeychainService.swift */; };
+		8BD3C6A97904F2B5EA290BFB /* MPCTransportService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2CBEC877961627D80F74AEA /* MPCTransportService.swift */; };
+		8F0100A095FC248AEC69D861 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3DE01BB64C71BE2D30E0F64 /* Models.swift */; };
+		90D3299B0C0DA522B0E25FCA /* ChatStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6825ADE2222344EB4C9A2BFF /* ChatStore.swift */; };
+		97423F1F6C097DEE0AC03CD6 /* BellSettingsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8AF2BC33AD818E9562E722E0 /* BellSettingsSheet.swift */; };
+		979BCD1E6BC1F51193BED46A /* RealtimeEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C2973837F73224324C9F780 /* RealtimeEngine.swift */; };
+		9F0BC51D8E40A25350D06A34 /* ImageLightbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7CB045405883A23D31B2792 /* ImageLightbox.swift */; };
+		9F1EED13366BA9C22670E283 /* PostCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2510E0688C1C7342AF692F4 /* PostCardView.swift */; };
+		A71AF3F776E303D626FA4659 /* AppleSignInCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6975270F8C2BC258AD8B8E21 /* AppleSignInCoordinator.swift */; };
+		A77BD2D239259F8EFD420EC3 /* MenuBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A854118BC43EC518F6D0FC2A /* MenuBarController.swift */; };
+		A7DB9147DA1C0699F894A559 /* ProfileColumn.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D5DBFD9A37915E895DD7B97 /* ProfileColumn.swift */; };
+		BF58874CAE94C2039B2B18A7 /* AuthLandingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08EED7BECD1E6AB0B881A03D /* AuthLandingView.swift */; };
+		C4118BE08A64070BF661E217 /* BloomFilter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29F906E480EF531DABD3940F /* BloomFilter.swift */; };
+		C59BF30F8F96EAC1E15504BA /* RUMRelayService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 881BC6B2954E95714BC7FEDF /* RUMRelayService.swift */; };
+		C5AD41D017224C3EB76C2616 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1FD2F650C81FBD9F72752148 /* Assets.xcassets */; };
+		C72887225FA4DC44AFBCDD8F /* MeshBridgeReceiver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E711E28AC54AA7AA9BF52AC /* MeshBridgeReceiver.swift */; };
+		C831004BBB7D7830896123F3 /* NoiseSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1305B9F88D0F01114EC73C51 /* NoiseSession.swift */; };
+		D2AC8F6D79388760B7568115 /* MeshDedupRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10691CB96E53B9E2283053BD /* MeshDedupRepository.swift */; };
+		DA7A3068AE2DFF8ECC4CB169 /* RailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6803FBF9E4A28765A8F3ED95 /* RailView.swift */; };
+		DE89C6E890AF1B75AD586781 /* NotificationsColumn.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD591881A548EEECFF62AB24 /* NotificationsColumn.swift */; };
+		EA61BAE4C4E6D988822FB70F /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = 5EFD6009DE79600FE016AB61 /* GoogleSignIn */; };
+		F4812E52F1F06276DC766DDF /* RightPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = C34BAB9A5F177BD70C47CDA4 /* RightPane.swift */; };
+		F998DB3ACEA2766DB26477CF /* BackgroundModeService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 352B50F495DF36A67C78E2D6 /* BackgroundModeService.swift */; };
+		FD96B8A23563909F47D0A295 /* NoiseSessionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 368C9E30D5FFF92127CDC65E /* NoiseSessionStore.swift */; };
+		FF667CCBEF952BA8E31F5E59 /* MeshEnvelope.swift in Sources */ = {isa = PBXBuildFile; fileRef = B28B4C98E749D85F22C45C5E /* MeshEnvelope.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		02FAECA03C297F8CDAFB8D54 /* MainColumn.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainColumn.swift; sourceTree = "<group>"; };
+		08674C601AAE99AC56855B76 /* ChatThreadView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatThreadView.swift; sourceTree = "<group>"; };
+		08EED7BECD1E6AB0B881A03D /* AuthLandingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthLandingView.swift; sourceTree = "<group>"; };
+		10691CB96E53B9E2283053BD /* MeshDedupRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshDedupRepository.swift; sourceTree = "<group>"; };
+		1305B9F88D0F01114EC73C51 /* NoiseSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoiseSession.swift; sourceTree = "<group>"; };
+		186FB9B0A758CFE6EA974006 /* HashtagFeedSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HashtagFeedSheet.swift; sourceTree = "<group>"; };
+		1C2973837F73224324C9F780 /* RealtimeEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RealtimeEngine.swift; sourceTree = "<group>"; };
+		1FD2F650C81FBD9F72752148 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		21B50D2DCD131ABDAD5B51C3 /* RAVENMacApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RAVENMacApp.swift; sourceTree = "<group>"; };
+		29F906E480EF531DABD3940F /* BloomFilter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BloomFilter.swift; sourceTree = "<group>"; };
+		2E711E28AC54AA7AA9BF52AC /* MeshBridgeReceiver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshBridgeReceiver.swift; sourceTree = "<group>"; };
+		31EF08CC201FE5E7A4CC76C9 /* RUMProtocolV2.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RUMProtocolV2.swift; sourceTree = "<group>"; };
+		352B50F495DF36A67C78E2D6 /* BackgroundModeService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundModeService.swift; sourceTree = "<group>"; };
+		368C9E30D5FFF92127CDC65E /* NoiseSessionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoiseSessionStore.swift; sourceTree = "<group>"; };
+		458B49D857C8672428F3C00C /* RAVEN.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = RAVEN.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		48EF6653E9C6F8438DB1D64A /* MacShellView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacShellView.swift; sourceTree = "<group>"; };
+		532E9B6EAC78862B6B93D722 /* ComposeSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposeSheet.swift; sourceTree = "<group>"; };
+		573B5E9A242924D22173E153 /* ChatListColumn.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatListColumn.swift; sourceTree = "<group>"; };
+		5A5B7F54AC8552ED5FA57A00 /* GoogleSignInCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoogleSignInCoordinator.swift; sourceTree = "<group>"; };
+		5B679CBFC1EC0C9E15AF0420 /* MeshError.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshError.swift; sourceTree = "<group>"; };
+		CAA635A3EBA141CFAEE40D30 /* CoverTrafficEmitter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoverTrafficEmitter.swift; sourceTree = "<group>"; };
+		3939DB368D7D4136A7CD0492 /* DoubleRatchet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DoubleRatchet.swift; sourceTree = "<group>"; };
+		9C8F3ABE81F548FCB64CBBF9 /* HopMACChain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HopMACChain.swift; sourceTree = "<group>"; };
+		BD394F9C796A433E823CD03A /* PQNoiseSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PQNoiseSession.swift; sourceTree = "<group>"; };
+		771D1CD770F54239B48711F9 /* PeerIDRotator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeerIDRotator.swift; sourceTree = "<group>"; };
+		9B607A2293C2464C9BA3DEDA /* SecurityConstants.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecurityConstants.swift; sourceTree = "<group>"; };
+		5FFA568DEF43254E90C6DB89 /* LinkedDevicesSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkedDevicesSheet.swift; sourceTree = "<group>"; };
+		60FF4A781159B80DED7B0B3B /* ExploreColumn.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExploreColumn.swift; sourceTree = "<group>"; };
+		6803FBF9E4A28765A8F3ED95 /* RailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RailView.swift; sourceTree = "<group>"; };
+		6825ADE2222344EB4C9A2BFF /* ChatStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatStore.swift; sourceTree = "<group>"; };
+		6975270F8C2BC258AD8B8E21 /* AppleSignInCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleSignInCoordinator.swift; sourceTree = "<group>"; };
+		729195D205060278D3C21CC7 /* MeshCryptoService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshCryptoService.swift; sourceTree = "<group>"; };
+		79A5D2B840C58EF0FFBFAD9F /* RavenTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RavenTheme.swift; sourceTree = "<group>"; };
+		881BC6B2954E95714BC7FEDF /* RUMRelayService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RUMRelayService.swift; sourceTree = "<group>"; };
+		8832467BB7E17FC786E61669 /* DeviceIdentityService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceIdentityService.swift; sourceTree = "<group>"; };
+		8AF2BC33AD818E9562E722E0 /* BellSettingsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BellSettingsSheet.swift; sourceTree = "<group>"; };
+		8D5DBFD9A37915E895DD7B97 /* ProfileColumn.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileColumn.swift; sourceTree = "<group>"; };
+		9976A355D37298E66D91267A /* VoiceRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceRecorder.swift; sourceTree = "<group>"; };
+		A2CBEC877961627D80F74AEA /* MPCTransportService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MPCTransportService.swift; sourceTree = "<group>"; };
+		A4FCE01586EE0F65FA7E6375 /* AuthService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthService.swift; sourceTree = "<group>"; };
+		A7CB045405883A23D31B2792 /* ImageLightbox.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageLightbox.swift; sourceTree = "<group>"; };
+		A854118BC43EC518F6D0FC2A /* MenuBarController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarController.swift; sourceTree = "<group>"; };
+		AA40A05B00ECC8E9C1FDADDF /* MeshLoginEnvelope.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshLoginEnvelope.swift; sourceTree = "<group>"; };
+		B28B4C98E749D85F22C45C5E /* MeshEnvelope.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshEnvelope.swift; sourceTree = "<group>"; };
+		B3DE01BB64C71BE2D30E0F64 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		B54451B21AB0F4E4F9D8E56E /* BLEMeshEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BLEMeshEngine.swift; sourceTree = "<group>"; };
+		BC7794544B985D8909A14F54 /* TransportTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransportTypes.swift; sourceTree = "<group>"; };
+		C11B6835A3A34ECA78132350 /* NetworkService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkService.swift; sourceTree = "<group>"; };
+		C34BAB9A5F177BD70C47CDA4 /* RightPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RightPane.swift; sourceTree = "<group>"; };
+		CD591881A548EEECFF62AB24 /* NotificationsColumn.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationsColumn.swift; sourceTree = "<group>"; };
+		D05477CF1893206624655CA8 /* FeedView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedView.swift; sourceTree = "<group>"; };
+		D2510E0688C1C7342AF692F4 /* PostCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PostCardView.swift; sourceTree = "<group>"; };
+		DAA4A3FB34D774C1F5830E84 /* FriendRequestsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FriendRequestsSheet.swift; sourceTree = "<group>"; };
+		E403F765DDDAF1923FA4CB05 /* KeychainService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainService.swift; sourceTree = "<group>"; };
+		E62F80C488BB58156FE0DD0F /* ChatSheets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatSheets.swift; sourceTree = "<group>"; };
+		F3B91F82D29BCC18C38E02A1 /* UserProfileSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserProfileSheet.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		2BC79079C2726219ACFC41E6 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				EA61BAE4C4E6D988822FB70F /* GoogleSignIn in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		00A3D7BA1C28613B4DC2D052 = {
+			isa = PBXGroup;
+			children = (
+				8A0D6B4919157A67A4ED58A3 /* RAVEN */,
+				BD59AD31830F132D5C4538B4 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		0694D1E8F4517091D2A1E15C /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				08EED7BECD1E6AB0B881A03D /* AuthLandingView.swift */,
+				48EF6653E9C6F8438DB1D64A /* MacShellView.swift */,
+				79A5D2B840C58EF0FFBFAD9F /* RavenTheme.swift */,
+				EE425F94F7B95985C46F7940 /* Components */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		1CFBE2A033A822682DDBBABC /* Mesh */ = {
+			isa = PBXGroup;
+			children = (
+				B54451B21AB0F4E4F9D8E56E /* BLEMeshEngine.swift */,
+				29F906E480EF531DABD3940F /* BloomFilter.swift */,
+				10691CB96E53B9E2283053BD /* MeshDedupRepository.swift */,
+				B28B4C98E749D85F22C45C5E /* MeshEnvelope.swift */,
+				5B679CBFC1EC0C9E15AF0420 /* MeshError.swift */,
+				AA40A05B00ECC8E9C1FDADDF /* MeshLoginEnvelope.swift */,
+				31EF08CC201FE5E7A4CC76C9 /* RUMProtocolV2.swift */,
+				881BC6B2954E95714BC7FEDF /* RUMRelayService.swift */,
+				BC7794544B985D8909A14F54 /* TransportTypes.swift */,
+			);
+			path = Mesh;
+			sourceTree = "<group>";
+		};
+		2D8F908D4A8D7DCB9EBDF973 /* Core */ = {
+			isa = PBXGroup;
+			children = (
+				1CFBE2A033A822682DDBBABC /* Mesh */,
+				A393E55ADB9C560D62193642 /* Security */,
+			);
+			path = Core;
+			sourceTree = "<group>";
+		};
+		6E4D5420D756E6E8932056D0 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				6975270F8C2BC258AD8B8E21 /* AppleSignInCoordinator.swift */,
+				A4FCE01586EE0F65FA7E6375 /* AuthService.swift */,
+				352B50F495DF36A67C78E2D6 /* BackgroundModeService.swift */,
+				6825ADE2222344EB4C9A2BFF /* ChatStore.swift */,
+				5A5B7F54AC8552ED5FA57A00 /* GoogleSignInCoordinator.swift */,
+				E403F765DDDAF1923FA4CB05 /* KeychainService.swift */,
+				A854118BC43EC518F6D0FC2A /* MenuBarController.swift */,
+				2E711E28AC54AA7AA9BF52AC /* MeshBridgeReceiver.swift */,
+				A2CBEC877961627D80F74AEA /* MPCTransportService.swift */,
+				C11B6835A3A34ECA78132350 /* NetworkService.swift */,
+				1C2973837F73224324C9F780 /* RealtimeEngine.swift */,
+				9976A355D37298E66D91267A /* VoiceRecorder.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		8A0D6B4919157A67A4ED58A3 /* RAVEN */ = {
+			isa = PBXGroup;
+			children = (
+				21B50D2DCD131ABDAD5B51C3 /* RAVENMacApp.swift */,
+				2D8F908D4A8D7DCB9EBDF973 /* Core */,
+				AB5AADB00E2022AE1F083634 /* Models */,
+				DDE419E070441450017AE6B9 /* Resources */,
+				6E4D5420D756E6E8932056D0 /* Services */,
+				0694D1E8F4517091D2A1E15C /* Views */,
+			);
+			path = RAVEN;
+			sourceTree = "<group>";
+		};
+		A393E55ADB9C560D62193642 /* Security */ = {
+			isa = PBXGroup;
+			children = (
+				8832467BB7E17FC786E61669 /* DeviceIdentityService.swift */,
+				729195D205060278D3C21CC7 /* MeshCryptoService.swift */,
+				1305B9F88D0F01114EC73C51 /* NoiseSession.swift */,
+				368C9E30D5FFF92127CDC65E /* NoiseSessionStore.swift */,
+				CAA635A3EBA141CFAEE40D30 /* CoverTrafficEmitter.swift */,
+				3939DB368D7D4136A7CD0492 /* DoubleRatchet.swift */,
+				9C8F3ABE81F548FCB64CBBF9 /* HopMACChain.swift */,
+				BD394F9C796A433E823CD03A /* PQNoiseSession.swift */,
+				771D1CD770F54239B48711F9 /* PeerIDRotator.swift */,
+				9B607A2293C2464C9BA3DEDA /* SecurityConstants.swift */,
+			);
+			path = Security;
+			sourceTree = "<group>";
+		};
+		AB5AADB00E2022AE1F083634 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				B3DE01BB64C71BE2D30E0F64 /* Models.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		BD59AD31830F132D5C4538B4 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				458B49D857C8672428F3C00C /* RAVEN.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		DDE419E070441450017AE6B9 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				1FD2F650C81FBD9F72752148 /* Assets.xcassets */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		EE425F94F7B95985C46F7940 /* Components */ = {
+			isa = PBXGroup;
+			children = (
+				8AF2BC33AD818E9562E722E0 /* BellSettingsSheet.swift */,
+				573B5E9A242924D22173E153 /* ChatListColumn.swift */,
+				E62F80C488BB58156FE0DD0F /* ChatSheets.swift */,
+				08674C601AAE99AC56855B76 /* ChatThreadView.swift */,
+				532E9B6EAC78862B6B93D722 /* ComposeSheet.swift */,
+				60FF4A781159B80DED7B0B3B /* ExploreColumn.swift */,
+				D05477CF1893206624655CA8 /* FeedView.swift */,
+				DAA4A3FB34D774C1F5830E84 /* FriendRequestsSheet.swift */,
+				186FB9B0A758CFE6EA974006 /* HashtagFeedSheet.swift */,
+				A7CB045405883A23D31B2792 /* ImageLightbox.swift */,
+				5FFA568DEF43254E90C6DB89 /* LinkedDevicesSheet.swift */,
+				02FAECA03C297F8CDAFB8D54 /* MainColumn.swift */,
+				CD591881A548EEECFF62AB24 /* NotificationsColumn.swift */,
+				D2510E0688C1C7342AF692F4 /* PostCardView.swift */,
+				8D5DBFD9A37915E895DD7B97 /* ProfileColumn.swift */,
+				6803FBF9E4A28765A8F3ED95 /* RailView.swift */,
+				C34BAB9A5F177BD70C47CDA4 /* RightPane.swift */,
+				F3B91F82D29BCC18C38E02A1 /* UserProfileSheet.swift */,
+			);
+			path = Components;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		2D46E4773B161113EE66BA27 /* RAVEN */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AC0D4A5B0B64CF5FE1828CDC /* Build configuration list for PBXNativeTarget "RAVEN" */;
+			buildPhases = (
+				6ABD18BBA8E5EC055F37370A /* Sources */,
+				13354853FDB7AACA947BBDD4 /* Resources */,
+				2BC79079C2726219ACFC41E6 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = RAVEN;
+			packageProductDependencies = (
+				5EFD6009DE79600FE016AB61 /* GoogleSignIn */,
+			);
+			productName = RAVEN;
+			productReference = 458B49D857C8672428F3C00C /* RAVEN.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		02FB35DCC36149F578F5DE59 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					2D46E4773B161113EE66BA27 = {
+						DevelopmentTeam = 86L46Z294A;
+						ProvisioningStyle = Manual;
+					};
+				};
+			};
+			buildConfigurationList = 8C776BBE4E9A56D7A96DC38E /* Build configuration list for PBXProject "RAVEN" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 00A3D7BA1C28613B4DC2D052;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				C1FFF86A1950B34653D098B2 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */,
+			);
+			preferredProjectObjectVersion = 77;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				2D46E4773B161113EE66BA27 /* RAVEN */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		13354853FDB7AACA947BBDD4 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C5AD41D017224C3EB76C2616 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		6ABD18BBA8E5EC055F37370A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A71AF3F776E303D626FA4659 /* AppleSignInCoordinator.swift in Sources */,
+				BF58874CAE94C2039B2B18A7 /* AuthLandingView.swift in Sources */,
+				6CD9F995B74C73D9FB1E54D7 /* AuthService.swift in Sources */,
+				168A46AD4FA12211A2D1163D /* BLEMeshEngine.swift in Sources */,
+				F998DB3ACEA2766DB26477CF /* BackgroundModeService.swift in Sources */,
+				97423F1F6C097DEE0AC03CD6 /* BellSettingsSheet.swift in Sources */,
+				C4118BE08A64070BF661E217 /* BloomFilter.swift in Sources */,
+				74536E8133F3A7076653A952 /* ChatListColumn.swift in Sources */,
+				4620CD29A674DBA4600965AC /* ChatSheets.swift in Sources */,
+				90D3299B0C0DA522B0E25FCA /* ChatStore.swift in Sources */,
+				1FA2830AB43760138C0E1DB3 /* ChatThreadView.swift in Sources */,
+				63246909E9712E4481FD3036 /* ComposeSheet.swift in Sources */,
+				413EEA415FC0E22CA6DD0E87 /* DeviceIdentityService.swift in Sources */,
+				20E84EB1936CB01A790A8D60 /* ExploreColumn.swift in Sources */,
+				0BA145B1198B0D9B74660DCC /* FeedView.swift in Sources */,
+				4E7C82F5D4D334F5421B8E3E /* FriendRequestsSheet.swift in Sources */,
+				60BEB63C552984ABB70F29E1 /* GoogleSignInCoordinator.swift in Sources */,
+				1A4FEB88B75982B1A3D8B829 /* HashtagFeedSheet.swift in Sources */,
+				9F0BC51D8E40A25350D06A34 /* ImageLightbox.swift in Sources */,
+				7C88B7C3C8B805082EDD8A85 /* KeychainService.swift in Sources */,
+				2CE245F03537DED543977252 /* LinkedDevicesSheet.swift in Sources */,
+				8BD3C6A97904F2B5EA290BFB /* MPCTransportService.swift in Sources */,
+				58C0DEF5EBBA79BC8C7475B2 /* MacShellView.swift in Sources */,
+				6E9AC13A39312AA9F0A60EE0 /* MainColumn.swift in Sources */,
+				A77BD2D239259F8EFD420EC3 /* MenuBarController.swift in Sources */,
+				C72887225FA4DC44AFBCDD8F /* MeshBridgeReceiver.swift in Sources */,
+				30429DC52C25601AEEF1478A /* MeshCryptoService.swift in Sources */,
+				D2AC8F6D79388760B7568115 /* MeshDedupRepository.swift in Sources */,
+				FF667CCBEF952BA8E31F5E59 /* MeshEnvelope.swift in Sources */,
+				3DBC3B3FDF63F58FE995B2CC /* MeshError.swift in Sources */,
+				35B72EC1D654F8576CB436E5 /* MeshLoginEnvelope.swift in Sources */,
+				8F0100A095FC248AEC69D861 /* Models.swift in Sources */,
+				189FAB352699749D307D8EAE /* NetworkService.swift in Sources */,
+				C831004BBB7D7830896123F3 /* NoiseSession.swift in Sources */,
+				FD96B8A23563909F47D0A295 /* NoiseSessionStore.swift in Sources */,
+				DE89C6E890AF1B75AD586781 /* NotificationsColumn.swift in Sources */,
+				9F1EED13366BA9C22670E283 /* PostCardView.swift in Sources */,
+				A7DB9147DA1C0699F894A559 /* ProfileColumn.swift in Sources */,
+				4CA59F9C55F9B34A638754C0 /* RAVENMacApp.swift in Sources */,
+				312E929336758D97F2299F20 /* RUMProtocolV2.swift in Sources */,
+				C59BF30F8F96EAC1E15504BA /* RUMRelayService.swift in Sources */,
+				DA7A3068AE2DFF8ECC4CB169 /* RailView.swift in Sources */,
+				6931AA8A3B8BC1658CE1F930 /* RavenTheme.swift in Sources */,
+				979BCD1E6BC1F51193BED46A /* RealtimeEngine.swift in Sources */,
+				F4812E52F1F06276DC766DDF /* RightPane.swift in Sources */,
+				519640C8E91243E100EA53A8 /* TransportTypes.swift in Sources */,
+				53D73DD1215E7C3E1CAAE240 /* UserProfileSheet.swift in Sources */,
+				035E0BDD3E958F20EF95189F /* VoiceRecorder.swift in Sources */,
+				7ACE261004FB47B099E484E1 /* CoverTrafficEmitter.swift in Sources */,
+				323AD254CBF44DEEA5CD8DEE /* DoubleRatchet.swift in Sources */,
+				6219C958E1DE49C7BDE5BBC6 /* HopMACChain.swift in Sources */,
+				1F46D5E0E5A74FB6A5F7B92B /* PQNoiseSession.swift in Sources */,
+				A5F722413E24458EB8BCF192 /* PeerIDRotator.swift in Sources */,
+				98F7058125D1434E81B7D567 /* SecurityConstants.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		35A2257F444D8499968A5E93 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = RAVEN/Resources/RAVEN.entitlements;
+				COMBINE_HIDPI_IMAGES = YES;
+				DEAD_CODE_STRIPPING = YES;
+				INFOPLIST_FILE = RAVEN/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				SDKROOT = macosx;
+				SKIP_INSTALL = NO;
+			};
+			name = Debug;
+		};
+		42D4CA5281283BDC0AF2EC96 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGNING_ALLOWED = YES;
+				CODE_SIGNING_REQUIRED = YES;
+				CODE_SIGN_ENTITLEMENTS = RAVEN/Resources/RAVEN.entitlements;
+				CODE_SIGN_IDENTITY = 238A3B20B49CEA45DB465F1DEB41FCA3F2CA1262;
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = 238A3B20B49CEA45DB465F1DEB41FCA3F2CA1262;
+				CODE_SIGN_STYLE = Manual;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = 86L46Z294A;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = RAVEN/Info.plist;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				OTHER_SWIFT_FLAGS = "-warn-concurrency -enable-actor-data-race-checks";
+				PRODUCT_BUNDLE_IDENTIFIER = app.raven.macos;
+				PRODUCT_NAME = RAVEN;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		5D9B61B52FBF1F90AE7B6672 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = RAVEN/Resources/RAVEN.entitlements;
+				COMBINE_HIDPI_IMAGES = YES;
+				DEAD_CODE_STRIPPING = YES;
+				INFOPLIST_FILE = RAVEN/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				SDKROOT = macosx;
+				SKIP_INSTALL = NO;
+			};
+			name = Release;
+		};
+		6107472CE0C62076CFBD8072 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGNING_ALLOWED = YES;
+				CODE_SIGNING_REQUIRED = YES;
+				CODE_SIGN_ENTITLEMENTS = RAVEN/Resources/RAVEN.entitlements;
+				CODE_SIGN_IDENTITY = 238A3B20B49CEA45DB465F1DEB41FCA3F2CA1262;
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = 238A3B20B49CEA45DB465F1DEB41FCA3F2CA1262;
+				CODE_SIGN_STYLE = Manual;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = 86L46Z294A;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = RAVEN/Info.plist;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				OTHER_SWIFT_FLAGS = "-warn-concurrency -enable-actor-data-race-checks";
+				PRODUCT_BUNDLE_IDENTIFIER = app.raven.macos;
+				PRODUCT_NAME = RAVEN;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		8C776BBE4E9A56D7A96DC38E /* Build configuration list for PBXProject "RAVEN" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				42D4CA5281283BDC0AF2EC96 /* Debug */,
+				6107472CE0C62076CFBD8072 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		AC0D4A5B0B64CF5FE1828CDC /* Build configuration list for PBXNativeTarget "RAVEN" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				35A2257F444D8499968A5E93 /* Debug */,
+				5D9B61B52FBF1F90AE7B6672 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		C1FFF86A1950B34653D098B2 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/google/GoogleSignIn-iOS";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 9.1.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		5EFD6009DE79600FE016AB61 /* GoogleSignIn */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C1FFF86A1950B34653D098B2 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */;
+			productName = GoogleSignIn;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 02FB35DCC36149F578F5DE59 /* Project object */;
+}

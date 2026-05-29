@@ -152,8 +152,30 @@ class GeminiService:
         if not audio_base64:
             return {"text": None, "language": None, "confidence": 0, "error": "Failed to download audio"}
         
-        # Build Gemini request with audio
-        url = f"{self.BASE_URL}/{self.TEXT_MODEL}:generateContent?key={self.api_key}"
+        # Build Gemini request with audio.
+        #
+        # 🔴 ROUND 43 (2026-05-19) — API-key URL-leak fix.
+        #
+        # PREVIOUSLY: `url = f"...?key={self.api_key}"` embedded the
+        # Gemini API key in the URL query string. Concrete leaks:
+        #   1. `httpx` raises exceptions that include the full URL
+        #      in the message (`HTTPStatusError: 500 for url
+        #      'https://...?key=AIza...REAL_KEY'`). Those messages
+        #      get `print`'d at line 242 to stdout, which on Cloud
+        #      Run is shipped to centralised logs that any teammate
+        #      with `logging.viewer` IAM can read.
+        #   2. URL-shaped strings are over-eagerly captured by
+        #      crash reporters, APM agents, and structured logs.
+        #   3. The Google Cloud edge logs every URL it sees.
+        # Net effect: the production GEMINI_API_KEY was one log
+        # query away from anyone with logs-viewer permission.
+        #
+        # FIX: move the key into the `x-goog-api-key` HEADER, which
+        # Google's API supports identically. Headers are NOT echoed
+        # in HTTP error messages, NOT captured by URL-substring
+        # log scanners, and NOT visible in URL-only access logs.
+        url = f"{self.BASE_URL}/{self.TEXT_MODEL}:generateContent"
+        headers = {"x-goog-api-key": self.api_key}
         
         prompt = """You are a precise audio transcription system.
 
@@ -194,8 +216,8 @@ Examples:
         
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.post(url, json=payload)
-                
+                response = await client.post(url, json=payload, headers=headers)
+
                 if response.status_code == 200:
                     data = response.json()
                     candidates = data.get("candidates", [])
@@ -380,7 +402,10 @@ Examples:
         
         # ✅ Select model based on whether we have an image
         model = self.VISION_MODEL if use_vision_model else self.TEXT_MODEL
-        url = f"{self.BASE_URL}/{model}:generateContent?key={self.api_key}"
+        # 🔴 ROUND 43 — same header-not-query-string fix as
+        # `transcribe_audio` above. See ROUND 43 comment there.
+        url = f"{self.BASE_URL}/{model}:generateContent"
+        headers = {"x-goog-api-key": self.api_key}
         
         print(f"🤖 [Gemini] Using model: {model} (vision: {use_vision_model})")
         
@@ -417,8 +442,8 @@ Examples:
         
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(url, json=payload)
-                
+                response = await client.post(url, json=payload, headers=headers)
+
                 if response.status_code == 200:
                     data = response.json()
                     # Extract text from response

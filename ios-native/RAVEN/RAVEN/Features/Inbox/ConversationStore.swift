@@ -266,12 +266,45 @@ class ConversationStore {
         
         // BRIDGE: If message needs forwarding and we have mesh peers, relay via mesh
         // This enables online devices to forward server messages to offline users
+        //
+        // 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — same fix as
+        // the batch handler below: force-bridge incoming GROUP
+        // messages to the mesh so offline group members can see
+        // them. Without this, an offline (BLE-only) member never
+        // receives messages from online senders.
         #if !targetEnvironment(simulator)
-        if normalizedMessage.needsForwarding && !BLEMeshEngine.shared.connectedPeers.isEmpty {
-            await forwardServerMessageToMesh(normalizedMessage)
+        let isFromMe_single = normalizedMessage.senderId == currentUserId
+        let shouldGroupBridge_single = isGroupMessage && !isFromMe_single
+        // 🟢 ROUND 73 (2026-05-24) — drop the `connectedPeers.isEmpty`
+        // gate.
+        //
+        // USER REPORT: "az C be A toye group nemire" — C→A group
+        // messages don't reach BLE-only A even when B (the online
+        // member that received the WS push) is supposedly bridging.
+        //
+        // ROOT CAUSE: this gate refused to enqueue when B had no
+        // CURRENTLY-CONNECTED BLE peers. If A was nearby but the
+        // BLE session hadn't (re)established yet at the exact
+        // moment the WS push arrived, the message was silently
+        // dropped from the mesh path. By the time A connected to B
+        // (seconds later), B had nothing to forward.
+        //
+        // FIX: always invoke the forwarder. `enqueueForBroadcast`
+        // already has a `!hasActiveConnections` branch that parks
+        // the signed envelope in `messageQueue` (capacity-bounded,
+        // priority-evicting) for delivery the moment a peer
+        // connects. The persisted `RelayQueueRepository` row also
+        // survives BLE restarts and app backgrounding. The previous
+        // gate was an optimization that became a correctness bug
+        // the moment A's connectivity was intermittent.
+        if normalizedMessage.needsForwarding || shouldGroupBridge_single {
+            let toForward = normalizedMessage
+            Task { [weak self] in
+                await self?.forwardServerMessageToMesh(toForward)
+            }
         }
         #endif
-        
+
         // 5. P0 FIX: Use group roomId for group messages, peerId for 1:1
         // Previously always used peerId, which routed group messages to DM chats
         let effectiveRoomId = isGroupMessage ? actualRoomId : peerId
@@ -301,21 +334,108 @@ class ConversationStore {
         #if DEBUG
         print("🌉 [Bridge] Forwarding server message to mesh: \(message.id.prefix(8))")
         #endif
-        
-        // Create mesh envelope
-        var envelope = message.toMeshEnvelope()
-        
-        // CRITICAL FIX: Mark this envelope as bridged so the receiving mesh node knows
-        // to trust the bridge's signature, since server messages lack original Ed25519 signatures.
-        envelope.isBridged = true
-        envelope.hopCount = 1
-        
+
+        // 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — propagate
+        // group context across the WS→mesh handoff.
+        //
+        // PROBLEM (user report 2026-05-24):
+        //   "lan bridge A be C toye group dorst dare kar mikone vali
+        //    C be A na" — A→C in group works, but C→A doesn't.
+        //
+        // ROOT CAUSES (compounding):
+        //   1. `ChatMessage.toMeshEnvelope()` doesn't carry
+        //      `isGroup` / `groupKeyVersion`. → A's mesh receive
+        //      treats the envelope as 1:1, fails to AES-GCM-decrypt
+        //      the group ciphertext.
+        //   2. For group WS pushes the server sets
+        //      `recipient_id = uid` (the receiving user, B) and
+        //      `room_id = group_id`. `toMeshEnvelope()` copies
+        //      `recipientId = message.recipientId` — i.e. B's userId
+        //      — so when A receives the mesh re-broadcast it sees
+        //      `envelope.recipientId == B`, NOT the group_id. The
+        //      bridged-group signature exception in
+        //      `MeshCryptoService.verifySignature` checks group
+        //      membership of `recipientId`, fails to find the group
+        //      under "B" → message REJECTED.
+        //
+        // FIX: when the room is a known group, override
+        // `recipientId` to the group_id and stamp
+        // `isGroup` + `groupKeyVersion` on the rebuilt envelope.
+        // The receiver routes by group, the signature exception
+        // accepts the bridge attestation, and `GroupKeyService.
+        // decrypt(version:)` unseals the ciphertext.
+        //
+        // SECURITY: server only fans group WS pushes to actual
+        // members, so the rooId here is genuinely a group we (the
+        // bridger) are in. Forwarding it intact is the same trust
+        // model as the existing 1:1 bridge-downlink path. The
+        // ciphertext stays encrypted under the group AES-GCM key
+        // throughout — we (the relay) don't decrypt to forward.
+        let isGroupRoom = await isGroupConversation(roomId: message.roomId ?? "") == true
+
+        var envelope: MeshEnvelope
+        if isGroupRoom, let gid = message.roomId, !gid.isEmpty {
+            // Rebuild with recipientId = group_id so receivers route
+            // through the group thread and the signature-exception
+            // membership check uses the correct ID.
+            envelope = MeshEnvelope(
+                clientMessageId: message.id,
+                roomId: gid,
+                senderId: message.senderId,
+                senderName: message.senderName,
+                recipientId: gid,
+                type: message.type.index,
+                text: message.text,
+                timestamp: message.timestamp.timeIntervalSince1970,
+                sprayCounter: message.sprayCounter,
+                hopCount: 1,
+                hopLimit: message.hopLimit,
+                routePath: message.routePath,
+                originDeviceId: message.originDeviceId,
+                needsForwarding: message.needsForwarding,
+                mediaUrl: message.attachmentUrl,
+                thumbnailUrl: message.thumbnailUrl,
+                fileName: message.fileName,
+                mimeType: message.mimeType,
+                fileSize: message.fileSize,
+                audioDuration: message.audioDurationSeconds,
+                replyToMessageId: message.replyToMessageId,
+                replyToTextPreview: nil,
+                replyToSenderName: message.replyToSenderName
+            )
+            envelope.isBridged = true
+            envelope.isGroup = true
+            envelope.groupKeyVersion = message.groupKeyVersion
+        } else {
+            envelope = message.toMeshEnvelope()
+            envelope.isBridged = true
+            envelope.hopCount = 1
+        }
+
         // Broadcast to mesh
         await BLEMeshEngine.shared.enqueueForBroadcast(envelope)
-        
+
         #if DEBUG
-        print("✅ [Bridge] Server message forwarded to \(BLEMeshEngine.shared.connectedPeers.count) mesh peers")
+        print("✅ [Bridge] Server message forwarded to \(BLEMeshEngine.shared.connectedPeers.count) mesh peers (isGroup=\(envelope.isGroup.map(String.init) ?? "nil"), gkv=\(message.groupKeyVersion.map(String.init) ?? "nil"))")
         #endif
+    }
+
+    /// Returns true if the given roomId is a known group on this device.
+    /// Used to stamp `MeshEnvelope.isGroup` on server→mesh bridge handoff
+    /// so offline receivers route the message into the group thread.
+    private func isGroupConversation(roomId: String) async -> Bool? {
+        guard !roomId.isEmpty else { return nil }
+        let inMemory = self.conversations.contains(where: { $0.roomId == roomId && ($0.isGroup || $0.isChannel) })
+        if inMemory { return true }
+        let groupExists = (try? await DatabaseService.shared.exists(
+            "SELECT 1 FROM groups WHERE id = ? LIMIT 1", params: [roomId]
+        )) ?? false
+        if groupExists { return true }
+        let convIsGroup = (try? await DatabaseService.shared.exists(
+            "SELECT 1 FROM conversations WHERE room_id = ? AND (is_group = 1 OR is_channel = 1) LIMIT 1",
+            params: [roomId]
+        )) ?? false
+        return convIsGroup ? true : nil
     }
     
     // MARK: - Handle Batch Messages (from poll)
@@ -389,15 +509,178 @@ class ConversationStore {
                 print("✅ [ConversationStore] roomId already correct (or group): \(message.roomId?.prefix(8) ?? "nil")")
                 #endif
             }
-            
+
+            // 🔴 ROUND 26 (2026-05-17) — CRITICAL UNSEAL FIX (audit Q2/Q4).
+            //
+            // PREVIOUSLY: WebSocket-pushed messages (from /ws/inbox)
+            // landed here with `text` set to the raw sealed-Base64
+            // wire — because the sender's `MessageStore.sendViaServer`
+            // path runs the plaintext through `MessageContentSealer.seal`
+            // before POSTing to /api/messages/send (correctly, for
+            // E2EE). The server stores + re-pushes the sealed wire
+            // verbatim. The receiver's pollInbox path in
+            // `RealtimeEngine.processWebSocketData:843-891` unseals
+            // correctly, but `ConversationStore.handleIncomingMessages`
+            // (this function, also called from the live WS push path)
+            // didn't. So users saw bubbles like
+            // "UlZOUDEAAABNYWluX1ozb3VzIHRvb2sgYS..." (= RVNP1\0\0\0
+            // followed by plaintext, base64'd) instead of the actual
+            // message text — exactly the user-reported screenshot.
+            //
+            // FIX: mirror the unseal logic from RealtimeEngine — try
+            // GroupKeyService.decrypt for group messages with a
+            // version, fall back to MessageContentSealer.unseal for
+            // 1:1. Empty / nil / unsealable bytes get the placeholder
+            // so bubbles never render raw base64.
+            if let wire = normalizedMessage.text, !wire.isEmpty {
+                // 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — split the
+                // group / 1:1 decrypt branches BEFORE the magic-prefix
+                // gate.
+                //
+                // PROBLEM (pre-fix): the `looksSealed` heuristic only
+                // recognised the 1:1 sealer's magic prefixes
+                // ("UlZT"=RVNS1, "UlZO"=RVNP1). Group AES-GCM
+                // ciphertext from `GroupKeyService.encrypt` has NO
+                // such magic — it's just base64(nonce(12) || ct ||
+                // tag(16)). So a group message arriving via WS
+                // (server's send_group_message push or the bridge
+                // group push) had `groupKeyVersion` set but
+                // `looksSealed=false` → the GroupKeyService.decrypt
+                // branch was NEVER entered. The bubble rendered the
+                // raw base64 ciphertext instead of the decrypted
+                // text. (Probably what the user is seeing: "group
+                // chat only works via mesh — once we switch to
+                // internet, messages are unreadable.")
+                //
+                // FIX: route on `groupKeyVersion` FIRST (the server
+                // contract: presence of the field means the body is
+                // group ciphertext). Fall back to the 1:1 magic
+                // heuristic only when groupKeyVersion is absent.
+                if let version = normalizedMessage.groupKeyVersion,
+                   let groupId = normalizedMessage.roomId, !groupId.isEmpty {
+                    // Group ciphertext — decrypt with group key.
+                    if let plain = await GroupKeyService.shared.decrypt(
+                        wire, groupId: groupId, version: version
+                    ) {
+                        normalizedMessage.text = plain
+                        await MessageEncryptionStatusStore.shared
+                            .record(.sealed, for: normalizedMessage.id)
+                    } else {
+                        #if DEBUG
+                        print("🔒 [CS] Group decrypt FAILED for mid=\(normalizedMessage.id.prefix(8)) groupId=\(groupId.prefix(8)) v\(version)")
+                        #endif
+                        normalizedMessage.text = "🔒 [Encrypted message — could not decrypt]"
+                        await MessageEncryptionStatusStore.shared
+                            .record(.sealedButFailed, for: normalizedMessage.id)
+                    }
+                } else if wire.hasPrefix("UlZT") || wire.hasPrefix("UlZO") {
+                    // 1:1 sealed message — heuristic: a base64 wire
+                    // from the sealer starts with RVNS1 → "UlZT" or
+                    // RVNP1 → "UlZO" (b64 of the magic bytes). Plain
+                    // text obviously doesn't.
+                    let unsealResult = await MessageContentSealer.unseal(
+                        encoded: wire,
+                        senderUserId: normalizedMessage.senderId,
+                        senderAgreementPubKey: nil,
+                        msgId: normalizedMessage.id
+                    )
+                    #if DEBUG
+                    let wirePrefix = String(wire.prefix(16))
+                    let resultStr: String
+                    if let r = unsealResult {
+                        resultStr = "plaintext.count=\(r.plaintext.count) reason=\(r.reason)"
+                    } else {
+                        resultStr = "nil (unknown magic / bad base64 / too large)"
+                    }
+                    print("🔍 [CS.unseal] mid=\(normalizedMessage.id.prefix(8)) sender=\(normalizedMessage.senderId.prefix(8)) wirePrefix='\(wirePrefix)' wireLen=\(wire.count) → \(resultStr)")
+                    #endif
+                    if let result = unsealResult, !result.plaintext.isEmpty {
+                        normalizedMessage.text = result.plaintext
+                        switch result.reason {
+                        case .noiseTransport, .atsamHybrid:
+                            await MessageEncryptionStatusStore.shared
+                                .record(.sealed, for: normalizedMessage.id)
+                        case .explicitPlaintext:
+                            await MessageEncryptionStatusStore.shared
+                                .record(.plaintextExplicit, for: normalizedMessage.id)
+                        case .legacy:
+                            await MessageEncryptionStatusStore.shared
+                                .record(.plaintextLegacy, for: normalizedMessage.id)
+                        case .decryptFailed:
+                            await MessageEncryptionStatusStore.shared
+                                .record(.sealedButFailed, for: normalizedMessage.id)
+                        case .noSenderKey:
+                            break
+                        }
+                    } else {
+                        #if DEBUG
+                        print("🚨 [CS.unseal] PLACEHOLDER SET for mid=\(normalizedMessage.id.prefix(8)) — wire didn't unseal cleanly. Wire prefix='\(String(wire.prefix(32)))'")
+                        #endif
+                        normalizedMessage.text = "🔒 [Encrypted message — could not decrypt]"
+                        await MessageEncryptionStatusStore.shared
+                            .record(.sealedButFailed, for: normalizedMessage.id)
+                    }
+                }
+            }
+
             try? await messageRepo.upsert(normalizedMessage)
             try? await conversationRepo.applyMessage(normalizedMessage, currentUserId: currentUserId)
-            
+
             // BRIDGE: If message needs forwarding and we have mesh peers, relay via mesh
             // This enables online devices to forward server messages to offline users
+            //
+            // 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — also fire
+            // unconditionally for GROUP messages we just received from
+            // the server.
+            //
+            // SCENARIO (user-reported 2026-05-24):
+            //   "on device ke faghat be bluetooth vasle... hich
+            //    kodom az payam haye group dayfat nemitone bokone"
+            //   ≈ device A (BLE-only / offline) can't receive any
+            //   group messages.
+            //
+            // Without this fix the reverse bridge — server → online
+            // member (B) → mesh-broadcast → offline member (A) —
+            // never fires because `needsForwarding` defaults to
+            // false on server-shipped messages. Group chat needs A
+            // to see what C says even when C and A can never talk
+            // directly (C is online, A is offline). B is the mesh
+            // bridge.
+            //
+            // 🛡️ SECURITY: the broadcast carries the server-
+            // delivered ciphertext + group_key_version unchanged.
+            // E2EE preserved — B doesn't decrypt to broadcast.
+            // `enqueueForBroadcast` signs the new envelope with B's
+            // own Ed25519 key (bridge attestation), so other mesh
+            // peers can verify the relay's authenticity even though
+            // the original sender's signature path is lossy here
+            // (server WS push didn't carry it). The
+            // `isBridged=true` flag in `forwardServerMessageToMesh`
+            // signals receivers to trust the bridge sig instead of
+            // requiring an original sender signature.
+            //
+            // SCOPE: limited to group messages from OTHER senders.
+            // Skip:
+            //   - our own messages (we already mesh-broadcast on
+            //     send, no double-emit)
+            //   - 1:1 messages (would create a spam loop with the
+            //     direct mesh path)
             #if !targetEnvironment(simulator)
-            if normalizedMessage.needsForwarding && !BLEMeshEngine.shared.connectedPeers.isEmpty {
-                await forwardServerMessageToMesh(normalizedMessage)
+            let isFromMe = normalizedMessage.senderId == currentUserId
+            let shouldGroupBridge = isGroupMessage && !isFromMe
+            // 🟢 ROUND 73 (2026-05-24) — same fix as the single-
+            // message handler above: drop the `connectedPeers.isEmpty`
+            // gate. `enqueueForBroadcast` already parks unsendable
+            // envelopes in `messageQueue` (and `RelayQueueRepository`
+            // for spray-counter envelopes), so the message reaches
+            // A as soon as the BLE link comes up — instead of being
+            // silently lost because of a momentary disconnect at
+            // the exact instant the batch arrived.
+            if normalizedMessage.needsForwarding || shouldGroupBridge {
+                let toForward = normalizedMessage
+                Task { [weak self] in
+                    await self?.forwardServerMessageToMesh(toForward)
+                }
             }
             #endif
         }
@@ -472,11 +755,18 @@ class ConversationStore {
     
     func toggleMute(roomId: String) async {
         guard let index = conversations.firstIndex(where: { $0.roomId == roomId }) else { return }
-        
+
         let newMutedState = !conversations[index].isMuted
         let isGroup = conversations[index].isGroup
         let peerId = conversations[index].peer.userId
-        
+
+        // 🔴 ROUND 26 — unified user-action telemetry (haptic + bg server log).
+        UserActionTelemetry.shared.record(
+            newMutedState ? .chatMute : .chatUnmute,
+            targetId: roomId,
+            targetType: isGroup ? .group : .conversation
+        )
+
         conversations[index].isMuted = newMutedState
         try? await conversationRepo.toggleMute(roomId: roomId)
         
@@ -504,11 +794,27 @@ class ConversationStore {
     /// Telegram-style archive: hide a chat from the main inbox into
     /// the "Archived" folder. Optimistic — local SQLite is updated
     /// first, server is fire-and-forget for cross-device sync. Idempotent.
+    ///
+    /// 🟦 ROUND 49 (2026-05-17) — full archive plumbing.
+    ///
+    /// Two bugs fixed here:
+    ///   1. For GROUPS, `peer.userId` is the creator's user_id (set by
+    ///      `createGroupConversation`), NOT the group_id. The previous
+    ///      server-sync call sent `peer_id = creator_user_id`, which
+    ///      the server can't use to identify the thread (and the
+    ///      server endpoint was a stub anyway). Switched to `room_id`
+    ///      which is the canonical thread identifier — group_id for
+    ///      groups, peer_user_id for 1:1.
+    ///   2. The previous payload field was `peer_id` (snake_case) on
+    ///      a Swift struct sent via JSONEncoder with no key strategy,
+    ///      so the wire field was literally `peer_id`. The server
+    ///      now expects `room_id` to match the new endpoint shape
+    ///      (handler upserts a `UserConversationState` row keyed
+    ///      by `(user_id, room_id)`).
     func toggleArchive(roomId: String) async {
         guard let index = conversations.firstIndex(where: { $0.roomId == roomId }) else { return }
 
         let newArchivedState = !conversations[index].isArchived
-        let peerId = conversations[index].peer.userId
 
         // Optimistic local update.
         if newArchivedState {
@@ -521,20 +827,32 @@ class ConversationStore {
         // archived/unarchived split (the main filter excludes archived).
         await loadFromDB()
 
-        // Sync to server (best-effort, non-blocking).
+        // Sync to server (best-effort, non-blocking) for cross-device
+        // persistence. Local archive state remains the source of truth
+        // for this device — server sync is "send my preference up"
+        // and "let other devices learn it on their next /conversations
+        // poll".
         if NetworkMonitor.shared.isOnline {
             struct ArchiveRequest: Codable {
-                let peer_id: String
+                let roomId: String
                 let archived: Bool
             }
-            _ = try? await NetworkService.shared.post(
-                path: "/api/messages/conversations/archive",
-                body: ArchiveRequest(peer_id: peerId, archived: newArchivedState)
-            ) as EmptyResponse
+            do {
+                _ = try await NetworkService.shared.post(
+                    path: "/api/messages/conversations/archive",
+                    body: ArchiveRequest(roomId: roomId, archived: newArchivedState)
+                ) as EmptyResponse
+                #if DEBUG
+                print("📥 [ConversationStore] Archive synced to server: \(newArchivedState) for \(roomId.prefix(8))")
+                #endif
+            } catch {
+                // Non-fatal — local is already archived/unarchived.
+                // Server sync will retry on next archive toggle.
+                #if DEBUG
+                print("⚠️ [ConversationStore] Archive server sync failed (local state already updated): \(error.localizedDescription)")
+                #endif
+            }
         }
-        #if DEBUG
-        print("📥 [ConversationStore] Archive synced: \(newArchivedState) for \(roomId.prefix(8))")
-        #endif
     }
 
     /// Snapshot of the current archived bucket. Re-queried each

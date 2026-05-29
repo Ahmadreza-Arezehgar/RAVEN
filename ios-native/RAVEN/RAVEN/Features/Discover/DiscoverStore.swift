@@ -125,10 +125,12 @@ final class DiscoverStore: ObservableObject {
         isLoadingAllSuggestions = true
         
         do {
+            // Server hard-caps `limit` at 50 (enumeration defense); a higher
+            // value is rejected with HTTP 422, so request exactly 50.
             let response: SuggestedFriendsResponse = try await networkService.get(
                 path: "/api/discovery/suggested",
                 queryItems: [
-                    URLQueryItem(name: "limit", value: "200")
+                    URLQueryItem(name: "limit", value: "50")
                 ]
             )
             allSuggestions = response.items.map { item in

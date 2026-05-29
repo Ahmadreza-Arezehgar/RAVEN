@@ -210,9 +210,24 @@ struct LiveRoomView: View {
                    uid == AuthService.shared.currentUser?.id,
                    info["needs_token_refresh"] as? Bool == true,
                    let me = myParticipant {
-                    try? await audioManager.refreshToken(
-                        roomId: roomId, participantName: me.safeDisplayName
-                    )
+                    // 🔴 ROUND 27: previously `try?` swallowed errors here.
+                    // If the host promoted us but the token refresh
+                    // failed (network blip, token endpoint 5xx, etc.),
+                    // we silently stayed as a listener with no publish
+                    // grant — user taps the mic button and nothing
+                    // happens, no UI feedback. Now we surface the
+                    // failure to the connection banner so they know
+                    // to retry or relaunch.
+                    do {
+                        try await audioManager.refreshToken(
+                            roomId: roomId, participantName: me.safeDisplayName
+                        )
+                    } catch {
+                        connectionError = "Couldn't refresh permissions after promotion. Leave and rejoin to speak."
+                        #if DEBUG
+                        print("❌ [LiveRoomView] token refresh failed: \(error)")
+                        #endif
+                    }
                 }
                 if event == "ended" {
                     // Host ended the room — clean up and dismiss
@@ -685,10 +700,45 @@ struct LiveRoomView: View {
                         )
                 )
                 .padding(.horizontal, 28)
+            } else if let err = loadError {
+                // 🔴 ROUND 27: previously this branch rendered nothing
+                // (blank screen) when the detail fetch had failed —
+                // the user saw an empty join gate with no
+                // explanation. Now show a clear error card.
+                VStack(spacing: 16) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 36))
+                        .foregroundStyle(.orange)
+                    Text("Couldn't load this room")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(.white)
+                    Text(err)
+                        .font(.system(size: 14))
+                        .foregroundStyle(RoomDesign.labelSecondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 24)
+                }
+                .padding(36)
+                .background(
+                    RoundedRectangle(cornerRadius: 28, style: .continuous)
+                        .fill(.ultraThinMaterial)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                                .stroke(RoomDesign.border, lineWidth: 0.5)
+                        )
+                )
+                .padding(.horizontal, 28)
+            } else {
+                // Detail fetch in flight — show a centered spinner so
+                // the join gate isn't visually empty while loading.
+                ProgressView()
+                    .progressViewStyle(.circular)
+                    .tint(.white)
+                    .scaleEffect(1.2)
             }
-            
+
             Spacer()
-            
+
             // Join buttons
             VStack(spacing: 14) {
                 Button { joinRoom(anonymous: false) } label: {
@@ -902,6 +952,7 @@ struct LiveRoomView: View {
         AudioRoomActivityManager.shared.startActivity(
             roomId: roomId,
             roomTitle: detail.room.title,
+            shareSlug: detail.room.shareSlug,
             state: .init(listenersCount: total, speakersCount: speakers, isMuted: !audioManager.isMicEnabled)
         )
     }

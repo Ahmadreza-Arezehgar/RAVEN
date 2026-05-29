@@ -152,6 +152,19 @@ final class AudioPlaybackStore {
                 }
             }
             
+            // 🔴 hacker-audit 2026-05-20 — Vault voice decrypt.
+            // A vault voice message arrives as an RVNV1 AES-GCM blob
+            // sealed to this device's X25519 key. AVPlayer can't
+            // render ciphertext, so sniff + decrypt to a plaintext
+            // .m4a first. Non-vault audio (and the sender's own
+            // local plaintext copy) passes through untouched — the
+            // check is an 8-byte magic compare.
+            if let decryptedVoice = Self.decryptVaultAudioIfNeeded(
+                fileURL: finalURL, itemId: item.id
+            ) {
+                finalURL = decryptedVoice
+            }
+
             await Task.detached(priority: .userInitiated) {
                 try? AVAudioSession.sharedInstance().setActive(true)
             }.value
@@ -207,6 +220,41 @@ final class AudioPlaybackStore {
                 self.displayState = .mini
             }
         }
+    }
+
+    // MARK: - Vault
+
+    /// If `fileURL` holds an RVNV1 vault payload, decrypt it with this
+    /// device's X25519 identity key and return a plaintext .m4a temp
+    /// URL. Returns nil for non-vault audio (caller keeps the original
+    /// URL) and on decrypt failure.
+    private static func decryptVaultAudioIfNeeded(fileURL: URL, itemId: String) -> URL? {
+        guard let blob = try? Data(contentsOf: fileURL, options: .mappedIfSafe),
+              VaultFileCrypto.looksLikeVaultPayload(blob) else {
+            return nil
+        }
+        // round-32 AAD binding is the message id; empty-AAD fallback
+        // covers legacy pre-binding uploads.
+        func attempt(_ aad: Data) -> Data? {
+            var out: Data? = nil
+            _ = DeviceIdentityService.shared.withAgreementPrivateKey { priv in
+                out = try? VaultFileCrypto.decrypt(
+                    wirePayload: blob,
+                    recipientIdentityPrivKey: priv.rawRepresentation,
+                    additionalAuthenticatedData: aad
+                )
+            }
+            return out
+        }
+        guard let plaintext = attempt(Data(itemId.utf8)) ?? attempt(Data()) else {
+            return nil
+        }
+        let dest = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(UUID().uuidString)_vaultvoice.m4a")
+        guard (try? plaintext.write(to: dest, options: [.atomic, .completeFileProtection])) != nil else {
+            return nil
+        }
+        return dest
     }
 
     // MARK: - Controls

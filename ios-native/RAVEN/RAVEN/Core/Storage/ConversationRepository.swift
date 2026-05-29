@@ -47,6 +47,18 @@ actor ConversationRepository {
     // MARK: - Upsert (Idempotent by room_id)
     
     func upsert(_ conversation: Conversation) async throws {
+        // 🟦 ROUND 49 (2026-05-17) — archive cross-device sync.
+        //
+        // Initialize `is_archived` from the server-supplied value on
+        // INSERT so a fresh device install (or first /conversations
+        // poll after sign-in) inherits archive state set on another
+        // device. On UPDATE we MERGE rather than overwrite — the
+        // local state is the source of truth for this device unless
+        // the server explicitly carries a NEW (more recent) value.
+        // Today the merge is "server wins" (server is the only
+        // authority for cross-device convergence). If two devices
+        // race a toggle, the last one to call /archive endpoint
+        // wins, then both pick it up on next poll.
         let sql = """
             INSERT INTO conversations (
                 room_id, peer_id, peer_username, peer_first_name, peer_last_name, peer_avatar_path,
@@ -55,35 +67,36 @@ actor ConversationRepository {
                 unread_count, is_pinned, is_muted, updated_at,
                 is_group, group_name, group_avatar_url, is_verified,
                 is_channel, channel_username, channel_type,
-                request_status, is_request_sender, pending_sent_count, request_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                request_status, is_request_sender, pending_sent_count, request_id,
+                is_archived
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(room_id) DO UPDATE SET
                 peer_username = COALESCE(excluded.peer_username, peer_username),
                 peer_first_name = COALESCE(excluded.peer_first_name, peer_first_name),
                 peer_last_name = COALESCE(excluded.peer_last_name, peer_last_name),
                 peer_avatar_path = COALESCE(excluded.peer_avatar_path, peer_avatar_path),
-                last_message_id = CASE 
-                    WHEN excluded.last_message_timestamp > COALESCE(conversations.last_message_timestamp, '') 
+                last_message_id = CASE
+                    WHEN excluded.last_message_timestamp > COALESCE(conversations.last_message_timestamp, '')
                     THEN excluded.last_message_id ELSE conversations.last_message_id END,
-                last_message_content = CASE 
-                    WHEN excluded.last_message_timestamp > COALESCE(conversations.last_message_timestamp, '') 
+                last_message_content = CASE
+                    WHEN excluded.last_message_timestamp > COALESCE(conversations.last_message_timestamp, '')
                     THEN excluded.last_message_content ELSE conversations.last_message_content END,
-                last_message_type = CASE 
-                    WHEN excluded.last_message_timestamp > COALESCE(conversations.last_message_timestamp, '') 
+                last_message_type = CASE
+                    WHEN excluded.last_message_timestamp > COALESCE(conversations.last_message_timestamp, '')
                     THEN excluded.last_message_type ELSE conversations.last_message_type END,
-                last_message_timestamp = CASE 
-                    WHEN excluded.last_message_timestamp > COALESCE(conversations.last_message_timestamp, '') 
+                last_message_timestamp = CASE
+                    WHEN excluded.last_message_timestamp > COALESCE(conversations.last_message_timestamp, '')
                     THEN excluded.last_message_timestamp ELSE conversations.last_message_timestamp END,
-                last_message_sender_id = CASE 
-                    WHEN excluded.last_message_timestamp > COALESCE(conversations.last_message_timestamp, '') 
+                last_message_sender_id = CASE
+                    WHEN excluded.last_message_timestamp > COALESCE(conversations.last_message_timestamp, '')
                     THEN excluded.last_message_sender_id ELSE conversations.last_message_sender_id END,
-                last_message_delivery_authority = CASE 
-                    WHEN excluded.last_message_timestamp > COALESCE(conversations.last_message_timestamp, '') 
+                last_message_delivery_authority = CASE
+                    WHEN excluded.last_message_timestamp > COALESCE(conversations.last_message_timestamp, '')
                     THEN excluded.last_message_delivery_authority ELSE conversations.last_message_delivery_authority END,
-                unread_count = CASE 
+                unread_count = CASE
                     WHEN excluded.unread_count = 0 THEN 0
-                    WHEN excluded.last_message_timestamp > COALESCE(conversations.last_message_timestamp, '') THEN excluded.unread_count 
-                    ELSE conversations.unread_count 
+                    WHEN excluded.last_message_timestamp > COALESCE(conversations.last_message_timestamp, '') THEN excluded.unread_count
+                    ELSE conversations.unread_count
                 END,
                 updated_at = MAX(excluded.updated_at, conversations.updated_at),
                 is_group = excluded.is_group,
@@ -96,7 +109,8 @@ actor ConversationRepository {
                 request_status = COALESCE(excluded.request_status, request_status),
                 is_request_sender = COALESCE(excluded.is_request_sender, is_request_sender),
                 pending_sent_count = COALESCE(excluded.pending_sent_count, pending_sent_count),
-                request_id = COALESCE(excluded.request_id, request_id)
+                request_id = COALESCE(excluded.request_id, request_id),
+                is_archived = excluded.is_archived
         """
         let dateFormatter = SharedDateFormatters.iso8601Standard
         
@@ -171,9 +185,10 @@ actor ConversationRepository {
             conversation.requestStatus as Any? ?? NSNull(),
             conversation.isRequestSender.map { $0 ? 1 : 0 } as Any? ?? NSNull(),
             conversation.pendingSentCount as Any? ?? NSNull(),
-            conversation.requestId as Any? ?? NSNull()
+            conversation.requestId as Any? ?? NSNull(),
+            conversation.isArchived ? 1 : 0     // Round 49 — cross-device archive sync
         ]
-        
+
         let groupInfo = conversation.isGroup ? " [GROUP: \(conversation.groupName ?? "unnamed")]" : ""
         #if DEBUG
         print("🔵 [UPSERT SERVER] room_id:\(normalizedRoomId.prefix(8)) peer_id:\(conversation.peer.userId.prefix(8)) name:\(conversation.peer.displayName)\(groupInfo)")
@@ -283,6 +298,29 @@ actor ConversationRepository {
         #endif
         
         // For mesh messages, we need to include peer info in case conversation doesn't exist
+        //
+        // 🟦 ROUND 55 (2026-05-17) — fix "random / wrong last-message preview"
+        // bug. The previous ON CONFLICT clause unconditionally
+        // overwrote `last_message_*` columns whenever ANY message
+        // landed through applyMessage. That's a bug because messages
+        // do NOT arrive in chronological order:
+        //   • Mesh DTN spray + bloom dedup can deliver an envelope
+        //     seconds (or minutes) after its timestamp.
+        //   • Server polling (`pollInbox`) replays messages older than
+        //     the websocket-pushed real-time one.
+        //   • Limbo-promoted group messages (PendingGroupMessageRepo)
+        //     re-run handleMeshMessage AFTER the user has already
+        //     received newer messages in that group.
+        // Without a timestamp guard, the inbox preview kept flipping
+        // to whichever message most-recently landed in applyMessage
+        // — the "very random text" the user reported.
+        //
+        // Fix: gate every `last_message_*` overwrite on
+        // `excluded.last_message_timestamp > conversations.last_message_timestamp`.
+        // The peer info + ghost-resurrection logic stays the same.
+        // unread_count still increments only for unread incoming
+        // messages, but ONLY when the row actually advances (else we
+        // double-count an older replay).
         let sql = """
             INSERT INTO conversations (
                 room_id, peer_id, peer_username, peer_first_name, peer_last_name, peer_avatar_path,
@@ -296,14 +334,35 @@ actor ConversationRepository {
                 peer_first_name = COALESCE(excluded.peer_first_name, conversations.peer_first_name),
                 peer_last_name = COALESCE(excluded.peer_last_name, conversations.peer_last_name),
                 peer_avatar_path = COALESCE(excluded.peer_avatar_path, conversations.peer_avatar_path),
-                last_message_id = excluded.last_message_id,
-                last_message_content = excluded.last_message_content,
-                last_message_type = excluded.last_message_type,
-                last_message_timestamp = excluded.last_message_timestamp,
-                last_message_sender_id = excluded.last_message_sender_id,
-                last_message_delivery_authority = excluded.last_message_delivery_authority,
-                unread_count = conversations.unread_count + ?,
-                updated_at = excluded.updated_at
+                last_message_id = CASE
+                    WHEN excluded.last_message_timestamp > COALESCE(conversations.last_message_timestamp, '')
+                    THEN excluded.last_message_id
+                    ELSE conversations.last_message_id END,
+                last_message_content = CASE
+                    WHEN excluded.last_message_timestamp > COALESCE(conversations.last_message_timestamp, '')
+                    THEN excluded.last_message_content
+                    ELSE conversations.last_message_content END,
+                last_message_type = CASE
+                    WHEN excluded.last_message_timestamp > COALESCE(conversations.last_message_timestamp, '')
+                    THEN excluded.last_message_type
+                    ELSE conversations.last_message_type END,
+                last_message_timestamp = CASE
+                    WHEN excluded.last_message_timestamp > COALESCE(conversations.last_message_timestamp, '')
+                    THEN excluded.last_message_timestamp
+                    ELSE conversations.last_message_timestamp END,
+                last_message_sender_id = CASE
+                    WHEN excluded.last_message_timestamp > COALESCE(conversations.last_message_timestamp, '')
+                    THEN excluded.last_message_sender_id
+                    ELSE conversations.last_message_sender_id END,
+                last_message_delivery_authority = CASE
+                    WHEN excluded.last_message_timestamp > COALESCE(conversations.last_message_timestamp, '')
+                    THEN excluded.last_message_delivery_authority
+                    ELSE conversations.last_message_delivery_authority END,
+                unread_count = CASE
+                    WHEN excluded.last_message_timestamp > COALESCE(conversations.last_message_timestamp, '')
+                    THEN conversations.unread_count + ?
+                    ELSE conversations.unread_count END,
+                updated_at = MAX(excluded.updated_at, COALESCE(conversations.updated_at, ''))
         """
         
         // CRITICAL: roomId depends on message type
@@ -450,10 +509,22 @@ actor ConversationRepository {
     /// Active inbox: excludes soft-deleted AND archived rows. The
     /// archive bucket has its own fetcher below.
     func getAllSorted() async throws -> [Conversation] {
+        // 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — fall back to
+        // `updated_at` (then `''` as last-resort) when
+        // `last_message_timestamp` is NULL. Newly-created groups
+        // and freshly-joined chats have no message yet, so their
+        // `last_message_timestamp` is NULL — under the pre-fix
+        // pure-`DESC` sort, NULL is treated as the smallest value
+        // and those rows landed at the BOTTOM of the inbox (the
+        // exact "groups always go to the bottom" user report).
+        // COALESCE picks the most-recent activity signal we have
+        // for the row, so newly-created groups now surface at the
+        // top until a message lands and supersedes them.
         let sql = """
             SELECT * FROM conversations
             WHERE deleted_at IS NULL AND COALESCE(is_archived, 0) = 0
-            ORDER BY is_pinned DESC, last_message_timestamp DESC
+            ORDER BY is_pinned DESC,
+                     COALESCE(last_message_timestamp, updated_at, '') DESC
         """
 
         let rows = try await db.query(sql)
@@ -804,6 +875,13 @@ actor ConversationRepository {
         case .text:
             if let t = message.text {
                 if t.looksEncrypted { return "Message" }
+                // 🟦 ROUND 55 (2026-05-17) — never store the decryption-
+                // failure placeholder ("🔒 [Encrypted message…]") as the
+                // inbox preview. That string is local UI state — it
+                // means THIS device couldn't decrypt, not "this is the
+                // message." Storing it pollutes the inbox + any local
+                // notification body. Surface a clean fallback instead.
+                if t.hasPrefix("🔒 [Encrypted message") { return "Message" }
                 if ContactSharePayload.looksLikeContactCard(t) {
                     return "👤 Shared a contact"
                 }

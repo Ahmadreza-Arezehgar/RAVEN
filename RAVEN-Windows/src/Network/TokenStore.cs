@@ -96,13 +96,32 @@ public sealed class TokenStore
         }
     }
 
+    // 🔴 hacker-audit 2026-05-19 — XOR fallback now fails hard in Release.
+    //
+    // PREVIOUSLY: the #if WINDOWS guard meant non-Windows builds (CI
+    // runs the test suite on Linux; macOS dev workstations may compile
+    // here too) silently dropped to `TestOnlyXor`. The XOR key
+    // "raven-test-tokens" is a public constant in source — anyone with
+    // 18 bytes of known plaintext (the JSON wrapper "{\"AccessToken\":")
+    // recovers the keystream and decrypts every stored token in
+    // microseconds.
+    //
+    // The risk is small in practice (Windows-only release build), but
+    // an accidental cross-compile or a non-Windows CI artifact escape
+    // ships defenceless storage. In #if !DEBUG we now throw so any
+    // such path crashes at first use instead of silently misprotecting.
     private static byte[] Protect(byte[] data)
     {
 #if WINDOWS
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             return ProtectedData.Protect(data, null, DataProtectionScope.CurrentUser);
 #endif
+#if DEBUG
         return TestOnlyXor(data);
+#else
+        throw new PlatformNotSupportedException(
+            "TokenStore requires Windows DPAPI. Refusing to fall back to test-only XOR in Release.");
+#endif
     }
 
     private static byte[] Unprotect(byte[] data)
@@ -111,7 +130,12 @@ public sealed class TokenStore
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             return ProtectedData.Unprotect(data, null, DataProtectionScope.CurrentUser);
 #endif
+#if DEBUG
         return TestOnlyXor(data);
+#else
+        throw new PlatformNotSupportedException(
+            "TokenStore requires Windows DPAPI. Refusing to fall back to test-only XOR in Release.");
+#endif
     }
 
     private static byte[] TestOnlyXor(byte[] data)

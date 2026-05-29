@@ -1,6 +1,9 @@
 import Foundation
 import UIKit
 import GoogleSignIn
+import os
+
+fileprivate let logger = Logger(subsystem: "app.raven.ios", category: "Auth.Google")
 
 // MARK: - Google Sign In Coordinator
 // Uses GoogleSignIn SDK (same as Flutter app)
@@ -103,9 +106,7 @@ class GoogleSignInCoordinator {
                 name: user.profile?.name
             )
             
-            #if DEBUG
-            print("✅ [GoogleSignIn] Success - email: \(credential.email ?? "nil"), name: \(credential.name ?? "nil")")
-            #endif
+            logger.debug("Success - email: \(credential.email ?? "nil", privacy: .private), name: \(credential.name ?? "nil", privacy: .private)")
             self.completion?(.success(credential))
         }
     }

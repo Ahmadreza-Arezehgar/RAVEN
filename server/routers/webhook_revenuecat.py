@@ -33,23 +33,61 @@ def _verify_webhook_auth(request: Request) -> bool:
     Validate that the request comes from RevenueCat using shared secret.
     Returns True if authorized, False otherwise.
     NEVER raises — we must always return 200 to RevenueCat.
+
+    🔴 ROUND 46 (2026-05-19) — hacker-audit Server F10 (CRITICAL).
+    PREVIOUSLY: when `REVENUECAT_WEBHOOK_SECRET` was empty (Cloud Run
+    serves "" for an unset env var) we returned True — the comment
+    bragged about "dev mode" but the same `webhook_revenuecat.py`
+    module ships to production. A forgotten env var on any new deploy
+    (new project, new region, var renamed in dashboard, secret
+    rotation that left the new value blank) means ANY unauthenticated
+    attacker on the public internet can POST
+    `{"event":{"type":"INITIAL_PURCHASE","app_user_id":"<victim>",
+    "expiration_at_ms":<far future>}}` and we'll happily flip
+    `is_premium=True` for that victim forever. Free premium for any
+    user_id the attacker can guess (and ids are UUIDs handed out on
+    register, often visible in posts/groups).
+
+    Also: we previously echoed the first 4 chars of the configured
+    secret to logs on a failed compare — a 4-char prefix of a 32-byte
+    secret is enough to materially reduce brute-force entropy when
+    combined with log access (3rd-party log shippers, mistakenly
+    public BigQuery sinks, devs grepping prod logs).
+
+    FIX:
+      • Production (`ENVIRONMENT=production`) with no secret → reject.
+        We choose this over "refuse to boot" because Cloud Run won't
+        give us a chance to alert if startup fails; instead we let
+        the server run and 200/dev-mode log every reject.
+      • Constant-time comparison (`secrets.compare_digest`) so a
+        partial-match timing oracle doesn't leak the first byte.
+      • No more secret prefix in logs.
     """
     if not WEBHOOK_SECRET:
-        # If no secret configured, allow all (dev mode)
-        logger.warning("⚠️ REVENUECAT_WEBHOOK_SECRET not set — webhook auth disabled")
-        return True
-    
+        # 🔴 hacker-audit 2026-05-20 — fail closed UNCONDITIONALLY.
+        # ROUND 46 only rejected when ENVIRONMENT == "production"
+        # (exact string match). Any other value ("prod", "staging",
+        # a typo, or unset) combined with an empty secret left this
+        # webhook unauthenticated — anyone could POST an
+        # INITIAL_PURCHASE event and grant arbitrary users premium.
+        # An unset secret now rejects in every environment.
+        logger.error(
+            "🚫 [Webhook] REVENUECAT_WEBHOOK_SECRET is unset — rejecting "
+            "ALL webhook calls until the secret is configured."
+        )
+        return False
+
     auth_header = request.headers.get("Authorization", "")
     # RevenueCat sends: "Bearer <secret>"
     expected = f"Bearer {WEBHOOK_SECRET}"
-    
-    if auth_header != expected:
-        logger.warning(
-            f"🚫 [Webhook] Unauthorized attempt from {request.client.host} | "
-            f"Got: '{auth_header[:20]}…' | Expected: 'Bearer {WEBHOOK_SECRET[:4]}…'"
-        )
+
+    # 🔴 ROUND 46 — constant-time compare; no secret prefix in logs.
+    import secrets as _secrets_mod
+    if not _secrets_mod.compare_digest(auth_header, expected):
+        client_host = request.client.host if request.client else "?"
+        logger.warning(f"🚫 [Webhook] Unauthorized attempt from {client_host}")
         return False
-    
+
     return True
 
 

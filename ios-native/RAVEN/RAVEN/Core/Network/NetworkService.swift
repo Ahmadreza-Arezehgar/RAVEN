@@ -2,6 +2,9 @@ import Foundation
 import Security
 import CryptoKit
 import UIKit
+import os
+
+fileprivate let logger = Logger(subsystem: "app.raven.ios", category: "NetworkService")
 
 // MARK: - Shared Date Formatters (created once per process, reused everywhere)
 // ISO8601DateFormatter is expensive to allocate (~1ms per init).
@@ -133,16 +136,40 @@ enum AuthLogger {
 }
 
 // MARK: - TLS Validation Delegate
-// Standard TLS certificate chain validation using the OS trust store.
-// NOT certificate pinning — pinning is intentionally disabled for Google Cloud Run,
-// whose certificates rotate automatically and unpredictably.
-// Security is maintained via:
-// 1. Standard TLS chain validation (below)
-// 2. HTTPS enforcement
-// 3. Token-based authentication at the API layer
-// 4. Google Cloud Run's managed TLS infrastructure
+//
+// Round 16 (2026-05-16) — hacker-audit finding N6.
+//
+// The previous version only ran `SecTrustEvaluateWithError`, which
+// trusts any cert chained to a system-installed root. That means an
+// MDM/enterprise CA pushed to a managed device — or a user-installed
+// root profile the user was social-engineered into trusting — could
+// silently decrypt every byte RAVEN ships, harvesting bearer tokens
+// and chat ciphertext for offline analysis.
+//
+// We now do **SPKI-hash public-key pinning** on top of the system
+// trust evaluation. The chain still has to be valid AND end with a
+// public-key whose SHA-256 SPKI hash matches one of the values
+// baked into `RavenTLSPinSet.allowed`.
+//
+// Why public-key pinning (not full-cert pinning):
+//   • Cloud Run rotates leaf certs; pinning the leaf would force a
+//     client release on every rotation.
+//   • Public-key rotation is rarer and survives leaf renewal.
+//   • Apple's HPKP-style guidance (`URLSessionDelegate` +
+//     `SecCertificateCopyKey` + SHA-256) is the same shape we use
+//     here.
+//
+// Rotation overlay: `RavenTLSPinSet.allowed` contains MULTIPLE
+// hashes so the operations team can roll a new key, ship it to
+// clients, wait for adoption, then flip the server. The set must
+// always contain at least the production leaf's SPKI AND one
+// queued-future key so a single rotation never breaks all clients.
+//
+// Failure mode: a chain that's system-valid but pins-invalid is
+// rejected with `cancelAuthenticationChallenge`. The user sees a
+// "network error" — same UX as any other TLS failure.
 final class TLSValidationDelegate: NSObject, URLSessionDelegate {
-    
+
     func urlSession(
         _ session: URLSession,
         didReceive challenge: URLAuthenticationChallenge,
@@ -153,21 +180,224 @@ final class TLSValidationDelegate: NSObject, URLSessionDelegate {
             completionHandler(.performDefaultHandling, nil)
             return
         }
-        
-        // Validate the certificate chain using system trust store
+
+        // 1. System trust evaluation — chain must be valid against
+        // the OS trust store.
         var error: CFError?
         let isValid = SecTrustEvaluateWithError(serverTrust, &error)
-        
-        if isValid {
-            // Certificate chain is valid - accept the connection
-            completionHandler(.useCredential, URLCredential(trust: serverTrust))
-        } else {
-            // Certificate chain validation failed - reject
+        guard isValid else {
             #if DEBUG
-            print("❌ [TLS] Certificate chain validation failed: \(error?.localizedDescription ?? "unknown")")
+            print("❌ [TLS] System chain validation failed: \(error?.localizedDescription ?? "unknown")")
             #endif
             completionHandler(.cancelAuthenticationChallenge, nil)
+            return
         }
+
+        // 2. SPKI pinning. Walk the chain and verify at least one
+        // certificate's SPKI hash matches our allowlist. The default
+        // is to check the LEAF only (cert at index 0), but checking
+        // every cert in the chain lets us pin an intermediate key
+        // for extra rotation flexibility.
+        if !RavenTLSPinSet.validate(serverTrust: serverTrust) {
+            #if DEBUG
+            print("❌ [TLS] SPKI pin mismatch — rejecting connection.")
+            #endif
+            completionHandler(.cancelAuthenticationChallenge, nil)
+            return
+        }
+
+        completionHandler(.useCredential, URLCredential(trust: serverTrust))
+    }
+}
+
+// MARK: - Pin set
+//
+// Public-key SPKI SHA-256 hashes for production. The hash is
+// computed as `SHA256(SubjectPublicKeyInfo DER)` — Apple's HPKP-
+// equivalent encoding. To compute one yourself from the running
+// server cert chain:
+//
+//   openssl s_client -connect raven.app:443 -showcerts < /dev/null 2>/dev/null \
+//     | awk '/BEGIN CERTIFICATE/,/END CERTIFICATE/' \
+//     | openssl x509 -pubkey -noout \
+//     | openssl pkey -pubin -outform der \
+//     | openssl dgst -sha256 -binary \
+//     | base64
+//
+// 🔴 hacker-audit 2026-05-19 — populated SPKI pin set + fixed
+// key-type detection.
+//
+// PRE-FIX STATE: `allowed` was empty AND the SPKI computation only
+// pre-pended the RSA-2048 ASN.1 header — wrong for ECDSA keys,
+// which is exactly what Cloud Run serves on the leaf. So even if
+// an operator had pasted the openssl-computed leaf hash into the
+// set, the runtime hash would NEVER match: pinning was effectively
+// off in two independent ways.
+//
+// THIS REVISION:
+//   1. `validate(...)` now picks the correct ASN.1 SPKI header
+//      based on `SecKeyCopyAttributes` (type + size). Supports
+//      RSA-2048, RSA-4096, EC-P-256, EC-P-384 — covers every
+//      modern Google Trust Services cert we'll ever see.
+//   2. `allowed` is populated with the three SPKI hashes pulled
+//      from the live production chain on 2026-05-19:
+//        • Leaf  *.a.run.app  (ECDSA P-256, expires 2026-07-13)
+//        • Inter GTS WR2      (RSA-2048,    expires 2029-02-20)
+//        • Root  GTS Root R1  (RSA-4096,    expires 2028-01-28)
+//      Any one of the three matching is enough; pinning the
+//      intermediate alone defeats a "rogue CA inside the system
+//      trust store" MITM (which is the actual threat). The leaf
+//      is included for belt-and-suspenders during normal ops.
+//   3. `enforceInProduction = true`. The Swift-side SPKI computation
+//      was offline-verified to produce byte-identical hashes to the
+//      openssl pipeline on all three certs in the chain (Python
+//      mirror script, 2026-05-19). The intermediate (WR2) pin alone
+//      survives a leaf rotation; the root (GTS R1) pin survives an
+//      intermediate rotation. App is only "bricked" if ALL THREE
+//      pins rotate at the same time — currently no rotation event
+//      before 2028.
+//      Operator's per-release checklist:
+//        a. On every TestFlight build, smoke-test against prod from
+//           a real device. Look at the Console for "SPKI pin
+//           mismatch" — must NOT appear.
+//        b. Rotate the LEAF entry every ~75 days (15 days before
+//           the 90-day Cloud Run cert expiry, ~2026-06-28 for the
+//           current pin). The openssl one-liner below regenerates
+//           the hash. The intermediate and root pins only need to
+//           be touched on multi-year boundaries.
+//        c. If you ever ADD a new production region (the file used
+//           to ship a Qatar failover before round-X), regenerate
+//           pins for THAT host too — different region, sometimes
+//           different intermediate.
+//
+// REGENERATION COMMAND (run from any machine with network +
+// openssl; no GCP creds required):
+//
+//   HOST=raven-server-516053629173.europe-west1.run.app
+//   echo | openssl s_client -connect $HOST:443 -servername $HOST \
+//       -showcerts 2>/dev/null \
+//   | awk '/BEGIN CERT/,/END CERT/' \
+//   | csplit -s -f /tmp/cc -b '%02d.pem' -k - '/BEGIN CERT/' '{*}' \
+//     >/dev/null 2>&1 || true
+//   for f in /tmp/cc*.pem; do
+//       [ -s "$f" ] && grep -q BEGIN "$f" || continue
+//       openssl x509 -in "$f" -pubkey -noout \
+//       | openssl pkey -pubin -outform der \
+//       | openssl dgst -sha256 -binary | base64
+//   done
+enum RavenTLSPinSet {
+
+    /// Production SPKI SHA-256 hashes (base64). Three-deep so that
+    /// neither a leaf rotation NOR an intermediate rotation kicks
+    /// users off until the next release.
+    static let allowed: Set<String> = [
+        // Leaf — Cloud Run *.a.run.app, ECDSA P-256
+        // Captured 2026-05-19; expires 2026-07-13. Rotate by ~2026-06-28.
+        "neQfZ6ISNsaLedSkSAW/nzr0z59zCA8ReK9X5zb2dZM=",
+
+        // Intermediate — Google Trust Services WR2, RSA-2048
+        // Captured 2026-05-19; expires 2029-02-20.
+        "YPtHaftLw6/0vnc2BnNKGF54xiCA28WFcccjkA4ypCM=",
+
+        // Root — GTS Root R1, RSA-4096
+        // Captured 2026-05-19; expires 2028-01-28.
+        "hxqRlPTu1bMS/0DITB1SSu0vd4u/8l8TjPgfaAp63Gc=",
+    ]
+
+    /// When false, pinning is reported as success even when the
+    /// hash doesn't match — useful during early rollout. Set to
+    /// `true` on 2026-05-19 after offline verification that the
+    /// hashes above match the live production cert chain via the
+    /// `swift_style_spki_hash` Python mirror (see commit notes).
+    /// Defence vs. an attacker who installs a custom root CA on
+    /// device (MDM, jailbreak, parental control profile) and uses
+    /// it to MITM RAVEN traffic; without pin enforcement the system
+    /// trust store would happily accept the rogue chain.
+    static let enforceInProduction: Bool = true
+
+    /// Run the pin check. Returns `true` when the connection is
+    /// allowed; `false` when it must be rejected. An empty `allowed`
+    /// set OR `enforceInProduction = false` returns `true` so a
+    /// mis-configured pin doesn't brick the app — the operator must
+    /// explicitly opt in.
+    static func validate(serverTrust: SecTrust) -> Bool {
+        guard enforceInProduction, !allowed.isEmpty else { return true }
+
+        let count = SecTrustGetCertificateCount(serverTrust)
+        for i in 0..<count {
+            guard let cert = SecTrustGetCertificateAtIndex(serverTrust, i),
+                  let pin = Self.spkiHash(for: cert) else { continue }
+            if allowed.contains(pin) {
+                return true
+            }
+        }
+        return false
+    }
+
+    // MARK: - SPKI helpers
+
+    /// Pre-pended bytes that turn a raw 2048-bit RSA modulus into a
+    /// full SubjectPublicKeyInfo DER. Same prefix HPKP / pin-sha256
+    /// uses (`openssl x509 -pubkey -noout | openssl pkey -outform der`).
+    private static let rsa2048SPKIHeader: [UInt8] = [
+        0x30, 0x82, 0x01, 0x22, 0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86,
+        0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00, 0x03, 0x82, 0x01, 0x0f, 0x00,
+    ]
+    private static let rsa4096SPKIHeader: [UInt8] = [
+        0x30, 0x82, 0x02, 0x22, 0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86,
+        0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00, 0x03, 0x82, 0x02, 0x0f, 0x00,
+    ]
+    /// EC P-256 (secp256r1 / prime256v1). The terminating `03 42 00`
+    /// is the BIT STRING wrapper for the 65-byte uncompressed point
+    /// `SecKeyCopyExternalRepresentation` hands back.
+    private static let ecP256SPKIHeader: [UInt8] = [
+        0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02,
+        0x01, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x03,
+        0x42, 0x00,
+    ]
+    /// EC P-384 (secp384r1).
+    private static let ecP384SPKIHeader: [UInt8] = [
+        0x30, 0x76, 0x30, 0x10, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02,
+        0x01, 0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x22, 0x03, 0x62, 0x00,
+    ]
+
+    /// Compute the SPKI SHA-256 base64 for a single certificate.
+    /// Mirrors openssl's `x509 -pubkey -noout | pkey -outform der |
+    /// dgst -sha256 -binary | base64` for the supported key types.
+    /// Returns nil for unsupported types so the caller skips that
+    /// chain position rather than computing a wrong hash that would
+    /// silently bypass pinning if the wrong type ever sneaks in.
+    private static func spkiHash(for certificate: SecCertificate) -> String? {
+        guard let pubKey = SecCertificateCopyKey(certificate) else { return nil }
+        var error: Unmanaged<CFError>?
+        guard let keyData = SecKeyCopyExternalRepresentation(pubKey, &error) as Data? else { return nil }
+        guard let attrs = SecKeyCopyAttributes(pubKey) as? [String: Any],
+              let type = attrs[kSecAttrKeyType as String] as? String,
+              let bits = attrs[kSecAttrKeySizeInBits as String] as? Int
+        else { return nil }
+
+        let header: [UInt8]?
+        if type == (kSecAttrKeyTypeRSA as String) {
+            switch bits {
+            case 2048: header = rsa2048SPKIHeader
+            case 4096: header = rsa4096SPKIHeader
+            default:   header = nil
+            }
+        } else if type == (kSecAttrKeyTypeECSECPrimeRandom as String) {
+            switch bits {
+            case 256: header = ecP256SPKIHeader
+            case 384: header = ecP384SPKIHeader
+            default:  header = nil
+            }
+        } else {
+            header = nil
+        }
+        guard let hdr = header else { return nil }
+
+        var spki = Data(hdr)
+        spki.append(keyData)
+        let digest = SHA256.hash(data: spki)
+        return Data(digest).base64EncodedString()
     }
 }
 
@@ -387,9 +617,7 @@ actor NetworkService {
         // Add auth token
         if let (token, scope) = await KeychainService.shared.getToken() {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            #if DEBUG
-            print("🔑 [NetworkService] Token attached (scope: \(scope), len: \(token.count))")
-            #endif
+            logger.debug("Token attached (scope: \(scope.rawValue, privacy: .public), len: \(token.count, privacy: .public))")
             
             // Check for restricted endpoints
             if scope == .restricted && !isAllowedForRestricted(path: path) {
@@ -858,15 +1086,25 @@ actor NetworkService {
             throw APIError.networkError(error)
         }
         
-        if let newRefreshToken = refreshResponse.refreshToken {
-            do {
-                try await KeychainService.shared.updateRefreshToken(newRefreshToken)
-                AuthLogger.log(.tokenRotated)
-            } catch {
-                AuthLogger.log(.tokenStoreFailed, detail: "refresh token: \(error.localizedDescription)")
-            }
+        // 🔴 ROUND 19 — hacker-audit Server F8 HIGH.
+        // Refresh-token rotation MUST be mandatory: if the server
+        // omits a new refresh token (or an on-path attacker strips
+        // the field) and we keep using the old one, a one-time
+        // leaked refresh token grants indefinite access-token
+        // reissuance. Treat the missing field as an auth failure
+        // and force a sign-out.
+        guard let newRefreshToken = refreshResponse.refreshToken else {
+            AuthLogger.log(.tokenStoreFailed, detail: "refresh response missing refresh_token — refusing single-use semantics")
+            throw APIError.unauthorized
         }
-        
+        do {
+            try await KeychainService.shared.updateRefreshToken(newRefreshToken)
+            AuthLogger.log(.tokenRotated)
+        } catch {
+            AuthLogger.log(.tokenStoreFailed, detail: "refresh token: \(error.localizedDescription)")
+            throw APIError.networkError(error)
+        }
+
         AuthLogger.log(.refreshSucceeded)
     }
 }
@@ -994,14 +1232,15 @@ extension NetworkService {
     /// timestamp within window. Returns the desktop's IP + the
     /// session's expiry so the UI can show context before approve/deny.
     func qrLoginScan(_ body: QRScanRequest) async throws -> QRScanResponse {
-        try await postCamelCase(path: "/api/auth/qr-login/scan", body: body)
+        // Round 16 (audit N5): signed body — don't auto-replay on 401.
+        try await postCamelCase(path: "/api/auth/qr-login/scan", body: body, signedBody: true)
     }
 
     /// Approve the previously-scanned desktop. Server upserts a
     /// `LinkedDevice` row + flips status to `approved`; the desktop's
     /// next poll receives the access + refresh tokens.
     func qrLoginApprove(_ body: QRApproveRequest) async throws -> QRApproveResponse {
-        try await postCamelCase(path: "/api/auth/qr-login/approve", body: body)
+        try await postCamelCase(path: "/api/auth/qr-login/approve", body: body, signedBody: true)
     }
 
     /// Deny the desktop login. Idempotent — re-denying a denied
@@ -1035,9 +1274,18 @@ extension NetworkService {
     /// keep the rest of the network plumbing — auth, idempotency,
     /// status handling, decoder — identical to the standard `post`
     /// path by reusing the public `get`-style decode at the end.
+    /// `signedBody: true` flags this call as carrying a payload that
+    /// the caller signed at a specific point in time (QR-login
+    /// approve / scan, identity-key upload, etc.). When set, the
+    /// 401-retry path is SUPPRESSED — re-sending the same signed
+    /// bytes with a stale timestamp lets a MITM replay the signed
+    /// request after token refresh. The caller is expected to catch
+    /// `.unauthorized`, re-sign with a fresh timestamp, and call
+    /// again. Round 16 — hacker-audit finding N5.
     func postCamelCase<T: Decodable, B: Encodable>(
         path: String,
-        body: B
+        body: B,
+        signedBody: Bool = false
     ) async throws -> T {
         guard let url = URL(string: baseURL + path) else {
             throw APIError.invalidURL
@@ -1087,6 +1335,14 @@ extension NetworkService {
         // or refresh-token rejected), `attemptTokenRefresh` throws the
         // appropriate error and we surface that instead of `unauthorized`.
         if http.statusCode == 401 {
+            if signedBody {
+                // Round 16 (audit N5): don't auto-retry a signed
+                // body — the embedded timestamp is now stale and
+                // replaying the same signature lets an attacker who
+                // captured the first leg send a second authenticated
+                // copy. Surface the 401; the caller re-signs.
+                throw APIError.unauthorized
+            }
             try await attemptTokenRefresh()
             (data, http) = try await sendOnce()
         }
@@ -1272,6 +1528,66 @@ extension NetworkService {
     /// All currently pinned messages in a group.
     func pinnedMessagesGroup(groupId: String) async throws -> [PinnedMessageDTO] {
         try await get(path: "/api/messages/group/\(groupId)/pinned")
+    }
+
+    // MARK: - Disappearing messages (per-conversation timer · v1.8)
+
+    /// The shared disappearing-messages timer of a 1:1 conversation.
+    /// `disappearingSeconds == 0` means off; otherwise every new
+    /// message is auto-deleted that many seconds after it is sent.
+    struct DisappearingSettingDTO: Decodable {
+        let peerId: String
+        let disappearingSeconds: Int
+    }
+
+    /// Read the disappearing-messages timer for the 1:1 thread with `peerId`.
+    func conversationDisappearing(peerId: String) async throws -> DisappearingSettingDTO {
+        try await get(path: "/api/messages/conversation/\(peerId)/disappearing")
+    }
+
+    /// Set the disappearing-messages timer for the 1:1 thread with
+    /// `peerId`. `seconds` must be a server-allowed value
+    /// (0, 30, 300, 3600, 28800, 86400, 604800, 2592000).
+    @discardableResult
+    func setConversationDisappearing(peerId: String, seconds: Int) async throws -> DisappearingSettingDTO {
+        struct Body: Encodable { let seconds: Int }
+        return try await put(
+            path: "/api/messages/conversation/\(peerId)/disappearing",
+            body: Body(seconds: seconds)
+        )
+    }
+
+    // MARK: - App Attest device enrolment (v1.8)
+
+    /// A one-time challenge nonce for an App Attest enrolment.
+    struct AttestChallengeDTO: Decodable {
+        let challenge: String   // base64
+    }
+
+    /// The outcome of an App Attest enrolment.
+    struct AttestEnrollDTO: Decodable {
+        let enrolled: Bool
+        let environment: String
+    }
+
+    /// Request a fresh single-use App Attest challenge.
+    func attestChallenge() async throws -> AttestChallengeDTO {
+        struct Empty: Encodable {}
+        return try await post(path: "/api/attest/challenge", body: Empty())
+    }
+
+    /// Submit an App Attest attestation to enrol this device's key.
+    @discardableResult
+    func attestEnroll(keyId: String, attestation: String,
+                      challenge: String) async throws -> AttestEnrollDTO {
+        struct Body: Encodable {
+            let keyId: String
+            let attestation: String
+            let challenge: String
+        }
+        return try await post(
+            path: "/api/attest/enroll",
+            body: Body(keyId: keyId, attestation: attestation, challenge: challenge))
     }
 
     // MARK: - Saved messages (per-user bookmarks)

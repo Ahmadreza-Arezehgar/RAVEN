@@ -15,6 +15,7 @@ import requests
 from jose import jwt, JWTError, jwk
 from jose.utils import base64url_decode
 import json
+import os  # 🔴 ROUND 41 — needed for GOOGLE_OAUTH_ALLOWED_CLIENT_IDS env
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # CONFIGURATION
@@ -66,18 +67,61 @@ def verify_google_token(id_token: str, expected_client_id: Optional[str] = None)
         if 'sub' not in user_info or 'email' not in user_info:
             print("❌ Invalid Google token: missing required fields")
             return None
-        
-        # ✅ Audience validation (if client ID provided)
-        if expected_client_id and user_info.get('aud') != expected_client_id:
-            print(f"❌ Google token: audience mismatch. Expected {expected_client_id}, got {user_info.get('aud')}")
+
+        # 🔴 ROUND 41 (2026-05-19) — MANDATORY audience validation.
+        #
+        # PREVIOUSLY: this branch ran ONLY if the caller passed
+        # `expected_client_id`. The /oauth/google handler in
+        # routers/auth.py didn't pass one, so the audience check
+        # was effectively disabled in production. Result: any
+        # id_token Google issued — for ANY iOS / Android / web
+        # client_id, including an attacker's own malicious app —
+        # was accepted as long as the signature verified and the
+        # account had the same `sub`. An attacker who convinced a
+        # victim's Google account to authorise the attacker's
+        # malicious app could then use the resulting id_token to
+        # log into RAVEN AS THE VICTIM. Classic OAuth audience-
+        # confusion → account-takeover primitive.
+        #
+        # FIX: maintain an allow-list of RAVEN's known client IDs
+        # (iOS, optionally web/server). If the caller supplies one,
+        # require an exact match. If the caller doesn't supply one,
+        # fall back to the env-driven allow-list — but ALWAYS
+        # enforce that the id_token's `aud` claim matches one of
+        # OUR client IDs, never another app's.
+        allowed_clients = set()
+        if expected_client_id:
+            allowed_clients.add(expected_client_id)
+        else:
+            env_clients = os.environ.get("GOOGLE_OAUTH_ALLOWED_CLIENT_IDS", "")
+            for c in env_clients.split(","):
+                c = c.strip()
+                if c:
+                    allowed_clients.add(c)
+            # Fallback hard-coded iOS client_id. Mirrors the value
+            # in `RAVEN/Info.plist:GIDClientID` (reverse-DNS form
+            # `com.googleusercontent.apps.<id>`). Not a secret —
+            # client IDs are public — but keeping it server-side
+            # means the `aud` gate works even when the env var is
+            # missing in a fresh deploy.
+            allowed_clients.add(
+                "516053629173-teh5np0h3i3ar6b25sd78d6o8ft1qhg9.apps.googleusercontent.com"
+            )
+
+        aud = user_info.get('aud')
+        if aud not in allowed_clients:
+            print(
+                f"❌ Google token: audience mismatch. Got {aud!r}, "
+                f"allowed: {sorted(allowed_clients)!r}"
+            )
             return None
-        
+
         # ✅ Expiry validation
         exp = user_info.get('exp')
         if exp and int(exp) < datetime.utcnow().timestamp():
             print("❌ Google token expired")
             return None
-        
+
         print(f"✅ Google token verified for user: {user_info.get('email')}")
         return user_info
         

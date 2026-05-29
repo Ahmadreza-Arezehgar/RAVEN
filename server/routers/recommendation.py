@@ -291,10 +291,33 @@ def get_recommended_feed(
     seen_post_ids = get_recently_seen_post_ids(db, current_user.id)
     
     # Candidate posts: all public posts, scored by algorithm (no time cutoff)
-    candidate_posts = db.query(Post).filter(
-        or_(Post.visibility == 'public', Post.visibility == None)
-    ).order_by(Post.timestamp.desc()).limit(500).all()  # Larger candidate pool
-    
+    # 🔴 ROUND 71 S10: also exclude `is_hidden=True` (admin/user hide)
+    # and posts referenced by `HiddenContent` for this user (per-user
+    # hide). Round-26 added these filters to `get_feed` but
+    # recommendation feed was missed. Plus bidirectional block
+    # exclusion (round-71 S10 follow-up to one-directional bug).
+    from models import HiddenContent, Block
+    hidden_ids_subq = db.query(HiddenContent.object_id).filter(
+        HiddenContent.user_id == current_user.id,
+        HiddenContent.object_type == "post",
+    ).subquery()
+    blocker_ids = [r[0] for r in db.query(Block.blocker_id).filter(
+        Block.blocked_id == current_user.id
+    ).all()]
+    blockee_ids = [r[0] for r in db.query(Block.blocked_id).filter(
+        Block.blocker_id == current_user.id
+    ).all()]
+    blocked_user_ids = set(blocker_ids) | set(blockee_ids)
+
+    candidate_query = db.query(Post).filter(
+        or_(Post.visibility == 'public', Post.visibility == None),
+        Post.is_hidden != True,
+        ~Post.id.in_(hidden_ids_subq),
+    )
+    if blocked_user_ids:
+        candidate_query = candidate_query.filter(~Post.author_id.in_(blocked_user_ids))
+    candidate_posts = candidate_query.order_by(Post.timestamp.desc()).limit(500).all()
+
     # Filter out recently seen posts
     candidates = [p for p in candidate_posts if p.id not in seen_post_ids]
     

@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<UserControl
+    x:Class="RAVEN.Windows.Ui.NotificationsView"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:local="using:RAVEN.Windows.Ui">
+
+    <!--
+      Notifications (likes/replies/follows/security) — middle pane on the
+      Notifications tab. Mirrors `NotificationsColumn.swift`. Empty state
+      visible until the server feed lands.
+    -->
+    <ScrollView Background="{StaticResource RavenBg}">
+        <Grid MaxWidth="720" HorizontalAlignment="Stretch">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+
+            <Grid Grid.Row="0" Padding="20,18,20,16">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="Notifications"
+                           FontSize="22" FontWeight="ExtraBold"
+                           Foreground="{StaticResource RavenText}"/>
+            </Grid>
+
+            <Border Grid.Row="1" Height="1" Background="{StaticResource RavenBorder}"/>
+
+            <StackPanel Grid.Row="2" Spacing="16"
+                        VerticalAlignment="Center" HorizontalAlignment="Center"
+                        Padding="40,80">
+                <Grid Width="96" Height="96">
+                    <Ellipse Fill="{StaticResource RavenLogoGradientSubtle}"/>
+                    <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xEA8F;"
+                              FontSize="38"
+                              Foreground="{StaticResource RavenLogoStartBrush}"
+                              HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                </Grid>
+                <TextBlock Text="All caught up"
+                           FontSize="20" FontWeight="ExtraBold"
+                           Foreground="{StaticResource RavenText}"
+                           HorizontalAlignment="Center"/>
+                <TextBlock Text="Likes, replies, and friend requests will show up here."
+                           FontSize="14"
+                           Foreground="{StaticResource RavenText3}"
+                           TextAlignment="Center"
+                           MaxWidth="360" TextWrapping="Wrap"/>
+            </StackPanel>
+        </Grid>
+    </ScrollView>
+</UserControl>

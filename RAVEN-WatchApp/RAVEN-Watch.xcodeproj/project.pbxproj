@@ -1,0 +1,459 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		130D34F5B3CD9747FB30980C /* VoiceRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC6057F587E869AFBA4A7E51 /* VoiceRecorder.swift */; };
+		1DE1CAEBFBC6974A343BA912 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 395E9611321891AB791FAEAB /* Assets.xcassets */; };
+		216B615ED8FA2053EA635667 /* RemoteAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 952CB617D8E85D8F100C99C3 /* RemoteAPI.swift */; };
+		48E54DF5E7C515F5EA6027D0 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30547F0DD2FF5E3D10DD884C /* ChatView.swift */; };
+		64C4C998E95582BFF2BCCA3C /* PhoneBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA8A62B3A41EA80839820662 /* PhoneBridge.swift */; };
+		757877C8F785045C8997BF80 /* AvatarCircle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FEDAC7E8BB08BEAADC3D240 /* AvatarCircle.swift */; };
+		7FA40AC6C771A222709C4F17 /* NotificationsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECCD55855CADA42D59B22275 /* NotificationsView.swift */; };
+		891F939F7D6D74C8CB230F90 /* RoomsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 298E1E9D3D37964E48B12882 /* RoomsView.swift */; };
+		90EC3CE1AF1ECBAB9BB5A88F /* WatchModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = C46AB111343315499B90A2CF /* WatchModels.swift */; };
+		A7556C4CAD3633D27D4E5EEF /* TimeFormatter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3AE9E64B63D3E16C17A706CD /* TimeFormatter.swift */; };
+		A7622B8DEE89B7F1CDD40B5D /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C4046E6AEAD865618F6E45B /* RootView.swift */; };
+		B2C2FADDBD8A9651539930CE /* FeedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE8DC631017BF9B6A6CC97CB /* FeedView.swift */; };
+		D63CDFD44D4658BE27C9E258 /* WatchStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF76828DDD7033AB679A0CAD /* WatchStore.swift */; };
+		DA4D9266EC667E05BE676FA9 /* VoiceReplyView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A786BD6CC7229591FF8DACB0 /* VoiceReplyView.swift */; };
+		DB10707D053C6BDB4086B99D /* ComposeReplyView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2AB9BAC58A5B6DCF9F39B20B /* ComposeReplyView.swift */; };
+		DB95141BACBD90733DC1610A /* RAVENWatchApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F13053D6856079D84E6D888 /* RAVENWatchApp.swift */; };
+		F202FB5543CF562FD7B32DA8 /* InboxView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C53C11F0409370F79197A587 /* InboxView.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		0692E5EA38243892D997474F /* RAVEN-Watch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "RAVEN-Watch.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		0C4046E6AEAD865618F6E45B /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		298E1E9D3D37964E48B12882 /* RoomsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoomsView.swift; sourceTree = "<group>"; };
+		2AB9BAC58A5B6DCF9F39B20B /* ComposeReplyView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposeReplyView.swift; sourceTree = "<group>"; };
+		2F13053D6856079D84E6D888 /* RAVENWatchApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RAVENWatchApp.swift; sourceTree = "<group>"; };
+		30547F0DD2FF5E3D10DD884C /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
+		395E9611321891AB791FAEAB /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		3AE9E64B63D3E16C17A706CD /* TimeFormatter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimeFormatter.swift; sourceTree = "<group>"; };
+		6FEDAC7E8BB08BEAADC3D240 /* AvatarCircle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AvatarCircle.swift; sourceTree = "<group>"; };
+		952CB617D8E85D8F100C99C3 /* RemoteAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteAPI.swift; sourceTree = "<group>"; };
+		A786BD6CC7229591FF8DACB0 /* VoiceReplyView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceReplyView.swift; sourceTree = "<group>"; };
+		BE8DC631017BF9B6A6CC97CB /* FeedView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedView.swift; sourceTree = "<group>"; };
+		C46AB111343315499B90A2CF /* WatchModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchModels.swift; sourceTree = "<group>"; };
+		C53C11F0409370F79197A587 /* InboxView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxView.swift; sourceTree = "<group>"; };
+		CA8A62B3A41EA80839820662 /* PhoneBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneBridge.swift; sourceTree = "<group>"; };
+		CC6057F587E869AFBA4A7E51 /* VoiceRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceRecorder.swift; sourceTree = "<group>"; };
+		DF76828DDD7033AB679A0CAD /* WatchStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchStore.swift; sourceTree = "<group>"; };
+		ECCD55855CADA42D59B22275 /* NotificationsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationsView.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		3B2EF47A8567EED3BBAC8FFC /* Notifications */ = {
+			isa = PBXGroup;
+			children = (
+				ECCD55855CADA42D59B22275 /* NotificationsView.swift */,
+			);
+			path = Notifications;
+			sourceTree = "<group>";
+		};
+		3D9D2E9DC8016598E06061AA /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				C46AB111343315499B90A2CF /* WatchModels.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		4145679B83D2A9839923674A /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				0692E5EA38243892D997474F /* RAVEN-Watch.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		5213EAB6D1848A5077118792 /* Rooms */ = {
+			isa = PBXGroup;
+			children = (
+				298E1E9D3D37964E48B12882 /* RoomsView.swift */,
+			);
+			path = Rooms;
+			sourceTree = "<group>";
+		};
+		6F1285EE38C117D9366B4A27 /* Root */ = {
+			isa = PBXGroup;
+			children = (
+				0C4046E6AEAD865618F6E45B /* RootView.swift */,
+			);
+			path = Root;
+			sourceTree = "<group>";
+		};
+		7C8998FB5507817ACFB93027 /* Components */ = {
+			isa = PBXGroup;
+			children = (
+				6FEDAC7E8BB08BEAADC3D240 /* AvatarCircle.swift */,
+				3AE9E64B63D3E16C17A706CD /* TimeFormatter.swift */,
+			);
+			path = Components;
+			sourceTree = "<group>";
+		};
+		8F3E19071D32E6BCCD173684 /* Feed */ = {
+			isa = PBXGroup;
+			children = (
+				BE8DC631017BF9B6A6CC97CB /* FeedView.swift */,
+			);
+			path = Feed;
+			sourceTree = "<group>";
+		};
+		9EC4B665206645E95E6EE9A2 /* RAVEN-Watch */ = {
+			isa = PBXGroup;
+			children = (
+				2F13053D6856079D84E6D888 /* RAVENWatchApp.swift */,
+				3D9D2E9DC8016598E06061AA /* Models */,
+				DFFDE9C7044366B99A2FFDAC /* Resources */,
+				F4260C75EDFD1AAEE58323F5 /* Services */,
+				C063FC8F721CC6EBB7462175 /* Views */,
+			);
+			path = "RAVEN-Watch";
+			sourceTree = "<group>";
+		};
+		C063FC8F721CC6EBB7462175 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				F4940FDB5D20B3E80D92AB27 /* Chat */,
+				7C8998FB5507817ACFB93027 /* Components */,
+				8F3E19071D32E6BCCD173684 /* Feed */,
+				F521B0937B52A306B011ADF5 /* Inbox */,
+				3B2EF47A8567EED3BBAC8FFC /* Notifications */,
+				5213EAB6D1848A5077118792 /* Rooms */,
+				6F1285EE38C117D9366B4A27 /* Root */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		CBEF6C12D76FCA498C2DD094 = {
+			isa = PBXGroup;
+			children = (
+				9EC4B665206645E95E6EE9A2 /* RAVEN-Watch */,
+				4145679B83D2A9839923674A /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		DFFDE9C7044366B99A2FFDAC /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				395E9611321891AB791FAEAB /* Assets.xcassets */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		F4260C75EDFD1AAEE58323F5 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				CA8A62B3A41EA80839820662 /* PhoneBridge.swift */,
+				952CB617D8E85D8F100C99C3 /* RemoteAPI.swift */,
+				CC6057F587E869AFBA4A7E51 /* VoiceRecorder.swift */,
+				DF76828DDD7033AB679A0CAD /* WatchStore.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		F4940FDB5D20B3E80D92AB27 /* Chat */ = {
+			isa = PBXGroup;
+			children = (
+				30547F0DD2FF5E3D10DD884C /* ChatView.swift */,
+				2AB9BAC58A5B6DCF9F39B20B /* ComposeReplyView.swift */,
+				A786BD6CC7229591FF8DACB0 /* VoiceReplyView.swift */,
+			);
+			path = Chat;
+			sourceTree = "<group>";
+		};
+		F521B0937B52A306B011ADF5 /* Inbox */ = {
+			isa = PBXGroup;
+			children = (
+				C53C11F0409370F79197A587 /* InboxView.swift */,
+			);
+			path = Inbox;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		7553427C5FB56E9DE2DE6355 /* RAVEN-Watch */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 092131A276240556E377E57D /* Build configuration list for PBXNativeTarget "RAVEN-Watch" */;
+			buildPhases = (
+				72BC08139FA3093CCA35A801 /* Sources */,
+				EEB1681DA0FC5A1FA2C00C7F /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "RAVEN-Watch";
+			packageProductDependencies = (
+			);
+			productName = "RAVEN-Watch";
+			productReference = 0692E5EA38243892D997474F /* RAVEN-Watch.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		BC865364036D924D3FA6465E /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					7553427C5FB56E9DE2DE6355 = {
+						DevelopmentTeam = 86L46Z294A;
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 175EBE9197CA886785476927 /* Build configuration list for PBXProject "RAVEN-Watch" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = CBEF6C12D76FCA498C2DD094;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				7553427C5FB56E9DE2DE6355 /* RAVEN-Watch */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		EEB1681DA0FC5A1FA2C00C7F /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				1DE1CAEBFBC6974A343BA912 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		72BC08139FA3093CCA35A801 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				757877C8F785045C8997BF80 /* AvatarCircle.swift in Sources */,
+				48E54DF5E7C515F5EA6027D0 /* ChatView.swift in Sources */,
+				DB10707D053C6BDB4086B99D /* ComposeReplyView.swift in Sources */,
+				B2C2FADDBD8A9651539930CE /* FeedView.swift in Sources */,
+				F202FB5543CF562FD7B32DA8 /* InboxView.swift in Sources */,
+				7FA40AC6C771A222709C4F17 /* NotificationsView.swift in Sources */,
+				64C4C998E95582BFF2BCCA3C /* PhoneBridge.swift in Sources */,
+				DB95141BACBD90733DC1610A /* RAVENWatchApp.swift in Sources */,
+				216B615ED8FA2053EA635667 /* RemoteAPI.swift in Sources */,
+				891F939F7D6D74C8CB230F90 /* RoomsView.swift in Sources */,
+				A7622B8DEE89B7F1CDD40B5D /* RootView.swift in Sources */,
+				A7556C4CAD3633D27D4E5EEF /* TimeFormatter.swift in Sources */,
+				130D34F5B3CD9747FB30980C /* VoiceRecorder.swift in Sources */,
+				DA4D9266EC667E05BE676FA9 /* VoiceReplyView.swift in Sources */,
+				90EC3CE1AF1ECBAB9BB5A88F /* WatchModels.swift in Sources */,
+				D63CDFD44D4658BE27C9E258 /* WatchStore.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		16FB1D0C6465B59632A54A7F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "RAVEN-Watch/Resources/RAVEN-Watch.entitlements";
+				INFOPLIST_FILE = "RAVEN-Watch/Resources/Info.plist";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = 4;
+			};
+			name = Debug;
+		};
+		3CD8CB01AEE9E8AE92936502 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "RAVEN-Watch/Resources/RAVEN-Watch.entitlements";
+				INFOPLIST_FILE = "RAVEN-Watch/Resources/Info.plist";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = 4;
+			};
+			name = Release;
+		};
+		43B2D74760E1F2437FA0A895 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_ENTITLEMENTS = "RAVEN-Watch/Resources/RAVEN-Watch.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = 86L46Z294A;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "RAVEN-Watch/Resources/Info.plist";
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				OTHER_SWIFT_FLAGS = "-warn-concurrency -enable-actor-data-race-checks";
+				PRODUCT_BUNDLE_IDENTIFIER = app.raven.ios.watchkitapp;
+				PRODUCT_NAME = RAVEN;
+				SDKROOT = watchos;
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 10.0;
+			};
+			name = Debug;
+		};
+		7AF71A76A23E6371EB694A95 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_ENTITLEMENTS = "RAVEN-Watch/Resources/RAVEN-Watch.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = 86L46Z294A;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "RAVEN-Watch/Resources/Info.plist";
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				OTHER_SWIFT_FLAGS = "-warn-concurrency -enable-actor-data-race-checks";
+				PRODUCT_BUNDLE_IDENTIFIER = app.raven.ios.watchkitapp;
+				PRODUCT_NAME = RAVEN;
+				SDKROOT = watchos;
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 10.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		092131A276240556E377E57D /* Build configuration list for PBXNativeTarget "RAVEN-Watch" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				16FB1D0C6465B59632A54A7F /* Debug */,
+				3CD8CB01AEE9E8AE92936502 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		175EBE9197CA886785476927 /* Build configuration list for PBXProject "RAVEN-Watch" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				43B2D74760E1F2437FA0A895 /* Debug */,
+				7AF71A76A23E6371EB694A95 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = BC865364036D924D3FA6465E /* Project object */;
+}

@@ -71,7 +71,7 @@ struct DesignSettingsView: View {
                                     }
                                 }
                             )
-                            
+
                             if mode != AppSettings.AppearanceMode.allCases.last {
                                 Divider()
                                     .background(Color.white.opacity(0.1))
@@ -79,7 +79,7 @@ struct DesignSettingsView: View {
                         }
                     }
                 }
-                
+
                 // Footer Note
                 Text("System uses your device's appearance settings")
                     .font(.footnote)

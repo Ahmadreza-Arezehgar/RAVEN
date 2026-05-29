@@ -113,22 +113,37 @@ struct NewChatView: View {
     // MARK: - Actions
     
     private func loadFriends() async {
-        // Optimistically load from cache first for instant UI
+        // 🟥 ROUND 40 (2026-05-17) — offline-first friend list.
+        //
+        // Always render cached friends FIRST so the user sees
+        // something instantly, even on a cold launch.  Then refresh
+        // from the network in the background only when online.
+        // Cache lives in UserDefaults under `raven_friends_cache`
+        // (see GroupService.fetchFriends:563).  RAVENApp launches
+        // a pre-warm task (Round 40 in RAVENApp.swift) so the
+        // cache is populated as soon as the app is online for
+        // the first time, not just on first open of this picker.
         if let cached = GroupService.shared.getCachedFriends(), !cached.isEmpty {
             self.friends = cached
             self.isLoading = false
         } else {
             self.isLoading = true
         }
-        
+
         self.errorMessage = nil
-        
-        // Skip network call entirely if offline and we already have cached data
-        guard NetworkMonitor.shared.isOnline || self.friends.isEmpty else {
+
+        // Skip network entirely if offline (whether cache is empty
+        // or not).  When the cache is empty + offline, the user
+        // sees the "no internet, no cached friends yet" message
+        // instead of an infinite spinner.
+        guard NetworkMonitor.shared.isOnline else {
             self.isLoading = false
+            if self.friends.isEmpty {
+                self.errorMessage = "You're offline and don't have a cached friends list yet. Open RAVEN once online so we can pre-warm the list, then it'll work offline."
+            }
             return
         }
-        
+
         do {
             let fetched = try await GroupService.shared.fetchFriends()
             withAnimation {
@@ -138,13 +153,15 @@ struct NewChatView: View {
             if self.friends.isEmpty {
                 // Show user-friendly message instead of raw NSURLErrorDomain
                 if (error as? URLError)?.code == .notConnectedToInternet {
-                    self.errorMessage = "You're offline. Connect to the internet to load your friends list."
+                    self.errorMessage = "You're offline and don't have a cached friends list yet. Open RAVEN once online so we can pre-warm the list, then it'll work offline."
                 } else {
                     self.errorMessage = "Couldn't load friends. Please try again."
                 }
             }
+            // If we DO have cached friends, silently keep showing them
+            // — better than wiping the list on a transient network blip.
         }
-        
+
         self.isLoading = false
     }
     

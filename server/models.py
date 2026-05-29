@@ -29,6 +29,19 @@ class User(Base):
     bio = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     last_login = Column(DateTime)
+    # 🔴 ROUND 45 (2026-05-19) — cross-instance access-token revocation.
+    #
+    # The pre-R45 `_revoked_access_jti` dict in `auth.py` was per-process.
+    # Cloud Run auto-scales to N instances + scales-to-zero — every cold
+    # start lost the revocation set, and a stolen JWT survived `/logout`
+    # whenever the next request happened to land on a fresh instance.
+    #
+    # `tokens_invalidated_at` is the persistent fix: `/logout` stamps
+    # this column with `utcnow()`, and `get_current_user` rejects any
+    # token whose `iat` (issued-at) is BEFORE this stamp. Works
+    # identically across N instances, survives cold start, and costs
+    # one extra column read on the existing user-fetch query.
+    tokens_invalidated_at = Column(DateTime, nullable=True)
     is_verified = Column(Boolean, default=False)  # Verified badge (blue tick)
     is_premium = Column(Boolean, default=False)   # RAVEN+ subscription (golden crown)
     premium_expires_at = Column(DateTime, nullable=True)  # When subscription expires (null = permanent)
@@ -64,6 +77,15 @@ class User(Base):
     read_receipts_enabled = Column(Boolean, default=True)  # Send read receipts to sender
     who_can_message = Column(String, default="everyone")  # "everyone" | "friends"
     who_can_see_profile = Column(String, default="public")  # "public" | "friends"
+    # 🔴 ROUND 71 phase 3 (2026-05-24) — back the three privacy toggles
+    # the iOS PrivacySettingsView PATCHes. Previously these were
+    # accepted by Pydantic but written via setattr to an unmapped
+    # attribute, silently dropped on commit. Migration in main.py
+    # provisions the columns; setattr smokescreen in users.py is
+    # replaced with direct attribute writes.
+    show_liked_posts = Column(Boolean, default=True)  # Other users can see my liked posts
+    show_replies = Column(Boolean, default=True)  # Show my comment-replies on profile
+    allow_contact_share = Column(Boolean, default=True)  # Allow friends to forward my contact card
     
     # Profile Enhancements
     hobbies = Column(Text, nullable=True)  # JSON array of hobbies/interests
@@ -132,7 +154,19 @@ class Message(Base):
     transcript_text = Column(Text, nullable=True)
     transcript_status = Column(String, default='none')      # none|pending|processing|ready|failed
     transcript_language = Column(String, nullable=True)     # ISO 639-1 code
-    
+
+    # 🔴 ROUND 26 — Telegram-style media albums.
+    # When a sender multi-picks N photos/videos, each item still
+    # produces its own Message row (so each item keeps its own
+    # encrypted body, signed URLs, ACK lifecycle), but they share
+    # an opaque `media_group_key`. The receiver groups rows with
+    # the same key into one rendered "album" bubble. Server is a
+    # passthrough — it doesn't enforce N ≤ 10 or any ordering;
+    # the client owns the UX rules.
+    media_group_key = Column(String, nullable=True, index=True)
+    media_group_index = Column(Integer, nullable=True)      # 0-based position in album
+    media_group_total = Column(Integer, nullable=True)      # total items in album
+
     # Relationships
     sender = relationship("User", foreign_keys=[sender_id], back_populates="sent_messages")
     recipient = relationship("User", foreign_keys=[recipient_id], back_populates="received_messages")
@@ -243,6 +277,8 @@ class Comment(Base):
     media_id = Column(String, ForeignKey("post_media.id"), nullable=True, index=True)  # For per-media comments
     entities = Column(Text, nullable=True)  # JSON: [{type, userId, username, rangeStart, rangeLength}]
     is_hidden = Column(Boolean, default=False)  # Hidden by moderation action
+    is_pinned = Column(Boolean, default=False, index=True)  # 🔴 ROUND 26 — author can pin a comment to top
+    edited_at = Column(DateTime, nullable=True)  # 🔴 ROUND 26 — last PATCH timestamp; null = never edited
     comment_type = Column(String, default="text")  # "text" | "voice" | "image"
     media_url = Column(String, nullable=True)       # CDN URL for voice/image
     duration_sec = Column(Float, nullable=True)      # Voice duration in seconds
@@ -458,19 +494,33 @@ class PostSubscription(Base):
 # ==================== ROOM VISIBILITY ====================
 
 class RoomVisibility(Base):
-    """Track room visibility and read status per user."""
+    """Track room visibility, read status, and per-user UI preferences per (user, room).
+
+    Round 49 (2026-05-17): added `is_archived` + `archived_at` for
+    cross-device archive sync. iOS already persists archive state in
+    local SQLite (Migration 35); these columns let the server echo
+    that state back via `/api/messages/conversations` so a fresh
+    install / second device inherits the bucket.
+    """
     __tablename__ = "room_visibility"
     __table_args__ = (
         UniqueConstraint('user_id', 'room_id', name='unique_room_user'),
     )
-    
+
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
-    room_id = Column(String, nullable=False, index=True)  # Format: {userId1}_{userId2}
+    # Canonical thread identifier:
+    #   • 1:1     → "{userId1}_{userId2}" OR a single peer userId (iOS uses peer-userId)
+    #   • group   → the group_id (UUID)
+    room_id = Column(String, nullable=False, index=True)
     hidden = Column(Boolean, default=False)  # Hide conversation for this user
     last_read_at = Column(DateTime, nullable=True)  # Last time user read messages in this room
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    
+
+    # Round 49 — per-user archive bucket.
+    is_archived = Column(Boolean, default=False, nullable=False)
+    archived_at = Column(DateTime, nullable=True)
+
     # Relationships
     user = relationship("User")
 
@@ -776,7 +826,21 @@ class GroupMessage(Base):
     transcript_text = Column(Text, nullable=True)
     transcript_status = Column(String, default='none')      # none|pending|processing|ready|failed
     transcript_language = Column(String, nullable=True)     # ISO 639-1 code
-    
+
+    # 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — group key version.
+    # When non-NULL, `content` is the AES-GCM ciphertext encrypted
+    # under the group's symmetric key at this version. The server
+    # stores ciphertext as-is (no Fernet wrap — see is_opaque flag
+    # in encrypt_text) and fans the version through to every member
+    # so they can decrypt locally via GroupKeyService.
+    group_key_version = Column(Integer, nullable=True)
+
+    # 🔴 ROUND 26 — Telegram-style media albums (groups).
+    # Mirrors the same shape we added to the 1:1 Message table.
+    media_group_key = Column(String, nullable=True, index=True)
+    media_group_index = Column(Integer, nullable=True)
+    media_group_total = Column(Integer, nullable=True)
+
     # Relationships
     group = relationship("Group")
     sender = relationship("User")
@@ -1131,6 +1195,7 @@ class AudioRoom(Base):
     
     # Room state
     is_live = Column(Boolean, default=True, index=True)
+    is_locked = Column(Boolean, default=False, nullable=False)  # Host-set: block new joins
     participant_count = Column(Integer, default=0)
     max_participants = Column(Integer, default=100)
     
@@ -1302,6 +1367,34 @@ class StoryReaction(Base):
     # Relationships
     story = relationship("Story", back_populates="reactions")
     user = relationship("User", foreign_keys=[user_id])
+
+
+class MessageReaction(Base):
+    """Emoji reactions on chat messages — 1:1 and group.
+
+    🔴 2026-05-20 — the iOS client shipped a complete reaction UI
+    (MessageReactionStore / ReactionPickerCapsule / EmojiReaction-
+    PickerSheet) calling POST/GET /api/messages/{id}/reactions, but
+    the server half was never built — every call 404'd, so a tapped
+    reaction flashed on screen then reverted. This model + the
+    messages.py endpoints are that missing half.
+
+    One table for both message kinds, distinguished by `is_group` so
+    the endpoint knows which message table to authorize against. The
+    unique constraint stops a user double-reacting with the same
+    emoji on the same message.
+    """
+    __tablename__ = "message_reactions"
+    __table_args__ = (
+        UniqueConstraint('message_id', 'user_id', 'emoji', name='uq_reaction_msg_user_emoji'),
+    )
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    message_id = Column(String, nullable=False, index=True)
+    is_group = Column(Boolean, nullable=False, default=False)
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    emoji = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 
 class StoryScreenshot(Base):
@@ -1503,3 +1596,171 @@ class VoiceChainLink(Base):
     # Relationships
     chain = relationship("VoiceChain", back_populates="links")
     user = relationship("User")
+
+class UserActionLog(Base):
+    """
+    Audit / telemetry log of every meaningful user-driven action.
+
+    🔴 ROUND 26 (2026-05-16) — added at user request:
+    "har dokmee ke user mizane app darja behesh reaction dashte
+    bashe ... va dar paszaminie toye server sabt beshe"
+    (every button the user taps should have a visible reaction AND
+    be logged on the server in the background).
+
+    Stores actions like block, report, follow, unfollow, accept,
+    decline, like, unlike, repost, unrepost, bookmark, unbookmark,
+    mute, mention, etc. Used for:
+      • Audit trail (was this user spamming reports? who blocked
+        whom and when?).
+      • Light analytics (button engagement, conversion funnels).
+      • Anti-abuse signals (rate-limiting per-user per-action).
+
+    Designed for high-volume INSERT-only traffic. No FK constraints
+    on `target_id` because target type varies (post / user /
+    comment / message / group / poll / room) — keeping it as a
+    bare string + a typed discriminator keeps the table cheap to
+    write and easy to query for any target type.
+    """
+    __tablename__ = "user_action_logs"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    action = Column(String, nullable=False, index=True)           # e.g. "like", "block", "follow"
+    target_id = Column(String, nullable=True, index=True)         # post id, user id, message id, …
+    target_type = Column(String, nullable=True)                   # "post" | "user" | "comment" | "message" | "group" | …
+    metadata_json = Column(Text, nullable=True)                   # optional free-form JSON blob
+    client = Column(String, nullable=True)                        # "ios" | "android" | "mac" | "web"
+    timestamp = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    user = relationship("User")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 🔴 ROUND 26 (2026-05-16) — endpoint-mismatch fixes
+#
+# The iOS client was calling four endpoints that simply didn't exist on
+# the server, so the actions silently 404'd and the optimistic UI lied
+# about state to the user:
+#   • POST/DELETE /api/users/follow/{id}      (one-way social follow)
+#   • POST/DELETE /api/posts/{id}/bookmark    (private save-for-later)
+#   • POST /api/comments/{id}/pin|/unpin      (post-author pin)
+#   • PATCH /api/comments/{id}                (edit)
+#
+# The two models below back the new follow/bookmark endpoints. The
+# pin/edit endpoints reuse the `Comment` columns added above.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class UserFollow(Base):
+    """One-way social follow (X / Twitter style).
+
+    Distinct from `FriendRequest` / `friendships`: a follow is unilateral,
+    requires no acceptance, and does NOT grant the follower direct-message
+    access. Used by the recommendation engine and the "Following" feed.
+    """
+    __tablename__ = "user_follows"
+    __table_args__ = (
+        UniqueConstraint('follower_id', 'followee_id', name='unique_user_follow'),
+    )
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    follower_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    followee_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    # 🔴 BUG FIX (2026-05-21) — follow-of-a-private-account approval.
+    # "accepted" = an active follow (public account, or a private
+    # account that approved the request). "pending" = the followee is
+    # a private account and has NOT yet approved — the row grants
+    # NOTHING (not counted as a follower) until the followee accepts.
+    # Defaults to "accepted" so every pre-existing row keeps working.
+    status = Column(String, nullable=False, default="accepted")  # "pending" | "accepted"
+
+    follower = relationship("User", foreign_keys=[follower_id])
+    followee = relationship("User", foreign_keys=[followee_id])
+
+
+class PostBookmark(Base):
+    """Per-user private bookmark on a post. Like `PostLike` but for the
+    save-for-later flow — the bookmark count is NOT shown publicly and
+    bookmarks never trigger notifications to the post author."""
+    __tablename__ = "post_bookmarks"
+    __table_args__ = (
+        UniqueConstraint('post_id', 'user_id', name='unique_post_bookmark'),
+    )
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    post_id = Column(String, ForeignKey("posts.id"), nullable=False, index=True)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    timestamp = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    post = relationship("Post")
+    user = relationship("User")
+
+
+class ConversationSetting(Base):
+    """🔴 v1.8 (2026-05-21) — per-1:1-conversation settings.
+
+    Currently holds ONE setting: the disappearing-messages timer.
+    A 1:1 DM has no `conversations` row (messages are just sender/
+    recipient pairs), so the timer is keyed by the *canonical ordered*
+    user pair — `user_low_id` is always the lexicographically smaller
+    id. That guarantees exactly one row per conversation regardless of
+    who set the timer, and either participant resolves the same row.
+
+    `disappearing_seconds` of 0 means OFF. When > 0, every NEW message
+    between the pair is stamped `expires_at = sent_at + seconds` by the
+    /send (and /bridge) handlers; the message-fetch endpoints filter
+    and lazily purge anything past its expiry. Existing messages are
+    NOT retroactively expired when the timer changes — matches
+    Signal / WhatsApp behaviour."""
+    __tablename__ = "conversation_settings"
+    __table_args__ = (
+        UniqueConstraint('user_low_id', 'user_high_id',
+                         name='uq_conversation_settings_pair'),
+    )
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_low_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    user_high_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    # Disappearing-messages timer, seconds. 0 = off.
+    disappearing_seconds = Column(Integer, default=0, nullable=False)
+    # Who last changed the timer + when (drives the system message).
+    updated_by_id = Column(String, ForeignKey("users.id"), nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class AttestChallenge(Base):
+    """🔴 v1.8 (2026-05-21) — feature #3: App Attest device enrolment.
+
+    A single-use, short-lived nonce the client must attest over when
+    enrolling its Apple App Attest key. Issued by POST /api/attest/
+    challenge, consumed by POST /api/attest/enroll."""
+    __tablename__ = "attest_challenges"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    challenge = Column(String, nullable=False, unique=True, index=True)  # base64
+    expires_at = Column(DateTime, nullable=False)
+    consumed = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class DeviceAttestation(Base):
+    """🔴 v1.8 (2026-05-21) — feature #3: a verified Apple App Attest
+    device key. Created by POST /api/attest/enroll once the attestation
+    chains to the Apple App Attest Root CA. The stored public key lets
+    future requests be proven genuine via App Attest assertions (a
+    follow-up); `sign_count` is the assertion replay counter — 0 at
+    enrolment."""
+    __tablename__ = "device_attestations"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    key_id = Column(String, nullable=False, unique=True, index=True)  # base64
+    public_key = Column(Text, nullable=False)          # PEM (SubjectPublicKeyInfo)
+    environment = Column(String, nullable=False)       # production | development
+    sign_count = Column(Integer, default=0, nullable=False)
+    receipt = Column(Text, nullable=True)              # base64 Apple receipt
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    last_verified_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+

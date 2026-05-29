@@ -401,6 +401,7 @@ struct FeedView: View {
                                 // ⚡ PERF: Prefetch images for 3 cards ahead — eliminates placeholder flash on fast scroll
                                 if let idx = posts.firstIndex(where: { $0.id == post.id }) {
                                     var urlsToPrefetch: [URL] = []
+                                    var videoUrlsToPrewarm: [URL] = []
                                     let lookAhead = min(idx + 4, posts.count) // 3 cards ahead
                                     for i in (idx + 1)..<lookAhead {
                                         let upcoming = posts[i]
@@ -408,14 +409,29 @@ struct FeedView: View {
                                         if let avatarUrl = AppConfig.mediaURL(from: upcoming.authorAvatar) {
                                             urlsToPrefetch.append(avatarUrl)
                                         }
-                                        // Prefetch first media image
-                                        if let firstMedia = upcoming.allMedia.first, !firstMedia.isVideo,
+                                        // Prefetch first media — images go to
+                                        // the image cache, videos to the
+                                        // AVFoundation prewarmer so the moov
+                                        // atom + first byte range are already
+                                        // in memory when the user scrolls onto
+                                        // the card.
+                                        if let firstMedia = upcoming.allMedia.first,
                                            let mediaUrl = URL(string: firstMedia.url) {
-                                            urlsToPrefetch.append(mediaUrl)
+                                            if firstMedia.isVideo {
+                                                videoUrlsToPrewarm.append(mediaUrl)
+                                            } else {
+                                                urlsToPrefetch.append(mediaUrl)
+                                            }
                                         }
                                     }
                                     if !urlsToPrefetch.isEmpty {
                                         ImageCache.shared.prefetch(urls: urlsToPrefetch)
+                                    }
+                                    if !videoUrlsToPrewarm.isEmpty {
+                                        let snapshot = videoUrlsToPrewarm
+                                        Task.detached(priority: .utility) {
+                                            await VideoPrefetcher.shared.prefetch(urls: snapshot)
+                                        }
                                     }
                                 }
                             }
@@ -576,27 +592,41 @@ struct FeedView: View {
                                     }
                                 }
                                 
-                                // ⚡ PERF: Prefetch images for 3 cards ahead
+                                // ⚡ PERF: Prefetch images for 3 cards ahead.
+                                // Videos are routed through VideoPrefetcher
+                                // so the moov atom is in memory by the time
+                                // the user scrolls onto the card.
                                 if let idx = posts.firstIndex(where: { $0.id == post.id }) {
                                     var urlsToPrefetch: [URL] = []
+                                    var videoUrlsToPrewarm: [URL] = []
                                     let lookAhead = min(idx + 4, posts.count)
                                     for i in (idx + 1)..<lookAhead {
                                         let upcoming = posts[i]
                                         if let avatarUrl = AppConfig.mediaURL(from: upcoming.authorAvatar) {
                                             urlsToPrefetch.append(avatarUrl)
                                         }
-                                        if let firstMedia = upcoming.allMedia.first, !firstMedia.isVideo,
+                                        if let firstMedia = upcoming.allMedia.first,
                                            let mediaUrl = URL(string: firstMedia.url) {
-                                            urlsToPrefetch.append(mediaUrl)
+                                            if firstMedia.isVideo {
+                                                videoUrlsToPrewarm.append(mediaUrl)
+                                            } else {
+                                                urlsToPrefetch.append(mediaUrl)
+                                            }
                                         }
                                     }
                                     if !urlsToPrefetch.isEmpty {
                                         ImageCache.shared.prefetch(urls: urlsToPrefetch)
                                     }
+                                    if !videoUrlsToPrewarm.isEmpty {
+                                        let snapshot = videoUrlsToPrewarm
+                                        Task.detached(priority: .utility) {
+                                            await VideoPrefetcher.shared.prefetch(urls: snapshot)
+                                        }
+                                    }
                                 }
                             }
                         }
-                    
+
                     // MARK: - Footers (Outside LazyVStack)
                     if !feedStore.friendsPosts.isEmpty {
                         // Loading indicator for friends infinite scroll
@@ -741,6 +771,36 @@ struct FeedView: View {
         } else {
             // Fallback: if eager warm somehow missed, load from cache now
             await feedStore.loadFromCache()
+        }
+
+        // 🔴 Bug fix (2026-05-16): Local feed was silently empty
+        // forever because the Home/Feed screen never asked for
+        // location permission — only the camera, location-attach,
+        // and post-creator did. Without a prompt, status stayed
+        // `.notDetermined`, `LocationManager.shared.lastLocation`
+        // stayed nil, `FeedStore.currentLocation` stayed nil, and
+        // `/api/posts/feed/local` was never called.
+        //
+        // Now, on first appear of the Home tab, we:
+        //   1. Ask for "When In Use" permission if not yet asked
+        //      (iOS shows the system prompt; on the simulator with
+        //      `simctl privacy ... grant location` the call no-ops
+        //      but the grant flag is already set).
+        //   2. Fire `getCurrentLocation()` to seed `FeedStore.
+        //      currentLocation` so the next `fetchMergedLocalFeed`
+        //      has lat/lng to send. This is a one-shot — the
+        //      Combine subscription in FeedStore handles continuous
+        //      updates if any other surface drives `lastLocation`.
+        let lm = LocationManager.shared
+        if lm.authorization == .notDetermined {
+            lm.requestWhenInUse()
+        }
+        if lm.hasLocationPermission && feedStore.currentLocation == nil {
+            if let cached = lm.lastLocation {
+                feedStore.currentLocation = cached
+            } else if let fresh = try? await lm.getCurrentLocation() {
+                feedStore.currentLocation = fresh
+            }
         }
         
         // 🚀 Fire visible-tab fetch AND rooms in parallel (independent endpoints,

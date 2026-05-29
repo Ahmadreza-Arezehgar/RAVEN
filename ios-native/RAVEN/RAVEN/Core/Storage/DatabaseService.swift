@@ -169,15 +169,47 @@ actor DatabaseService {
         // NOTE: Previously this was double-hex-encoded (UTF-8 bytes of hex string were re-hex-encoded),
         // producing a 128-char key. Migration below handles existing databases.
         let pragmaSQL = "PRAGMA key = \"x'\(encryptionKey)'\";"
-        
+
         var errorMessage: UnsafeMutablePointer<CChar>?
         let keyResult = sqlite3_exec(db, pragmaSQL, nil, nil, &errorMessage)
-        
+
         if keyResult != SQLITE_OK {
             if let errorMessage = errorMessage {
                 sqlite3_free(errorMessage)
             }
             throw DatabaseError.failedToApplyEncryptionKey
+        }
+
+        // Round 13 (2026-05-16) — hacker-audit finding S1.
+        // Apply explicit v4 PRAGMAs immediately after the key so the
+        // KDF / page format never silently drifts with linker version.
+        //
+        //   • cipher_compatibility=4 → 256k PBKDF2 iters + HMAC-SHA512
+        //     + 4 KB page size (the modern default; pinning makes it
+        //     intentional rather than implicit).
+        //   • cipher_memory_security=ON → SQLCipher zeroes free'd
+        //     page buffers and locks them out of swap. Without this,
+        //     plaintext page-cache bytes can be paged to disk by the
+        //     kernel and survive in unencrypted form on backup or
+        //     jailbreak extraction.
+        //
+        // PRAGMAs are silent-no-op on the older default cipher, so
+        // setting them here is forward-compatible.
+        let hardenSQL =
+            "PRAGMA cipher_compatibility = 4;" +
+            "PRAGMA cipher_memory_security = ON;"
+        var hardenErr: UnsafeMutablePointer<CChar>?
+        let hardenResult = sqlite3_exec(db, hardenSQL, nil, nil, &hardenErr)
+        if hardenResult != SQLITE_OK {
+            if let hardenErr = hardenErr {
+                #if DEBUG
+                print("⚠️ [Database] SQLCipher hardening PRAGMA failed: \(String(cString: hardenErr))")
+                #endif
+                sqlite3_free(hardenErr)
+            }
+            // Not fatal — older SQLCipher builds may not recognise
+            // the PRAGMAs. The key has already been applied; we
+            // continue but the operator should see the warning.
         }
         
         // Validate that the DB can be queried with the configured key.
@@ -706,6 +738,31 @@ actor DatabaseService {
         // `is_archived = 0`; the archived folder filters `= 1`.
         try addColumnIfMissing(table: "conversations", column: "is_archived", definition: "INTEGER DEFAULT 0")
         try addColumnIfMissing(table: "conversations", column: "archived_at", definition: "REAL")
+
+        // Migration 36: Telegram-style media albums (round 26).
+        // When the user multi-picks photos/videos and hits Send,
+        // every item gets its OWN messages row (preserves existing
+        // E2EE / progress / ACK lifecycle) but they share a
+        // `media_group_key` so the chat surface renders them as
+        // one grouped bubble.
+        try addColumnIfMissing(table: "messages", column: "media_group_key", definition: "TEXT")
+        try addColumnIfMissing(table: "messages", column: "media_group_index", definition: "INTEGER")
+        try addColumnIfMissing(table: "messages", column: "media_group_total", definition: "INTEGER")
+        // Index speeds up the chat-surface "group consecutive
+        // rows by media_group_key" pass — keyed on (room, key).
+        try? _executeDDL([
+            "CREATE INDEX IF NOT EXISTS idx_messages_album ON messages(room_id, media_group_key) WHERE media_group_key IS NOT NULL"
+        ])
+
+        // Migration 37 (🔴 v1.8): per-conversation disappearing
+        // messages. `expires_at` is the ISO-8601 instant after which
+        // the message is swept from this device by
+        // `MessageRepository.purgeExpiredMessages`. NULL = never
+        // expires; the server stamps the same value server-side.
+        try addColumnIfMissing(table: "messages", column: "expires_at", definition: "TEXT")
+        try? _executeDDL([
+            "CREATE INDEX IF NOT EXISTS idx_messages_expires_at ON messages(expires_at) WHERE expires_at IS NOT NULL"
+        ])
 
         isInitialized = true
         #if DEBUG

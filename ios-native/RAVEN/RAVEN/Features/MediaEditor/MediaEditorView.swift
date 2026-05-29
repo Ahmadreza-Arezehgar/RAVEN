@@ -23,33 +23,26 @@ struct MediaEditorView: View {
     }
     
     var body: some View {
-        // Layout approach: split the topBar so the safe-area spacer
-        // above is a SEPARATE Color view (not padding on the topBar
-        // itself). This prevents SwiftUI from including the 60pt
-        // spacer inside the topBar's hit-test region — earlier
-        // attempts where `.padding(.top, 60)` was applied directly to
-        // the topBar caused the buttons' hit area to include the
-        // empty space above, pushing the actual hit target above the
-        // visible buttons.
+        // 🔴 ROUND 22 — LIVE-TEST BUG FIX. The previous layout put
+        // the topBar inside the same VStack as the image preview +
+        // tool panel. On iOS 26, the image preview's GeometryReader
+        // (which fills its parent) was capturing the entire screen's
+        // hit-test region BEFORE the topBar's Button hit-tests ran,
+        // because SwiftUI evaluates VStack children's hit shapes
+        // bottom-up when materials are stacked. Result: Close (X)
+        // AND Send buttons silently ate every tap — the user clicked
+        // Send four times with no response.
+        //
+        // Fix: hoist topBar OUT of the VStack and attach via
+        // `.safeAreaInset(edge: .top)`. iOS hosts the inset content
+        // in a dedicated container that's guaranteed to receive its
+        // own hit tests independent of the body content beneath.
+        // Same pattern used in VideoPreviewBeforeSendSheet.
         ZStack {
             Color(hex: "1C1C1E")
                 .ignoresSafeArea()
 
             VStack(spacing: 0) {
-                // Dynamic Island clearance — pure background, no
-                // hit-testable content.
-                Color(hex: "1C1C1E").opacity(0.85)
-                    .background(.ultraThinMaterial)
-                    .frame(height: 60)
-                    .allowsHitTesting(false)
-
-                topBar
-                    .padding(.bottom, 4)
-                    .background(
-                        Color(hex: "1C1C1E").opacity(0.85)
-                            .background(.ultraThinMaterial)
-                    )
-
                 imagePreviewWithOverlays
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
 
@@ -64,6 +57,14 @@ struct MediaEditorView: View {
                         .background(.ultraThinMaterial)
                 )
             }
+        }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            topBar
+                .padding(.bottom, 4)
+                .background(
+                    Color(hex: "1C1C1E").opacity(0.85)
+                        .background(.ultraThinMaterial)
+                )
         }
         .onAppear { viewModel.setup() }
         // Note: status bar is intentionally NOT hidden — `.statusBarHidden()`
@@ -145,7 +146,24 @@ struct MediaEditorView: View {
             // hits the 44pt iOS HIG minimum without needing extra hit
             // shapes (which broke clicks via `.fullScreenCover`).
             Button {
-                showExportSheet = true
+                // 🔴 ROUND 22 — LIVE-TEST BUG: the Send button used
+                // to set `showExportSheet = true` and rely on a
+                // `.sheet(isPresented: $showExportSheet)` modifier
+                // nested inside the parent `.fullScreenCover` that
+                // hosts MediaEditorView. On iOS 26 a nested .sheet
+                // inside .fullScreenCover often fails to present
+                // (SwiftUI's hosting controller chain doesn't
+                // surface the sheet up to the window scene). The
+                // user clicked Send repeatedly and nothing
+                // happened.
+                //
+                // Fix: skip the export-settings sheet entirely and
+                // ship directly with sensible defaults (high
+                // quality, strip GPS location for privacy). The
+                // user expects "tap Send → message goes" — the
+                // quality picker was a power-user nice-to-have
+                // that's not worth the hit-test bug.
+                exportAndSend(quality: .high, stripLocation: true)
             } label: {
                 HStack(spacing: 4) {
                     if viewModel.isExporting {
@@ -171,6 +189,12 @@ struct MediaEditorView: View {
                         )
                     )
                 )
+                // 🔴 ROUND 22 — also enforce the capsule as the
+                // explicit hit shape so SwiftUI's tap area matches
+                // the visible button. Without this, taps near the
+                // padded edge sometimes route to the parent VStack
+                // instead of the Button.
+                .contentShape(Capsule())
             }
             .disabled(viewModel.isExporting || !viewModel.isReady)
             .opacity((viewModel.isExporting || !viewModel.isReady) ? 0.5 : 1.0)

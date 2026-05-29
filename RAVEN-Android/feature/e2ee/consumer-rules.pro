@@ -1,0 +1,1 @@
+-keep,includedescriptorclasses class app.raven.feature.e2ee.** { *; }

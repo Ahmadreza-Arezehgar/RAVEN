@@ -18,7 +18,7 @@ from typing import Optional
 from datetime import datetime
 
 from database import get_db
-from models import User, UserEvent, UserInterest
+from models import User, UserEvent, UserInterest, UserActionLog
 from routers.users import get_current_user
 
 router = APIRouter(prefix="/api/events", tags=["events"])
@@ -42,6 +42,22 @@ class SearchEventRequest(BaseModel):
 
 class HashtagClickRequest(BaseModel):
     hashtag: str
+
+
+# 🔴 ROUND 26 — unified user-action telemetry.
+class UserActionLogRequest(BaseModel):
+    """
+    Single user-driven button press: block, report, follow, accept,
+    decline, like, repost, bookmark, etc. The iOS / Android client
+    fires this as a background fire-and-forget POST every time the
+    user taps an action button — see UserActionTelemetry on the
+    client side.
+    """
+    action: str  # e.g. "like", "unlike", "block", "follow", "report", "bookmark"
+    target_id: Optional[str] = None
+    target_type: Optional[str] = None  # "post" | "user" | "comment" | "message" | "group" | …
+    metadata: Optional[dict] = None
+    client: Optional[str] = None       # "ios" | "android" | "mac" | "web"
 
 
 # ==================== Interest Scoring Weights ====================
@@ -213,6 +229,60 @@ def log_search_event(
     db.commit()
     
     print(f"🔍 Search: {current_user.username} searched '{req.query}'")
+    return {"status": "ok"}
+
+
+@router.post("/action")
+def log_user_action(
+    req: UserActionLogRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    🔴 ROUND 26 — unified user-action telemetry endpoint.
+
+    Records ONE user-driven button press into `user_action_logs`.
+    The iOS / Android client fires this in the background for every
+    meaningful action (block, report, follow, accept, decline, like,
+    repost, bookmark, mute, etc.) so we have:
+      • An audit trail of who did what to whom and when.
+      • Engagement analytics per button / per surface.
+      • Anti-abuse signal source (rate-limit reports / blocks).
+
+    The endpoint is intentionally permissive — the client sends
+    arbitrary `action` strings. We don't enforce an enum so the
+    server doesn't need a redeploy every time the iOS team adds a
+    new tracked button. Constrain length so a misbehaving client
+    can't DoS via huge metadata blobs.
+    """
+    import uuid
+    import json as _json
+
+    action = (req.action or "").strip()[:64]
+    if not action:
+        # Soft reject empty actions — return 200 so a flaky client
+        # can never block the user's UI on this background call.
+        return {"status": "ok", "noop": True}
+
+    metadata_str: Optional[str] = None
+    if req.metadata:
+        try:
+            metadata_str = _json.dumps(req.metadata)[:2048]
+        except Exception:
+            metadata_str = None
+
+    log = UserActionLog(
+        id=str(uuid.uuid4()),
+        user_id=current_user.id,
+        action=action,
+        target_id=(req.target_id or None),
+        target_type=(req.target_type or None),
+        metadata_json=metadata_str,
+        client=(req.client or None),
+        timestamp=datetime.utcnow()
+    )
+    db.add(log)
+    db.commit()
     return {"status": "ok"}
 
 

@@ -52,6 +52,11 @@ final class BlockService {
     
     /// Block a user. Optimistic: adds to local cache immediately.
     func blockUser(userId: String) async throws -> BlockResult {
+        // 🔴 ROUND 26 — unified user-action telemetry (haptic + bg server log).
+        await MainActor.run {
+            UserActionTelemetry.shared.record(.block, targetId: userId, targetType: .user)
+        }
+
         // 1. Optimistic UI: Add to block list and INSTANTLY remove content from feeds
         await MainActor.run {
             blockedUserIds.insert(userId)
@@ -103,6 +108,11 @@ final class BlockService {
     
     /// Unblock a user. Optimistic: removes from local cache immediately.
     func unblockUser(userId: String) async throws {
+        // 🔴 ROUND 26 — unified user-action telemetry (haptic + bg server log).
+        await MainActor.run {
+            UserActionTelemetry.shared.record(.unblock, targetId: userId, targetType: .user)
+        }
+
         // Optimistic: remove immediately. Discard the removed-element return
         // values so MainActor.run keeps a Void inferred type.
         await MainActor.run {

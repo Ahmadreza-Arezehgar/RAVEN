@@ -80,13 +80,20 @@ public sealed class EncryptedDb : IAsyncDisposable
         return Convert.ToHexString(key).ToLowerInvariant();
     }
 
+    // 🔴 hacker-audit 2026-05-19 — fail hard on non-Windows release.
+    // See RAVEN-Windows/src/Network/TokenStore.cs for full rationale.
     private static byte[] Protect(byte[] data)
     {
 #if WINDOWS
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             return ProtectedData.Protect(data, null, DataProtectionScope.CurrentUser);
 #endif
+#if DEBUG
         return TestOnlyXor(data);
+#else
+        throw new PlatformNotSupportedException(
+            "EncryptedDb requires Windows DPAPI. Refusing to fall back to test-only XOR in Release.");
+#endif
     }
 
     private static byte[] Unprotect(byte[] data)
@@ -95,7 +102,12 @@ public sealed class EncryptedDb : IAsyncDisposable
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             return ProtectedData.Unprotect(data, null, DataProtectionScope.CurrentUser);
 #endif
+#if DEBUG
         return TestOnlyXor(data);
+#else
+        throw new PlatformNotSupportedException(
+            "EncryptedDb requires Windows DPAPI. Refusing to fall back to test-only XOR in Release.");
+#endif
     }
 
     private static byte[] TestOnlyXor(byte[] data)

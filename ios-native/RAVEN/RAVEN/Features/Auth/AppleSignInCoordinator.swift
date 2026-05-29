@@ -1,5 +1,8 @@
 import Foundation
 import AuthenticationServices
+import os
+
+fileprivate let logger = Logger(subsystem: "app.raven.ios", category: "Auth.Apple")
 
 // MARK: - Apple Sign In Coordinator
 class AppleSignInCoordinator: NSObject, ASAuthorizationControllerDelegate, ASAuthorizationControllerPresentationContextProviding {
@@ -85,9 +88,7 @@ class AppleSignInCoordinator: NSObject, ASAuthorizationControllerDelegate, ASAut
             email: appleIDCredential.email
         )
         
-        #if DEBUG
-        print("🍎 [AppleSignIn] Success - email: \(credential.email ?? "nil"), name: \(credential.fullName ?? "nil")")
-        #endif
+        logger.debug("Success - email: \(credential.email ?? "nil", privacy: .private), name: \(credential.fullName ?? "nil", privacy: .private)")
         completion?(.success(credential))
     }
     

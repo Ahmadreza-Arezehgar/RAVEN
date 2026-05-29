@@ -60,7 +60,9 @@ struct DeviceIdentitySettingsView: View {
             
             if !fingerprint.isEmpty {
                 Button {
-                    UIPasteboard.general.string = fingerprint
+                    // Round 14 — S9: identity fingerprint is high-value;
+                    // .localOnly stops Handoff cross-device sync.
+                    SecurePasteboard.copy(fingerprint)
                     Haptics.success()
                     
                     withAnimation { isCopied = true }

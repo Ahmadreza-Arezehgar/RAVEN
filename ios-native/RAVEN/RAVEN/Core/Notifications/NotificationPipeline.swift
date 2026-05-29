@@ -9,6 +9,23 @@ private extension String {
     /// Returns nil instead of an empty string. Lets `??` chain
     /// gracefully through optional fallbacks.
     var nonEmpty: String? { isEmpty ? nil : self }
+
+    /// Filter out Unicode scalars that don't carry visible content —
+    /// control (LRM, RLM, BOM, ZWSP, ZWJ, …) and format-category
+    /// scalars. Lets the empty-check + fallback fire correctly when
+    /// a payload's "preview" is technically non-empty but visually
+    /// blank. Shared between the title and body sanitation paths.
+    func strippingInvisibleUnicode() -> String {
+        let visible = self.unicodeScalars.filter { scalar in
+            switch scalar.properties.generalCategory {
+            case .control, .format, .lineSeparator, .paragraphSeparator:
+                return false
+            default:
+                return true
+            }
+        }
+        return String(String.UnicodeScalarView(visible))
+    }
 }
 
 // MARK: - Notification Pipeline
@@ -34,8 +51,17 @@ final class NotificationPipeline: ObservableObject {
     private var dismissTask: Task<Void, Never>?
     private var isPaused: Bool = false
     
-    /// Toast display duration in seconds
-    private let displayDuration: UInt64 = 3_000_000_000 // 3 seconds
+    /// Toast display duration in seconds.
+    ///
+    /// 🔴 ROUND 71 phase 3 follow-up #4 (2026-05-24) — bumped 3s → 5s.
+    /// User reported: "in banner notification ke miyad va mire ro
+    /// khodet dorost kon" — banner disappears too fast to read.
+    /// 5 seconds is long enough for typical user reading speed
+    /// (~250 wpm × 1 line = ~3-4s) while still feeling
+    /// non-intrusive. Users who interact (tap / swipe-down to
+    /// reply) extend the timer via `pauseDismiss`; users who don't
+    /// want to read it can swipe-left to dismiss immediately.
+    private let displayDuration: UInt64 = 5_000_000_000 // 5 seconds
     
     /// Time window for merging similar notifications (seconds)
     private let mergeWindow: TimeInterval = 5.0
@@ -53,8 +79,16 @@ final class NotificationPipeline: ObservableObject {
         // dot — looked broken to the user. Sanitize at the boundary
         // so we ALWAYS show something meaningful instead.
         var item = item
-        let trimmedTitle = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedBody  = item.body.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 🔴 ROUND 28 (2026-05-17) — strip invisible Unicode in
+        // addition to whitespace. The "empty box" bug the user kept
+        // hitting was caused by upstream payloads carrying just an
+        // LRM / RLM / ZWSP / control char in the body; the old
+        // `trimmingCharacters(in: .whitespacesAndNewlines)` check
+        // didn't catch those, so the safety-net `defaultBody(for:)`
+        // fallback never fired and the toast rendered with a
+        // technically-non-empty but visually-blank second line.
+        let trimmedTitle = item.title.strippingInvisibleUnicode().trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedBody  = item.body.strippingInvisibleUnicode().trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmedTitle.isEmpty {
             item.title = item.senderName?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty
                 ?? defaultTitle(for: item.type)
@@ -70,10 +104,26 @@ final class NotificationPipeline: ObservableObject {
         // ⚡ DEDUPE: WebSocket and APNS often deliver the same message within
         // milliseconds — without dedupe, the user gets two in-app toasts for
         // ONE message. We keep a 5-second sliding window of recently-shown
-        // toast keys and drop exact duplicates. The key is type + chatId +
-        // sender + first 60 chars of body, which uniquely identifies a
-        // single notification across delivery channels.
-        let dedupeKey = "\(item.type.rawValue)|\(item.chatId ?? "")|\(item.senderId ?? "")|\(item.body.prefix(60))"
+        // toast keys and drop exact duplicates.
+        //
+        // 🔴 ROUND 71 phase 3 follow-up #4 (2026-05-24) — prefer
+        // `messageId` for the dedup key when available. Pre-fix
+        // the key included `item.body.prefix(60)` — which DIFFERS
+        // between channels for the same logical message (e.g.
+        // WS push has "💬 Message" placeholder while APNs has the
+        // type-formatted preview, mesh has yet another shape).
+        // Result: the SAME message slipped past dedup as 2-3
+        // distinct toasts depending on which channels delivered.
+        // With `messageId` we collapse cross-channel duplicates
+        // perfectly. Fallback to the legacy shape preserves
+        // dedup for synthetic toasts (security alerts, etc.) that
+        // don't carry a messageId.
+        let dedupeKey: String = {
+            if let mid = item.messageId, !mid.isEmpty {
+                return "\(item.type.rawValue)|msgId:\(mid)"
+            }
+            return "\(item.type.rawValue)|\(item.chatId ?? "")|\(item.senderId ?? "")|\(item.body.prefix(60))"
+        }()
         let now = Date()
         recentlyShown = recentlyShown.filter { $0.value.timeIntervalSince(now) > -5 }
         if recentlyShown[dedupeKey] != nil {
@@ -163,10 +213,21 @@ final class NotificationPipeline: ObservableObject {
     func handleTap(_ item: ToastItem) {
         Haptics.light()
         pauseDismiss()
-        
-        // Mark as read on server
+
+        // Mark as read on server.
+        //
+        // 🔴 ROUND 71 phase 3 follow-up #4 (2026-05-24) — use
+        // `serverNotificationId` instead of the toast's own UUID.
+        // Pre-fix `item.id` was a fresh UUID minted by the toast
+        // factory — the server NEVER had a notification row with
+        // that id, so /api/notifications/{id}/read returned 404
+        // and the bell badge stayed bumped after the user
+        // dismissed every toast. With the server id passed
+        // through (added in ROUND 71 p3 follow-up #4), the
+        // mark-as-read finally hits the correct row.
+        let readId = item.serverNotificationId ?? item.id
         Task {
-            try? await NotificationsService.shared.markAsRead(id: item.id)
+            try? await NotificationsService.shared.markAsRead(id: readId)
         }
         
         switch item.type {
@@ -196,8 +257,38 @@ final class NotificationPipeline: ObservableObject {
         case .appUpdate:
             // Could open app store or changelog
             break
+
+        // (2026-05-15 — round 8) New round-8 toast types — for now
+        // they each route to the most relevant existing destination
+        // until dedicated screens land.
+        case .vaultAccess:
+            // Recipient opened a vault payload → land in the chat.
+            if let chatId = item.chatId {
+                DeepLinkRouter.shared.navigate(to: .chat(roomId: chatId))
+            }
+        case .meshPeerNearby:
+            // Mesh peer appeared → open their profile so the user
+            // can verify or DM.
+            if let senderId = item.senderId {
+                DeepLinkRouter.shared.navigate(to: .profile(userId: senderId))
+            }
+        case .backupDone:
+            // Drop into Settings → Backup pane lives there.
+            DeepLinkRouter.shared.navigate(to: .settings)
+        case .twoFactorRequest:
+            // Sign-in approval → Security pane (auth-protected).
+            DeepLinkRouter.shared.navigate(to: .security)
+        case .disasterMode:
+            // Surface notifications list — disaster-mode banner is
+            // pinned at the top inside Home/Inbox separately.
+            DeepLinkRouter.shared.navigate(to: .notifications)
+        case .audioRoomMention:
+            // Open the room if we know its slug (stored in chatId).
+            if let slug = item.chatId {
+                DeepLinkRouter.shared.navigate(to: .audioRoom(slug: slug))
+            }
         }
-        
+
         // Resume dismiss timer so subsequent toasts auto-dismiss properly
         resumeDismiss()
         dismissCurrent()
@@ -308,9 +399,13 @@ final class NotificationPipeline: ObservableObject {
             }
             
             do {
-                // Call friend request decline API with request_id
+                // 🟢 ROUND 75 (2026-05-24) — endpoint is `/reject`, not
+                // `/decline`. Server defines `POST /api/users/friend-request/
+                // {id}/reject` in users.py:1756. Calling `/decline` returned
+                // 404 silently — every decline action from the toast was a
+                // no-op and the user couldn't dismiss friend requests.
                 let _: Empty = try await NetworkService.shared.post(
-                    path: "/api/users/friend-request/\(requestId)/decline",
+                    path: "/api/users/friend-request/\(requestId)/reject",
                     body: EmptyBody()
                 )
                 
@@ -420,26 +515,38 @@ final class NotificationPipeline: ObservableObject {
 
     private func defaultTitle(for type: ToastType) -> String {
         switch type {
-        case .message:        return "New message"
-        case .voice:          return "Voice message"
-        case .friendRequest:  return "Friend request"
-        case .like:           return "New like"
-        case .comment:        return "New comment"
-        case .security:       return "Security alert"
-        case .groupInvite:    return "Group invite"
-        case .appUpdate:      return "Update"
+        case .message:           return "New message"
+        case .voice:             return "Voice message"
+        case .friendRequest:     return "Friend request"
+        case .like:              return "New like"
+        case .comment:           return "New comment"
+        case .security:          return "Security alert"
+        case .groupInvite:       return "Group invite"
+        case .appUpdate:         return "Update"
+        case .vaultAccess:       return "Vault opened"
+        case .meshPeerNearby:    return "Peer nearby"
+        case .backupDone:        return "Backup complete"
+        case .twoFactorRequest:  return "Sign-in request"
+        case .disasterMode:      return "Disaster mode active"
+        case .audioRoomMention:  return "Mentioned in room"
         }
     }
 
     private func defaultBody(for type: ToastType) -> String {
         switch type {
-        case .message, .voice: return "You have a new message"
-        case .friendRequest:   return "Someone wants to connect"
-        case .like:            return "Someone liked your post"
-        case .comment:         return "Someone commented"
-        case .security:        return "Account activity"
-        case .groupInvite:     return "You were invited to a group"
-        case .appUpdate:       return "RAVEN was updated"
+        case .message, .voice:   return "You have a new message"
+        case .friendRequest:     return "Someone wants to connect"
+        case .like:              return "Someone liked your post"
+        case .comment:           return "Someone commented"
+        case .security:          return "Account activity"
+        case .groupInvite:       return "You were invited to a group"
+        case .appUpdate:         return "RAVEN was updated"
+        case .vaultAccess:       return "A recipient opened your vault attachment"
+        case .meshPeerNearby:    return "A paired peer just appeared on the mesh"
+        case .backupDone:        return "Your encrypted backup finished"
+        case .twoFactorRequest:  return "Approve a sign-in from another device"
+        case .disasterMode:      return "Mesh-only delivery is active in your area"
+        case .audioRoomMention:  return "Your name came up in a live transcript"
         }
     }
 

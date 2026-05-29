@@ -96,9 +96,36 @@ actor MediaCacheService {
         }
         
         do {
-            // Ensure directory exists
+            // 🔴 ROUND 26 (2026-05-16) — hacker-mode audit MEDIA-MED-6.
+            //
+            // PREVIOUSLY: `createDirectory` here used the default
+            // protection class (Documents inherits
+            // `.completeUntilFirstUserAuthentication`), and the
+            // subsequent `moveItem` / `replaceItemAt` didn't set
+            // `.completeFileProtection` on the file either. So every
+            // cached photo / video / voice / PDF survived an iTunes/
+            // Finder backup extraction even from a LOCKED device.
+            //
+            // AttachmentService had a belt-and-suspenders fix on the
+            // SEND path that pre-created the directory with
+            // `.completeFileProtection`, but that only fired when the
+            // user SENT something. Receive-only users (or anyone who
+            // received before sending) ended up with cleartext media
+            // in `Documents/attachments/` accessible via any backup.
+            //
+            // FIX: explicitly request `.completeFileProtection` on
+            // BOTH the directory and the materialised file. After
+            // this rounds's deploy, cached media is unreadable while
+            // the device is locked, and backups carry only encrypted
+            // blobs.
             let dir = localURL.deletingLastPathComponent()
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(
+                at: dir,
+                withIntermediateDirectories: true,
+                attributes: [
+                    .protectionKey: FileProtectionType.complete
+                ]
+            )
             
             // Build request — only attach auth for our own API URLs (not GCS/CDN)
             var request = URLRequest(url: remoteUrl)
@@ -133,6 +160,18 @@ actor MediaCacheService {
             } else {
                 try FileManager.default.moveItem(at: tempURL, to: localURL)
             }
+
+            // 🔴 ROUND 26 — apply `.complete` protection on the
+            // freshly-materialised file. `moveItem` / `replaceItemAt`
+            // preserves the source file's attributes (from `tempURL`
+            // in the OS download dir, which uses the default class),
+            // so we explicitly set the protection class on the
+            // destination after the move lands. Idempotent — safe to
+            // re-run if the file already has the right class.
+            try? FileManager.default.setAttributes(
+                [.protectionKey: FileProtectionType.complete],
+                ofItemAtPath: localURL.path
+            )
 
             // Update local_path in DB
             try await messageRepo.updateLocalPath(

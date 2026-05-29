@@ -65,20 +65,99 @@ enum AppConfig {
     
     // MARK: - Media URL Helper
     
-    /// Convert a path (relative or absolute) to a full media URL
-    /// Handles cases where server returns "/uploads/..." without base URL
+    /// Convert a path (relative or absolute) to a full media URL.
+    /// Handles cases where server returns "/uploads/..." without base URL.
+    ///
+    /// Round 14 (2026-05-16) — hacker-audit finding N9.
+    /// Two changes vs. the old behaviour:
+    ///   1. `http://` is REJECTED — only `https://` and the
+    ///      relative-path branch (which prepends our own apiBaseURL)
+    ///      are accepted. ATS would block plain HTTP on most
+    ///      consumers anyway, but enforcing it here means a server-
+    ///      side compromise that injects `http://attacker/x.svg`
+    ///      never reaches the ImageIO decoder (SVG + crafted XML
+    ///      have been image-decoder RCE in past iOS releases).
+    ///   2. Host allow-list — absolute URLs must point to one of
+    ///      our known media/CDN hostnames. An attacker-controlled
+    ///      domain in an attacker-injected URL is rejected even if
+    ///      it's HTTPS.
+    private static let allowedMediaHostSuffixes: Set<String> = [
+        // Cloud Run + project domains.
+        "run.app",
+        "raven.app",
+        "raven-messager.com",
+        // 🔴 ROUND 25 — Cloud Storage host where Cloud Run stores
+        // every uploaded attachment (signed URLs land at
+        // storage.googleapis.com/<bucket>/<object>). My round-14
+        // allowlist forgot this host so every image in the feed
+        // rejected with "media URL host ... not in allowlist". The
+        // user's log showed 3 stacked rejections per feed render.
+        "googleapis.com",
+        // Google CDNs for Apple/Google sign-in avatars.
+        "googleusercontent.com",
+        // Apple-hosted sign-in avatars (when we ever wire them).
+        "apple.com",
+    ]
+
     static func mediaURL(from path: String?) -> URL? {
         guard let path = path, !path.isEmpty else { return nil }
-        
-        let encodedPath = path.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? path
-        
-        // Already a full URL or local file
-        if encodedPath.hasPrefix("http://") || encodedPath.hasPrefix("https://") || encodedPath.hasPrefix("file://") {
-            return URL(string: encodedPath)
+
+        // 🔴 BUG FIX (2026-05-20) — feed media not loading.
+        //
+        // PREVIOUSLY: `path.addingPercentEncoding(withAllowedCharacters:
+        // .urlQueryAllowed)` ran unconditionally, even on already-fully-
+        // formed `https://...` GCS signed URLs. The `urlQueryAllowed`
+        // character set does NOT include `%`, so every pre-existing
+        // percent-escape in the signed URL (e.g. `%40` for `@`, `%2F`
+        // for `/`) was double-encoded to `%2540`, `%252F`. Google Cloud
+        // Storage then rejected the request with
+        //   400 MalformedSecurityHeader — "Credential scope string has
+        //    invalid format"
+        // and the iOS image loader showed a broken thumbnail.
+        //
+        // FIX: only percent-encode RELATIVE paths. A full `https://`
+        // URL is already correctly encoded by whoever produced it
+        // (Cloud Run + the GCS SDK, which handle URL encoding properly
+        // by construction). Pass it through to `URL(string:)` untouched.
+        if path.hasPrefix("https://") {
+            guard let url = URL(string: path),
+                  let host = url.host?.lowercased() else {
+                #if DEBUG
+                print("⚠️ [AppConfig] absolute URL failed to parse: \(path.prefix(96))")
+                #endif
+                return nil
+            }
+            let allowed = allowedMediaHostSuffixes.contains { suffix in
+                host == suffix || host.hasSuffix("." + suffix)
+            }
+            if !allowed {
+                #if DEBUG
+                print("⚠️ [AppConfig] media URL host '\(host)' not in allowlist — rejected.")
+                #endif
+                return nil
+            }
+            return url
         }
-        
-        // Relative path - prepend base URL
-        let cleanPath = encodedPath.hasPrefix("/") ? encodedPath : "/\(encodedPath)"
+
+        // Plain HTTP and other schemes are rejected outright.
+        if path.hasPrefix("http://") {
+            #if DEBUG
+            print("⚠️ [AppConfig] plain HTTP media URL rejected: \(path.prefix(64))")
+            #endif
+            return nil
+        }
+
+        // Local file — used by attachment-cache reads.
+        if path.hasPrefix("file://") {
+            return URL(string: path)
+        }
+
+        // Relative path — percent-encode the segments that need it,
+        // then prepend our trusted base URL. ONLY relative paths get
+        // encoded here; absolute URLs took the early-return branch
+        // above.
+        let encodedRelative = path.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? path
+        let cleanPath = encodedRelative.hasPrefix("/") ? encodedRelative : "/\(encodedRelative)"
         return URL(string: "\(apiBaseURL)\(cleanPath)")
     }
 }

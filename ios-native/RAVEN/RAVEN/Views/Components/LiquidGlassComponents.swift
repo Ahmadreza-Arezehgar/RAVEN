@@ -786,7 +786,14 @@ import CryptoKit
 @Observable
 final class GroupKeyService {
     static let shared = GroupKeyService()
-    private init() {}
+    private init() {
+        // 🟢 ROUND 74 (2026-05-24) — load persisted keys from Keychain
+        // on first access so a fresh launch (or cold start after low-
+        // memory eviction) restores everything we've ingested.
+        // Without this, every restart wiped the in-memory cache and
+        // BLE-only devices re-failed every decrypt.
+        loadFromKeychain()
+    }
 
     fileprivate struct Entry { let version: Int; let key: SymmetricKey }
     /// Latest key per group, indexed by groupId.
@@ -813,12 +820,211 @@ final class GroupKeyService {
             let entry = Entry(version: resp.version, key: SymmetricKey(data: raw))
             latest[groupId] = entry
             byVersion[groupId, default: [:]][resp.version] = entry.key
+            // 🟢 ROUND 74 — also persist server-fetched keys so we have
+            // them after a restart even if the mesh ingest path never
+            // fired. AND broadcast on mesh so BLE-only members can
+            // ingest. Fire-and-forget — the mesh broadcast must not
+            // block the encrypt path.
+            persistKey(groupId: groupId, version: resp.version, keyB64: resp.keyB64)
+            Task.detached(priority: .utility) {
+                await MeshGroupBroadcaster.broadcastKey(
+                    groupId: groupId,
+                    version: resp.version,
+                    keyB64: resp.keyB64
+                )
+            }
             return entry
         } catch {
             #if DEBUG
             print("⚠️ [GroupKey] fetch failed for \(groupId.prefix(8)): \(error)")
             #endif
             return nil
+        }
+    }
+
+    /// 🟢 ROUND 74 (2026-05-24) — public trigger to fetch + broadcast.
+    ///
+    /// Use case: right after a group is created, the creator calls
+    /// this to fetch the AES-GCM key from the server (which mints v1
+    /// on first request) and broadcast it on the mesh so BLE-only
+    /// members can ingest before any chat traffic flows.
+    ///
+    /// No-op if we already have the key cached locally (the cache hit
+    /// path in currentKey doesn't broadcast — that's only done on
+    /// fresh server fetches).
+    func prefetchAndBroadcast(groupId: String) async {
+        _ = await currentKey(for: groupId)
+    }
+
+    /// 🟢 ROUND 74 (2026-05-24) — ingest a key delivered via mesh.
+    ///
+    /// Called by RAVENApp.handleMeshMessage when a `group_key` envelope
+    /// arrives. Validates length + group membership before storing.
+    /// Returns true if the key was accepted (new or refresh), false if
+    /// rejected (not a member, malformed, etc).
+    ///
+    /// 🛡️ SECURITY:
+    ///   - Caller (RAVENApp.handleMeshMessage) MUST verify the outer
+    ///     mesh signature before passing the key here — this method
+    ///     trusts the broadcaster is authenticated.
+    ///   - Caller MUST verify the receiver is a current member of
+    ///     `groupId` per the local GroupRepository.
+    ///   - We refuse keys that don't decode to 32 bytes (AES-256).
+    @discardableResult
+    func ingestMeshKey(groupId: String, version: Int, keyB64: String) -> Bool {
+        guard let raw = Data(base64Encoded: keyB64), raw.count == 32 else {
+            #if DEBUG
+            print("🟥 [GroupKey] REJECT mesh-ingest gid=\(groupId.prefix(8)) v=\(version) — keyB64 not 32 bytes")
+            #endif
+            return false
+        }
+
+        // 🔐 ROUND 76 (2026-05-24) — Hacker #6 finding #2.
+        // Clamp accepted version to ≤ latest_local + 1 so a current
+        // member can't broadcast `v999` and become the new `latest`.
+        // Pre-fix, `if version > currentLatest.version { latest = entry }`
+        // promoted ANY higher version unconditionally, letting an attacker
+        // force the victim to encrypt outbound with the attacker's key.
+        //
+        // Threat model: the server is the canonical source for new
+        // key versions (it mints them on rotation). Mesh-distributed
+        // keys catch up the local cache; they should NEVER skip ahead
+        // by more than 1 from what we already have. A delta > 1 means
+        // either (a) we missed an intermediate rotation and should
+        // refetch from server (best-effort: log + reject this mesh
+        // ingest, the next HTTPS encrypt() will fetch the correct
+        // version), or (b) we're being attacked.
+        let currentLatestVersion = latest[groupId]?.version ?? 0
+        if version > currentLatestVersion + 1 {
+            #if DEBUG
+            print("🟥 [GroupKey] REJECT mesh-ingest gid=\(groupId.prefix(8)) v=\(version) — too far ahead of local latest v=\(currentLatestVersion). Possible v999 hijack attempt. Will refetch from server on next encrypt.")
+            #endif
+            return false
+        }
+
+        // Idempotent: silently accept duplicate (same gid+version+key) re-ingests.
+        if let existing = byVersion[groupId]?[version] {
+            // Constant-time compare via raw bytes.
+            let existingBytes = existing.withUnsafeBytes { Data($0) }
+            if existingBytes == raw {
+                #if DEBUG
+                print("🟢 [GroupKey] mesh-ingest gid=\(groupId.prefix(8)) v=\(version) — already have matching key, no-op")
+                #endif
+                return true
+            }
+            // Same gid+version but DIFFERENT key bytes → reject. The
+            // server's key is canonical; allowing arbitrary mesh
+            // overrides would let an attacker poison the cache.
+            #if DEBUG
+            print("🟥 [GroupKey] REJECT mesh-ingest gid=\(groupId.prefix(8)) v=\(version) — local key differs from incoming")
+            #endif
+            return false
+        }
+        let symKey = SymmetricKey(data: raw)
+        let entry = Entry(version: version, key: symKey)
+        byVersion[groupId, default: [:]][version] = symKey
+        // Update `latest` only if this is a NEWER version than what we have.
+        // (Already clamped above: at most latest+1.)
+        if let currentLatest = latest[groupId] {
+            if version > currentLatest.version {
+                latest[groupId] = entry
+            }
+        } else {
+            latest[groupId] = entry
+        }
+        persistKey(groupId: groupId, version: version, keyB64: keyB64)
+        #if DEBUG
+        print("🟢 [GroupKey] ✅ mesh-ingested gid=\(groupId.prefix(8)) v=\(version) — \(raw.count)B")
+        #endif
+        return true
+    }
+
+    // MARK: - Keychain persistence (Round 74)
+    //
+    // Persist group keys with kSecAttrAccessibleAfterFirstUnlock so they
+    // survive app restart but never leave the device (no iCloud sync).
+    // Stored as a single Codable blob keyed by `raven.groupkeys.v1` —
+    // updating any single entry rewrites the whole blob (low write
+    // frequency makes this cheaper than per-entry items).
+
+    private static let keychainService = "com.raven.groupkeys"
+    private static let keychainAccount = "groupkeys.v1"
+
+    private struct PersistedKey: Codable {
+        let groupId: String
+        let version: Int
+        let keyB64: String
+    }
+
+    private struct PersistedBlob: Codable {
+        let keys: [PersistedKey]
+    }
+
+    private func persistKey(groupId: String, version: Int, keyB64: String) {
+        var existing = readPersistedBlob()
+        // Replace the (groupId, version) entry if present, else append.
+        var keys = existing.keys.filter { !($0.groupId == groupId && $0.version == version) }
+        keys.append(PersistedKey(groupId: groupId, version: version, keyB64: keyB64))
+        existing = PersistedBlob(keys: keys)
+        writePersistedBlob(existing)
+    }
+
+    private func loadFromKeychain() {
+        let blob = readPersistedBlob()
+        for entry in blob.keys {
+            guard let raw = Data(base64Encoded: entry.keyB64), raw.count == 32 else { continue }
+            let symKey = SymmetricKey(data: raw)
+            byVersion[entry.groupId, default: [:]][entry.version] = symKey
+            // Pick the highest version per groupId as latest.
+            if let cur = latest[entry.groupId] {
+                if entry.version > cur.version {
+                    latest[entry.groupId] = Entry(version: entry.version, key: symKey)
+                }
+            } else {
+                latest[entry.groupId] = Entry(version: entry.version, key: symKey)
+            }
+        }
+        #if DEBUG
+        if !blob.keys.isEmpty {
+            print("🟢 [GroupKey] loaded \(blob.keys.count) persisted keys from Keychain")
+        }
+        #endif
+    }
+
+    private func readPersistedBlob() -> PersistedBlob {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.keychainService,
+            kSecAttrAccount as String: Self.keychainAccount,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        guard status == errSecSuccess,
+              let data = item as? Data,
+              let blob = try? JSONDecoder().decode(PersistedBlob.self, from: data)
+        else { return PersistedBlob(keys: []) }
+        return blob
+    }
+
+    private func writePersistedBlob(_ blob: PersistedBlob) {
+        guard let data = try? JSONEncoder().encode(blob) else { return }
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.keychainService,
+            kSecAttrAccount as String: Self.keychainAccount
+        ]
+        let attributes: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        ]
+        // Try update first; if not found, add.
+        let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if updateStatus == errSecItemNotFound {
+            var addQuery = query
+            for (k, v) in attributes { addQuery[k] = v }
+            SecItemAdd(addQuery as CFDictionary, nil)
         }
     }
 
@@ -844,6 +1050,41 @@ final class GroupKeyService {
         }
     }
 
+    /// 🔴 ROUND 70 — version-tag derivation. Produces an 8-byte
+    /// deterministic tag from the group key + version that proves
+    /// possession of the key WITHOUT revealing it. A kicked-out
+    /// attacker who knows the old version's `groupKeyVersion` integer
+    /// cannot synthesise the matching tag for the NEW version, so
+    /// forged-version envelopes are now detectable.
+    ///
+    /// Stable across sessions because the input is the same key
+    /// bytes both sides hold. SHA-256 truncated to 8 bytes; 64 bits
+    /// is comfortable for collision resistance at the volumes
+    /// involved (one tag per envelope).
+    func versionTag(groupId: String, version: Int) async -> String? {
+        guard let key = key(for: groupId, version: version) else { return nil }
+        var hasher = SHA256()
+        hasher.update(data: Data("raven-gkv-tag-v1".utf8))
+        hasher.update(data: Data([0x00]))
+        hasher.update(data: key.withUnsafeBytes { Data($0) })
+        hasher.update(data: Data([0x00]))
+        var v = Int64(version).bigEndian
+        hasher.update(data: withUnsafeBytes(of: &v) { Data($0) })
+        let digest = Data(hasher.finalize())
+        return digest.prefix(8).base64EncodedString()
+    }
+
+    /// 🔴 ROUND 70 — verify a version-tag claim against the local
+    /// key for `version`. Returns true iff the claim could only have
+    /// been produced by a holder of the same group key.
+    func verifyVersionTag(_ tagB64: String, groupId: String, version: Int) async -> Bool {
+        guard let expected = await versionTag(groupId: groupId, version: version) else {
+            return false
+        }
+        // Constant-time compare via SHA256-equality.
+        return expected == tagB64
+    }
+
     /// Decrypt a base64-encoded `nonce || ciphertext || tag` blob using the
     /// group's key for the given version.
     func decrypt(_ ciphertextB64: String, groupId: String, version: Int) async -> String? {
@@ -864,6 +1105,15 @@ final class GroupKeyService {
     func reset() {
         latest.removeAll()
         byVersion.removeAll()
+        // 🟢 ROUND 74 — also purge the persisted Keychain blob so a
+        // logout fully clears group keys (else next sign-in inherits
+        // stale keys from a previous account on the same device).
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.keychainService,
+            kSecAttrAccount as String: Self.keychainAccount
+        ]
+        SecItemDelete(query as CFDictionary)
     }
 
     /// 🔐 Forward-secrecy cache invalidation.

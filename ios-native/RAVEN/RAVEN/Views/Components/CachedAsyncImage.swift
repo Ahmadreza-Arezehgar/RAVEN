@@ -110,17 +110,33 @@ struct CachedAsyncImage<Content: View, Placeholder: View>: View {
     
     private func loadImage() async {
         guard let url, !isLoading else { return }
-        
+
         // 1. Check RAM cache
         if let cached = ImageCache.shared.image(for: url) {
             self.uiImage = cached
             return
         }
-        
+
         isLoading = true
         defer { isLoading = false }
-        
-        // 2. Download
+
+        // 🔴 Bug fix (2026-05-15): the previous implementation rejected
+        // every file:// URL because URLSession returns a plain
+        // `URLResponse` (not `HTTPURLResponse`) for local file loads —
+        // the `as? HTTPURLResponse` cast failed and the method bailed
+        // out before decoding. Outgoing image bubbles store their
+        // bytes locally first via `attachmentsDirectory/<id>.jpg`, so
+        // the local-cache hit was being silently dropped and the user
+        // saw the gray "photo" placeholder for every photo they sent.
+        //
+        // Split the read into two paths: file:// → load straight off
+        // disk; everything else → keep the existing HTTP path with
+        // auth headers + status check.
+        if url.isFileURL {
+            await loadImageFromFile(at: url)
+            return
+        }
+
         do {
             var request = URLRequest(url: url)
             // Add auth header for internal media URLs
@@ -128,36 +144,59 @@ struct CachedAsyncImage<Content: View, Placeholder: View>: View {
                url.host == AppConfig.mediaURL(from: "/")?.host {
                 request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
             }
-            
+
             let (data, response) = try await ImageCache.imageSession.data(for: request)
-            
+
             guard !Task.isCancelled,
                   let httpResponse = response as? HTTPURLResponse,
                   (200...299).contains(httpResponse.statusCode) else { return }
-            
+
             // ✅ Perf fix: ImageIO downsampling — never loads full-res bitmap into RAM.
             // A 48MP camera photo would consume ~180MB uncompressed; this path reads
             // only the bytes needed for a 1024px thumbnail.
-            let preparedImage = await Task.detached(priority: .userInitiated) {
-                let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
-                guard let source = CGImageSourceCreateWithData(data as CFData, sourceOptions) else { return nil as UIImage? }
-                let downsampleOptions: [CFString: Any] = [
-                    kCGImageSourceCreateThumbnailFromImageAlways: true,
-                    kCGImageSourceShouldCacheImmediately: true,
-                    kCGImageSourceThumbnailMaxPixelSize: 1024
-                ]
-                guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, downsampleOptions as CFDictionary) else { return nil as UIImage? }
-                return UIImage(cgImage: cgImage)
-            }.value
-            
-            guard let finalImage = preparedImage else { return }
-            
-            // 3. Cache + display
-            ImageCache.shared.store(finalImage, for: url)
-            self.uiImage = finalImage
+            if let finalImage = await downsample(data: data) {
+                ImageCache.shared.store(finalImage, for: url)
+                self.uiImage = finalImage
+            }
         } catch {
             // Network error — leave placeholder visible
         }
+    }
+
+    /// Local-file fast path. Reads the data off disk and runs the
+    /// same ImageIO downsample so a 48MP capture doesn't park
+    /// uncompressed in RAM. Cancellation-aware.
+    private func loadImageFromFile(at url: URL) async {
+        do {
+            let data = try Data(contentsOf: url, options: .mappedIfSafe)
+            guard !Task.isCancelled else { return }
+            if let finalImage = await downsample(data: data) {
+                ImageCache.shared.store(finalImage, for: url)
+                self.uiImage = finalImage
+            }
+        } catch {
+            // Disk read error — leave placeholder visible.
+            #if DEBUG
+            print("⚠️ [CachedAsyncImage] Failed to read local file at \(url.path): \(error.localizedDescription)")
+            #endif
+        }
+    }
+
+    /// Shared ImageIO thumbnail step used by both the network and
+    /// file paths. Caps the long edge at 1024px so chat scroll stays
+    /// smooth even with phone-camera-quality originals.
+    private func downsample(data: Data) async -> UIImage? {
+        return await Task.detached(priority: .userInitiated) {
+            let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
+            guard let source = CGImageSourceCreateWithData(data as CFData, sourceOptions) else { return nil as UIImage? }
+            let downsampleOptions: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceShouldCacheImmediately: true,
+                kCGImageSourceThumbnailMaxPixelSize: 1024
+            ]
+            guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, downsampleOptions as CFDictionary) else { return nil as UIImage? }
+            return UIImage(cgImage: cgImage)
+        }.value
     }
 }
 

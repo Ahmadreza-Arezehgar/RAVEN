@@ -6,7 +6,7 @@ Returns all user-owned data as a downloadable JSON file.
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import io
 
@@ -20,6 +20,29 @@ from auth import decode_token
 from encryption import decrypt_text
 
 router = APIRouter(prefix="/api/users", tags=["data-export"])
+
+
+# 🔴 ROUND 60 (2026-05-19) — hacker-audit Server F16 (HIGH).
+#
+# PREVIOUSLY: this endpoint had no rate limit and no cooldown. The
+# response is a JSON blob containing EVERY DM the user has ever
+# sent or received (decrypted), every group message, every post,
+# every comment, every friend, every group membership. A single
+# stolen access token therefore enables single-request bulk
+# exfiltration of the entire chat history — exactly the goldmine
+# a phisher / device-thief wants. (After round 45 we revoke tokens
+# cross-instance on /logout, but in the window between theft and
+# the victim noticing + logging out, this endpoint is the highest-
+# value target on the server.)
+#
+# FIX: enforce a 24-hour cooldown per user (in-process; on multi-
+# instance Cloud Run this becomes "24h per user per instance",
+# which still defeats the bulk-grab pattern because a real attacker
+# wants ONE big dump, not a slow trickle). Real users export at
+# most a handful of times per year for GDPR / device-migration
+# use cases — 1 export per day is generous.
+_LAST_EXPORT_AT: dict[str, datetime] = {}
+_EXPORT_COOLDOWN = timedelta(hours=24)
 
 
 # ── Auth dependency (same pattern as users.py) ──
@@ -69,16 +92,57 @@ def export_user_data(
 ):
     """
     Export all user data as a downloadable JSON file.
-    
+
     Includes: profile, messages, posts, comments, likes, friends, groups.
     Encrypted fields are decrypted before export.
     Media URLs are included so the user can download files separately.
+
+    🔴 ROUND 60 — 24-hour per-user cooldown. See module-level
+    comment block for the stolen-token bulk-exfil threat model.
     """
     from sqlalchemy import or_
     import json as _json
 
     user_id = current_user.id
     username = current_user.username or "user"
+
+    # 🔴 ROUND 60 — cooldown gate. Real users export rarely; a
+    # tight cap shuts the door on bulk grab via stolen token.
+    #
+    # 🔴 hacker-audit 2026-05-19 — also enforce via the shared
+    # `rate_limiter` singleton. The `_LAST_EXPORT_AT` dict above is
+    # PER-INSTANCE on Cloud Run with `min-instances=0` and the
+    # default `max-instances` ≥ 2: a stolen-token holder could fan
+    # requests out and get one full export per warm instance per 24h.
+    # The rate_limiter is also in-process so it doesn't fully fix
+    # the issue, but it adds a second 1-per-24h gate keyed on user_id
+    # which means the attacker has to hit ALL instances' both stores
+    # before the cap resets — the per-instance dict alone was a
+    # single store. A proper fix is Redis or a DB column; tracked
+    # but not in scope for this round.
+    try:
+        from middleware.rate_limit import rate_limiter
+        rate_limiter.check_rate_limit(
+            identifier=f"data_export:{user_id}",
+            max_attempts=1,
+            window_minutes=60 * 24,
+            lockout_minutes=60 * 24,
+        )
+    except HTTPException:
+        raise
+
+    last_at = _LAST_EXPORT_AT.get(str(user_id))
+    if last_at is not None:
+        delta = datetime.utcnow() - last_at
+        if delta < _EXPORT_COOLDOWN:
+            remaining = _EXPORT_COOLDOWN - delta
+            hours_left = int(remaining.total_seconds() // 3600) + 1
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Data export available every 24 hours. Try again in ~{hours_left}h.",
+                headers={"Retry-After": str(int(remaining.total_seconds()))},
+            )
+    _LAST_EXPORT_AT[str(user_id)] = datetime.utcnow()
 
     print(f"📦 [DataExport] Starting export for {username} ({user_id[:8]}...)")
 

@@ -56,16 +56,36 @@ async def sync_contacts(
 ):
     """
     Find which contacts are on Raven.
-    
+
     Client sends HMAC-SHA256 hashes of contact phone numbers.
     Server matches against users who have allow_contact_discovery=True.
+
+    🔴 hacker-audit 2026-05-19: this endpoint maps phone-hashes to
+    real userIds. With a fixed HMAC salt (PHONE_HASH_SALT), an attacker
+    holding any leaked phone-number list can submit batches of hashes
+    and recover userId → phone correspondences at scale. The previous
+    5000-per-call cap with no per-account rate limit meant a single
+    account could probe ~7.2M numbers/day at 1 RPS — enough to scrape
+    every E.164 in a small country in days. We now:
+      1. Cap each call at 1000 hashes (was 5000).
+      2. Throttle each authenticated account to 5 syncs per hour,
+         lockout 60 min if exceeded. Real clients sync once on first
+         install + occasionally after granting contacts permission;
+         5/hour is comfortable headroom.
     """
     if not request.hashes:
         return ContactSyncResponse(matches=[])
-    
-    # Limit to prevent abuse
-    if len(request.hashes) > 5000:
-        raise HTTPException(status_code=400, detail="Too many hashes (max 5000)")
+
+    if len(request.hashes) > 1000:
+        raise HTTPException(status_code=400, detail="Too many hashes (max 1000)")
+
+    from middleware.rate_limit import rate_limiter
+    rate_limiter.check_rate_limit(
+        identifier=f"contacts_sync:{current_user.id}",
+        max_attempts=5,
+        window_minutes=60,
+        lockout_minutes=60,
+    )
     
     # Find matching users
     matching_users = db.query(models.User).filter(

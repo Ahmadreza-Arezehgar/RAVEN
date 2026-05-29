@@ -180,6 +180,43 @@ struct ChatMessage: Identifiable, Codable {
     // live tally + cast votes via /api/groups/{group_id}/polls/{poll_id}.
     var pollId: String? = nil
 
+    /// Round 21 (2026-05-16) — hacker-audit Bridge F1 follow-up.
+    /// Set when a bridged group message arrives carrying the AES-GCM
+    /// ciphertext that the bridge node refused to decrypt. The
+    /// receive path runs `GroupKeyService.decrypt(..., version:)` on
+    /// `text` when this is non-nil; legacy bridges (round ≤20) that
+    /// already decrypt before upload leave this nil, so the existing
+    /// "treat content as plaintext" behaviour is preserved for them.
+    var groupKeyVersion: Int? = nil
+
+    // MARK: - Album / Media Group (round 26 — Telegram-style)
+    //
+    // When the user multi-selects photos+videos in the picker and
+    // hits "Send N items", each item is sent as its own ChatMessage
+    // row (so each gets its own encryption envelope, upload progress,
+    // server id, ACK lifecycle — none of that has to change). The
+    // three fields below glue them back together at render time:
+    //
+    //   • `albumGroupKey`  — opaque UUID shared by every item in
+    //     the same picker-batch. Two messages with the same key in
+    //     the same room render as ONE grouped bubble.
+    //   • `albumIndex`     — 0-based position within the album.
+    //     Picker preserves selection order, so this is what the grid
+    //     iterates by.
+    //   • `albumTotal`     — total item count in the album, stamped
+    //     by the sender so the receiver can render a "+N" overlay or
+    //     a "waiting for sibling N/M" placeholder when one ChatMessage
+    //     in the group arrives before the others.
+    //
+    // All three are server-roundtripped via `media_group_key` /
+    // `media_group_index` / `media_group_total` (snake_case decoded
+    // automatically by NetworkService). Nil for a regular single
+    // media message — chat surface falls back to the existing
+    // `ImageMessageView` / `FileMessageView` render in that case.
+    var albumGroupKey: String? = nil
+    var albumIndex: Int? = nil
+    var albumTotal: Int? = nil
+
     // MARK: - CodingKeys (Handle snake_case from server)
     
     // NOTE: NetworkService uses .convertFromSnakeCase decoder strategy,
@@ -249,6 +286,16 @@ struct ChatMessage: Identifiable, Codable {
         case ephemeralStatus
         // Vault
         case vaultLock
+        // Round 21 — Bridge F1: opaque group ciphertext carries
+        // the version index the recipient needs to decrypt.
+        case groupKeyVersion
+        // Round 26 — Telegram-style album grouping. Server emits
+        // snake_case `media_group_key` / `media_group_index` /
+        // `media_group_total`; NetworkService's convertFromSnakeCase
+        // decoder maps them automatically.
+        case albumGroupKey = "media_group_key"
+        case albumIndex = "media_group_index"
+        case albumTotal = "media_group_total"
         // Extra keys only used for decoding (server variations)
         case content
         case messageType
@@ -321,8 +368,13 @@ struct ChatMessage: Identifiable, Codable {
         try container.encodeIfPresent(ephemeralStatus, forKey: .ephemeralStatus)
         // Vault
         try container.encodeIfPresent(vaultLock, forKey: .vaultLock)
+        // Round 26 — Telegram-style album grouping (nil for single-
+        // media messages and back-compat with pre-round-26 clients).
+        try container.encodeIfPresent(albumGroupKey, forKey: .albumGroupKey)
+        try container.encodeIfPresent(albumIndex, forKey: .albumIndex)
+        try container.encodeIfPresent(albumTotal, forKey: .albumTotal)
     }
-    
+
     // MARK: - Custom Decoder (Handle missing/optional fields)
     
     init(from decoder: Decoder) throws {
@@ -468,6 +520,10 @@ struct ChatMessage: Identifiable, Codable {
         
         // Vault
         vaultLock = try container.decodeIfPresent(VaultLock.self, forKey: .vaultLock)
+        // Round 26 — Telegram-style album grouping.
+        albumGroupKey = try container.decodeIfPresent(String.self, forKey: .albumGroupKey)
+        albumIndex = try container.decodeIfPresent(Int.self, forKey: .albumIndex)
+        albumTotal = try container.decodeIfPresent(Int.self, forKey: .albumTotal)
     }
     
     // MARK: - Memberwise Initializer (Required since we have custom Decodable init)
@@ -882,9 +938,16 @@ struct ChatMessage: Identifiable, Codable {
         senderId: String,
         senderName: String,
         roomId: String,
-        originDeviceId: String
+        originDeviceId: String,
+        // 🔴 ROUND 26 — Telegram-style album grouping.
+        // All three default nil so existing single-image / single-
+        // file / single-voice call sites are unchanged. The picker's
+        // multi-select path stamps them when it builds the batch.
+        albumGroupKey: String? = nil,
+        albumIndex: Int? = nil,
+        albumTotal: Int? = nil
     ) -> ChatMessage {
-        ChatMessage(
+        var msg = ChatMessage(
             id: messageId,
             serverId: nil,
             roomId: roomId,
@@ -924,5 +987,9 @@ struct ChatMessage: Identifiable, Codable {
             sendMode: nil,
             scheduledAtUtc: nil
         )
+        msg.albumGroupKey = albumGroupKey
+        msg.albumIndex = albumIndex
+        msg.albumTotal = albumTotal
+        return msg
     }
 }

@@ -103,6 +103,7 @@ class RoomResponse(BaseModel):
     allow_anonymous: bool
     allow_raise_hand: bool
     is_live: bool
+    is_locked: bool = False  # 🔴 ROUND 27: was missing — iOS toggle had no round-trip
     participant_count: int
     max_participants: int
     created_at: datetime
@@ -237,7 +238,8 @@ def create_room(
         participant_count=room.participant_count,
         max_participants=room.max_participants,
         created_at=room.created_at,
-        share_slug=room.share_slug
+        share_slug=room.share_slug,
+        is_locked=bool(room.is_locked),
     )
 
 
@@ -362,7 +364,8 @@ def list_rooms(
             participant_count=room.participant_count,
             max_participants=room.max_participants,
             created_at=room.created_at,
-            share_slug=room.share_slug
+            share_slug=room.share_slug,
+            is_locked=bool(room.is_locked),
         ))
     
     return result
@@ -417,7 +420,8 @@ def list_friends_rooms(
             participant_count=room.participant_count,
             max_participants=room.max_participants,
             created_at=room.created_at,
-            share_slug=room.share_slug
+            share_slug=room.share_slug,
+            is_locked=bool(room.is_locked),
         ))
     
     print(f"📻 Fetched {len(result)} friends-only rooms for {current_user.username}")
@@ -507,7 +511,8 @@ def join_by_slug(
         participant_count=room.participant_count,
         max_participants=room.max_participants,
         created_at=room.created_at,
-        share_slug=room.share_slug
+        share_slug=room.share_slug,
+        is_locked=bool(room.is_locked),
     )
 
 
@@ -517,11 +522,39 @@ def get_room(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Get room details with participants."""
-    
+    """Get room details with participants.
+
+    🔴 hacker-audit 2026-05-19 — privacy gate on private rooms.
+    PREVIOUSLY this endpoint had no privacy check. `room.privacy`
+    could be 'private' / 'invite-only' but anyone with the room_id
+    (8-character share_slug is easily brute-forceable; UUIDs leak
+    via mentions/groups/error logs) got back:
+      • full host identity + avatar
+      • complete participant list (including stealth-mode opt-outs
+        of the 'hidden' display_mode, NB those WERE filtered)
+      • active asset URL (the slide deck / image being shared)
+      • `is_locked` and `is_live` state
+    Effectively the entire private-room metadata graph plus the
+    in-room asset was readable. `/join` correctly enforces
+    `is_locked`, but the read path bypassed it entirely.
+    NOW: non-participants get 404 on private/invite-only rooms.
+    Public rooms remain visible to everyone. We use 404 (not 403)
+    so a brute-force on share_slug can't distinguish "private
+    room exists" from "no such room."
+    """
     room = db.query(AudioRoom).filter(AudioRoom.id == room_id).first()
     if not room:
         raise HTTPException(status_code=404, detail="Room not found")
+
+    privacy = (getattr(room, "privacy", None) or "public").lower()
+    if privacy != "public" and room.host_user_id != current_user.id:
+        is_participant = db.query(AudioRoomParticipant).filter(
+            AudioRoomParticipant.room_id == room_id,
+            AudioRoomParticipant.user_id == current_user.id,
+            AudioRoomParticipant.left_at.is_(None),
+        ).first() is not None
+        if not is_participant:
+            raise HTTPException(status_code=404, detail="Room not found")
     
     # Get host info
     host = db.query(User).filter(User.id == room.host_user_id).first()
@@ -586,7 +619,8 @@ def get_room(
             participant_count=room.participant_count,
             max_participants=room.max_participants,
             created_at=room.created_at,
-            share_slug=room.share_slug  # Bug 4 fix: include share_slug
+            share_slug=room.share_slug,  # Bug 4 fix: include share_slug
+            is_locked=bool(room.is_locked),
         ),
         participants=participant_list,
         pending_requests=pending_requests,
@@ -629,11 +663,62 @@ def join_room(
     
     if existing:
         raise HTTPException(status_code=400, detail="Already in room")
-    
+
+    # 🔴 ROUND 27: enforce host-set lock. Host themselves can always
+    # join (e.g. rejoining after a brief disconnect); everyone else
+    # is blocked while the room is locked. Stays a 403 (not 404) so
+    # the client can show a "Room is locked" message instead of
+    # generic "not found".
+    if bool(room.is_locked) and room.host_user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Room is locked by the host")
+
+    # 🔴 hacker-audit 2026-05-20 — friends-only privacy gate.
+    # PREVIOUSLY join_room never read room.privacy, so a room the
+    # host created as "friends" was joinable by ANY authenticated
+    # stranger — who then minted a LiveKit token (livekit.py only
+    # checks for a participant row) and listened to the entire
+    # private call. get_room was hardened on 2026-05-19 but this
+    # join path was missed. A friends-only room admits only the
+    # host and the host's accepted friends.
+    room_privacy = (getattr(room, "privacy", None) or "public").lower()
+    if room_privacy == "friends" and room.host_user_id != current_user.id:
+        from models import FriendRequest
+        is_friend = db.query(FriendRequest.id).filter(
+            FriendRequest.status == "accepted",
+            ((FriendRequest.requester_id == current_user.id) &
+             (FriendRequest.recipient_id == room.host_user_id))
+            | ((FriendRequest.requester_id == room.host_user_id) &
+               (FriendRequest.recipient_id == current_user.id)),
+        ).first() is not None
+        if not is_friend:
+            raise HTTPException(
+                status_code=403,
+                detail="This room is limited to the host's friends",
+            )
+
+    # 🔴 hacker-audit 2026-05-20 — block kicked users from rejoining.
+    # kick_participant marks the participant row role="kicked"; a
+    # plain re-POST to /join would otherwise create a fresh row and
+    # let the kicked user straight back into the live call.
+    was_kicked = db.query(AudioRoomParticipant.id).filter(
+        AudioRoomParticipant.room_id == room_id,
+        AudioRoomParticipant.user_id == current_user.id,
+        AudioRoomParticipant.role == "kicked",
+    ).first() is not None
+    if was_kicked:
+        raise HTTPException(status_code=403, detail="You have been removed from this room")
+
     # Determine display mode
     anon_name = None
     anon_avatar = None
-    
+
+    # 🔴 ROUND 27: Ghost Mode is premium-only. Previously we silently
+    # downgraded non-premium stealth requests to "real" — same
+    # symptom as silently honoring them, no client error. Now reject
+    # explicitly so the client knows to show the upsell.
+    if req.is_stealth and not current_user.is_premium:
+        raise HTTPException(status_code=402, detail="Ghost Mode requires RAVEN+ subscription")
+
     if req.is_stealth and current_user.is_premium:
         display_mode = "hidden"  # Ghost Mode: not visible in participant list
         print(f"👻 [Ghost Mode] {current_user.username} joined room '{room.title}' in stealth")
@@ -970,23 +1055,67 @@ def change_role(
     
     if not host_participant:
         raise HTTPException(status_code=403, detail="Only host can change roles")
-    
+
     if req.role not in ["speaker", "listener", "cohost"]:
         raise HTTPException(status_code=400, detail="Invalid role")
-    
+
+    # 🔴 ROUND 44 (2026-05-19) — orphaned-room + ghost-cohost fixes.
+    #
+    # Two real issues with this endpoint pre-R44:
+    #
+    #   1. ORPHANED ROOM: the host could call this endpoint on
+    #      themselves (`user_id == current_user.id`) with any
+    #      role in the allowed list. After demoting themselves
+    #      to "speaker" or "listener", NO row in the room has
+    #      `role == "host"`. Every subsequent admin action
+    #      (`change_role`, `kick`, lock, end_room) starts with
+    #      the same `role == "host"` lookup → all return 403 →
+    #      the room is permanently un-administrable until it
+    #      auto-expires. Should be a dedicated "transfer host"
+    #      flow, not a slip-of-the-finger.
+    #
+    #   2. GHOST COHOST: stealth-mode (Ghost) participants are
+    #      promotable to "cohost", which inherits kick power
+    #      (see `kick_participant` at line 1075). A host who
+    #      socially-engineers a stealth user into "help me
+    #      moderate" hands them invisible kick power — victims
+    #      see "kicked by <hidden>" with no identity, defeating
+    #      the accountability built into the kick flow.
+    #
+    # FIXES:
+    #   - Reject self-targeted role change. Host must use a
+    #     dedicated transfer flow (not implemented here — out
+    #     of scope, separate endpoint).
+    #   - Reject promotion to a power role (cohost / speaker)
+    #     for participants whose `display_mode == "hidden"`
+    #     (Ghost) or `display_mode == "anonymous"`. They can
+    #     remain listeners; if they want a moderator role they
+    #     have to re-join in real mode.
+    if user_id == current_user.id:
+        raise HTTPException(
+            status_code=400,
+            detail="Host cannot change their own role. Use the transfer-host flow instead."
+        )
+
     participant = db.query(AudioRoomParticipant).filter(
         AudioRoomParticipant.room_id == room_id,
         AudioRoomParticipant.user_id == user_id,
         AudioRoomParticipant.left_at.is_(None)
     ).first()
-    
+
     if not participant:
         raise HTTPException(status_code=404, detail="Participant not found")
-    
+
+    if req.role in ("cohost", "speaker") and participant.display_mode in ("hidden", "anonymous"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot promote a {participant.display_mode}-mode participant to {req.role}. They must rejoin in real mode."
+        )
+
     participant.role = req.role
     if req.role == "listener":
         participant.is_muted = True
-    
+
     db.commit()
     
     print(f"🔄 Role changed: {user_id} → {req.role}")
@@ -999,7 +1128,7 @@ class MuteRequest(BaseModel):
 
 
 @router.post("/{room_id}/mute/{user_id}")
-def mute_participant(
+async def mute_participant(
     room_id: str,
     user_id: str,
     req: MuteRequest,
@@ -1032,14 +1161,20 @@ def mute_participant(
     
     participant.is_muted = req.muted
     db.commit()
-    
+
+    # 🔴 hacker-audit 2026-05-20 — enforce the mute on the LiveKit SFU,
+    # not just the DB row. Without this a "muted" client can keep
+    # publishing its microphone track; the host's mute was cosmetic.
+    from services.livekit_service import get_livekit_control
+    await get_livekit_control().mute_participant(room_id, user_id, muted=req.muted)
+
     print(f"🔇 {user_id} {'muted' if req.muted else 'unmuted'}")
-    
+
     return {"success": True, "is_muted": req.muted}
 
 
 @router.post("/{room_id}/kick/{user_id}")
-def kick_participant(
+async def kick_participant(
     room_id: str,
     user_id: str,
     current_user: User = Depends(get_current_user),
@@ -1071,19 +1206,28 @@ def kick_participant(
         raise HTTPException(status_code=404, detail="Participant not found")
     
     participant.left_at = datetime.utcnow()
-    
+    # 🔴 hacker-audit 2026-05-20 — mark the row role="kicked" so
+    # join_room can refuse a rejoin. A plain left_at would let the
+    # kicked user re-POST /join and walk straight back in.
+    participant.role = "kicked"
+
     room = db.query(AudioRoom).filter(AudioRoom.id == room_id).first()
     room.participant_count = max(0, room.participant_count - 1)
-    
+
     db.commit()
-    
+
+    # 🔴 hacker-audit 2026-05-20 — sever the SFU session too, so the
+    # kicked user's audio stops immediately instead of on next poll.
+    from services.livekit_service import get_livekit_control
+    await get_livekit_control().remove_participant(room_id, user_id)
+
     print(f"👢 {user_id} kicked from room")
-    
+
     return {"success": True}
 
 
 @router.post("/{room_id}/end")
-def end_room(
+async def end_room(
     room_id: str,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -1112,16 +1256,22 @@ def end_room(
         room_post.is_hidden = True
     
     db.commit()
-    
+
+    # 🔴 hacker-audit 2026-05-20 — delete the SFU room so every
+    # participant is disconnected now; otherwise clients keep
+    # streaming to a phantom room until they happen to poll.
+    from services.livekit_service import get_livekit_control
+    await get_livekit_control().delete_room(room_id)
+
     print(f"🔴 Room '{room.title}' ended by host")
-    
+
     return {"success": True}
 
 
 # ==================== MUTE ALL / SETTINGS ====================
 
 @router.post("/{room_id}/mute-all")
-def mute_all_speakers(
+async def mute_all_speakers(
     room_id: str,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -1140,16 +1290,25 @@ def mute_all_speakers(
         raise HTTPException(status_code=403, detail="Only host/cohost can mute all")
     
     # Mute all speakers (excluding host)
-    count = db.query(AudioRoomParticipant).filter(
+    speakers = db.query(AudioRoomParticipant).filter(
         AudioRoomParticipant.room_id == room_id,
         AudioRoomParticipant.left_at.is_(None),
         AudioRoomParticipant.role.in_(["speaker", "cohost"]),
         AudioRoomParticipant.user_id != current_user.id,
         AudioRoomParticipant.is_muted == False
-    ).update({"is_muted": True})
-    
+    ).all()
+    for s in speakers:
+        s.is_muted = True
     db.commit()
-    
+
+    # 🔴 hacker-audit 2026-05-20 — enforce each mute on the LiveKit
+    # SFU, not just the DB rows (a DB-only mute is cosmetic).
+    from services.livekit_service import get_livekit_control
+    _control = get_livekit_control()
+    for s in speakers:
+        await _control.mute_participant(room_id, s.user_id, muted=True)
+
+    count = len(speakers)
     print(f"🔇 Muted {count} speakers in room {room_id[:8]}")
     return {"success": True, "muted_count": count}
 

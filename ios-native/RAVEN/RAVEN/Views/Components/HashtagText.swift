@@ -59,6 +59,12 @@ struct InteractiveHashtagText: View {
     /// Wired by `PostCard`/`PostDetailView`; `nil` here means the post has no
     /// video, so any tokens render as plain styled text without the link.
     var onVideoTimestampTap: ((Double) -> Void)? = nil
+    /// 🔴 Bug fix (2026-05-15): tapping any http(s) link inside a post
+    /// used to bounce the user out to system Safari. Posts now expose a
+    /// hook that routes web links into the in-app capsule
+    /// `SafariSheet` — same liquid-glass viewer the chat surface uses.
+    /// `nil` keeps the legacy systemAction fallback (Safari).
+    var onLinkTap: ((URL) -> Void)? = nil
 
     @State private var hashtagRanges: [(String, CGRect)] = []
 
@@ -84,6 +90,14 @@ struct InteractiveHashtagText: View {
                    let raw = components.queryItems?.first(where: { $0.name == "seconds" })?.value,
                    let seconds = Double(raw) {
                     onVideoTimestampTap?(seconds)
+                    return .handled
+                }
+                // Web links → in-app capsule browser when the parent
+                // wired `onLinkTap`. Otherwise fall through to Safari.
+                if let scheme = url.scheme?.lowercased(),
+                   scheme == "http" || scheme == "https",
+                   let onLinkTap {
+                    onLinkTap(url)
                     return .handled
                 }
                 return .systemAction

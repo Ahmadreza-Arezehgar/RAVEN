@@ -243,42 +243,64 @@ final class SubscriptionService: NSObject {
     /// Whether the server has permanently granted premium (e.g. admin accounts).
     /// Set from the user profile API response during login.
     private var serverGrantedPremium: Bool = false
-    
+
+    /// 🔴 ROUND 71 phase 3 — track the RevenueCat entitlement state
+    /// separately from `serverGrantedPremium` so each signal can flip
+    /// independently. Pre-fix the code only stored `serverGrantedPremium`
+    /// and re-derived `isPremium` against `wasPremium` (the local
+    /// cache), which meant once a user was ever premium the OR with
+    /// `wasPremium` kept them premium FOREVER. Downgrade after
+    /// subscription expiry / refund / admin-revoke never took effect
+    /// locally. Storing the RC entitlement separately lets both
+    /// paths correctly recompute `next` from authoritative inputs.
+    private var rcActiveEntitlement: Bool = false
+
     /// Call after fetching user profile from API to set server-granted premium.
     func setServerPremiumStatus(_ isPremiumFromServer: Bool) {
         if serverGrantedPremium != isPremiumFromServer {
             serverGrantedPremium = isPremiumFromServer
 
-            // Immediately update premium status for UI responsiveness (offline cold start)
+            // Immediately update premium status for UI responsiveness
+            // (offline cold start). 🔴 ROUND 71 phase 3 — derive
+            // `next` from BOTH authoritative inputs (server flag +
+            // last-known RC entitlement) so a server-side downgrade
+            // actually flips the local flag. Pre-fix the OR with
+            // `wasPremium` made downgrade a no-op.
             let wasPremium = isPremium
-            let next = isPremiumFromServer || wasPremium
+            let next = serverGrantedPremium || rcActiveEntitlement
             premiumState.value = next
             PremiumLimits.isPremiumCached = next
             if wasPremium != next {
                 #if DEBUG
-                print("💎 [SubscriptionService] Immediate server-granted premium: \(wasPremium) → \(next)")
+                print("💎 [SubscriptionService] Immediate server-granted premium: \(wasPremium) → \(next) "
+                      + "(server=\(serverGrantedPremium) rc=\(rcActiveEntitlement))")
                 #endif
                 NotificationCenter.default.post(name: .premiumStatusDidChange, object: nil)
             }
-            
+
             // Also reconcile with RevenueCat (may fail offline — that's OK now)
             Task {
                 await refreshPremiumStatus()
             }
         }
     }
-    
+
     private func updatePremiumStatus(from customerInfo: CustomerInfo) {
         let wasPremium = isPremium
+        // 🔴 ROUND 71 phase 3 — store the RC entitlement state so
+        // `setServerPremiumStatus` can reuse it for the offline-cold-
+        // start fast path. See `rcActiveEntitlement` declaration.
+        rcActiveEntitlement = customerInfo.entitlements[Self.entitlementID]?.isActive == true
         // Premium if EITHER RevenueCat entitlement is active OR server grants permanent premium
-        let next = customerInfo.entitlements[Self.entitlementID]?.isActive == true || serverGrantedPremium
+        let next = rcActiveEntitlement || serverGrantedPremium
         premiumState.value = next
 
         // Sync thread-safe cache (readable from any actor)
         PremiumLimits.isPremiumCached = next
         if wasPremium != next {
             #if DEBUG
-            print("💎 [SubscriptionService] Premium status changed: \(wasPremium) → \(next)")
+            print("💎 [SubscriptionService] Premium status changed: \(wasPremium) → \(next) "
+                  + "(server=\(serverGrantedPremium) rc=\(rcActiveEntitlement))")
             #endif
             NotificationCenter.default.post(name: .premiumStatusDidChange, object: nil)
         }

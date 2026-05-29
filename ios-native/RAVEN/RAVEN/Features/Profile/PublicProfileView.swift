@@ -746,6 +746,14 @@ struct PublicProfileView: View {
     
     private func sendFriendRequest() async {
         guard let userId = user?.id else { return }
+
+        // 🔴 ROUND 26 — unified user-action telemetry (haptic + bg server log).
+        UserActionTelemetry.shared.record(
+            .friendRequestSend,
+            targetId: userId,
+            targetType: .user
+        )
+
         // ⚡ Optimistic: instantly show Pending
         let previousState = friendState
         friendState = .pending

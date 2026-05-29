@@ -817,6 +817,13 @@ struct CommentsSheetView: View {
                     #endif
                 }
             } else {
+                // 🔴 fix 2026-05-20 — invalidate the comments cache
+                // BEFORE reloading. loadComments() returns the cached
+                // list on a cache hit, so without this the just-posted
+                // reply (absent from the stale pre-reply cache) is
+                // overwritten and vanishes from the UI until the
+                // cache naturally expires.
+                feedStore.invalidateCommentsCache(for: realPostId)
                 await loadComments()
                 if commentType == "voice" {
                     #if DEBUG
@@ -827,7 +834,14 @@ struct CommentsSheetView: View {
             
             // Update cache so reopening sheet shows latest
             feedStore.setCachedComments(comments, for: realPostId)
-            
+
+            // 🔴 fix 2026-05-20 — bump the post's comment count in the
+            // feed so the card's comment pill updates immediately.
+            // The server counts replies too, so this fires for both
+            // top-level comments and replies. Runs only on a confirmed
+            // server success — the catch paths never bump.
+            feedStore.adjustCommentCount(postId: realPostId, delta: 1)
+
             Haptics.success()
             
             if commentType == "voice" {
@@ -991,7 +1005,11 @@ struct CommentsSheetView: View {
             )
             await MainActor.run {
                 replaceCommentInTree(commentId: commentId, with: updated)
-                feedStore.invalidateCommentsCache(for: post.id)
+                // 🔴 fix 2026-05-20 — the comments cache is keyed by
+                // realPostId (see loadComments). Keying by post.id
+                // misses the real entry for looped feed posts, so the
+                // edit wouldn't survive a sheet reopen.
+                feedStore.invalidateCommentsCache(for: realPostId)
             }
         } catch {
             #if DEBUG
@@ -1008,8 +1026,12 @@ struct CommentsSheetView: View {
         do {
             struct EmptyResp: Decodable {}
             let _: EmptyResp = try await networkService.post(path: path, body: EmptyBody())
+            // 🔴 fix 2026-05-20 — invalidate (with the correct
+            // realPostId key) BEFORE loadComments. Previously it ran
+            // after, AND used post.id — so loadComments returned the
+            // stale cache and the pinned-first re-order never showed.
+            feedStore.invalidateCommentsCache(for: realPostId)
             await loadComments()  // refetch to apply pinned-first sort
-            feedStore.invalidateCommentsCache(for: post.id)
             Haptics.success()
         } catch {
             #if DEBUG
@@ -1027,7 +1049,13 @@ struct CommentsSheetView: View {
             let _: EmptyResp = try await networkService.delete(path: "/api/comments/\(commentId)")
             await MainActor.run {
                 removeCommentFromTree(commentId: commentId)
-                feedStore.invalidateCommentsCache(for: post.id)
+                // 🔴 fix 2026-05-20 — cache is keyed by realPostId;
+                // post.id misses it for looped feed posts, so the
+                // deleted comment reappeared on a sheet reopen.
+                feedStore.invalidateCommentsCache(for: realPostId)
+                // 🔴 fix 2026-05-20 — keep the feed card's comment
+                // pill in sync after a delete.
+                feedStore.adjustCommentCount(postId: realPostId, delta: -1)
             }
             Haptics.success()
         } catch {
@@ -1118,7 +1146,8 @@ struct CommentsSheetView: View {
                     )
                     return updated
                 }
-                feedStore.setCachedComments(comments, for: post.id)
+                // 🔴 fix 2026-05-20 — cache is keyed by realPostId.
+                feedStore.setCachedComments(comments, for: realPostId)
             } catch {
                 #if DEBUG
                 print("❌ Vote failed: \(error)")

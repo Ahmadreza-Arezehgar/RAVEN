@@ -152,16 +152,111 @@ async def send_snap(
 ):
     """
     Upload an ephemeral photo and create a SnapMessage.
-    
+
     - Validates image (JPEG, PNG, WebP, max 10MB)
     - Optimizes and uploads to GCS or local
     - Creates SnapMessage with specified TTL (5s or 10s)
     - Returns snap metadata
+
+    🔴 ROUND 58 (2026-05-19) — hacker-audit Snap F2 (CRITICAL).
+    PREVIOUSLY: this endpoint accepted any `recipient_id` and
+    immediately created (a) a `SnapMessage` row, (b) a `Message`
+    row in the recipient's inbox, (c) an in-app `Notification`,
+    (d) a WebSocket push, AND (e) an APNs push. ALL of that bypassed
+    the friend / message-request / block gate that the standard
+    `/api/messages/send` enforces.
+
+    Concrete attacks the gate was missing:
+      • Snap bombing: attacker creates 100 throwaway accounts and
+        sends a snap to every user in a target community → every
+        target receives a push notification "📸 Ephemeral Photo"
+        from a stranger. The push itself is harassment, even if
+        the recipient never opens.
+      • Block bypass: a blocked attacker can still snap-DM a victim
+        who blocked them, because the block check lives in
+        `/api/messages/send` (which uses `Block` joins) — it never
+        ran here.
+      • Stalker channel: snaps create a `Message` row that surfaces
+        in the recipient's conversation list, opening a private
+        chat thread against the victim's will.
+      • Rate-free upload: a single account could fire 1000
+        snaps/minute → S3/GCS cost amplification.
+
+    FIX: mirror the gates that `/api/messages/send` already has —
+    block-check both directions, require friendship OR an active
+    message-request the recipient accepted, and per-sender rate
+    limit. Senders also must own the conversation_id if one is
+    supplied. Reuses the existing `rate_limiter` singleton.
     """
+    from sqlalchemy import or_, and_
+    from models import Block, FriendRequest, MessageRequest
+    from middleware.rate_limit import rate_limiter
+
     # Ensure table exists (handles DB init race / skipped migrations)
     _ensure_table()
 
     try:
+        # 🔴 ROUND 58 — Step 0: per-sender rate limit. 30 snaps/min
+        # is comfortable for legitimate use, kills bombing.
+        rate_limiter.check_rate_limit(
+            identifier=f"snap_send:{current_user.id}",
+            max_attempts=30,
+            window_minutes=1,
+            lockout_minutes=5,
+        )
+
+        # 🔴 ROUND 58 — Step 1: self-send is meaningless, reject.
+        if recipient_id == current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot send a snap to yourself",
+            )
+
+        # 🔴 ROUND 58 — Step 2: bidirectional block check.
+        blocked = db.query(Block).filter(
+            or_(
+                and_(Block.blocker_id == current_user.id, Block.blocked_id == recipient_id),
+                and_(Block.blocker_id == recipient_id, Block.blocked_id == current_user.id),
+            )
+        ).first()
+        if blocked:
+            # Same generic 403 regardless of direction so we don't
+            # leak which side blocked which.
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Cannot send snap to this user",
+            )
+
+        # 🔴 ROUND 58 — Step 3: friendship-or-accepted-request gate.
+        # Matches the policy `/api/messages/send` enforces: either
+        # the two users are friends, OR the recipient has accepted a
+        # message-request from the sender.
+        is_friend = db.query(FriendRequest).filter(
+            or_(
+                and_(FriendRequest.requester_id == current_user.id,
+                     FriendRequest.recipient_id == recipient_id,
+                     FriendRequest.status == "accepted"),
+                and_(FriendRequest.requester_id == recipient_id,
+                     FriendRequest.recipient_id == current_user.id,
+                     FriendRequest.status == "accepted"),
+            )
+        ).first() is not None
+
+        if not is_friend:
+            accepted_request = db.query(MessageRequest).filter(
+                MessageRequest.sender_id == current_user.id,
+                MessageRequest.recipient_id == recipient_id,
+                MessageRequest.status == "accepted",
+            ).first()
+            if not accepted_request:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=(
+                        "Snaps require an accepted friend request or "
+                        "message request first."
+                    ),
+                )
+
         # Validate extension
         file_ext = Path(file.filename or "").suffix.lower()
         if file_ext not in ALLOWED_SNAP_EXTENSIONS:
@@ -255,13 +350,29 @@ async def send_snap(
         from encryption import encrypt_text
         import json
 
+        # 🔴 ROUND 26 (2026-05-16) — hacker-mode audit MEDIA-CRIT-7.
+        #
+        # PREVIOUSLY: this Message row stored `audio_url=media_url`
+        # (the raw GCS URL of the snap). Recipients fetched the
+        # message via `GET /api/messages/conversation/{sender_id}`
+        # and got the GCS URL back — `curl $URL` returned the photo,
+        # NO /snaps/{id}/open round-trip, view_count never incremented,
+        # status stayed "sent", screenshot-detection never fired,
+        # _delete_media() never ran. The 24-h snap.expires_at applied
+        # to the SnapMessage row, not the GCS object. Effectively the
+        # entire "ephemeral" guarantee was bypassable in one curl.
+        #
+        # FIX: don't put the GCS URL in `audio_url`. Recipients see
+        # an in-chat row pointing at `snap_id`; they must hit
+        # `/api/snaps/{id}/open` to get the (re-signed) URL, which
+        # is the path that enforces view_count + auto-delete.
         message = Message(
             id=str(uuid.uuid4()),
             sender_id=current_user.id,
             recipient_id=recipient_id,
             content=encrypt_text(f"📸 Ephemeral photo ({ttl_seconds}s)"),
             message_type="ephemeral_photo",
-            audio_url=media_url,  # reuse audio_url field for the snap media URL
+            audio_url=None,  # round 26 — NEVER expose raw snap URL here
             timestamp=datetime.utcnow(),
         )
         db.add(message)
@@ -299,7 +410,10 @@ async def send_snap(
                 "sender_name": current_user.username,
                 "message_type": "ephemeral_photo",
                 "room_id": current_user.id,
-                "audio_url": media_url,
+                # 🔴 ROUND 26 — MEDIA-CRIT-7: never ship raw snap URL.
+                # Recipient must call /api/snaps/{id}/open to get a
+                # short-lived signed URL AND trip the view-counter.
+                "audio_url": None,
                 "audio_duration_seconds": None,
                 "file_name": None,
                 "file_size": None,
@@ -446,13 +560,36 @@ async def report_screenshot(
 ):
     """
     Report that the recipient took a screenshot.
-    
+
     - Sets screenshot_attempted = True
     - Can be used to notify the sender
+
+    🔴 ROUND 57 (2026-05-19) — hacker-audit Snap F1 (CRITICAL).
+    PREVIOUSLY: this endpoint had ZERO ownership check. Any
+    authenticated user could call `/api/snaps/<arbitrary_snap_id>/
+    screenshot` and trip `screenshot_attempted=True` on someone
+    else's snap. Concrete attacks:
+      • Harassment: attacker scrapes snap ids (via abuse of GET
+        /pending against bot accounts) and reports each one as
+        screenshotted → senders get false alerts → trust breaks
+        between real friends.
+      • Distraction: an attacker on a victim's chat thread can
+        spam-report screenshots on their own snaps to flood the
+        sender's notification feed.
+    FIX: require `snap.recipient_id == current_user.id`, the same
+    check used by `/open` and `/viewed`. Senders never report
+    screenshots on their own sent snaps; non-recipients have no
+    legitimate reason to call this endpoint.
     """
     snap = db.query(SnapMessage).filter(SnapMessage.id == snap_id).first()
     if not snap:
         raise HTTPException(status_code=404, detail="Snap not found")
+
+    if snap.recipient_id != current_user.id:
+        # 🔴 ROUND 57 — only the recipient can report a screenshot.
+        # Return 403 (not 404) here because the snap clearly exists;
+        # the caller's authorization is the missing piece.
+        raise HTTPException(status_code=403, detail="Not authorized")
 
     snap.screenshot_attempted = True
     db.commit()

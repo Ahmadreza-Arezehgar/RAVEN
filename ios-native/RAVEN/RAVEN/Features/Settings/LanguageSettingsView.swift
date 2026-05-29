@@ -71,15 +71,15 @@ final class AppLanguageManager {
     
     /// Whether current language is RTL
     var isRTL: Bool {
-        let rtlCodes = ["fa", "he", "ar"]
+        let rtlCodes = ["fa", "ar"]
         return rtlCodes.contains(currentLanguage)
     }
-    
+
     /// Get the current language details
     var currentLanguageDetails: SupportedLanguage? {
         Self.supportedLanguages.first { $0.code == currentLanguage }
     }
-    
+
     /// Supported languages with all metadata
     static let supportedLanguages: [SupportedLanguage] = [
         SupportedLanguage(code: "en", nativeName: "English", englishName: "English", flag: "🇺🇸"),
@@ -88,7 +88,6 @@ final class AppLanguageManager {
         SupportedLanguage(code: "es", nativeName: "Español", englishName: "Spanish", flag: "🇪🇸"),
         SupportedLanguage(code: "fa", nativeName: "فارسی", englishName: "Persian", flag: "🇮🇷", isRTL: true),
         SupportedLanguage(code: "ja", nativeName: "日本語", englishName: "Japanese", flag: "🇯🇵"),
-        SupportedLanguage(code: "he", nativeName: "עברית", englishName: "Hebrew", flag: "🇮🇱", isRTL: true),
         SupportedLanguage(code: "ru", nativeName: "Русский", englishName: "Russian", flag: "🇷🇺")
     ]
     

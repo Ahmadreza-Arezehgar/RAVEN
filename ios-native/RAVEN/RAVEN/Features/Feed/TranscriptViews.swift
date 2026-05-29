@@ -247,7 +247,9 @@ struct TranscriptPill: View {
     }
     
     private func copyToClipboard(_ text: String) {
-        UIPasteboard.general.string = text
+        // Round 14 — S9: transcript text is user-generated content,
+        // use the privacy-preserving copy path.
+        SecurePasteboard.copy(text)
         Haptics.light()
     }
 }
@@ -417,7 +419,8 @@ struct FullTranscriptSheet: View {
                 
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
-                        UIPasteboard.general.string = text
+                        // Round 14 — S9.
+                        SecurePasteboard.copy(text)
                         Haptics.light()
                     } label: {
                         Image(systemName: "doc.on.doc")

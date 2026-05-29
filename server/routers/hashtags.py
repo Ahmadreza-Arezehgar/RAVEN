@@ -146,12 +146,38 @@ def get_posts_by_hashtag(
     # Search for posts containing this hashtag
     # Note: This uses LIKE which is not optimal for large datasets
     # In production, use a hashtag junction table or full-text search
-    pattern = f"%#{tag}%"
-    
-    posts = db.query(Post).filter(
+    # 🔴 hacker-audit 2026-05-20 — escape LIKE wildcards in the tag.
+    # normalize_hashtag does not strip % / _, so an unescaped tag
+    # turned this ILIKE into an attacker-controlled wildcard scan.
+    from routers.search import _escape_like
+    pattern = f"%#{_escape_like(tag[:64])}%"
+
+    # 🔴 ROUND 71 S11: hashtag feed now respects `is_hidden`,
+    # `HiddenContent`, and bidirectional blocks (mirrors round-26
+    # main-feed filter trio). Previously moderated / per-user-hidden
+    # posts and blocked authors all reappeared via #tag.
+    from models import HiddenContent, Block
+    hidden_ids_subq = db.query(HiddenContent.object_id).filter(
+        HiddenContent.user_id == current_user.id,
+        HiddenContent.object_type == "post",
+    ).subquery()
+    blocker_ids = [r[0] for r in db.query(Block.blocker_id).filter(
+        Block.blocked_id == current_user.id
+    ).all()]
+    blockee_ids = [r[0] for r in db.query(Block.blocked_id).filter(
+        Block.blocker_id == current_user.id
+    ).all()]
+    blocked_user_ids = set(blocker_ids) | set(blockee_ids)
+
+    post_query = db.query(Post).filter(
         or_(Post.visibility == 'public', Post.visibility == None),
-        Post.content.ilike(pattern)  # Case-insensitive LIKE
-    ).order_by(Post.timestamp.desc()).offset(offset).limit(limit).all()
+        Post.is_hidden != True,
+        ~Post.id.in_(hidden_ids_subq),
+        Post.content.ilike(pattern, escape="\\")  # Case-insensitive LIKE
+    )
+    if blocked_user_ids:
+        post_query = post_query.filter(~Post.author_id.in_(blocked_user_ids))
+    posts = post_query.order_by(Post.timestamp.desc()).offset(offset).limit(limit).all()
     
     result = []
     for post in posts:
@@ -201,10 +227,12 @@ def get_hashtag_info(
     tag = normalize_hashtag(hashtag)
     
     # Count posts (approximate - uses LIKE)
-    pattern = f"%#{tag}%"
+    # 🔴 hacker-audit 2026-05-20 — escape LIKE wildcards (see above).
+    from routers.search import _escape_like
+    pattern = f"%#{_escape_like(tag[:64])}%"
     post_count = db.query(Post).filter(
         or_(Post.visibility == 'public', Post.visibility == None),
-        Post.content.ilike(pattern)
+        Post.content.ilike(pattern, escape="\\")
     ).count()
     
     # Check if following

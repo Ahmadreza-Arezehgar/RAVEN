@@ -107,6 +107,46 @@ async def submit_verification_request(
         raise HTTPException(status_code=400, detail="Category must be person, brand, or org.")
     if req.doc_type not in ("passport", "national_id", "drivers_license"):
         raise HTTPException(status_code=400, detail="Invalid document type.")
+
+    # 🔴 hacker-audit 2026-05-19: the three URL fields are client-
+    # supplied strings, but the only legitimate values are either:
+    #   (a) a GCS pointer from /upload-doc, shape "gcs://<bucket>/<uid>/<file>"
+    #   (b) a local-fallback path, shape "verification_docs/<uid>/<file>"
+    # …and BOTH must be scoped to the calling user's own user-id
+    # subdirectory. Without this gate, an attacker could:
+    #   - point doc_front_url at *another user's* doc and ride the
+    #     admin review on someone else's KYC photos.
+    #   - inject `javascript:` or `data:` URLs which the admin UI
+    #     might render unsafely (XSS into the privileged review UI).
+    #   - chain into the cancel-path delete bug (now also fixed
+    #     defence-in-depth below).
+    def _validate_doc_url(url: Optional[str], field_name: str) -> Optional[str]:
+        if url is None:
+            return None
+        url = url.strip()
+        if not url:
+            return None
+        if len(url) > 1024:
+            raise HTTPException(status_code=400, detail=f"{field_name} too long")
+        expected_local_prefix = f"verification_docs/{current_user.id}/"
+        expected_gcs_prefix_fragment = f"/{current_user.id}/"
+        if url.startswith(expected_local_prefix):
+            # Local-fallback URL from /upload-doc — accept and
+            # strip nothing.
+            return url
+        if url.startswith("gcs://") and expected_gcs_prefix_fragment in url:
+            # GCS pointer — also acceptable. We don't parse buckets
+            # here because the read path (admin.serve_verification_document)
+            # already enforces the configured bucket.
+            return url
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field_name} must come from /api/verification/upload-doc for this user",
+        )
+
+    validated_front = _validate_doc_url(req.doc_front_url, "doc_front_url")
+    validated_back = _validate_doc_url(req.doc_back_url, "doc_back_url")
+    validated_selfie = _validate_doc_url(req.selfie_url, "selfie_url")
     
     # Create dedupe hash
     dedupe = hashlib.sha256(
@@ -114,18 +154,24 @@ async def submit_verification_request(
     ).hexdigest()
     
     # Create verification request
+    # 🔴 ROUND 70 — KYC doc URLs now Fernet-wrapped at rest (matches
+    # the model header comment that already claimed "encrypted").
+    # Previously these were plaintext columns; insider DB read +
+    # 15-min signed-URL replay → passport + selfie download. The
+    # decrypt path in admin.py is wrapped in `_kyc_decrypt` (added
+    # in same round) so the admin viewer still works.
     verification = VerificationRequest(
         id=str(uuid.uuid4()),
         user_id=current_user.id,
         status="pending",
         legal_first_name=encrypt_text(req.legal_first_name.strip()),
         legal_last_name=encrypt_text(req.legal_last_name.strip()),
-        country=req.country.strip(),
+        country=encrypt_text(req.country.strip()),
         category=req.category,
         doc_type=req.doc_type,
-        doc_front_url=req.doc_front_url,
-        doc_back_url=req.doc_back_url,
-        selfie_url=req.selfie_url,
+        doc_front_url=encrypt_text(validated_front) if validated_front else None,
+        doc_back_url=encrypt_text(validated_back) if validated_back else None,
+        selfie_url=encrypt_text(validated_selfie) if validated_selfie else None,
         links_json=json.dumps(req.links) if req.links else None,
         submitted_at=datetime.utcnow(),
         hash_dedupe=dedupe
@@ -199,27 +245,103 @@ async def cancel_verification_request(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Cancel a pending verification request."""
+    """Cancel a pending verification request.
+
+    🔴 hacker-audit 2026-05-19 — CRITICAL arbitrary-file-deletion fix.
+
+    PREVIOUSLY this endpoint took the three URL strings off the
+    verification request row and ran:
+
+        for url in [doc_front_url, doc_back_url, selfie_url]:
+            file_path = Path(url.lstrip("/"))
+            if file_path.exists():
+                file_path.unlink()
+
+    Those URLs are CLIENT-SUPPLIED on POST /api/verification/request
+    — there's no validation that they live inside the verification-
+    docs directory, or even that they're relative paths at all. An
+    attacker could submit a request with e.g.
+      doc_front_url = "encryption.key"
+      doc_back_url  = "raven.db"
+      selfie_url    = "AuthKey_XZ5LNZVH3C.p8"
+    …then immediately POST /api/verification/cancel and the server
+    happily unlinks all three files inside its working directory.
+    `"../../"` traversal also worked — anything reachable by the
+    server process's filesystem credentials.
+
+    Concretely this could delete:
+      • encryption.key      → all Fernet-wrapped legacy/system
+                              messages become unreadable forever
+      • raven.db / messenger.db → wipe the SQLite DB (dev or
+                                  mis-configured single-instance prod)
+      • AuthKey_*.p8        → push notifications die
+      • any other server-writable file under the process cwd
+
+    FIX:
+      1. Only touch files that resolve INSIDE
+         `VERIFICATION_DOCS_DIR / current_user.id`. Anything else
+         (GCS URLs, absolute paths, traversal, other users' subdirs)
+         is silently skipped — we still NULL the column either way.
+      2. Use `Path.resolve(strict=False)` and verify
+         `realpath(file).is_relative_to(realpath(allowed_root))`
+         before any unlink.
+      3. NULL the columns on the DB row so a stale URL can never be
+         re-cancel'd to re-trigger the (now-bounded) delete.
+    """
     pending = db.query(VerificationRequest).filter(
         VerificationRequest.user_id == current_user.id,
         VerificationRequest.status == "pending"
     ).first()
-    
+
     if not pending:
         raise HTTPException(status_code=404, detail="No pending request found.")
-    
-    # Delete the request documents
-    for url in [pending.doc_front_url, pending.doc_back_url, pending.selfie_url]:
-        if url:
-            file_path = Path(url.lstrip("/"))
-            if file_path.exists():
-                file_path.unlink()
-    
-    # Update status
+
+    # Resolve the per-user allowed root once, up front. Anything that
+    # doesn't resolve inside this directory is rejected — including
+    # absolute paths, ".." traversal, and other users' subdirs.
+    allowed_root = (VERIFICATION_DOCS_DIR / str(current_user.id)).resolve()
+
+    def _safe_unlink_doc_url(url: Optional[str]) -> None:
+        if not url:
+            return
+        # Skip non-local URLs — GCS, https, etc. — we don't manage
+        # those files from this endpoint. Production cleanup is the
+        # GCS lifecycle policy's job.
+        if "://" in url:
+            return
+        # Defensive: refuse absolute paths and obvious traversal
+        # without even hitting the filesystem.
+        if url.startswith("/") or ".." in url.split("/"):
+            return
+        try:
+            candidate = (Path.cwd() / url).resolve(strict=False)
+        except (OSError, RuntimeError):
+            return
+        # Strict containment check. Python 3.9+ has `is_relative_to`;
+        # we use the explicit prefix form for portability.
+        try:
+            candidate.relative_to(allowed_root)
+        except ValueError:
+            # Outside the per-user verification dir — refuse.
+            return
+        if candidate.is_file():
+            try:
+                candidate.unlink()
+            except OSError:
+                pass
+
+    for url in (pending.doc_front_url, pending.doc_back_url, pending.selfie_url):
+        _safe_unlink_doc_url(url)
+
+    # Null the columns so the row can't be replayed to re-trigger the
+    # delete path on a future call (defence in depth).
+    pending.doc_front_url = None
+    pending.doc_back_url = None
+    pending.selfie_url = None
     pending.status = "cancelled"
     pending.reviewed_at = datetime.utcnow()
     db.commit()
-    
+
     return {"status": "cancelled", "message": "Verification request cancelled."}
 
 

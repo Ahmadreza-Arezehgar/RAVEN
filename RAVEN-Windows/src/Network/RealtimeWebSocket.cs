@@ -53,9 +53,28 @@ public sealed class RealtimeWebSocket : IAsyncDisposable
         // Reconnect-friendly keepalive.
         _socket.Options.KeepAliveInterval = TimeSpan.FromSeconds(30);
 
-        var uri = new UriBuilder(_wsUri) { Query = $"token={Uri.EscapeDataString(token)}" }.Uri;
+        // 🔴 hacker-audit 2026-05-19 — bearer token via header, not URL.
+        //
+        // PREVIOUSLY: token was embedded in the upgrade URL as
+        // `?token=<JWT>`. The token then appeared in:
+        //   • Reverse-proxy / load-balancer access logs
+        //   • Network-debugging tools that buffer request lines
+        //   • Application Insights / custom telemetry capturing the
+        //     `RequestUri` property
+        //   • Any third-party log shipper configured to capture URLs
+        // …all of which gave anyone with log read-access a working
+        // bearer token without needing to break TLS.
+        //
+        // NOW: token rides in `Authorization: Bearer <JWT>` on the
+        // upgrade request itself. Header values are inside the TLS
+        // payload and not surfaced by the standard URL-logging
+        // infrastructure. The server accepts BOTH (for the iOS leg
+        // that hasn't migrated yet); this client uses the header
+        // path exclusively.
+        _socket.Options.SetRequestHeader("Authorization", $"Bearer {token}");
+
         _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        await _socket.ConnectAsync(uri, _cts.Token).ConfigureAwait(false);
+        await _socket.ConnectAsync(_wsUri, _cts.Token).ConfigureAwait(false);
         OnConnectionStateChanged?.Invoke(true);
         _log.LogInformation("RealtimeWebSocket connected.");
 

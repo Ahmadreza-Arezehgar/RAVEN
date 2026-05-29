@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="utf-8"?>
+<UserControl
+    x:Class="RAVEN.Windows.Ui.QrLoginView"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:local="using:RAVEN.Windows.Ui">
+
+    <!--
+      QR-code login screen. Calls /api/auth/qr-login/init, displays the
+      session+nonce as a QR for the mobile app to scan, and polls /poll
+      every 2 s. Once status is approved, ApiClient saves the new tokens
+      and the host (App.xaml.cs) navigates to MainWindow.
+    -->
+
+    <Border Background="{StaticResource RavenBgCard}"
+            BorderBrush="{StaticResource RavenBorder}" BorderThickness="1"
+            CornerRadius="20" Padding="32">
+        <StackPanel Spacing="20" HorizontalAlignment="Center" MaxWidth="480">
+
+            <TextBlock Text="Log in by scanning a QR code"
+                       FontSize="22" FontWeight="Bold"
+                       HorizontalAlignment="Center"
+                       Foreground="{StaticResource RavenText}"/>
+            <TextBlock Text="Scan this code with the RAVEN app on your phone."
+                       FontSize="13" HorizontalAlignment="Center"
+                       Foreground="{StaticResource RavenText3}"/>
+
+            <Border CornerRadius="16" Background="White" Padding="16"
+                    HorizontalAlignment="Center">
+                <Image x:Name="QrImage" Width="280" Height="280"
+                       Stretch="Uniform"/>
+            </Border>
+
+            <TextBlock x:Name="StatusLabel" Text="Generating code…"
+                       FontSize="13" HorizontalAlignment="Center"
+                       Foreground="{StaticResource RavenText2}"/>
+
+            <Button x:Name="RetryButton" HorizontalAlignment="Center"
+                    Padding="14,10" CornerRadius="12"
+                    Background="{StaticResource RavenBgCardHover}"
+                    BorderBrush="{StaticResource RavenBorder}" BorderThickness="1"
+                    Foreground="{StaticResource RavenText}"
+                    Visibility="Collapsed"
+                    Click="OnRetryClick">
+                <TextBlock Text="Generate a new code" FontWeight="SemiBold"/>
+            </Button>
+
+            <Border Background="{StaticResource RavenBgCardHover}" CornerRadius="12"
+                    Padding="14" BorderBrush="{StaticResource RavenBorder}" BorderThickness="1">
+                <StackPanel Spacing="6">
+                    <TextBlock Text="How to scan" FontWeight="SemiBold" FontSize="12"
+                               Foreground="{StaticResource RavenText}"/>
+                    <TextBlock TextWrapping="Wrap" FontSize="11"
+                               Foreground="{StaticResource RavenText2}"
+                               Text="1. Open RAVEN on your phone"/>
+                    <TextBlock TextWrapping="Wrap" FontSize="11"
+                               Foreground="{StaticResource RavenText2}"
+                               Text="2. Go to Settings → Linked Devices"/>
+                    <TextBlock TextWrapping="Wrap" FontSize="11"
+                               Foreground="{StaticResource RavenText2}"
+                               Text="3. Tap 'Link a Desktop' and aim at this code"/>
+                </StackPanel>
+            </Border>
+
+        </StackPanel>
+    </Border>
+</UserControl>

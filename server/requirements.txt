@@ -27,3 +27,6 @@ google-generativeai>=0.3.0
 # LiveKit + Gemini Live API (for live room transcription)
 livekit>=0.17.0
 google-genai>=1.0.0
+
+# App Attest attestation parsing (v1.8 feature #3 — device enrolment)
+cbor2==6.1.1

@@ -108,12 +108,66 @@ import UIKit
         forwardedFromChannelId: String? = nil,
         forwardedFromChannelName: String? = nil
     ) async throws {
+        // 🔴 ROUND 69 (2026-05-23) — hacker-audit VAULT-CRIT-2
+        // (HIGH: vault attachment forward gap).
+        //
+        // PREVIOUSLY: this method blindly passed `originalMsg.attachmentUrl`
+        // and `originalMsg.fileName` through to the new message,
+        // regardless of whether the original was a Vault-sealed
+        // attachment. Two real problems with that path:
+        //
+        //   1. METADATA LEAK — the original Vault file's `fileName`
+        //      (e.g. "passport_2024.pdf") was forwarded in cleartext
+        //      to a third party. Server admin / DB compromise sees
+        //      another copy of the sensitive name. (Round 69 also
+        //      strips this on the original send path; this branch
+        //      closes the forward-as-replay loophole.)
+        //
+        //   2. BROKEN-FILE UX — the .vlt blob on Cloud Storage is
+        //      AES-GCM-sealed to the ORIGINAL recipient's X25519
+        //      identity key with AAD = original msgId. A new recipient
+        //      attempting to decrypt with their key + the forwarded
+        //      msgId fails both checks; they get a "couldn't decrypt
+        //      vault attachment" error and never see the content.
+        //      The Forward action in the UI looks like it worked but
+        //      ships a deliberately undecryptable file — confusing
+        //      and security-theatre.
+        //
+        // FIX: refuse to forward vault attachments. The caller's UI
+        // catches `forwardingVaultDenied` and surfaces a clear message
+        // ("Vault attachments cannot be forwarded"). If the sender
+        // really wants to share the content with a third party they
+        // must re-send it as a fresh vault message — that triggers a
+        // new encryption to the new recipient's verified key. The
+        // matching server-side gate is `allow_forward = false` set
+        // by AttachmentService when `vault=true` (see round 69 in
+        // AttachmentService.swift); this client-side check fires
+        // first so the user gets immediate feedback instead of a
+        // generic 403.
+        //
+        // Detection: the upload pipeline writes vault blobs to a path
+        // ending in `.vlt`, and the receiver mirrors that suffix
+        // through to `attachmentUrl`. Belt-and-suspenders also check
+        // `allowForward` — set false by the server on vault sends.
+        let isVaultAttachment =
+            originalMsg.attachmentUrl?.lowercased().hasSuffix(".vlt") == true ||
+            originalMsg.attachmentUrl?.lowercased().contains(".vlt?") == true ||
+            originalMsg.allowForward == false
+        if isVaultAttachment {
+            throw NSError(
+                domain: "MessageService",
+                code: 4,
+                userInfo: [NSLocalizedDescriptionKey:
+                    "Vault attachments cannot be forwarded. Send a fresh copy to share with this recipient."]
+            )
+        }
+
         let clientMessageId = UUID().uuidString
         let roomId = isGroup ? recipientId : await makeRoomId(with: recipientId)
         let senderId = await currentUserId()
         let senderName = await currentUsername()
         let deviceId = await deviceIdentifier()
-        
+
         let forwardedMsg = ChatMessage(
             id: clientMessageId,
             serverId: nil,

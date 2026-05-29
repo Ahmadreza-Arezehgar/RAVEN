@@ -9,6 +9,9 @@
 import Foundation
 import Security
 import CryptoKit
+import os
+
+fileprivate let logger = Logger(subsystem: "app.raven.ios", category: "Identity")
 
 /// Manages cryptographic device identity for secure mesh messaging
 /// - Generates Ed25519 keypair on first launch
@@ -290,9 +293,7 @@ final class DeviceIdentityService {
         let validUntil = Date().addingTimeInterval(Self.rotationGraceWindowSeconds)
         UserDefaults.standard.set(validUntil.timeIntervalSince1970, forKey: rotationWindowKey)
 
-        #if DEBUG
-        print("🔁 [Identity] Rotated signing keys — new fingerprint \(fingerprint ?? "?"), grace until \(validUntil)")
-        #endif
+        logger.debug("Rotated signing keys — new fingerprint \(self.fingerprint ?? "?", privacy: .private), grace until \(validUntil.description, privacy: .public)")
 
         return RotationProof(
             previousPublicKey: oldPublicKey.rawRepresentation,
@@ -365,9 +366,16 @@ final class DeviceIdentityService {
         // Generate Ed25519 signing keypair
         let privateKey = Curve25519.Signing.PrivateKey()
         let publicKey = privateKey.publicKey
-        
-        // Store signing keys in Keychain
-        try storeKey(privateKey.rawRepresentation, tag: privateKeyTag, accessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly)
+
+        // Round 13 (2026-05-16) — hacker-audit finding S4.
+        // Bump the long-lived identity privkey to
+        // `WhenPasscodeSetThisDeviceOnly`: it's only readable while a
+        // device passcode is set AND the device has been unlocked at
+        // least once since boot. Compromising this key = peer
+        // impersonation + decrypt of past traffic, so it deserves the
+        // strongest access class iOS offers. The public half can stay
+        // at AfterFirstUnlock for background-task reads.
+        try storeKey(privateKey.rawRepresentation, tag: privateKeyTag, accessible: kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly)
         try storeKey(publicKey.rawRepresentation, tag: publicKeyTag, accessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly)
         
         // Cache signing keys (lock — could race with concurrent deriveSharedSecret)
@@ -376,17 +384,20 @@ final class DeviceIdentityService {
         // Generate separate X25519 key agreement keypair for ECDH
         try generateAgreementKeypair()
         
-        #if DEBUG
-        print("🔐 [Identity] Signing + Agreement keypairs generated - Fingerprint: \(fingerprint ?? "unknown")")
-        #endif
+        logger.debug("Signing + Agreement keypairs generated - Fingerprint: \(self.fingerprint ?? "unknown", privacy: .private)")
     }
     
     /// Generate and store a dedicated X25519 KeyAgreement keypair.
     /// Separate from the Ed25519 signing key — different curve encodings.
     private func generateAgreementKeypair() throws {
         let agreementKey = Curve25519.KeyAgreement.PrivateKey()
-        
-        try storeKey(agreementKey.rawRepresentation, tag: agreementPrivateKeyTag, accessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly)
+
+        // Round 13: same passcode-bound treatment as the Ed25519
+        // signing key — the X25519 agreement privkey is what
+        // decrypts every inbound Noise transport frame. Compromise
+        // = full message-history decryption. Public half stays at
+        // AfterFirstUnlock for background reads.
+        try storeKey(agreementKey.rawRepresentation, tag: agreementPrivateKeyTag, accessible: kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly)
         try storeKey(agreementKey.publicKey.rawRepresentation, tag: agreementPublicKeyTag, accessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly)
 
         keyCacheLock.lock()

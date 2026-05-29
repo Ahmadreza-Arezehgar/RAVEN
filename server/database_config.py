@@ -12,9 +12,17 @@ if ENVIRONMENT == "production":
     DATABASE_URL = os.getenv("DATABASE_URL")
     if not DATABASE_URL:
         raise ValueError("DATABASE_URL must be set in production")
-    
-    # Connection arguments for Cloud SQL
-    connect_args = {}
+
+    # 🔴 hacker-audit 2026-05-19: require TLS on the DB connection.
+    # Cloud SQL accepts TLS by default and the Cloud Run socket
+    # connector uses a private socket, so today this is mostly
+    # belt-and-suspenders. But if anyone ever swaps to a non-socket
+    # DATABASE_URL (host=db.public.example.com), the connection
+    # would silently fall back to unencrypted Postgres unless we
+    # force `sslmode=require` here. Always require it — Cloud SQL
+    # ignores the flag over the socket, real network connections
+    # MUST honor it.
+    connect_args = {"sslmode": "require"}
 else:
     # SQLite for development
     DATABASE_URL = "sqlite:///./encrypted.db"

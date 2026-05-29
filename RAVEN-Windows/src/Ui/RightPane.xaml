@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<UserControl
+    x:Class="RAVEN.Windows.Ui.RightPane"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:local="using:RAVEN.Windows.Ui">
+
+    <!--
+      Right pane (340px on Mac). Renders ChatThreadView when the shell
+      is on the Messages section, WidgetsView otherwise — same logic as
+      `RAVEN-MacApp/RAVEN/Views/Components/RightPane.swift`.
+    -->
+    <Grid Background="{StaticResource RavenBg}">
+        <local:ChatThreadView x:Name="ThreadHost" Visibility="Collapsed"/>
+        <local:WidgetsView    x:Name="WidgetsHost" Visibility="Visible"/>
+    </Grid>
+</UserControl>

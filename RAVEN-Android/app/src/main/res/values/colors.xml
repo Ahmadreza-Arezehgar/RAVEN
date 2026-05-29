@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Used only by the OS splash screen + adaptive-icon background.
+         The Compose theme owns every other surface. -->
+    <color name="raven_splash_bg">#0A0814</color>
+    <color name="raven_brand_purple">#7344C7</color>
+</resources>

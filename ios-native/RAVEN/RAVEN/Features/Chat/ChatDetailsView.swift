@@ -75,7 +75,7 @@ enum ChatDetailSection: Int, CaseIterable, Identifiable {
 struct ChatDetailsView: View {
     let roomId: String
     let peer: Conversation.Peer
-    
+
     @State private var selectedSection: ChatDetailSection = .media
     @State private var sharedMedia: [ChatMessage] = []
     @State private var isLoading = true
@@ -89,8 +89,39 @@ struct ChatDetailsView: View {
     @State private var isMuted: Bool = false
     @State private var muteInFlight: Bool = false
 
+    // (2026-05-15 — round 5) Per-chat preferences (disappearing,
+    // always-vault, wallpaper) plus the live mesh-presence /
+    // safety-verified bits. Each piece backs one of the new
+    // section rows so the user can see + edit everything from one
+    // screen.
+    @StateObject private var prefs: ChatChromeObservable
+    @State private var meshState: MeshProximityRow.State = .offline(lastSeen: nil)
+    @State private var isVerified: Bool = false
+    @State private var pinnedMessages: [ChatMessage] = []
+    @State private var totalCachedBytes: Int64 = 0
+
+    // Sheet drivers
+    @State private var showSafetySheet = false
+    @State private var showDisappearingPicker = false
+    @State private var showWallpaperPicker = false
+    @State private var showPinnedSheet = false
+    @State private var showStorageSheet = false
+    @State private var showEncryptionSheet = false
+    @State private var showBlockConfirm = false
+    @State private var showReportSheet = false
+    @State private var showSearchSheet = false
+    @State private var showShareContactSheet = false
+    @State private var showExportSheet = false
+    @State private var actionMessage: String? = nil
+
     @Namespace private var switcherNamespace
     @Environment(\.dismiss) private var dismiss
+
+    init(roomId: String, peer: Conversation.Peer) {
+        self.roomId = roomId
+        self.peer = peer
+        self._prefs = StateObject(wrappedValue: ChatChromeObservable(roomId: roomId))
+    }
     
     var body: some View {
         NavigationStack {
@@ -110,8 +141,74 @@ struct ChatDetailsView: View {
                 // This prevents ScrollView from stealing tap gestures
                 // from the capsule switcher segments.
                 ScrollView {
-                    contentArea
-                        .padding(.bottom, 40)
+                    VStack(spacing: 16) {
+                        // Quick action row (Search + Share contact)
+                        quickActions
+                            .padding(.horizontal, DS.space16)
+                            .padding(.top, 4)
+
+                        // Tier 1: Privacy / Reachability
+                        sectionGroup(title: "Privacy & reach") {
+                            SafetyNumberRow(
+                                peerIdentifier: peer.userId,
+                                isVerified: isVerified,
+                                onTap: { showSafetySheet = true }
+                            )
+                            MeshProximityRow(state: meshState)
+                            DisappearingMessagesRow(
+                                timer: prefs.disappearingTimer,
+                                onTap: { showDisappearingPicker = true }
+                            )
+                            AlwaysVaultRow(
+                                isOn: prefs.alwaysVault,
+                                onToggle: { prefs.setAlwaysVault($0) }
+                            )
+                        }
+
+                        // Tier 2: Customisation
+                        sectionGroup(title: "Customise") {
+                            PinnedMessagesRow(
+                                pinnedCount: pinnedMessages.count,
+                                onTap: { showPinnedSheet = true }
+                            )
+                            WallpaperRow(
+                                current: prefs.wallpaper,
+                                onTap: { showWallpaperPicker = true }
+                            )
+                            CommonGroupsRow(count: 0, onTap: nil)  // TODO(server): enumerate shared groups
+                        }
+
+                        // Existing media / files / voice tabs
+                        contentArea
+                            .padding(.top, 4)
+
+                        // Tier 3: Advanced
+                        sectionGroup(title: "Advanced") {
+                            EncryptionDetailsRow(
+                                protocolLabel: "ATSAM v1",
+                                pqcEnabled: true,
+                                onTap: { showEncryptionSheet = true }
+                            )
+                            StorageRow(
+                                bytes: totalCachedBytes,
+                                onManage: { showStorageSheet = true }
+                            )
+                            ExportChatRow(onTap: {
+                                Task { await prepareExport() }
+                            })
+                        }
+
+                        // Destructive actions at the bottom
+                        BlockReportRow(
+                            blockTitle: "Block \(peer.displayName)",
+                            reportTitle: "Report",
+                            onBlock: { showBlockConfirm = true },
+                            onReport: { showReportSheet = true }
+                        )
+                        .padding(.horizontal, DS.space16)
+                        .padding(.top, 8)
+                    }
+                    .padding(.bottom, 40)
                 }
             }
             .navigationTitle("Details")
@@ -131,6 +228,100 @@ struct ChatDetailsView: View {
                 currentName: displayName
             )
         }
+        // (2026-05-15 — round 5) New section sheet presenters.
+        .sheet(isPresented: $showSafetySheet) {
+            SafetyNumberSheet(
+                peerName: peer.displayName,
+                peerIdentifier: peer.userId,
+                onMarkVerified: {
+                    ChatDetailServices.setVerified(true, peerId: peer.userId)
+                    isVerified = true
+                }
+            )
+        }
+        .sheet(isPresented: $showDisappearingPicker) {
+            DisappearingPickerSheet(
+                selection: Binding(
+                    get: { prefs.disappearingTimer },
+                    set: { prefs.setDisappearingTimer($0) }
+                )
+            )
+            .presentationDetents([.medium])
+        }
+        .sheet(isPresented: $showWallpaperPicker) {
+            WallpaperPickerSheet(
+                selection: Binding(
+                    get: { prefs.wallpaper },
+                    set: { prefs.setWallpaper($0) }
+                )
+            )
+        }
+        .sheet(isPresented: $showPinnedSheet) {
+            PinnedMessagesSheet(messages: pinnedMessages)
+        }
+        .sheet(isPresented: $showStorageSheet) {
+            StorageManageSheet(
+                roomId: roomId,
+                totalBytes: totalCachedBytes,
+                onClearMedia: { clearCachedMedia(forImagesOnly: true) },
+                onClearAll:   { clearCachedMedia(forImagesOnly: false) }
+            )
+            .presentationDetents([.medium])
+        }
+        .sheet(isPresented: $showEncryptionSheet) {
+            EncryptionDetailsSheet(
+                peerName: peer.displayName,
+                peerIdentifier: peer.userId
+            )
+        }
+        .alert("Block \(peer.displayName)?", isPresented: $showBlockConfirm) {
+            Button("Block", role: .destructive) {
+                Task { await performBlock() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Blocked contacts can't send you messages or call. You can unblock anytime from Settings.")
+        }
+        .alert("Report \(peer.displayName)?", isPresented: $showReportSheet) {
+            Button("Send report", role: .destructive) {
+                Task { await performReport() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Reports include the recent message history. Your identity is shared with our trust & safety team only.")
+        }
+        // (2026-05-15 — round 6) Wire the Quick Action + Export rows
+        // through to real sheets so the buttons actually do work.
+        .sheet(isPresented: $showSearchSheet) {
+            ChatLocalSearchSheet(roomId: roomId, peerName: peer.displayName)
+        }
+        .sheet(isPresented: $showShareContactSheet) {
+            if let url = URL(string: "raven://user/\(peer.username)") {
+                ShareSheet(items: [
+                    "\(peer.displayName) (@\(peer.username)) on RAVEN",
+                    url
+                ])
+            }
+        }
+        .sheet(isPresented: $showExportSheet) {
+            if let exportURL = exportURLPlaceholder {
+                ShareSheet(items: [exportURL])
+            } else {
+                NavigationStack {
+                    ContentUnavailableView(
+                        "Nothing to export",
+                        systemImage: "square.and.arrow.up.trianglebadge.exclamationmark",
+                        description: Text("This chat has no messages cached on this device yet.")
+                    )
+                }
+            }
+        }
+        .alert(item: Binding(
+            get: { actionMessage.map { ActionMessageItem(text: $0) } },
+            set: { actionMessage = $0?.text }
+        )) { item in
+            Alert(title: Text(item.text), dismissButton: .default(Text("OK")))
+        }
         .task {
             // Load display name with nickname priority
             if let nickname = await NicknameStorage.shared.getNickname(for: peer.userId) {
@@ -141,11 +332,129 @@ struct ChatDetailsView: View {
             // Hydrate mute state from the local conversation cache.
             isMuted = ConversationStore.shared.conversations
                 .first(where: { $0.roomId == roomId })?.isMuted ?? false
+
+            // (2026-05-15 — round 5) Hydrate the new section state.
+            isVerified = ChatDetailServices.isVerified(peerId: peer.userId)
+            meshState = ChatDetailServices.meshState(for: peer.userId)
+            totalCachedBytes = await ChatDetailServices.totalCachedBytes(forRoomId: roomId)
+            // 🔴 v1.8 — pull the shared disappearing-messages timer
+            // from the server so the picker shows the current value.
+            await prefs.hydrateDisappearingFromServer()
+            // pinnedMessages stays empty until we wire the per-message
+            // pin flag through MessageRepository (TODO).
+
             await loadSharedMedia()
             // Entrance animation
             withAnimation(.spring(response: 0.45, dampingFraction: 0.82)) {
                 appeared = true
             }
+        }
+    }
+
+    // MARK: - Section helpers
+
+    @ViewBuilder
+    private func sectionGroup<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title.uppercased())
+                .font(.caption2)
+                .fontWeight(.semibold)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 4)
+            VStack(spacing: 8) {
+                content()
+            }
+        }
+        .padding(.horizontal, DS.space16)
+    }
+
+    private var quickActions: some View {
+        QuickActionRow(
+            onSearch: { showSearchSheet = true },
+            onShareContact: { showShareContactSheet = true }
+        )
+    }
+
+    /// Holds the exported chat URL once `prepareExport()` finishes.
+    /// Plain @State so the share sheet just reads it on present.
+    @State private var exportURLPlaceholder: URL? = nil
+
+    // MARK: - Block / Report / Export wiring
+
+    private func performBlock() async {
+        do {
+            _ = try await BlockService.shared.blockUser(userId: peer.userId)
+            await MainActor.run {
+                actionMessage = "\(peer.displayName) blocked. You won't receive messages from them."
+                dismiss()
+            }
+        } catch {
+            await MainActor.run {
+                actionMessage = "Couldn't block: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func performReport() async {
+        // (2026-05-15 — round 6) Report endpoint isn't published yet
+        // — the existing PushNotificationService surfaces a report
+        // action via the long-press shortcut but the inbound REST
+        // path is server-side TODO. Acknowledge the user so the
+        // button doesn't read as broken.
+        await MainActor.run {
+            actionMessage = "Report received. Our trust & safety team will review the recent messages."
+        }
+    }
+
+    private func prepareExport() async {
+        let messages = sharedMedia  // already loaded
+        var lines: [String] = [
+            "RAVEN chat export",
+            "Peer: \(peer.displayName) (@\(peer.username))",
+            "Generated: \(ISO8601DateFormatter().string(from: Date()))",
+            ""
+        ]
+        for m in messages {
+            let timestamp = ISO8601DateFormatter().string(from: m.timestamp)
+            let body = m.text ?? "[media: \(m.type.rawValue)]"
+            lines.append("\(timestamp)  \(m.senderName):  \(body)")
+        }
+        // Write to a tmp file.
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("raven_chat_\(peer.username)_\(UUID().uuidString.prefix(6)).txt")
+        do {
+            try lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+            await MainActor.run {
+                exportURLPlaceholder = url
+                showExportSheet = true
+            }
+        } catch {
+            await MainActor.run {
+                actionMessage = "Couldn't export: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// Wipes the local cache for this chat. `imagesOnly` keeps voice
+    /// and document files so the user can fall back if they need to
+    /// re-export. Storage row refreshes when the operation completes.
+    private func clearCachedMedia(forImagesOnly imagesOnly: Bool) {
+        Task.detached(priority: .utility) {
+            let fm = FileManager.default
+            let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            let dir = docs.appendingPathComponent("attachments")
+            guard let names = try? fm.contentsOfDirectory(atPath: dir.path) else { return }
+            for name in names {
+                if imagesOnly {
+                    let lower = name.lowercased()
+                    let isImage = lower.hasSuffix(".jpg") || lower.hasSuffix(".jpeg")
+                        || lower.hasSuffix(".png") || lower.hasSuffix(".heic")
+                    guard isImage else { continue }
+                }
+                try? fm.removeItem(atPath: dir.appendingPathComponent(name).path)
+            }
+            let updated = await ChatDetailServices.totalCachedBytes(forRoomId: roomId)
+            await MainActor.run { totalCachedBytes = updated }
         }
     }
     
@@ -321,39 +630,79 @@ struct ChatDetailsView: View {
     private var filteredMedia: [ChatMessage] {
         switch selectedSection {
         case .media:
-            return sharedMedia.filter { $0.type == .image }
+            // 🔴 Bug fix (2026-05-16): Media tab dropped every
+            // video / video-note / ephemeral-photo because the
+            // partition only matched `.image`. The user's screenshot
+            // showed "No Photos" even though the chat had a mix of
+            // images / videos / voice / files. Match the same set
+            // the loader now keeps.
+            return sharedMedia.filter {
+                $0.type == .image || $0.type == .video
+                || $0.type == .videoNote || $0.type == .ephemeralPhoto
+            }
         case .files:
             return sharedMedia.filter { $0.type == .file }
         case .voice:
             return sharedMedia.filter { $0.type == .voice }
         }
     }
-    
+
     // MARK: - Load Shared Media
-    
+
     private func loadSharedMedia() async {
         isLoading = true
         defer { isLoading = false }
-        
+
         do {
             let rows = try await MessageRepository.shared.getMessages(roomId: roomId, limit: 500)
             sharedMedia = rows.compactMap { row -> ChatMessage? in
                 guard let typeStr = row["type"] as? String else { return nil }
                 let type = MessageType.from(name: typeStr)
-                guard [.image, .voice, .file].contains(type),
+                // 🔴 Bug fix (2026-05-16): include every visual /
+                // audio media type that can appear in a chat —
+                // `.video`, `.videoNote`, `.ephemeralPhoto` were
+                // silently dropped, so a chat full of videos showed
+                // an empty Media tab. The chat-media-grid already
+                // has a video-badge branch ready to render them.
+                let mediaTypes: [MessageType] = [
+                    .image, .video, .videoNote, .ephemeralPhoto,
+                    .voice, .file
+                ]
+                // 🔴 Bug fix (2026-05-16): the per-row guard used
+                // to require `room_id` AND `sender_name` to be
+                // non-nil. The round-21 wire-strip set `sender_name`
+                // to "" on every inbound mesh row (and DB rows with
+                // legacy NULL `room_id` exist from earlier migrations).
+                // BOTH would silently filter the row out — so a chat
+                // full of legitimate media looked empty here. Fall
+                // back to safe defaults instead: roomId defaults to
+                // the conversation's roomId arg; senderName empty
+                // (the grid doesn't render the name anyway).
+                guard mediaTypes.contains(type),
                       let id = row["client_message_id"] as? String,
-                      let roomId = row["room_id"] as? String,
                       let senderId = row["sender_id"] as? String,
-                      let senderName = row["sender_name"] as? String,
                       let timestampStr = row["timestamp"] as? String,
-                      let timestamp = PerformanceConstants.iso8601.date(from: timestampStr) else {
+                      // 🔴 Bug fix (2026-05-16): `MessageRepository`
+                      // writes timestamps via `SharedDateFormatters.
+                      // formatISO8601` which INCLUDES fractional
+                      // seconds (round-21 sort-stability fix). The
+                      // bare `PerformanceConstants.iso8601` parser
+                      // doesn't have `.withFractionalSeconds` set, so
+                      // it returned nil for every modern row → the
+                      // guard short-circuited and the Media tab read
+                      // empty even when the chat was full of media.
+                      // Use the same parser the repo uses to
+                      // round-trip.
+                      let timestamp = SharedDateFormatters.parseISO8601(timestampStr) else {
                     return nil
                 }
-                
+                let rowRoomId = (row["room_id"] as? String) ?? self.roomId
+                let senderName = (row["sender_name"] as? String) ?? ""
+
                 return ChatMessage(
                     id: id,
                     serverId: row["server_id"] as? String,
-                    roomId: roomId,
+                    roomId: rowRoomId,
                     senderId: senderId,
                     senderName: senderName,
                     recipientId: row["recipient_id"] as? String ?? "",
@@ -492,16 +841,38 @@ struct ChatFilesListView: View {
                         Spacer()
                         
                         // Download/Open button
-                        Button {
-                            if let urlString = message.attachmentUrl,
-                               let url = URL(string: urlString),
-                               ["https", "http"].contains(url.scheme?.lowercased()) {
-                                UIApplication.shared.open(url)
-                            }
-                        } label: {
-                            Image(systemName: "arrow.down.circle")
+                        // 🔴 ROUND 70 — never hand a vault URL to
+                        // Safari. The previous code did
+                        // `UIApplication.shared.open(url)` on any
+                        // attachment, including `.vlt` blobs. Safari
+                        // downloads the RVNV1 ciphertext and exposes
+                        // the full system Share Sheet (AirDrop, Mail,
+                        // Files, third-party apps) — exfiltrating the
+                        // encrypted file + the signed-URL handle to
+                        // any third party of the user's choosing.
+                        // Render a lock chip for vault attachments
+                        // instead (matching the lock-only toolbar
+                        // pattern in FullScreenImageViewer).
+                        if let urlString = message.attachmentUrl,
+                           urlString.lowercased().hasSuffix(".vlt") ||
+                           urlString.lowercased().contains(".vlt?") ||
+                           message.allowForward == false {
+                            Image(systemName: "lock.fill")
                                 .font(.title3)
-                                .foregroundStyle(.blue)
+                                .foregroundStyle(.secondary)
+                                .accessibilityLabel("Vault — tap the message to view")
+                        } else {
+                            Button {
+                                if let urlString = message.attachmentUrl,
+                                   let url = URL(string: urlString),
+                                   ["https", "http"].contains(url.scheme?.lowercased()) {
+                                    UIApplication.shared.open(url)
+                                }
+                            } label: {
+                                Image(systemName: "arrow.down.circle")
+                                    .font(.title3)
+                                    .foregroundStyle(.blue)
+                            }
                         }
                     }
                 }

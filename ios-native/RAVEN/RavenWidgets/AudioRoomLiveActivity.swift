@@ -9,10 +9,28 @@ import ActivityKit
 
 /// WidgetKit views for Audio Room Dynamic Island + Lock Screen banner.
 struct AudioRoomLiveActivity: Widget {
+    /// Build the `raven://room/{slug}` deep link used when the user
+    /// taps the Dynamic Island or the lock-screen banner. Falls back
+    /// to the bare `raven://` scheme (which opens the app's last
+    /// screen) for legacy rooms that don't have a shareable slug
+    /// stamped on them.
+    private func deepLink(for attributes: AudioRoomAttributes) -> URL {
+        if let slug = attributes.shareSlug, !slug.isEmpty {
+            return URL(string: "raven://room/\(slug)") ?? URL(string: "raven://")!
+        }
+        return URL(string: "raven://")!
+    }
+
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: AudioRoomAttributes.self) { context in
             // MARK: - Lock Screen / StandBy banner
+            //
+            // `widgetURL` makes the entire banner one tap target that
+            // routes through DeepLinkRouter back into the room. Lock
+            // Screen Live Activities don't accept arbitrary buttons,
+            // so a single deep link is the cleanest UX.
             lockScreenBanner(context)
+                .widgetURL(deepLink(for: context.attributes))
         } dynamicIsland: { context in
             DynamicIsland {
                 // MARK: - Expanded
@@ -78,6 +96,11 @@ struct AudioRoomLiveActivity: Widget {
                     .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(Color(hue: 0.55, saturation: 0.35, brightness: 0.7))
             }
+            // Tapping the compact / minimal Dynamic Island when collapsed
+            // (or the expanded view's blank area when open) routes
+            // back to the live room via the deep-link scheme.
+            .widgetURL(deepLink(for: context.attributes))
+            .keylineTint(Color(hue: 0.55, saturation: 0.35, brightness: 0.7))
         }
     }
 

@@ -131,41 +131,44 @@ async def block_user(
     cleanup_actions = []
     
     # 1. Remove friendship (both directions)
-    try:
-        from models import Friendship
-        friendships = db.query(Friendship).filter(
-            or_(
-                and_(Friendship.user_id == current_user.id, Friendship.friend_id == block.blocked_id),
-                and_(Friendship.user_id == block.blocked_id, Friendship.friend_id == current_user.id)
-            )
-        ).all()
-        for f in friendships:
-            db.delete(f)
-        if friendships:
-            cleanup_actions.append("friendship_removed")
-    except Exception:
-        pass  # Friendship table might not exist
-    
-    # 2. Cancel pending friend requests (both directions)
+    # 🔴 ROUND 71 S16: round-22 audit established that `Friendship`
+    # table is NEVER written — friendship state lives in
+    # `FriendRequest.status='accepted'`. The Friendship-delete code
+    # below is dead. Update accepted FriendRequest rows to
+    # 'cancelled-by-block' so existing friendship is actually severed.
     try:
         from models import FriendRequest
         requests = db.query(FriendRequest).filter(
             or_(
-                and_(FriendRequest.sender_id == current_user.id, FriendRequest.receiver_id == block.blocked_id),
-                and_(FriendRequest.sender_id == block.blocked_id, FriendRequest.receiver_id == current_user.id)
+                and_(FriendRequest.requester_id == current_user.id, FriendRequest.recipient_id == block.blocked_id),
+                and_(FriendRequest.requester_id == block.blocked_id, FriendRequest.recipient_id == current_user.id)
             ),
-            FriendRequest.status == "pending"
+            FriendRequest.status.in_(["pending", "accepted"]),
         ).all()
+        any_accepted = any(r.status == "accepted" for r in requests)
+        any_pending  = any(r.status == "pending"  for r in requests)
         for r in requests:
             r.status = "cancelled"
-        if requests:
+        if any_accepted:
+            cleanup_actions.append("friendship_removed")
+        if any_pending:
             cleanup_actions.append("friend_requests_cancelled")
-    except Exception:
-        pass
-    
+    except Exception as _e_fr:
+        # 🔴 ROUND 71 phase 3 — log instead of swallowing silently.
+        # Bare `except: pass` is what hid the original S15 bug for
+        # months; keep the same fail-soft behavior (don't abort the
+        # whole block) but surface the error so future regressions
+        # are visible in logs.
+        print(f"⚠️ [Block] friendship cleanup failed for "
+              f"{block.blocked_id[:8]}: {type(_e_fr).__name__}: {_e_fr}")
+
     # 3. Hide all blocked user's posts from the blocker
+    # 🔴 ROUND 71 S15: column is `author_id`, not `user_id`.
+    # Try/except previously masked the bug — `HiddenContent` rows
+    # were NEVER inserted. Feed exclusion still worked via
+    # `get_blocked_user_ids`, but block-hide-on-post was theatre.
     try:
-        blocked_posts = db.query(Post).filter(Post.user_id == block.blocked_id).all()
+        blocked_posts = db.query(Post).filter(Post.author_id == block.blocked_id).all()
         for post in blocked_posts:
             existing_hidden = db.query(HiddenContent).filter(
                 HiddenContent.user_id == current_user.id,
@@ -182,8 +185,11 @@ async def block_user(
                 ))
         if blocked_posts:
             cleanup_actions.append(f"hid_{len(blocked_posts)}_posts")
-    except Exception:
-        pass
+    except Exception as _e_hp:
+        # 🔴 ROUND 71 phase 3 — log instead of swallowing silently.
+        # See note above.
+        print(f"⚠️ [Block] hide-posts cleanup failed for "
+              f"{block.blocked_id[:8]}: {type(_e_hp).__name__}: {_e_hp}")
     
     # 4. Hide the user account itself
     db.add(HiddenContent(
@@ -247,7 +253,8 @@ async def unblock_user(
         db.delete(user_hidden)
     
     # Remove hidden posts from this user
-    blocked_posts = db.query(Post).filter(Post.user_id == blocked_id).all()
+    # 🔴 ROUND 71 S15: column is `author_id`, not `user_id` (same typo).
+    blocked_posts = db.query(Post).filter(Post.author_id == blocked_id).all()
     for post in blocked_posts:
         post_hidden = db.query(HiddenContent).filter(
             HiddenContent.user_id == current_user.id,

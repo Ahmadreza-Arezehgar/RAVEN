@@ -11,7 +11,16 @@ enum ToastType: Int, Codable, CaseIterable {
     case comment = 5        // Someone commented on your post
     case groupInvite = 6    // Invited to a group
     case appUpdate = 7      // App update available
-    
+    // (2026-05-15 — round 8) New in-app toast types matching the
+    // newly-registered APNs categories. Keep the raw values stable
+    // so existing serialised toasts in NotificationStore survive.
+    case vaultAccess = 8        // Recipient opened a vault attachment
+    case meshPeerNearby = 9     // Paired peer just appeared on BLE
+    case backupDone = 10        // Encrypted backup finished
+    case twoFactorRequest = 11  // Sign-in approval request
+    case disasterMode = 12      // Disaster mode flipped on
+    case audioRoomMention = 13  // Your name appeared in a live transcript
+
     var icon: String {
         switch self {
         case .message: return "message.fill"
@@ -22,9 +31,15 @@ enum ToastType: Int, Codable, CaseIterable {
         case .comment: return "bubble.left.fill"
         case .groupInvite: return "person.3.fill"
         case .appUpdate: return "arrow.down.circle.fill"
+        case .vaultAccess: return "lock.open.fill"
+        case .meshPeerNearby: return "antenna.radiowaves.left.and.right"
+        case .backupDone: return "externaldrive.fill.badge.checkmark"
+        case .twoFactorRequest: return "key.fill"
+        case .disasterMode: return "exclamationmark.triangle.fill"
+        case .audioRoomMention: return "mic.fill.badge.plus"
         }
     }
-    
+
     var accentColor: String {
         switch self {
         case .message: return "blue"
@@ -35,9 +50,15 @@ enum ToastType: Int, Codable, CaseIterable {
         case .comment: return "cyan"
         case .groupInvite: return "indigo"
         case .appUpdate: return "mint"
+        case .vaultAccess: return "indigo"
+        case .meshPeerNearby: return "blue"
+        case .backupDone: return "green"
+        case .twoFactorRequest: return "yellow"
+        case .disasterMode: return "red"
+        case .audioRoomMention: return "purple"
         }
     }
-    
+
     /// Display name for the notification type
     var displayName: String {
         switch self {
@@ -49,6 +70,12 @@ enum ToastType: Int, Codable, CaseIterable {
         case .comment: return "Comment"
         case .groupInvite: return "Group Invite"
         case .appUpdate: return "Update"
+        case .vaultAccess: return "Vault Access"
+        case .meshPeerNearby: return "Mesh Peer"
+        case .backupDone: return "Backup Done"
+        case .twoFactorRequest: return "Sign-in Request"
+        case .disasterMode: return "Disaster Mode"
+        case .audioRoomMention: return "Mention"
         }
     }
 }
@@ -68,7 +95,32 @@ struct ToastItem: Identifiable, Equatable {
     let canReply: Bool
     let receivedAt: Date
     var mergedCount: Int = 1
-    
+    // 🔴 ROUND 71 phase 3 follow-up #4 (2026-05-24) — group context.
+    // For group messages we want the banner to show
+    // "<sender> in <group>" so the recipient can see which group
+    // the message belongs to without opening it. Pre-fix the
+    // toast carried only `isGroup: Bool` — the title was either
+    // just the sender's username (no group context) or just the
+    // group name (no sender). Now we carry the group name
+    // separately so the renderer can compose the full subtitle.
+    var groupName: String? = nil
+    // 🔴 ROUND 71 phase 3 follow-up #4 — server notification id
+    // for proper read-tracking. Toast.id is a fresh UUID per
+    // surface event (so dedup across re-renders works); the
+    // server's Notification row has its OWN UUID. Pre-fix
+    // `NotificationPipeline.handleTap` called `markAsRead(id:
+    // item.id)` with the toast UUID — server never had a matching
+    // row → unread count never decremented when the user tapped
+    // the banner. Carry the server-side id here so the tap
+    // handler can mark the right row read.
+    var serverNotificationId: String? = nil
+    // 🔴 ROUND 71 phase 3 follow-up #4 — message id for navigation
+    // / dedup with other channels. Toast.id was used as the dedup
+    // key, but the same message can arrive via WS + APNs + mesh,
+    // each generating a fresh toast UUID. Carry the actual
+    // message id so cross-channel dedup works.
+    var messageId: String? = nil
+
     static func == (lhs: ToastItem, rhs: ToastItem) -> Bool {
         lhs.id == rhs.id
     }
@@ -76,6 +128,17 @@ struct ToastItem: Identifiable, Equatable {
     // MARK: - Factory Methods
     
     /// Create a message toast
+    ///
+    /// 🔴 ROUND 28 (2026-05-17) — defensive preview sanitation.
+    /// The in-app banner used to render with an EMPTY second line when
+    /// the server's notification payload carried `preview: ""` (empty
+    /// string, not null). The factory accepted the empty string at
+    /// face value, `Text("")` still claimed layout height per font
+    /// metrics, and the result was a banner showing only the sender's
+    /// username with a visibly-blank body line. The few NotificationsService
+    /// paths that used `data.preview ?? "Sent you a message"` weren't
+    /// catching this because nil-coalescing doesn't apply to `""`.
+    /// Centralise the safety check here so every caller benefits.
     static func message(
         id: String = UUID().uuidString,
         senderName: String,
@@ -83,20 +146,44 @@ struct ToastItem: Identifiable, Equatable {
         avatarURL: URL? = nil,
         chatId: String,
         senderId: String,
-        isGroup: Bool = false
+        isGroup: Bool = false,
+        groupName: String? = nil,
+        serverNotificationId: String? = nil,
+        messageId: String? = nil
     ) -> ToastItem {
-        ToastItem(
+        // 🔴 ROUND 28 (2026-05-17) — strip invisible Unicode before
+        // checking emptiness. PREVIOUSLY: only whitespace was
+        // trimmed, so a body containing just an LRM / RLM / ZWSP /
+        // control char (a real shape for failed-decrypt or empty
+        // E2EE handoff payloads) survived the trim and rendered as
+        // a visually-blank toast. Strip control/format/separator
+        // scalars first so we fall back to "💬 Message" instead.
+        let visibleScalars = preview.unicodeScalars.filter { scalar in
+            switch scalar.properties.generalCategory {
+            case .control, .format, .lineSeparator, .paragraphSeparator:
+                return false
+            default:
+                return true
+            }
+        }
+        let stripped = String(String.UnicodeScalarView(visibleScalars))
+        let trimmed = stripped.trimmingCharacters(in: .whitespacesAndNewlines)
+        let safeBody = trimmed.isEmpty ? "💬 Message" : trimmed
+        return ToastItem(
             id: id,
             type: .message,
             title: senderName,
-            body: preview,
+            body: safeBody,
             avatarURL: avatarURL,
             chatId: chatId,
             senderId: senderId,
             senderName: senderName,
             isGroup: isGroup,
             canReply: true,
-            receivedAt: Date()
+            receivedAt: Date(),
+            groupName: groupName,
+            serverNotificationId: serverNotificationId,
+            messageId: messageId
         )
     }
     

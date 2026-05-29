@@ -65,18 +65,14 @@ class AuthService {
         email: String,
         phone: String? = nil
     ) async throws {
-        // 🔐 Phase 2A: stretch the password before it leaves the
-        // device. The server stores argon2id(stretched), so even a
-        // full DB exfiltration leaves attackers grinding PBKDF2(600k)
-        // per dictionary guess instead of attacking the raw password.
-        let stretched = (try? PasswordStretcher.stretch(
-            password: password,
-            usernameLowercased: username.lowercased()
-        )) ?? password
-
+        // ⚠️ Phase 2A client-side password stretching is DISABLED.
+        // It must stay in lockstep with login() — the deployed server
+        // hashes whatever it receives, so register + login must send
+        // the password the same way. Re-enable both together only
+        // once the server-side counterpart + migration have shipped.
         let request = RegisterRequest(
             username: username,
-            password: stretched,
+            password: password,
             firstName: firstName,
             lastName: lastName,
             birthYear: birthYear,
@@ -118,18 +114,14 @@ class AuthService {
     }
     
     func login(username: String, password: String) async throws {
-        // 🔐 Phase 2A: client-side password stretching. Server never
-        // sees the raw password — it sees a 32-byte PBKDF2 derivative
-        // bound to the lowercased username. Backward-compatible
-        // because servers running the matching update detect the
-        // `RVNS1$` prefix and treat the value as a key, not a password.
-        // Older servers see a long opaque string and reject it; the
-        // user can fall back to legacy by calling `loginLegacy(...)`.
-        let stretched = (try? PasswordStretcher.stretch(
-            password: password,
-            usernameLowercased: username.lowercased()
-        )) ?? password
-        let request = LoginRequest(username: username, password: stretched)
+        // ⚠️ Phase 2A client-side password stretching is DISABLED.
+        // The deployed server has no matching `RVNS1$` handling, and
+        // every existing account's hash is of the RAW password — so
+        // sending a stretched value would lock out every current
+        // user. Re-enable only once the server-side counterpart and
+        // an account-hash migration have shipped. See
+        // PasswordStretcher.swift (kept for that future work).
+        let request = LoginRequest(username: username, password: password)
 
         let response: TokenResponse = try await NetworkService.shared.post(
             path: "/api/auth/login",
@@ -416,12 +408,22 @@ class AuthService {
         do {
             currentUser = try await NetworkService.shared.get(path: "/api/users/me")
             cacheUserProfile(currentUser)  // Persist for offline boot
-            
+
             // Forward server-granted premium status (e.g. admin accounts)
             if let user = currentUser {
                 await SubscriptionService.shared.setServerPremiumStatus(user.isPremium)
+
+                // 🔴 ROUND 71 phase 3 — register the signed-in user in
+                // MeshIdentityResolver so inbound strict-strip
+                // envelopes addressed to us via the hashed identity
+                // token resolve back to our real id. Without this,
+                // self-recipient envelopes drop into the "bridge"
+                // branch and never decrypt locally. Friends are
+                // registered separately via
+                // `GroupService.fetchFriends()` / `getCachedFriends()`.
+                await MeshIdentityResolver.shared.register(userId: user.id)
             }
-            
+
             // Hydrate notification + privacy settings from server (fire-and-forget)
             Task { await hydrateSettingsFromServer() }
         } catch APIError.restricted {
@@ -539,6 +541,44 @@ class AuthService {
         // 1. Clear keychain (token)
         // Use try? — keychain failure must not block remaining cleanup
         try? await KeychainService.shared.deleteAll()
+
+        // 🔴 ROUND 71 phase 3 — wipe MeshIdentityResolver so the
+        // next account that signs in on the same device doesn't
+        // inherit the previous user's peer→userId map. Pre-fix the
+        // map persisted across logouts, meaning a hashed peer
+        // token for user A's contact could resolve under user B's
+        // session (cross-account identity leak in the local mesh
+        // receive path).
+        await MeshIdentityResolver.shared.reset()
+
+        // 🔐 ROUND 76 (2026-05-24) — Hacker #9 V1 CRITICAL.
+        //
+        // Pre-fix, logout() wiped KeychainService + DB but left:
+        //   • ATSAMRootStorage Keychain rows (service prefix
+        //     `app.raven.ios.atsam.root` ≠ KeychainService's
+        //     `app.raven.ios`, so `deleteAll()` skipped them)
+        //   • GroupKeyService Keychain blob (service
+        //     `com.raven.groupkeys`)
+        //   • SealedReplayWindow UserDefaults blob
+        //     (`raven.sealer.replayWindow.v1`)
+        //
+        // Cross-account leak: User A logs out → User B logs in
+        // on the same device → B's GroupKeyService loads A's
+        // persisted group keys; B's ATSAMRootStorage returns A's
+        // ATSAM roots when sending to A's old peers. B could
+        // decrypt incoming ATSAM ciphertext addressed to A and
+        // forge outbound messages from A.
+        //
+        // Fix: explicit purge of every per-user crypto store BEFORE
+        // signaling the rest of logout. All three calls are
+        // best-effort `try?`-equivalent (the storages internally
+        // swallow Keychain errors) so a failure doesn't block the
+        // rest of cleanup.
+        await ATSAMRootStorage.shared.purgeAll()
+        await MainActor.run { GroupKeyService.shared.reset() }
+        // SealedReplayWindow is a fileprivate actor inside
+        // MessageContentSealer; expose a purge hook via the sealer.
+        await MessageContentSealer.purgeReplayWindow()
         
         // 2. Clear SQLite database (messages, conversations, notifications, posts)
         try? await DatabaseService.shared.clearAllData()

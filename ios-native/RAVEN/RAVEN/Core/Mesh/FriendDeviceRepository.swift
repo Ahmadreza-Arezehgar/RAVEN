@@ -8,6 +8,9 @@
 //
 
 import Foundation
+import os
+
+fileprivate let logger = Logger(subsystem: "app.raven.ios", category: "Mesh.FriendDeviceRepo")
 
 actor FriendDeviceRepository {
     static let shared = FriendDeviceRepository()
@@ -32,9 +35,7 @@ actor FriendDeviceRepository {
             }
             isCacheLoaded = true
         } catch {
-            #if DEBUG
-            print("  [FriendDeviceRepo] Failed to load cache: \(error)")
-            #endif
+            logger.debug("Failed to load cache: \(error.localizedDescription, privacy: .public)")
         }
     }
     
@@ -69,9 +70,7 @@ actor FriendDeviceRepository {
         try await db.execute("CREATE INDEX IF NOT EXISTS idx_friend_fingerprint ON friend_devices(fingerprint)")
         try await db.execute("CREATE INDEX IF NOT EXISTS idx_friend_trust ON friend_devices(trust_state)")
         try await db.execute("CREATE INDEX IF NOT EXISTS idx_friend_user ON friend_devices(friend_user_id)")
-        #if DEBUG
-        print("📦 [FriendDeviceRepo] Table created/verified")
-        #endif
+        logger.debug("Table created/verified")
     }
     
     // MARK: - CRUD Operations (Cache + DB Write-Through)
@@ -147,9 +146,7 @@ actor FriendDeviceRepository {
                 params: [state.rawValue, fingerprint]
             )
         }
-        #if DEBUG
-        print("📦 [FriendDeviceRepo] Updated trust state: \(fingerprint) → \(state)")
-        #endif
+        logger.debug("Updated trust state: \(fingerprint, privacy: .private) → \(state.rawValue, privacy: .public)")
     }
     
     /// Check if fingerprint is trusted
@@ -171,9 +168,7 @@ actor FriendDeviceRepository {
             "DELETE FROM friend_devices WHERE fingerprint = ?",
             params: [fingerprint]
         )
-        #if DEBUG
-        print("📦 [FriendDeviceRepo] Deleted device: \(fingerprint)")
-        #endif
+        logger.debug("Deleted device: \(fingerprint, privacy: .private)")
     }
     
     // MARK: - Helper

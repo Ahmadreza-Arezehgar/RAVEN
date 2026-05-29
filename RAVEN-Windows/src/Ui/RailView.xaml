@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="utf-8"?>
+<UserControl
+    x:Class="RAVEN.Windows.Ui.RailView"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:local="using:RAVEN.Windows.Ui">
+
+    <!--
+      Left navigation rail — mirrors `RAVEN-MacApp/RAVEN/Views/Components/RailView.swift`.
+        - RAVEN logo + gradient wordmark at the top
+        - Five capsule rail items: Home / Explore / Notifications / Messages / Profile
+        - Big gradient Post button below the items
+        - ProfileChip pinned at the bottom
+        - Pure black background to match the Mac shell
+    -->
+    <Grid Background="{StaticResource RavenBg}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Brand header: 36×36 logo tile + RAVEN wordmark in logo gradient -->
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="10"
+                    Padding="18,32,18,22">
+            <Border Width="36" Height="36" CornerRadius="9"
+                    Background="{StaticResource RavenLogoGradient}">
+                <TextBlock Text="R" FontSize="20" FontWeight="Black"
+                           Foreground="White"
+                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+            <TextBlock Text="RAVEN" FontSize="22" FontWeight="Black"
+                       Foreground="{StaticResource RavenLogoGradient}"
+                       VerticalAlignment="Center" CharacterSpacing="40"/>
+        </StackPanel>
+
+        <!-- Nav items — 5, capsule, hover/select states match Mac. -->
+        <StackPanel Grid.Row="1" Spacing="0">
+            <local:RailItem x:Name="NavHome"
+                            Icon="&#xE80F;" IconActive="&#xE80F;"
+                            Label="Home" IsSelected="True"
+                            Tapped="OnRailItemTapped"/>
+            <local:RailItem x:Name="NavExplore"
+                            Icon="&#xE721;" IconActive="&#xE721;"
+                            Label="Explore"
+                            Tapped="OnRailItemTapped"/>
+            <local:RailItem x:Name="NavNotifications"
+                            Icon="&#xEA8F;" IconActive="&#xEA8F;"
+                            Label="Notifications"
+                            Tapped="OnRailItemTapped"/>
+            <local:RailItem x:Name="NavMessages"
+                            Icon="&#xE715;" IconActive="&#xE715;"
+                            Label="Messages"
+                            Tapped="OnRailItemTapped"/>
+            <local:RailItem x:Name="NavProfile"
+                            Icon="&#xE77B;" IconActive="&#xE77B;"
+                            Label="Profile"
+                            Tapped="OnRailItemTapped"/>
+        </StackPanel>
+
+        <!-- Big gradient Post button: 50pt tall, ExtraBold 17pt — Mac's RailView.swift L57. -->
+        <Button Grid.Row="2" Style="{StaticResource PostButton}"
+                Margin="20,16,20,0"
+                Click="OnPostClicked">
+            <TextBlock Text="Post" FontSize="17" FontWeight="ExtraBold" Foreground="White"/>
+        </Button>
+
+        <!-- Spacer pushes the profile chip to the bottom. -->
+        <Border Grid.Row="3"/>
+
+        <!-- ProfileChip — small avatar + username + ellipsis affordance. -->
+        <local:ProfileChip Grid.Row="4" Margin="12,0,12,16"/>
+    </Grid>
+</UserControl>

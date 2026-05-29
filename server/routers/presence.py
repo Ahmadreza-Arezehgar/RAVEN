@@ -136,10 +136,21 @@ def go_offline(current_user: User = Depends(get_current_user)):
     return {"status": "ok"}
 
 
-@router.get("/debug/all")
-def debug_all_presence(current_user: User = Depends(get_current_user)):
-    """Debug endpoint to see all presence data (admin only)"""
-    # TODO: Add admin check
+@router.get("/debug/all", include_in_schema=False)
+def debug_all_presence(_admin: bool = Depends(__import__("routers.admin", fromlist=["verify_admin_secret"]).verify_admin_secret)):
+    """Debug endpoint to see all presence data — admin only.
+
+    🔴 hacker-audit 2026-05-19: docstring claimed "admin only" but the
+    code had a literal `# TODO: Add admin check`. Any authenticated
+    user could dump the in-process presence cache and:
+      • Build a per-user activity-time graph (which targets are
+        online when), correlating with messages they receive.
+      • Trace failed-login attempts to specific accounts via the
+        device_id field.
+      • Enumerate active accounts on the server (any user with
+        a recent heartbeat appears).
+    Now gated on X-Admin-Secret, same gate as every other admin op.
+    """
     result = {}
     for user_id, data in _presence_cache.items():
         online, has_internet, last_seen = _is_online(user_id)

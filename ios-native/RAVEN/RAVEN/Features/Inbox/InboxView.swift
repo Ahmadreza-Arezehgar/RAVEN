@@ -226,6 +226,12 @@ struct InboxView: View {
                         .id(roomId)
                 }
             }
+            // (2026-05-15 — round 7) Quick Action: New Message → open
+            // the existing New Chat composer the same way the inbox
+            // toolbar's `+` button does.
+            .onReceive(NotificationCenter.default.publisher(for: .ravenShortcutNewMessage)) { _ in
+                showNewChat = true
+            }
             // Deep link handling: navigate to chat when notification is tapped
             .onReceive(NotificationCenter.default.publisher(for: .deepLinkReceived)) { notification in
                 guard let destination = notification.object as? DeepLinkRouter.Destination else { return }

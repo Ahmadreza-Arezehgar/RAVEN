@@ -22,10 +22,16 @@ extension View {
 }
 
 // MARK: - Screenshot Protection
-// NOTE: The UITextField.isSecureTextEntry hack was removed because Apple
-// has historically rejected apps that exploit UITextField subview injection
-// for screenshot blocking. Until Apple provides an official API, the only
-// App-Store-safe approach is the ScreenshotObserver overlay below.
+// NOTE: iOS exposes no API to BLOCK a screenshot. Two tools exist here:
+//   • ScreenshotObserver (below) — DETECTS screenshots / screen
+//     recording after the fact. Safe to use app-wide.
+//   • SecureHostView (bottom of file) — EXCLUDES content from
+//     screenshots AND screen recordings via the secure-text-entry
+//     layer (the same OS mechanism banking apps use to blank card
+//     numbers). Re-introduced 2026-05-20 at the user's request,
+//     SCOPED to Vault media viewers only — a genuine privacy feature
+//     on a small surface, which is the defensible, low-review-risk
+//     use. It is deliberately NOT applied app-wide.
 
 // MARK: - Screenshot Observer (for additional protection)
 /// Monitors for screenshot/recording and can trigger additional actions
@@ -143,9 +149,144 @@ extension View {
         Text("This content is protected!")
             .font(.title)
             .padding()
-        
+
         Text("Screenshots will show a black screen")
             .foregroundStyle(.secondary)
     }
     .screenshotProtected()
+}
+
+// MARK: - Vault Screenshot Exclusion (secure-text-entry layer)
+//
+// 🔴 2026-05-20 — content rendered inside a secure-text-entry field's
+// layer is omitted by the iOS compositor from BOTH screenshots and
+// screen recordings — the exact mechanism banking apps use to blank
+// out card numbers. A screenshot of protected content comes back
+// blank; the live on-device display is unaffected.
+//
+// Fail-open: if the secure canvas can't be obtained (OS internals
+// change), the content is shown unprotected rather than hidden — the
+// viewer is never blank. The VaultScreenGuard detect/blur overlay is
+// the backstop in that case.
+
+/// A UIView whose hosted content iOS excludes from screenshots and
+/// screen recordings — the iOS analogue of Android's FLAG_SECURE.
+///
+/// 🔴 2026-05-20 (v3 — researched rewrite). A secure-text-entry
+/// `UITextField` owns a private canvas view (`_UITextLayoutCanvasView`
+/// on iOS 15+, `_UITextFieldCanvasView` / `_UITextFieldContentView`
+/// on older iOS) whose layer the iOS compositor omits from screen
+/// capture. The canonical community technique — what banking apps use
+/// — is to DETACH that canvas, clear it, and host the content inside
+/// it. (v1 injected into `subviews.first` in place; v2 reparented a
+/// layer into `sublayers.last` — both guessed wrong at the internals
+/// and never engaged.)
+///
+/// This is an UNDOCUMENTED hack: the private class names can change
+/// between iOS versions. It fails OPEN — the content stays visible,
+/// just unprotected — and in DEBUG it logs the secure field's live
+/// subview tree so the exact internal class can be confirmed on a
+/// real device if it ever needs adjusting.
+final class SecureContainerUIView: UIView {
+    private var secureCanvas = UIView()
+    /// False when the secure canvas couldn't be obtained (fail-open).
+    private(set) var isSecured = false
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        setupSecureCanvas()
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) not implemented") }
+
+    private func setupSecureCanvas() {
+        // Mint a secure canvas from a throwaway secure UITextField.
+        let field = UITextField()
+        field.isSecureTextEntry = true
+        field.frame = CGRect(x: 0, y: 0, width: 320, height: 44)
+        field.layoutIfNeeded()  // force the field to build its subviews
+
+        // The secure canvas is the private _UITextLayoutCanvasView
+        // (iOS 15+) / _UITextFieldCanvasView / _UITextFieldContentView.
+        let canvas = field.subviews.first { sub in
+            let name = String(describing: type(of: sub))
+            return name.contains("Canvas") || name.contains("Content")
+        } ?? field.subviews.first
+
+        #if DEBUG
+        print("🔒 [SecureContainer] secure UITextField subviews = "
+              + "\(field.subviews.map { String(describing: type(of: $0)) }) → "
+              + (canvas != nil
+                 ? "secured ✅"
+                 : "FAIL-OPEN ⚠️  no secure canvas — screenshots NOT blocked"))
+        #endif
+
+        if let canvas {
+            canvas.subviews.forEach { $0.removeFromSuperview() }
+            canvas.isUserInteractionEnabled = true
+            secureCanvas = canvas
+            isSecured = true
+        }
+        // else: secureCanvas stays the placeholder UIView — fail-open.
+
+        secureCanvas.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(secureCanvas)
+        NSLayoutConstraint.activate([
+            secureCanvas.topAnchor.constraint(equalTo: topAnchor),
+            secureCanvas.bottomAnchor.constraint(equalTo: bottomAnchor),
+            secureCanvas.leadingAnchor.constraint(equalTo: leadingAnchor),
+            secureCanvas.trailingAnchor.constraint(equalTo: trailingAnchor),
+        ])
+    }
+
+    /// Host `view` inside the secure canvas (pinned to fill).
+    func host(_ view: UIView) {
+        view.translatesAutoresizingMaskIntoConstraints = false
+        secureCanvas.addSubview(view)
+        NSLayoutConstraint.activate([
+            view.topAnchor.constraint(equalTo: secureCanvas.topAnchor),
+            view.bottomAnchor.constraint(equalTo: secureCanvas.bottomAnchor),
+            view.leadingAnchor.constraint(equalTo: secureCanvas.leadingAnchor),
+            view.trailingAnchor.constraint(equalTo: secureCanvas.trailingAnchor),
+        ])
+    }
+}
+
+/// Hosts SwiftUI `content` inside a `SecureContainerUIView` so iOS
+/// omits it from screenshots and screen recordings.
+struct SecureHostView<Content: View>: UIViewRepresentable {
+    @ViewBuilder var content: () -> Content
+
+    func makeUIView(context: Context) -> SecureContainerUIView {
+        let container = SecureContainerUIView()
+        let host = UIHostingController(rootView: content())
+        host.view.backgroundColor = .clear
+        context.coordinator.host = host
+        container.host(host.view)
+        return container
+    }
+
+    func updateUIView(_ uiView: SecureContainerUIView, context: Context) {
+        context.coordinator.host?.rootView = content()
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    final class Coordinator {
+        var host: UIHostingController<Content>?
+    }
+}
+
+extension View {
+    /// Exclude this view from screenshots & screen recordings at the
+    /// OS level (secure-text-entry layer). Pass `false` to render
+    /// normally. Use ONLY for genuinely sensitive content such as
+    /// Vault media — never app-wide.
+    @ViewBuilder
+    func vaultScreenshotProtected(_ enabled: Bool = true) -> some View {
+        if enabled {
+            SecureHostView { self }
+        } else {
+            self
+        }
+    }
 }

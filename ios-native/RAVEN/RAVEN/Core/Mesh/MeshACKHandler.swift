@@ -6,6 +6,9 @@
 //
 
 import Foundation
+import os
+
+fileprivate let logger = Logger(subsystem: "app.raven.ios", category: "Mesh.ACK")
 
 /// Handles ACK processing and message deduplication for mesh networking
 /// Key principle: "Dedup باید با MessageID + ACK از گیرنده حل شود"
@@ -34,17 +37,13 @@ actor MeshACKHandler {
         cleanExpiredEntries()
         
         if seenMessageIds[messageId] != nil {
-            #if DEBUG
-            print("🔄 [ACK] Duplicate message detected: \(messageId.prefix(8))")
-            #endif
+            logger.debug("Duplicate message detected: \(messageId, privacy: .private)")
             return true
         }
-        
+
         // Mark as seen
         seenMessageIds[messageId] = Date()
-        #if DEBUG
-        print("✅ [ACK] New message registered: \(messageId.prefix(8))")
-        #endif
+        logger.debug("New message registered: \(messageId, privacy: .private)")
         return false
     }
     
@@ -58,12 +57,8 @@ actor MeshACKHandler {
     /// Handle incoming ACK from mesh (delivery/read confirmation)
     func handleIncomingACK(_ ack: MeshACKEnvelope) async {
         let messageId = ack.originalMessageId
-        
-        #if DEBUG
-        print("📩 [ACK] Processing ACK for message \(messageId.prefix(8))")
-        print("    Status: \(ack.status.rawValue)")
-        print("    From: \(ack.senderId.prefix(8))")
-        #endif
+
+        logger.debug("Processing ACK for message \(messageId, privacy: .private) status=\(ack.status.rawValue, privacy: .public) from=\(ack.senderId, privacy: .private)")
         
         // Update message status based on ACK
         let newStatus: MessageStatus
@@ -79,13 +74,9 @@ actor MeshACKHandler {
                 clientMessageId: messageId,
                 status: newStatus
             )
-            #if DEBUG
-            print("✅ [ACK] Message \(messageId.prefix(8)) marked as \(newStatus.rawValue)")
-            #endif
+            logger.debug("Message \(messageId, privacy: .private) marked as \(newStatus.rawValue, privacy: .public)")
         } catch {
-            #if DEBUG
-            print("❌ [ACK] Failed to update status: \(error)")
-            #endif
+            logger.debug("Failed to update status: \(error.localizedDescription, privacy: .public)")
         }
     }
     
@@ -94,12 +85,10 @@ actor MeshACKHandler {
     /// Send ACK back to sender (call when receiving a mesh message)
     func sendDeliveryACK(for messageId: String, toSenderId senderId: String) async {
         guard let myId = await KeychainService.shared.getUserId(), !myId.isEmpty else {
-            #if DEBUG
-            print("❌ [ACK] Cannot send ACK - no user ID")
-            #endif
+            logger.debug("Cannot send ACK - no user ID")
             return
         }
-        
+
         let ack = MeshACKEnvelope(
             originalMessageId: messageId,
             senderId: myId,
@@ -108,10 +97,8 @@ actor MeshACKHandler {
             pathUsed: "mesh",
             originDeviceId: DeviceIdentityService.shared.fingerprint ?? ""
         )
-        
-        #if DEBUG
-        print("📤 [ACK] Sending delivery ACK to \(senderId.prefix(8)) for message \(messageId.prefix(8))")
-        #endif
+
+        logger.debug("Sending delivery ACK to \(senderId, privacy: .private) for message \(messageId, privacy: .private)")
         await mesh.sendACK(ack)
     }
     
@@ -133,9 +120,7 @@ actor MeshACKHandler {
             originDeviceId: DeviceIdentityService.shared.fingerprint ?? ""
         )
         
-        #if DEBUG
-        print("📤 [ACK] Sending read ACK to \(senderId.prefix(8)) for message \(messageId.prefix(8))")
-        #endif
+        logger.debug("Sending read ACK to \(senderId, privacy: .private) for message \(messageId, privacy: .private)")
         await mesh.sendACK(ack)
     }
     

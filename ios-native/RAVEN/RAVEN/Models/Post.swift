@@ -17,16 +17,42 @@ struct PostMedia: Identifiable, Codable, Equatable, Hashable {
     let thumbnailUrl: String?  // Required for videos (cover frame)
     var topComments: [TopComment]?  // Top 3 comments for this media
     
-    /// Defensive video detection — checks mediaType AND URL extension.
+    /// Defensive video detection — checks mediaType AND URL shape.
     /// Prevents video URLs from being rendered as broken images when mediaType is nil.
     private static let videoExtensions: Set<String> = ["mp4", "mov", "m4v", "avi", "webm", "mkv"]
-    
+
+    /// URL path segments that indicate video content. Used as a
+    /// secondary heuristic when the `mediaType` field is missing AND
+    /// the URL no longer carries a recognizable file extension (e.g.
+    /// because a CDN rewrite or signed-URL proxy stripped it, or the
+    /// uploader stored the file with a UUID-only filename).
+    private static let videoPathSegments: Set<String> = ["videos", "video_notes"]
+
     var isVideo: Bool {
+        // 1. Trust the server-supplied media_type when present.
         if mediaType?.lowercased() == "video" { return true }
-        // Fallback: check URL extension (handles cases where mediaType is nil or wrong)
-        let cleanUrl = url.components(separatedBy: "?").first ?? url  // Strip query params
+
+        // 2. Strip query params (signed-URL X-Goog-... tail) before
+        //    extracting the file extension or path segments.
+        let cleanUrl = url.components(separatedBy: "?").first ?? url
         let ext = (cleanUrl as NSString).pathExtension.lowercased()
-        return Self.videoExtensions.contains(ext)
+        if Self.videoExtensions.contains(ext) { return true }
+
+        // 3. 🔴 ROUND 29 (2026-05-17) — path-segment fallback.
+        //    Some upload pipelines (CDN rewrites, signed-URL proxies,
+        //    legacy /files/ migrations) drop the .mp4 extension from
+        //    the public URL. Without this check, a perfectly good
+        //    video at `https://.../videos/<uuid>` was rendering as a
+        //    broken AsyncImage because pathExtension returned "".
+        //    The `videos/` and `video_notes/` GCS prefixes are the
+        //    server-side source-of-truth — any URL containing one of
+        //    them is, by construction, a video.
+        if let lower = cleanUrl.lowercased() as String? {
+            for segment in Self.videoPathSegments {
+                if lower.contains("/\(segment)/") { return true }
+            }
+        }
+        return false
     }
     
     // Top comment preview for per-media display
@@ -58,7 +84,7 @@ struct Post: Identifiable, Codable, Equatable, Hashable {
     let timestamp: Date
     let editedAt: Date?
     var likes: Int
-    let comments: Int
+    var comments: Int
     var reposts: Int
     var viewCount: Int
     let isLocal: Bool

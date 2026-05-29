@@ -219,7 +219,15 @@ struct ReportView: View {
     // MARK: - Submit Report
     private func submitReport() async {
         guard let reason = selectedReason else { return }
-        
+
+        // 🔴 ROUND 26 — unified user-action telemetry (haptic + bg server log).
+        UserActionTelemetry.shared.record(
+            .report,
+            targetId: targetId,
+            targetType: UserActionTarget(rawValue: targetType.rawValue),
+            metadata: ["reason": reason.code]
+        )
+
         // ⚡ Optimistic: show success immediately
         Haptics.success()
         showSuccess = true

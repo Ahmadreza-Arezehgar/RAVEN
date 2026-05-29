@@ -107,13 +107,39 @@ class OutboxManager {
                 print("✅ [OutboxManager] Group message sent via server: \(message.id)")
                 #endif
             } else {
-                // 1:1 message: use regular endpoint
+                // 1:1 message: use regular endpoint.
+                // 🔴 SECURITY FIX (2026-05-16 — round 10): the bare
+                // `content: message.text ?? ""` shipped the plaintext
+                // straight to the server. Now we run it through
+                // `MessageContentSealer` which encrypts via the live
+                // Noise session when we have one; the recipient's
+                // chat surface unseals on receive. When no session
+                // exists yet (cold contact) we wrap the body with
+                // the explicit-plaintext magic so the receiver can
+                // surface a "Not end-to-end encrypted" badge —
+                // honesty over silent failure.
+                // Round 12: hand the userId to the sealer so it can
+                // lazy-fetch + verify the recipient's prekey bundle
+                // when we don't have the agreement key cached yet.
+                // Closes the "every first DM goes RVNP1" gap.
+                let sealed = await MessageContentSealer.seal(
+                    plaintext: message.text ?? "",
+                    recipientUserId: message.recipientId,
+                    recipientAgreementPubKey: nil,
+                    msgId: message.id
+                )
+                // Round 15 — tag our OWN outbound bubble with the
+                // encryption verdict so the sender sees the same
+                // lock badge the receiver does. Without this the
+                // local bubble has no verdict at all and the user
+                // can't tell if THEIR send was sealed.
+                await MessageContentSealer.recordSealVerdict(sealed.reason, for: message.id)
                 let response: SendMessageResponse = try await NetworkService.shared.post(
                     path: "/api/messages/send",
                     body: SendMessageRequest(
                         messageId: message.id,
                         recipientId: message.recipientId,
-                        content: message.text ?? "",
+                        content: sealed.base64,
                         messageType: message.type.rawValue,
                         audioUrl: message.attachmentUrl,
                         replyToMessageId: message.replyToMessageId

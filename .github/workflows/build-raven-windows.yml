@@ -1,0 +1,75 @@
+# build-raven-windows.yml
+#
+# CI workflow that produces a single-file RAVEN.exe for Windows on every
+# push/manual trigger. The job runs on `windows-latest` because the
+# WinUI 3 toolchain is Windows-only.
+#
+# After a successful run:
+#   1. Open the run in GitHub Actions
+#   2. Scroll to "Artifacts" at the bottom
+#   3. Download "RAVEN-windows-x64" → unzip → run `RAVEN.exe`
+
+name: build-raven-windows
+
+on:
+  push:
+    paths:
+      - 'RAVEN-Windows/**'
+      - '.github/workflows/build-raven-windows.yml'
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: Target architecture
+        default: x64
+        type: choice
+        options: [x64, arm64]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        arch: [x64]
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: RAVEN-Windows
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Show SDK info
+        run: dotnet --info
+
+      - name: Run mesh interop tests
+        run: dotnet test tests/RAVEN.Windows.Tests.csproj -c Release --nologo
+
+      - name: Publish single-file RAVEN.exe (${{ matrix.arch }})
+        run: |
+          dotnet publish src/RAVEN.Windows.csproj `
+            -c Release `
+            -r win-${{ matrix.arch }} `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:WindowsAppSDKSelfContained=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:DebugType=embedded `
+            --nologo
+
+      - name: Show build output
+        run: |
+          $publishDir = "src/bin/Release/net8.0-windows10.0.19041.0/win-${{ matrix.arch }}/publish"
+          Get-ChildItem $publishDir | Format-Table Name, Length
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RAVEN-windows-${{ matrix.arch }}
+          path: RAVEN-Windows/src/bin/Release/net8.0-windows10.0.19041.0/win-${{ matrix.arch }}/publish/RAVEN.exe
+          if-no-files-found: error
+          retention-days: 30

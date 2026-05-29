@@ -146,23 +146,39 @@ async def submit_report(
             detail=f"Invalid reason. Must be one of: {VALID_REASON_CODES}"
         )
     
-    # Can't report yourself
-    if report.target_type == "user" and report.target_id == current_user.id:
-        raise HTTPException(status_code=400, detail="You cannot report yourself.")
-    
-    # Duplicate guard
+    # 🔴 ROUND 71 phase 3: self-report guard moved BELOW
+    # resolved_reported_user_id resolution. The pre-fix guard
+    # only triggered for `target_type == "user"`; a user could
+    # still report their own post/comment/message/group.
+
+    # 🔴 ROUND 71 phase 3 — duplicate guard scoped to a time
+    # window AND non-dismissed status. Previously this query was
+    # permanent + global: a single report locked the user out of
+    # EVER reporting the same target again, even if the offender
+    # re-offended years later or the original report was
+    # dismissed. Now we only block re-reports within the last 30
+    # days that aren't `dismissed` — accepted appeals set
+    # report.status back to "dismissed" (see
+    # admin_appeal_decision), so re-reports of vindicated targets
+    # are also unblocked. Legitimate re-reports against repeat
+    # offenders can land.
+    from datetime import timedelta as _td
+    _now = datetime.utcnow()
+    _dedupe_window = _now - _td(days=30)
     recent = db.query(Report).filter(
         and_(
             Report.reporter_id == current_user.id,
             Report.target_type == report.target_type,
             Report.target_id == report.target_id,
+            Report.created_at >= _dedupe_window,
+            Report.status != "dismissed",
         )
     ).first()
-    
+
     if recent:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="You have already reported this content."
+            detail="You have already reported this content recently."
         )
     
     # Rate limiting: max 5 reports/hour, 20 reports/day
@@ -188,6 +204,27 @@ async def submit_report(
             detail="Daily report limit reached. Please try again tomorrow."
         )
     
+    # 🔴 hacker-audit 2026-05-20 — derive reported_user_id server-side
+    # from the target's real owner; never trust the client value
+    # (a spoofed one gets an innocent third party banned).
+    resolved_reported_user_id = _resolve_reported_user_id(
+        db, report.target_type, report.target_id
+    )
+
+    # 🔴 ROUND 71 phase 3 — broaden self-report guard. The original
+    # check only blocked `target_type == "user"`, but the same user
+    # could still report their own post/comment/message/group via
+    # those other target types. Reject if the resolved owner of the
+    # target is the caller — works for every target_type.
+    if (
+        resolved_reported_user_id is not None
+        and resolved_reported_user_id == current_user.id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You cannot report your own content.",
+        )
+
     # Create report
     report_id = str(uuid_mod.uuid4())
     db_report = Report(
@@ -195,7 +232,7 @@ async def submit_report(
         reporter_id=current_user.id,
         target_type=report.target_type,
         target_id=report.target_id,
-        reported_user_id=report.reported_user_id,
+        reported_user_id=resolved_reported_user_id,
         reason=report.reason,
         note=report.note,
         evidence_json=json.dumps(report.evidence) if report.evidence else None,
@@ -291,12 +328,11 @@ async def submit_appeal(
     Only the affected user can appeal. Must have a decision and no existing appeal.
     """
     report = db.query(Report).filter(Report.id == report_id).first()
-    if not report:
+    # 🔴 hacker-audit 2026-05-20 — identical 404 for "not found" and
+    # "not yours" so this endpoint can't be probed as an oracle to
+    # confirm which report_ids exist or who they target.
+    if not report or report.reported_user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Report not found")
-    
-    # Only the affected user can appeal
-    if report.reported_user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Only the affected user can appeal")
     
     # Must have a decision to appeal
     if report.decision == "none":
@@ -320,11 +356,49 @@ async def submit_appeal(
 
 # ==================== ADMIN ENDPOINTS ====================
 
-ADMIN_USER_IDS = []
+# 🔴 hacker-audit 2026-05-19 — username-based admin gate is fragile.
+#
+# PREVIOUSLY `is_admin` granted admin powers based on a hardcoded
+# list of USERNAMES. Three concrete failure modes:
+#   1. If the iOS PATCH /me endpoint ever allowed username changes
+#      (it does — line 640 of users.py), a regular user could
+#      register, then RENAME themselves to "Raven-messenger" if
+#      that handle was ever free (e.g. after the real account got
+#      banned/deleted), and instantly inherit moderation powers.
+#      Username collision uniqueness check exists, but doesn't help
+#      if the real account is gone.
+#   2. Compromise of one of those three accounts (password reuse,
+#      phishing, lost device) gives a full takeover of moderation —
+#      not just one user's inbox.
+#   3. Confusable / homoglyph attack: register username with
+#      `ABBASBAZAR` using Cyrillic А (U+0410), pass the equality
+#      check at the DB layer if collation is locale-sensitive. The
+#      Python `in` here is byte-equality so this one is safe today
+#      but the code shape encourages bugs.
+#
+# Fix is operational, not just code:
+#   • Source of truth is `ADMIN_USER_IDS` populated from the
+#     `RAVEN_ADMIN_USER_IDS` env var (comma-separated UUIDs).
+#     Empty by default — admin actions just refuse.
+#   • Username list kept ONLY as a bootstrap shim and gated behind
+#     `ALLOW_USERNAME_ADMIN=1` env var so production explicitly
+#     opts out and the username path is dead in normal deploys.
+import os as _os_for_admin
+
+_ADMIN_USER_IDS_ENV = _os_for_admin.getenv("RAVEN_ADMIN_USER_IDS", "")
+ADMIN_USER_IDS = [u.strip() for u in _ADMIN_USER_IDS_ENV.split(",") if u.strip()]
+_ALLOW_USERNAME_ADMIN = _os_for_admin.getenv("ALLOW_USERNAME_ADMIN", "0").lower() in ("1", "true", "yes")
+_LEGACY_ADMIN_USERNAMES = {"ABBASBAZAR", "MAHLAMOHAMMADREZA2005", "Raven-messenger"}
+
 
 def is_admin(user: User) -> bool:
-    """Check if user is an admin (by ID or username)."""
-    return user.id in ADMIN_USER_IDS or user.username in ["ABBASBAZAR", "MAHLAMOHAMMADREZA2005", "Raven-messenger"]
+    """Check if user is an admin (by user-id env list)."""
+    if user.id in ADMIN_USER_IDS:
+        return True
+    if _ALLOW_USERNAME_ADMIN and user.username in _LEGACY_ADMIN_USERNAMES:
+        # Legacy fallback — explicit opt-in via env var.
+        return True
+    return False
 
 
 @router.get("/admin/queue")
@@ -565,7 +639,23 @@ async def admin_decision(
     report = db.query(Report).filter(Report.id == report_id).first()
     if not report:
         raise HTTPException(status_code=404, detail="Report not found")
-    
+
+    # 🔴 ROUND 71 phase 3 — decision idempotency. Previously a
+    # second POST against an already-decided report re-ran the side-
+    # effects: re-banned, reset `banned_at`, re-created a
+    # moderation_decision Notification, and appended another
+    # ModerationAction row. Reject re-apply unless the admin
+    # explicitly passes `parameters.override = true`.
+    _override = bool((decision.parameters or {}).get("override", False))
+    if report.decision and report.decision != "none" and not _override:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Report already actioned with '{report.decision}'. "
+                "Pass parameters.override=true to re-decide."
+            ),
+        )
+
     # Update report
     report.decision = decision.decision
     report.decision_reason = decision.decision_reason.strip()
@@ -737,6 +827,49 @@ def get_hidden_ids(db: Session, user_id: str, object_type: str) -> list:
     ]
 
 
+def _resolve_reported_user_id(db: Session, target_type: str, target_id: str) -> Optional[str]:
+    """🔴 hacker-audit 2026-05-20 — derive the reported user from the target.
+
+    PREVIOUSLY submit_report stored the client-supplied
+    reported_user_id verbatim, so an attacker could report some
+    innocuous object but name a DIFFERENT victim as reported_user_id —
+    and every moderation action (ban/tempban/restrict/mute) runs
+    against report.reported_user_id. That let an attacker get an
+    arbitrary user banned. The owner is now resolved server-side from
+    the reported object; the client-supplied value is ignored.
+    """
+    try:
+        if target_type == "user":
+            return target_id
+        if target_type == "post":
+            from models import Post
+            row = db.query(Post).filter(Post.id == target_id).first()
+            return row.author_id if row else None
+        if target_type == "comment":
+            from models import PostComment
+            row = db.query(PostComment).filter(PostComment.id == target_id).first()
+            if not row:
+                return None
+            return getattr(row, "author_id", None) or getattr(row, "user_id", None)
+        if target_type == "message":
+            from models import Message
+            row = db.query(Message).filter(Message.id == target_id).first()
+            return row.sender_id if row else None
+        if target_type == "group":
+            from models import Group
+            row = db.query(Group).filter(Group.id == target_id).first()
+            return getattr(row, "created_by", None) if row else None
+        if target_type == "room":
+            from models import AudioRoom
+            row = db.query(AudioRoom).filter(AudioRoom.id == target_id).first()
+            return getattr(row, "host_user_id", None) if row else None
+    except Exception as e:
+        print(f"⚠️ [Report] reported_user resolve failed: {e}")
+    # story / media / unknown — no clean owner; leave unset so no
+    # user-level action is auto-applied (admin reviews manually).
+    return None
+
+
 def _fetch_target_info(db: Session, target_type: str, target_id: str) -> dict:
     """Fetch displayable info about the reported target (for admin review)."""
     try:
@@ -900,29 +1033,82 @@ def _execute_decision(db: Session, report: Report, decision: str, parameters: di
 
 
 def _reverse_decision(db: Session, report: Report):
-    """Reverse side-effects when an appeal is accepted."""
+    """Reverse side-effects when an appeal is accepted.
+
+    🔴 ROUND 71 phase 3 — scoped reversal. Previously this function
+    blanket-cleared `is_hidden` on the target post/comment AND every
+    user-level sanction (`is_banned`, `is_restricted`, `ban_reason`,
+    …). If a user had been sanctioned by *another* actioned report,
+    accepting an appeal on report A wiped sanctions from report B
+    too — a single accepted appeal fully reset the user even when
+    unrelated reports were still standing.
+
+    The fix: before clearing each side-effect, check for OTHER
+    actioned reports that still justify it. Only clear when this is
+    the last active sanction.
+    """
     try:
+        # Per-content reversal (`is_hidden`): un-hide only if no
+        # OTHER actioned report against this same target still
+        # demands it.
+        _content_decisions = ("warn", "remove_content", "shadowban")
         if report.target_type == "post":
             from models import Post
             post = db.query(Post).filter(Post.id == report.target_id).first()
             if post:
-                post.is_hidden = False
+                other = db.query(Report).filter(
+                    Report.id != report.id,
+                    Report.target_type == "post",
+                    Report.target_id == report.target_id,
+                    Report.decision.in_(_content_decisions),
+                    Report.status == "actioned",
+                ).first()
+                if other is None:
+                    post.is_hidden = False
+                else:
+                    print(f"⚠️ [Reverse] Post {report.target_id[:8]} stays hidden "
+                          f"due to active report {other.id[:8]}")
         elif report.target_type == "comment":
             from models import Comment
             comment = db.query(Comment).filter(Comment.id == report.target_id).first()
             if comment:
-                comment.is_hidden = False
-        
+                other = db.query(Report).filter(
+                    Report.id != report.id,
+                    Report.target_type == "comment",
+                    Report.target_id == report.target_id,
+                    Report.decision.in_(_content_decisions),
+                    Report.status == "actioned",
+                ).first()
+                if other is None:
+                    comment.is_hidden = False
+                else:
+                    print(f"⚠️ [Reverse] Comment {report.target_id[:8]} stays hidden "
+                          f"due to active report {other.id[:8]}")
+
+        # User-level sanctions: only clear if no OTHER actioned
+        # ban/restrict report against this user is still standing.
+        _user_decisions = ("ban", "tempban", "restrict", "mute", "shadowban")
         if report.reported_user_id:
-            user = db.query(User).filter(User.id == report.reported_user_id).first()
-            if user:
-                user.is_banned = False
-                user.banned_at = None
-                user.ban_reason = None
-                user.is_restricted = False
-                user.restricted_until = None
-                user.restriction_scope = None
-    
+            other_user_action = db.query(Report).filter(
+                Report.id != report.id,
+                Report.reported_user_id == report.reported_user_id,
+                Report.decision.in_(_user_decisions),
+                Report.status == "actioned",
+            ).first()
+            if other_user_action is None:
+                user = db.query(User).filter(User.id == report.reported_user_id).first()
+                if user:
+                    user.is_banned = False
+                    user.banned_at = None
+                    user.ban_reason = None
+                    user.is_restricted = False
+                    user.restricted_until = None
+                    user.restriction_scope = None
+            else:
+                print(f"⚠️ [Reverse] User {report.reported_user_id[:8]} retains sanctions "
+                      f"due to active report {other_user_action.id[:8]} "
+                      f"(decision={other_user_action.decision})")
+
     except Exception as e:
         print(f"⚠️ [Reverse] Error reversing decision: {e}")
 

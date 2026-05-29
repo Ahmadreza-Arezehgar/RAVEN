@@ -6,6 +6,9 @@
 //
 
 import Foundation
+import os
+
+fileprivate let logger = Logger(subsystem: "app.raven.ios", category: "Mesh.Presence")
 
 /// Response from presence check
 struct PresenceResponse: Codable {
@@ -33,14 +36,10 @@ class PresenceService {
             let response: PresenceResponse = try await NetworkService.shared.get(
                 path: "/api/presence/\(userId)"
             )
-            #if DEBUG
-            print("🌐 [Presence] User \(userId.prefix(8)): online=\(response.online), hasInternet=\(response.hasInternet)")
-            #endif
+            logger.debug("User \(userId, privacy: .private): online=\(response.online, privacy: .public), hasInternet=\(response.hasInternet, privacy: .public)")
             return response
         } catch {
-            #if DEBUG
-            print("⚠️ [Presence] Failed to check \(userId.prefix(8)): \(error)")
-            #endif
+            logger.debug("Failed to check \(userId, privacy: .private): \(error.localizedDescription, privacy: .public)")
             // Default to offline - will trigger mesh fallback
             return PresenceResponse(
                 online: false,

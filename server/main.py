@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from database import engine, Base
-from routers import auth, users, messages, posts, uploads, comments, search, counts, voice, backup, subscriptions, notifications, devices, knowledge, groups, reports, blocks, debug_email, ai, events, recommendation, hashtags, admin, presence, contacts, rooms, livekit, mentions, verification_identity, discovery, data_export, webhook_revenuecat, snaps, message_requests, channels, stats
+from routers import auth, users, messages, posts, uploads, comments, search, counts, voice, backup, subscriptions, notifications, devices, knowledge, groups, reports, blocks, debug_email, ai, events, recommendation, hashtags, admin, presence, contacts, rooms, livekit, mentions, verification_identity, discovery, data_export, webhook_revenuecat, snaps, message_requests, channels, stats, atsam_prekey, mesh, public, attest
 import models  # ✅ CRITICAL: Import all models to register them with Base.metadata
 from logging_config import configure_secure_logging
 import os
@@ -80,6 +80,12 @@ def run_migrations():
         ("ALTER TABLE reports ADD COLUMN IF NOT EXISTS context_json TEXT", "reports.context_json"),
         # Add share_slug to audio_rooms table for deep linking
         ("ALTER TABLE audio_rooms ADD COLUMN IF NOT EXISTS share_slug VARCHAR UNIQUE", "audio_rooms.share_slug"),
+        # 🔴 ROUND 27 (2026-05-17) — `is_locked` was already in
+        # rooms.py's allowed_keys whitelist for /settings/, but the
+        # column was missing so the setattr silently no-op'd. iOS
+        # toggle has been broken since the feature shipped. Add the
+        # column so locks actually persist + block new joins.
+        ("ALTER TABLE audio_rooms ADD COLUMN IF NOT EXISTS is_locked BOOLEAN DEFAULT FALSE NOT NULL", "audio_rooms.is_locked"),
         # ═══════════════════════════════════════════════════════════════════════════
         # MESSAGE TABLE MIGRATIONS - Smart Message Expiry & Scheduled Messages
         # ═══════════════════════════════════════════════════════════════════════════
@@ -89,6 +95,100 @@ def run_migrations():
         ("ALTER TABLE messages ADD COLUMN IF NOT EXISTS allow_forward BOOLEAN DEFAULT TRUE", "messages.allow_forward"),
         ("ALTER TABLE messages ADD COLUMN IF NOT EXISTS send_mode VARCHAR DEFAULT 'instant'", "messages.send_mode"),
         ("ALTER TABLE messages ADD COLUMN IF NOT EXISTS scheduled_at_utc TIMESTAMP", "messages.scheduled_at_utc"),
+        # 🔴 ROUND 26 — Telegram-style media albums.
+        # See models.Message for column semantics.
+        ("ALTER TABLE messages ADD COLUMN IF NOT EXISTS media_group_key VARCHAR", "messages.media_group_key"),
+        ("ALTER TABLE messages ADD COLUMN IF NOT EXISTS media_group_index INTEGER", "messages.media_group_index"),
+        ("ALTER TABLE messages ADD COLUMN IF NOT EXISTS media_group_total INTEGER", "messages.media_group_total"),
+        ("CREATE INDEX IF NOT EXISTS idx_messages_media_group_key ON messages(media_group_key) WHERE media_group_key IS NOT NULL", "idx_messages_media_group_key"),
+        # 🔴 ROUND 26 — unified user-action telemetry log.
+        # See models.UserActionLog for column semantics.
+        ("""
+        CREATE TABLE IF NOT EXISTS user_action_logs (
+            id VARCHAR PRIMARY KEY,
+            user_id VARCHAR NOT NULL REFERENCES users(id),
+            action VARCHAR NOT NULL,
+            target_id VARCHAR,
+            target_type VARCHAR,
+            metadata_json TEXT,
+            client VARCHAR,
+            timestamp TIMESTAMP DEFAULT NOW() NOT NULL
+        )
+        """, "user_action_logs table"),
+        ("CREATE INDEX IF NOT EXISTS idx_user_action_logs_user_ts ON user_action_logs(user_id, timestamp DESC)", "idx_user_action_logs_user_ts"),
+        ("CREATE INDEX IF NOT EXISTS idx_user_action_logs_action ON user_action_logs(action)", "idx_user_action_logs_action"),
+        # 🔴 v1.8 (2026-05-21) — per-conversation disappearing-messages
+        # timer. See models.ConversationSetting for column semantics.
+        # Keyed by the canonical ordered user pair so a 1:1 conversation
+        # has exactly one settings row regardless of who set the timer.
+        ("""
+        CREATE TABLE IF NOT EXISTS conversation_settings (
+            id VARCHAR PRIMARY KEY,
+            user_low_id VARCHAR NOT NULL REFERENCES users(id),
+            user_high_id VARCHAR NOT NULL REFERENCES users(id),
+            disappearing_seconds INTEGER DEFAULT 0 NOT NULL,
+            updated_by_id VARCHAR REFERENCES users(id),
+            updated_at TIMESTAMP DEFAULT NOW() NOT NULL
+        )
+        """, "conversation_settings table"),
+        ("CREATE UNIQUE INDEX IF NOT EXISTS uq_conversation_settings_pair ON conversation_settings(user_low_id, user_high_id)", "uq_conversation_settings_pair"),
+        # 🔴 v1.8 (2026-05-21) — feature #3: App Attest device enrolment.
+        # See models.AttestChallenge / models.DeviceAttestation.
+        ("""
+        CREATE TABLE IF NOT EXISTS attest_challenges (
+            id VARCHAR PRIMARY KEY,
+            user_id VARCHAR NOT NULL REFERENCES users(id),
+            challenge VARCHAR NOT NULL UNIQUE,
+            expires_at TIMESTAMP NOT NULL,
+            consumed BOOLEAN DEFAULT FALSE NOT NULL,
+            created_at TIMESTAMP DEFAULT NOW() NOT NULL
+        )
+        """, "attest_challenges table"),
+        ("CREATE INDEX IF NOT EXISTS idx_attest_challenges_user ON attest_challenges(user_id)", "idx_attest_challenges_user"),
+        ("""
+        CREATE TABLE IF NOT EXISTS device_attestations (
+            id VARCHAR PRIMARY KEY,
+            user_id VARCHAR NOT NULL REFERENCES users(id),
+            key_id VARCHAR NOT NULL UNIQUE,
+            public_key TEXT NOT NULL,
+            environment VARCHAR NOT NULL,
+            sign_count INTEGER DEFAULT 0 NOT NULL,
+            receipt TEXT,
+            created_at TIMESTAMP DEFAULT NOW() NOT NULL,
+            last_verified_at TIMESTAMP DEFAULT NOW() NOT NULL
+        )
+        """, "device_attestations table"),
+        ("CREATE INDEX IF NOT EXISTS idx_device_attestations_user ON device_attestations(user_id)", "idx_device_attestations_user"),
+        ("CREATE INDEX IF NOT EXISTS idx_user_action_logs_target ON user_action_logs(target_id) WHERE target_id IS NOT NULL", "idx_user_action_logs_target"),
+        # 🔴 ROUND 26 — endpoint-mismatch fixes: follow / bookmark / comment pin.
+        # iOS was calling these for months but the server returned 404s. Adding
+        # the backing tables + columns so the new endpoints have somewhere to
+        # write to.
+        ("""
+        CREATE TABLE IF NOT EXISTS user_follows (
+            id VARCHAR PRIMARY KEY,
+            follower_id VARCHAR NOT NULL REFERENCES users(id),
+            followee_id VARCHAR NOT NULL REFERENCES users(id),
+            created_at TIMESTAMP DEFAULT NOW() NOT NULL,
+            CONSTRAINT unique_user_follow UNIQUE (follower_id, followee_id)
+        )
+        """, "user_follows table"),
+        ("CREATE INDEX IF NOT EXISTS idx_user_follows_follower ON user_follows(follower_id)", "idx_user_follows_follower"),
+        ("CREATE INDEX IF NOT EXISTS idx_user_follows_followee ON user_follows(followee_id)", "idx_user_follows_followee"),
+        ("""
+        CREATE TABLE IF NOT EXISTS post_bookmarks (
+            id VARCHAR PRIMARY KEY,
+            post_id VARCHAR NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+            user_id VARCHAR NOT NULL REFERENCES users(id),
+            timestamp TIMESTAMP DEFAULT NOW() NOT NULL,
+            CONSTRAINT unique_post_bookmark UNIQUE (post_id, user_id)
+        )
+        """, "post_bookmarks table"),
+        ("CREATE INDEX IF NOT EXISTS idx_post_bookmarks_user_ts ON post_bookmarks(user_id, timestamp DESC)", "idx_post_bookmarks_user_ts"),
+        ("CREATE INDEX IF NOT EXISTS idx_post_bookmarks_post ON post_bookmarks(post_id)", "idx_post_bookmarks_post"),
+        ("ALTER TABLE comments ADD COLUMN IF NOT EXISTS is_pinned BOOLEAN DEFAULT FALSE", "comments.is_pinned"),
+        ("ALTER TABLE comments ADD COLUMN IF NOT EXISTS edited_at TIMESTAMP", "comments.edited_at"),
+        ("CREATE INDEX IF NOT EXISTS idx_comments_pinned ON comments(post_id, is_pinned) WHERE is_pinned = TRUE", "idx_comments_pinned"),
         # ═══════════════════════════════════════════════════════════════════════════
         # GROUPS TABLE MIGRATIONS
         # ═══════════════════════════════════════════════════════════════════════════
@@ -125,6 +225,18 @@ def run_migrations():
             UNIQUE(user_id, room_id)
         )
         """, "room_visibility table"),
+        # ═══════════════════════════════════════════════════════════════════════════
+        # ROUND 49 (2026-05-17) — per-user archive bucket on RoomVisibility.
+        # Allows cross-device sync of the iOS-local archive state. New
+        # rows default to is_archived=FALSE; iOS toggles via the new
+        # POST /api/messages/conversations/archive endpoint.
+        # ═══════════════════════════════════════════════════════════════════════════
+        ("ALTER TABLE room_visibility ADD COLUMN IF NOT EXISTS is_archived BOOLEAN DEFAULT FALSE NOT NULL",
+         "room_visibility.is_archived"),
+        ("ALTER TABLE room_visibility ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP",
+         "room_visibility.archived_at"),
+        ("CREATE INDEX IF NOT EXISTS idx_room_visibility_user_archived ON room_visibility(user_id, is_archived)",
+         "room_visibility idx for archived lookup"),
         # ═══════════════════════════════════════════════════════════════════════════
         # USER PRIVACY & PROFILE SETTINGS
         # ═══════════════════════════════════════════════════════════════════════════
@@ -189,6 +301,12 @@ def run_migrations():
         ("ALTER TABLE users ADD COLUMN IF NOT EXISTS verified_at TIMESTAMP", "users.verified_at"),
         ("ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_badge_type VARCHAR DEFAULT 'identity'", "users.verification_badge_type"),
         ("ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_visibility BOOLEAN DEFAULT TRUE", "users.verification_visibility"),
+        # 🔴 ROUND 45 (2026-05-19) — cross-instance access-token revocation marker.
+        ("ALTER TABLE users ADD COLUMN IF NOT EXISTS tokens_invalidated_at TIMESTAMP", "users.tokens_invalidated_at"),
+        # 🔴 ROUND 51 (2026-05-19) — Ghost-Route ACK ownership binding.
+        ("ALTER TABLE ghost_route_envelopes ADD COLUMN IF NOT EXISTS claimed_by VARCHAR", "ghost_route_envelopes.claimed_by"),
+        # 🔴 BUG FIX (2026-05-21) — follow-of-private-account approval state.
+        ("ALTER TABLE user_follows ADD COLUMN IF NOT EXISTS status VARCHAR DEFAULT 'accepted'", "user_follows.status"),
         # ═══════════════════════════════════════════════════════════════════════════
         # EMAIL/PHONE VERIFICATION TIMESTAMPS
         # ═══════════════════════════════════════════════════════════════════════════
@@ -244,6 +362,11 @@ def run_migrations():
         ("ALTER TABLE group_messages ADD COLUMN IF NOT EXISTS reply_to_sender_name VARCHAR", "group_messages.reply_to_sender_name"),
         ("ALTER TABLE group_messages ADD COLUMN IF NOT EXISTS reply_to_type VARCHAR", "group_messages.reply_to_type"),
         ("ALTER TABLE group_messages ADD COLUMN IF NOT EXISTS entities TEXT", "group_messages.entities"),
+        # 🔴 ROUND 26 — Telegram-style media albums (group chats).
+        ("ALTER TABLE group_messages ADD COLUMN IF NOT EXISTS media_group_key VARCHAR", "group_messages.media_group_key"),
+        ("ALTER TABLE group_messages ADD COLUMN IF NOT EXISTS media_group_index INTEGER", "group_messages.media_group_index"),
+        ("ALTER TABLE group_messages ADD COLUMN IF NOT EXISTS media_group_total INTEGER", "group_messages.media_group_total"),
+        ("CREATE INDEX IF NOT EXISTS idx_group_messages_media_group_key ON group_messages(media_group_key) WHERE media_group_key IS NOT NULL", "idx_group_messages_media_group_key"),
         # Mesh delivery tracking for group messages
         ("ALTER TABLE group_messages ADD COLUMN IF NOT EXISTS recipient_set TEXT", "group_messages.recipient_set"),
         ("ALTER TABLE group_messages ADD COLUMN IF NOT EXISTS delivered_to TEXT", "group_messages.delivered_to"),
@@ -419,6 +542,12 @@ def run_migrations():
         ("ALTER TABLE users ADD COLUMN IF NOT EXISTS read_receipts_enabled BOOLEAN DEFAULT TRUE", "users.read_receipts_enabled"),
         ("ALTER TABLE users ADD COLUMN IF NOT EXISTS who_can_message VARCHAR DEFAULT 'everyone'", "users.who_can_message"),
         ("ALTER TABLE users ADD COLUMN IF NOT EXISTS who_can_see_profile VARCHAR DEFAULT 'public'", "users.who_can_see_profile"),
+        # 🔴 ROUND 71 phase 3 (2026-05-24): three privacy toggles
+        # iOS PATCHes that were silently dropped on commit because
+        # they weren't mapped Columns. Backing them now.
+        ("ALTER TABLE users ADD COLUMN IF NOT EXISTS show_liked_posts BOOLEAN DEFAULT TRUE", "users.show_liked_posts"),
+        ("ALTER TABLE users ADD COLUMN IF NOT EXISTS show_replies BOOLEAN DEFAULT TRUE", "users.show_replies"),
+        ("ALTER TABLE users ADD COLUMN IF NOT EXISTS allow_contact_share BOOLEAN DEFAULT TRUE", "users.allow_contact_share"),
         # Hobbies
         ("ALTER TABLE users ADD COLUMN IF NOT EXISTS hobbies TEXT", "users.hobbies"),
         # ═══════════════════════════════════════════════════════════════════════════
@@ -431,6 +560,11 @@ def run_migrations():
         # Time Bomb + Poll reference on group_messages
         ("ALTER TABLE group_messages ADD COLUMN IF NOT EXISTS bomb_duration_sec INTEGER", "group_messages.bomb_duration_sec"),
         ("ALTER TABLE group_messages ADD COLUMN IF NOT EXISTS poll_id VARCHAR", "group_messages.poll_id"),
+        # 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — group key version
+        # for E2EE group online-send path. Online sends now ship the
+        # AES-GCM ciphertext + the version; server stores both so
+        # receivers can decrypt locally.
+        ("ALTER TABLE group_messages ADD COLUMN IF NOT EXISTS group_key_version INTEGER", "group_messages.group_key_version"),
         # Poll tables
         ("""
         CREATE TABLE IF NOT EXISTS group_polls (
@@ -615,50 +749,169 @@ def run_migrations():
         )
         """, "channel_invite_links table"),
         ("CREATE INDEX IF NOT EXISTS idx_channel_invite_code ON channel_invite_links(invite_code)", "channel_invite_links.invite_code index"),
+        # 🔴 2026-05-20 — message emoji reactions. The table only ever
+        # existed in a standalone .sql file (never in this list) and
+        # had no model/endpoint, so the iOS reaction UI 404'd on every
+        # tap. See models.MessageReaction + routers/messages.py.
+        ("""
+        CREATE TABLE IF NOT EXISTS message_reactions (
+            id VARCHAR PRIMARY KEY,
+            message_id VARCHAR NOT NULL,
+            is_group BOOLEAN NOT NULL DEFAULT FALSE,
+            user_id VARCHAR NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            emoji VARCHAR NOT NULL,
+            created_at TIMESTAMP DEFAULT NOW(),
+            CONSTRAINT uq_reaction_msg_user_emoji UNIQUE (message_id, user_id, emoji)
+        )
+        """, "message_reactions table"),
+        ("CREATE INDEX IF NOT EXISTS ix_message_reactions_message_id ON message_reactions(message_id)", "message_reactions.message_id index"),
+        ("CREATE INDEX IF NOT EXISTS ix_message_reactions_user_id ON message_reactions(user_id)", "message_reactions.user_id index"),
     ]
 
     
     from database import engine as _engine
     
-    # ── Guard: skip migrations if latest column already exists ──
+    # ── Guard: skip migrations if the LATEST migration's marker exists ──
     # This avoids re-running 80+ DDL statements on every cold start,
     # which takes minutes over cross-region Cloud SQL and can hang the process.
+    #
+    # 🔴 BUG FIX (2026-05-16 / round 26): the guard MUST advance every
+    # time a new migration block is appended below — otherwise newer
+    # migrations silently skip on every deploy where the OLD marker
+    # already exists. Symptom: production threw
+    #   "column messages.media_group_key does not exist"
+    # on every /inbox poll because the round-26 column never got
+    # added — the guard saw the round-22 index and bailed out.
+    #
+    # 🔴 SECOND BUG FIX (2026-05-16): checking `pg_indexes` is
+    # unreliable because an INDEX can survive when the migration
+    # batch that added the underlying COLUMN got partially rolled
+    # back (single-transaction failure cascade — see the comment
+    # on the migration loop below for the full story). When the
+    # column rollback was already committed but the index entry
+    # remained, the guard saw the index, said "we're good", and
+    # left every /messages endpoint broken on cold start.
+    #
+    # Check the actual COLUMN via `information_schema.columns`
+    # instead — that's the source of truth for "this DDL applied".
+    # 🟥 ROUND 51 (2026-05-17) — migration-guard ROLLOVER.
+    #
+    # PREVIOUS BUG: the guard short-circuited on a SINGLE round-26
+    # column (`messages.media_group_key`). Once that column existed,
+    # the function returned BEFORE running ANY newer migration.
+    # Round 49 added `room_visibility.is_archived` / `archived_at`
+    # — but the guard's quick-exit kept them from landing in
+    # production. The user-reported "archive doesn't work
+    # cross-device" was partly this: even after `00092-4gv` shipped
+    # with the new migration entries, the guard saw the old column
+    # + returned, and the ALTER TABLE never ran.
+    #
+    # FIX: the guard must check the LATEST column added by the
+    # newest migration batch. When R49 added `is_archived`, we add
+    # it to the guard's required-columns list. Each future round
+    # that adds a column SHOULD append it here too — the cost is
+    # one extra `information_schema` lookup per cold-start, the
+    # benefit is "we never silently skip new migrations again."
+    required_columns = [
+        ("messages", "media_group_key"),                   # R26
+        ("room_visibility", "is_archived"),                # R49 — added this guard entry in R51
+        # 🔴 ROUND 61 (2026-05-19) — guard-rollover for the columns
+        # added in rounds 45 + 51. Without these here, the guard
+        # short-circuits on the older columns and the new ALTER
+        # TABLEs never run on production, causing SQLAlchemy SELECTs
+        # to fail with `column users.tokens_invalidated_at does not
+        # exist`. Discovered when both news bots returned HTTP 500
+        # on every login attempt for 3 days straight.
+        ("users", "tokens_invalidated_at"),                # R45
+        ("ghost_route_envelopes", "claimed_by"),           # R51
+        ("user_follows", "status"),                        # 2026-05-21 follow-approval fix
+        # 🟥 v1.8 (2026-05-22) — guard-rollover for the disappearing-
+        # messages + App Attest batch. Guard on a column of the NEW
+        # `conversation_settings` table — NOT `messages.expires_at`,
+        # which can pre-date this round and so never triggers the
+        # guard. conversation_settings / attest_challenges /
+        # device_attestations are all created by this round's
+        # migrations, so a missing column there reliably forces the
+        # full migration set to run — see the ROUND 51 note above.
+        ("conversation_settings", "user_low_id"),          # v1.8 disappearing messages
+        # 🔴 ROUND 71 phase 3 (2026-05-24) — guard-rollover for the
+        # privacy-toggle columns. Without this, the migration loop
+        # short-circuits on the older guard columns and the new
+        # `users.show_liked_posts / show_replies / allow_contact_share`
+        # ALTER TABLEs never run, leaving the PrivacySettings PATCH
+        # silently no-op again — defeating the exact fix R71 phase 3
+        # was meant to land.
+        ("users", "show_liked_posts"),                     # R71 phase 3
+        # 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — E2EE group
+        # online-send needs this column to land before iOS can ship
+        # ciphertext-with-version payloads.
+        ("group_messages", "group_key_version"),           # R71 phase 3 follow-up
+    ]
     try:
         with _engine.connect() as guard_conn:
             guard_conn.execute(text("SET statement_timeout = '10s'"))
-            result = guard_conn.execute(text(
-                "SELECT 1 FROM pg_indexes "
-                "WHERE indexname = 'idx_channel_posts_channel_ts'"
-            ))
-            if result.fetchone():
-                logger.info("✅ Migrations already applied (guard column exists), skipping")
+            all_present = True
+            for table, column in required_columns:
+                result = guard_conn.execute(text(
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_name = :table AND column_name = :column"
+                ), {"table": table, "column": column})
+                if not result.fetchone():
+                    all_present = False
+                    logger.info(f"🔧 Migration guard: column {table}.{column} missing — running migrations")
+                    break
+            if all_present:
+                logger.info("✅ Migrations already applied (all guard columns present), skipping")
                 return
     except Exception as e:
         logger.warning(f"⚠️ Migration guard check failed ({e}), running migrations...")
     
-    # Use raw connection (not SessionLocal) with a single transaction
-    # to avoid 100+ individual commits (each ~30s due to cross-region latency).
-    # All DDL uses IF NOT EXISTS, so safe to run in one batch.
-    with _engine.connect() as conn:
+    # 🔴 BUG FIX (2026-05-16): the previous version wrapped all 198
+    # migrations in a SINGLE transaction. Postgres marks the whole
+    # transaction as aborted the moment any DDL fails for a
+    # NON-"already exists" reason (e.g. a transient lock conflict
+    # on a busy table, a stale `pg_type` cache miss, or any other
+    # one-off error), and EVERY subsequent statement in that
+    # transaction then fails with "current transaction is aborted,
+    # commands ignored until end of transaction block".
+    #
+    # The inner `try` swallowed those follow-on errors as benign
+    # warnings, but `conn.commit()` at the end rolled the whole
+    # thing back — so ANY new column added late in the list
+    # (the round-26 `media_group_key`, in our case) never landed,
+    # and every endpoint that touched the `messages` table 500'd
+    # forever despite the migration log claiming success.
+    #
+    # Fix: run each DDL in its own AUTOCOMMIT execution. The IF
+    # NOT EXISTS guards mean per-statement overhead is one cheap
+    # round-trip when the column / index already exists, and the
+    # blast-radius of a transient failure is a single statement
+    # rather than the entire batch.
+    with _engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
         try:
-            # Set a generous per-statement timeout to prevent infinite hangs
             conn.execute(text("SET statement_timeout = '30s'"))
-            
+
             total = len(migrations)
+            applied = 0
+            failed = 0
             for i, (sql, description) in enumerate(migrations):
                 try:
                     conn.execute(text(sql))
+                    applied += 1
                     if (i + 1) % 20 == 0:
                         logger.info(f"📦 Migrations progress: {i + 1}/{total}")
                 except Exception as e:
                     err = str(e).lower()
                     if "already exists" not in err and "duplicate" not in err:
+                        failed += 1
                         logger.warning(f"⚠️ Migration failed: {description} - {e}")
-            conn.commit()
-            logger.info(f"✅ All {total} migrations applied successfully")
+                    # AUTOCOMMIT mode means this single statement's
+                    # rollback is automatic — the next iteration
+                    # gets a clean slate. No need to manually
+                    # reconnect or reset.
+            logger.info(f"✅ Migrations done — applied {applied}/{total} successfully, {failed} hard failures")
         except Exception as e:
-            conn.rollback()
-            logger.error(f"❌ Migration batch failed: {e}")
+            logger.error(f"❌ Migration loop crashed: {e}")
 
 # run_migrations() and setup_admin_user() are now called in @app.on_event("startup")
 
@@ -822,11 +1075,238 @@ app.include_router(snaps.router)  # Ephemeral photo messages
 app.include_router(message_requests.router)  # Message request accept/decline
 app.include_router(channels.router)  # Broadcast channels (Telegram-style)
 app.include_router(stats.router)  # Public live stats (user count dashboard)
+app.include_router(atsam_prekey.router)  # ATSAM hybrid prekey bundles (round 22 mount fix; entire ATSAM endpoint set was returning 404 before)
+# 🔴 ROUND 26 (2026-05-16) — REAL FIX. The `mesh` router was never
+# imported or registered, so iOS clients calling
+# `POST /api/mesh/bridge-envelope` and
+# `GET  /api/mesh/pending-bridges`
+# have been silently 404'ing since release. Bridge-relay-via-server
+# never actually worked — clients fell back to BLE-only. Mounting
+# the router now activates the feature AND applies the round-26
+# rate-limit + window hardening we just added.
+app.include_router(mesh.router)  # Mesh bridge envelopes (uplink + downlink polling)
+app.include_router(public.router)  # Read-only endpoints for raven-messager.com share previews (Phase C.3)
+app.include_router(attest.router)  # 🔴 v1.8 — App Attest device enrolment
 
-# Mount static files for uploaded images
-app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+# 🔴 ROUND 26 (2026-05-16) — hacker-mode audit MEDIA-CRIT-3.
+#
+# PREVIOUSLY: `app.mount("/uploads", StaticFiles(directory="uploads"))`
+# served EVERY file in the uploads dir to ANY HTTP caller — no auth,
+# no ownership check. iOS used this path as a fallback when GCS
+# wasn't available. An attacker who captured a `/uploads/voice/<uuid>`
+# URL from a leaked log, an old mesh envelope, or a phished link
+# could download the file directly with one `curl`.
+#
+# FIX: replace the StaticFiles mount with a route handler that
+# requires a valid JWT (`get_current_user` dependency). Path-traversal
+# is rejected up front. Full per-file ownership lookup (matching the
+# `/api/uploads/sign-read` pattern that loads Message/Comment/PostMedia
+# rows) is a follow-up — for round 26 the bar moves from "anyone with
+# the URL can download" to "any signed-in account can download", which
+# defeats the URL-leak attack vector even if some account is rogue
+# (we have rate limiting + abuse signals on logged-in users).
+#
+# The internal `static/` directory (Gemini avatar etc.) stays as a
+# public StaticFiles mount — nothing user-private lives there.
+import os as _os
+from fastapi.responses import FileResponse
+from sqlalchemy.orm import Session
+from database import get_db
+from routers.users import get_current_user as _get_current_user_for_uploads
 
-# Mount static files for system images (like Gemini avatar)
+
+@app.get("/uploads/{file_path:path}", include_in_schema=False)
+async def serve_uploaded_file(
+    file_path: str,
+    current_user=Depends(_get_current_user_for_uploads),
+    db: Session = Depends(get_db),
+):
+    """Auth-gated, owner-scoped replacement for the old static mount.
+
+    🔴 hacker-audit 2026-05-19 — per-file ACL.
+
+    The round-26 patch raised the bar from "anyone with the URL"
+    (StaticFiles) to "any signed-in account" — but the comment
+    acknowledged that "Full per-file ownership lookup is a follow-
+    up". That follow-up was the actual hole: a rogue but signed-up
+    account that learns ANY /uploads/<uuid>.<ext> path (via a leaked
+    log, an old mesh envelope, or a phished link) can curl every
+    image/voice/file uploaded by anyone. The UUIDs are v4 (random),
+    but that's a secret-in-URL, not access control.
+
+    NOW: we look up the file in the four tables that store URLs
+    pointing at /uploads — Message, Comment, PostMedia, GroupMessage
+    — and require the caller to be sender/recipient (1:1), comment
+    or post author (post media), post author or post-is-public, or
+    a current group member (group media). Path traversal is
+    rejected up front. Mirror logic of /api/uploads/sign-read.
+    """
+    # Defensive: reject path traversal. `normpath` collapses `..`
+    # but we additionally require the resolved path to stay rooted
+    # inside `uploads/`.
+    rel = _os.path.normpath(file_path)
+    if rel.startswith("..") or _os.path.isabs(rel):
+        raise HTTPException(status_code=404, detail="Not found")
+    full_path = _os.path.join("uploads", rel)
+    real_full = _os.path.realpath(full_path)
+    real_root = _os.path.realpath("uploads")
+    if not real_full.startswith(real_root + _os.sep):
+        raise HTTPException(status_code=404, detail="Not found")
+    if not _os.path.isfile(real_full):
+        raise HTTPException(status_code=404, detail="Not found")
+
+    # ── Per-file ACL ──
+    # The stored URL for a given /uploads/<rel> file may be:
+    #   • the bare relative path: "voice/abc.m4a"
+    #   • the full http URL:     "https://<host>/uploads/voice/abc.m4a"
+    # Both contain `<rel>` as a substring. We match with LIKE.
+    from sqlalchemy import or_ as _or_
+    from models import Message as _Message
+    from models import Comment as _Comment
+    from models import Post as _Post
+    from models import PostMedia as _PostMedia
+    from models import GroupMessage as _GroupMessage
+    from models import GroupMember as _GroupMember
+
+    like_pat = f"%{rel}%"
+    authorised = False
+
+    # 1. 1:1 message audio / file URL — sender or recipient only.
+    if db.query(_Message.id).filter(
+        _or_(
+            _Message.audio_url.like(like_pat),
+            getattr(_Message, "file_url", None).like(like_pat) if hasattr(_Message, "file_url") else False,
+        ),
+        _or_(
+            _Message.sender_id == current_user.id,
+            _Message.recipient_id == current_user.id,
+        ),
+    ).first() is not None:
+        authorised = True
+
+    # 2. Comments — comment author or post author.
+    if not authorised:
+        comment = db.query(_Comment).filter(_Comment.media_url.like(like_pat)).first()
+        if comment is not None:
+            post = db.query(_Post).filter(_Post.id == comment.post_id).first()
+            if post is not None and (
+                comment.author_id == current_user.id or post.author_id == current_user.id
+            ):
+                authorised = True
+
+    # 3. Post attachments — author always, others only if public.
+    if not authorised:
+        media = db.query(_PostMedia).filter(_PostMedia.url.like(like_pat)).first()
+        if media is not None:
+            post = db.query(_Post).filter(_Post.id == media.post_id).first()
+            if post is not None and (
+                post.author_id == current_user.id
+                or (post.visibility or "public") == "public"
+            ):
+                authorised = True
+
+    # 3b/c. Legacy post columns (image_url, voice_url).
+    if not authorised:
+        legacy = db.query(_Post).filter(
+            _or_(_Post.image_url.like(like_pat), _Post.voice_url.like(like_pat))
+        ).first()
+        if legacy is not None and (
+            legacy.author_id == current_user.id
+            or (legacy.visibility or "public") == "public"
+        ):
+            authorised = True
+
+    # 4. Group messages — any current group member.
+    if not authorised:
+        gmsg = db.query(_GroupMessage).filter(
+            _or_(
+                _GroupMessage.audio_url.like(like_pat),
+                getattr(_GroupMessage, "file_url", None).like(like_pat) if hasattr(_GroupMessage, "file_url") else False,
+            )
+        ).first()
+        if gmsg is not None:
+            is_member = db.query(_GroupMember).filter(
+                _GroupMember.group_id == gmsg.group_id,
+                _GroupMember.user_id == current_user.id,
+            ).first() is not None
+            if is_member:
+                authorised = True
+
+    # 5. Voice messages — sender or recipient only.
+    if not authorised:
+        from models import VoiceMessage as _VoiceMessage
+        if db.query(_VoiceMessage.id).filter(
+            _VoiceMessage.audio_url.like(like_pat),
+            _or_(
+                _VoiceMessage.sender_id == current_user.id,
+                _VoiceMessage.recipient_id == current_user.id,
+            ),
+        ).first() is not None:
+            authorised = True
+
+    # 6. Snaps — recipient only, AND only while the snap is inside
+    # its live view window.
+    #
+    # 🔴 hacker-audit 2026-05-20 — ephemeral guarantee bypass.
+    # PREVIOUSLY this branch authorised the recipient for any snap
+    # whose media_url matched, with NO status/expiry check. After
+    # /open returned the URL, a malicious client could re-GET it
+    # forever — the /open view-counter and the /viewed auto-delete
+    # were bypassed entirely, so an "ephemeral" snap was in fact
+    # permanently downloadable. NOW: only authorise while the snap
+    # is opened and has not passed its view-duration deadline.
+    if not authorised:
+        from models import SnapMessage as _SnapMessage
+        if db.query(_SnapMessage.id).filter(
+            _SnapMessage.media_url.like(like_pat),
+            _SnapMessage.recipient_id == current_user.id,
+            _SnapMessage.status == "opened",
+            _SnapMessage.expires_at > datetime.utcnow(),
+        ).first() is not None:
+            authorised = True
+
+    if not authorised:
+        # 404 (not 403) — don't leak existence vs. permission.
+        raise HTTPException(status_code=404, detail="Not found")
+
+    return FileResponse(real_full)
+
+
+# Mount static files for system images (like Gemini avatar) — public.
+# 🔴 hacker-audit 2026-05-19 — gate the admin UI behind explicit
+# opt-in. The HTML/JS at /static/admin/index.html doesn't ship
+# secrets, but publishing it (a) tells every passive scanner the
+# admin surface exists at this hostname, (b) hands attackers a
+# pre-built form they can drive against /api/admin/* with brute-
+# forced ADMIN_SECRET candidates, and (c) lets a future contributor
+# stash an XSS payload there and have it auto-served to the next
+# admin who logs in. Cheap defence: require ENVIRONMENT=development
+# OR ADMIN_UI_ENABLED=true. Operators who actually want a hosted
+# admin UI on prod set the env var; everyone else gets a 404.
+@app.get("/static/admin/{file_path:path}", include_in_schema=False)
+@app.get("/static/admin", include_in_schema=False)
+async def _serve_admin_ui(file_path: str = "index.html"):
+    if (
+        _os.getenv("ENVIRONMENT", "development").lower() != "development"
+        and _os.getenv("ADMIN_UI_ENABLED", "").lower() not in ("1", "true", "yes")
+    ):
+        raise HTTPException(status_code=404, detail="Not found")
+    # Path-traversal guard, mirror of /uploads gate.
+    rel = _os.path.normpath(file_path or "index.html")
+    if rel.startswith("..") or _os.path.isabs(rel):
+        raise HTTPException(status_code=404, detail="Not found")
+    full = _os.path.join("static", "admin", rel)
+    real_full = _os.path.realpath(full)
+    real_root = _os.path.realpath(_os.path.join("static", "admin"))
+    if not real_full.startswith(real_root + _os.sep) and real_full != real_root:
+        raise HTTPException(status_code=404, detail="Not found")
+    if _os.path.isdir(real_full):
+        real_full = _os.path.join(real_full, "index.html")
+    if not _os.path.isfile(real_full):
+        raise HTTPException(status_code=404, detail="Not found")
+    return FileResponse(real_full)
+
+
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # ==================== WEBSOCKET INBOX ====================
@@ -840,28 +1320,59 @@ from ws_manager import ws_manager
 async def websocket_inbox(websocket: WebSocket, token: str = Query(None)):
     """
     Real-time inbox via WebSocket — EVENT-DRIVEN PUSH.
-    
-    Client connects with: wss://server/ws/inbox?token=JWT
-    Messages are pushed instantly when send_message() or bridge_message()
-    calls ws_manager.notify() — no more 3s DB polling delay.
-    
-    Fallback: DB catch-up poll every 30s to recover any missed messages.
+
+    Client connects with: wss://server/ws/inbox
+      • Preferred: send `Authorization: Bearer <JWT>` on the upgrade
+        request (Windows + macOS clients do this).
+      • Legacy: `?token=<JWT>` query parameter (iOS still uses this;
+        tokens appear in proxy/balancer access logs, hence the
+        deprecation push toward the header path).
+
+    Messages are pushed instantly when send_message() or
+    bridge_message() calls ws_manager.notify() — no 3s DB polling.
+    Fallback: DB catch-up poll every 30s.
+
+    🔴 hacker-audit 2026-05-19 — accept Authorization header.
+    PREVIOUSLY this only read `?token=` from the URL. URLs hit every
+    proxy access log, reverse-proxy buffer, browser history (for the
+    web client), and load-balancer metric. Header-based auth keeps
+    the bearer token in the TLS-wrapped payload only. Header is
+    PREFERRED; URL stays for backward compat with old clients.
     """
     from auth import decode_token
     from database import SessionLocal
     from models import Message, User
     from encryption import decrypt_text
-    
+
+    # Prefer Authorization header (header-based auth, see comment above).
+    # Falls back to ?token= query if the client didn't send the header.
+    if not token:
+        auth_header = websocket.headers.get("authorization") or websocket.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header[len("Bearer "):].strip()
+
     # ── Auth ──
     if not token:
         await websocket.close(code=4001, reason="Missing token")
         return
-    
+
     payload = decode_token(token)
     if not payload or not payload.get("sub"):
         await websocket.close(code=4001, reason="Invalid token")
         return
-    
+
+    # 🔴 hacker-audit 2026-05-19: `decode_token` accepts both access
+    # and refresh tokens (it only checks the access-jti revocation
+    # set when type=="access"). Without an explicit type gate here,
+    # a refresh token — which is LONG-LIVED (REFRESH_TOKEN_EXPIRE_DAYS)
+    # and was never meant to authorise live traffic — would mount a
+    # persistent inbox-subscription. A stolen refresh token thus
+    # became a real-time wiretap that survives every access-token
+    # rotation. WS streams must be access-token-only.
+    if payload.get("type") != "access":
+        await websocket.close(code=4001, reason="Invalid token type")
+        return
+
     user_id = payload["sub"]
     
     await websocket.accept()
@@ -878,25 +1389,35 @@ async def websocket_inbox(websocket: WebSocket, token: str = Query(None)):
                 # Create tasks for both queue events and client messages
                 queue_task = asyncio.create_task(queue.get())
                 client_task = asyncio.create_task(websocket.receive_text())
-                
+
                 done, pending = await asyncio.wait(
                     {queue_task, client_task},
                     timeout=30.0,
                     return_when=asyncio.FIRST_COMPLETED
                 )
-                
-                # Cancel whichever didn't complete
+
+                # Cancel whichever didn't complete. CRITICAL: also
+                # retrieve any pending exception so asyncio doesn't
+                # log "Task exception was never retrieved" — that's
+                # what was filling Cloud Run logs with thousands of
+                # tracebacks per session and eventually starving the
+                # event loop for HTTP request handling.
                 for task in pending:
                     task.cancel()
                     try:
                         await task
-                    except (asyncio.CancelledError, WebSocketDisconnect):
+                    except (asyncio.CancelledError, WebSocketDisconnect, RuntimeError):
+                        # RuntimeError covers Starlette's
+                        # "WebSocket is not connected" and "Cannot
+                        # call receive once a disconnect message has
+                        # been received" raised when the underlying
+                        # transport raced ahead of our cancel.
                         pass
-                
+
                 if queue_task in done:
                     # ⚡ Instant push — message arrived via ws_manager.notify()
                     message_data = queue_task.result()
-                    
+
                     # Drain any additional queued messages (batch send)
                     batch = [message_data]
                     while not queue.empty():
@@ -904,20 +1425,53 @@ async def websocket_inbox(websocket: WebSocket, token: str = Query(None)):
                             batch.append(queue.get_nowait())
                         except asyncio.QueueEmpty:
                             break
-                    
+
                     await websocket.send_text(json.dumps(batch))
                     print(f"⚡ [WS] Instant push: {len(batch)} messages to {user_id[:8]}")
                     continue
-                
+
                 if client_task in done:
-                    # Client sent a message (ping/pong or app-level)
-                    # Just continue the loop
-                    continue
-                
+                    # 🔴 ROUND 26 (2026-05-16) — REAL ROOT CAUSE FIX.
+                    #
+                    #   PREVIOUSLY: this branch just `continue`d
+                    #   without ever calling `client_task.result()`
+                    #   or `.exception()`. When the WebSocket
+                    #   disconnected, `receive_text()` either threw
+                    #   `WebSocketDisconnect` or `RuntimeError(
+                    #   'Cannot call receive once a disconnect …')`.
+                    #   That exception was attached to the completed
+                    #   task BUT NEVER RETRIEVED — asyncio logged
+                    #   "Task exception was never retrieved", and on
+                    #   the next loop iteration we created ANOTHER
+                    #   receive_text task, which immediately raised
+                    #   the same error. The loop ran indefinitely,
+                    #   accumulating tens of thousands of failed
+                    #   tasks per dead WebSocket, starving the
+                    #   event loop for legitimate HTTP requests —
+                    #   THAT'S why follow/like/comment POSTs felt
+                    #   like they "weren't reaching the server":
+                    #   the server was alive but too busy churning
+                    #   through zombie WS tasks to dispatch them.
+                    #
+                    #   FIX: always retrieve the exception. If the
+                    #   client disconnected, BREAK out of the loop
+                    #   so the `finally` block can disconnect cleanly.
+                    try:
+                        _ = client_task.result()
+                        # Client sent an app-level message (ping/pong);
+                        # nothing to do, loop continues.
+                        continue
+                    except (WebSocketDisconnect, RuntimeError):
+                        # Disconnect or "not connected" — exit the
+                        # loop cleanly. The `finally` block at the
+                        # bottom of this function will unregister
+                        # us from `ws_manager`.
+                        raise WebSocketDisconnect()
+
                 # Timeout — do a fallback DB catch-up poll every 30s
                 # This catches any messages that might have been missed
                 # (e.g., during brief disconnection or race conditions)
-                
+
             except asyncio.TimeoutError:
                 pass  # Fall through to DB catch-up
             
@@ -985,6 +1539,7 @@ async def websocket_inbox(websocket: WebSocket, token: str = Query(None)):
             pass
     finally:
         await ws_manager.disconnect(user_id)
+
 
 
 # ==================== HEALTH ENDPOINTS ====================
@@ -1105,9 +1660,212 @@ async def startup_db_init():
     
     # Start background cleanup job for stale audio rooms
     asyncio.create_task(_room_cleanup_loop())
-    
+
     # Start background cleanup for expired registration verification tokens
     asyncio.create_task(_registration_token_cleanup_loop())
+
+    # 🔴 ROUND 71 (2026-05-24) — scheduled-message dispatch worker.
+    # Round-71 audit S1: scheduled messages were stored on /send with
+    # send_mode='scheduled' but NO worker ever flipped them to instant
+    # at scheduled_at_utc. Users believed they had scheduled messages
+    # that simply never arrived. This worker ticks every 15s and
+    # promotes due rows + fires push + WS notify.
+    asyncio.create_task(_scheduled_message_dispatch_loop())
+
+
+async def _scheduled_message_dispatch_loop():
+    """🔴 ROUND 71 phase 3 — promote due scheduled messages every 15s.
+
+    Architecture (per-row independent transaction):
+      • Phase A: cheap, lock-free SELECT of due row IDs (max 100).
+      • Phase B: for each ID, open a fresh session and atomically
+        claim the row via `SELECT … WHERE send_mode='scheduled' FOR
+        UPDATE SKIP LOCKED`. If another instance won the race, the
+        SELECT returns None and we skip.
+
+    Why per-row tx (vs the round-71 phase-1 bulk-claim):
+      The phase-1 implementation held FOR UPDATE locks on 100 rows in
+      one transaction, then committed after each row's dispatch. The
+      first commit released ALL 100 locks, leaving iterations 2..100
+      racing with other Cloud Run instances on UN-locked rows —
+      attribute access on the in-Python `msg` objects re-queried the
+      DB without lock protection, and an instance that re-claimed the
+      same row between commits could dispatch it twice. Per-row tx
+      keeps lock + flip + dispatch atomic at the row level and holds
+      no cross-row state, eliminating the race entirely.
+
+    Retry semantics: a savepoint wraps the flip + dispatch inside
+    each per-row tx so a fanout exception rolls back the flip and the
+    row stays `scheduled` for the next tick. WS/APNs failures are
+    best-effort (logged, not raised) so a transient push outage
+    doesn't reschedule the message forever.
+    """
+    import asyncio as _asyncio
+    import json as _json
+
+    # Wait briefly for DB init to complete.
+    await _asyncio.sleep(20)
+    logger.info("⏰ [Scheduled] Scheduled-message dispatch loop started "
+                "(tick=15s, per-row atomic-claim)")
+
+    tick_seconds = 15
+    while True:
+        try:
+            from database import SessionLocal
+            from models import Message, User, Notification, Group, GroupMember
+
+            # ── Phase A: cheap peek for due IDs (no locks, no FOR UPDATE) ──
+            peek_db = SessionLocal()
+            try:
+                now = datetime.utcnow()
+                due_ids = [
+                    row[0] for row in peek_db.query(Message.id).filter(
+                        Message.send_mode == "scheduled",
+                        Message.scheduled_at_utc.isnot(None),
+                        Message.scheduled_at_utc <= now,
+                    ).order_by(Message.scheduled_at_utc.asc()).limit(100).all()
+                ]
+            finally:
+                peek_db.close()
+
+            if due_ids:
+                logger.info(f"⏰ [Scheduled] {len(due_ids)} due rows queued for per-row claim")
+
+            # ── Phase B: per-row independent tx with atomic claim ──
+            for msg_id in due_ids:
+                claim_db = SessionLocal()
+                try:
+                    # Atomic claim — requeries `send_mode == 'scheduled'`
+                    # so an instance that already won the race is a
+                    # no-op (`first()` returns None and we skip).
+                    msg = claim_db.query(Message).filter(
+                        Message.id == msg_id,
+                        Message.send_mode == "scheduled",
+                    ).with_for_update(skip_locked=True).first()
+                    if msg is None:
+                        continue
+
+                    try:
+                        # Savepoint scope: flip + dispatch are revertible
+                        # together. If anything except WS/APNs raises,
+                        # the savepoint rolls back and the row stays
+                        # `scheduled` for the next tick.
+                        with claim_db.begin_nested():
+                            msg.send_mode = "instant"
+                            # NOTE: keep `msg.timestamp` as the originally
+                            # intended send time so inbox sort order
+                            # reflects user intent.
+                            claim_db.flush()
+
+                            sender = claim_db.query(User).filter(User.id == msg.sender_id).first()
+                            if not sender:
+                                continue
+
+                            # Group vs 1:1 detection. iOS sends scheduled
+                            # group messages with `recipient_id = group_id`.
+                            is_group = claim_db.query(Group).filter(
+                                Group.id == msg.recipient_id
+                            ).first() is not None
+
+                            if is_group:
+                                group_id = msg.recipient_id
+                                member_ids = [
+                                    m.user_id for m in claim_db.query(GroupMember).filter(
+                                        GroupMember.group_id == group_id
+                                    ).all()
+                                ]
+                                fanout_targets = [u for u in member_ids if u != msg.sender_id]
+                            else:
+                                fanout_targets = [msg.recipient_id]
+
+                            for target_uid in fanout_targets:
+                                recipient = claim_db.query(User).filter(User.id == target_uid).first()
+                                if not recipient:
+                                    continue
+
+                                notif = Notification(
+                                    user_id=target_uid,
+                                    type="group_message" if is_group else "message",
+                                    data=_json.dumps({
+                                        "room_id": (msg.recipient_id if is_group else msg.sender_id),
+                                        "sender_id": msg.sender_id,
+                                        "sender_username": sender.username,
+                                        "preview": "",
+                                        "message_type": msg.message_type or "text",
+                                        "scheduled_dispatch": True,
+                                    }),
+                                    is_read=False,
+                                )
+                                claim_db.add(notif)
+
+                                # WS push — best-effort.
+                                try:
+                                    await ws_manager.notify(target_uid, {
+                                        "id": msg.id,
+                                        "sender_id": msg.sender_id,
+                                        "recipient_id": (target_uid if not is_group else msg.recipient_id),
+                                        "content": msg.content,
+                                        "timestamp": msg.timestamp.isoformat() + "Z" if msg.timestamp else None,
+                                        "read_at": None,
+                                        "delivered_at": None,
+                                        "sender_username": sender.username,
+                                        "message_type": msg.message_type or "text",
+                                        "room_id": (msg.recipient_id if is_group else msg.sender_id),
+                                        "audio_url": msg.audio_url,
+                                        "audio_duration_seconds": msg.audio_duration_seconds,
+                                        "file_name": msg.file_name,
+                                        "file_size": msg.file_size,
+                                        "mime_type": msg.mime_type,
+                                        "reply_to_message_id": msg.reply_to_message_id,
+                                        "expiry_mode": msg.expiry_mode,
+                                        "expires_at": msg.expires_at.isoformat() + "Z" if msg.expires_at else None,
+                                        "allow_forward": msg.allow_forward if msg.allow_forward is not None else True,
+                                        "is_group": is_group,
+                                        "media_group_key": msg.media_group_key,
+                                        "media_group_index": msg.media_group_index,
+                                        "media_group_total": msg.media_group_total,
+                                    })
+                                except Exception as ws_err:
+                                    logger.warning(f"⏰ [Scheduled] WS notify failed for {target_uid[:8]}: {ws_err}")
+
+                                # APNs push — best-effort.
+                                if recipient.push_token and recipient.push_platform == "ios":
+                                    try:
+                                        from services.apns_service import get_apns_service, APNsService
+                                        prefs = APNsService.should_send_push(recipient, "message")
+                                        if prefs["allowed"]:
+                                            apns = get_apns_service()
+                                            await apns.send_message_notification(
+                                                device_token=recipient.push_token,
+                                                sender_name=sender.username or "Someone",
+                                                message_preview="New message",
+                                                room_id=(msg.recipient_id if is_group else msg.sender_id),
+                                                sender_id=msg.sender_id,
+                                                message_type=msg.message_type or "text",
+                                            )
+                                    except Exception as push_err:
+                                        logger.warning(f"⏰ [Scheduled] push failed for {target_uid[:8]}: {push_err}")
+
+                            logger.info(f"⏰ [Scheduled] dispatched msg {msg.id[:8]} "
+                                        f"is_group={is_group} fanout={len(fanout_targets)}")
+
+                        # Savepoint released cleanly; commit outer tx
+                        # (releases the per-row FOR UPDATE lock).
+                        claim_db.commit()
+                    except Exception as per_msg_err:
+                        logger.warning(f"⏰ [Scheduled] per-msg dispatch failed for "
+                                       f"{msg_id[:8]}: {type(per_msg_err).__name__}: {per_msg_err} — "
+                                       f"row stays scheduled, will retry next tick")
+                        try:
+                            claim_db.rollback()
+                        except Exception:
+                            pass
+                finally:
+                    claim_db.close()
+        except Exception as e:
+            logger.warning(f"⏰ [Scheduled] loop iteration failed: {type(e).__name__}: {e}")
+
+        await _asyncio.sleep(tick_seconds)
 
 
 async def _registration_token_cleanup_loop():
@@ -1344,10 +2102,184 @@ def _setup_admin_user():
                     """), {"id": str(uuid.uuid4()), "uid": a, "fid": b})
             db.commit()
             logger.info("✅ Reviewer accounts are now friends with each other")
-        
+
+        # ── 4. News-bot accounts (raven_news + raven_economic) ──
+        #
+        # 🔴 ROUND 61 (2026-05-19) — bot-account recovery bootstrap.
+        # Companion to the auth.py NULL-password_hash fix.
+        #
+        # The two news-bot accounts ended up with `password_hash =
+        # NULL` in production (likely an OAuth promotion or an admin
+        # DB action). With the auth.py fix, login now returns 401
+        # cleanly instead of 500 — but the bots still can't post
+        # until their password is re-set to a known value.
+        #
+        # This block ensures `raven_news` and `raven_economic` exist
+        # with the password supplied via env vars. It's idempotent:
+        # on every startup, we hash the env value and UPSERT it onto
+        # the bot row. If the env var is unset, we skip and log a
+        # warning so the operator notices.
+        #
+        # The OPERATOR must set these on Cloud Run (one-time):
+        #   gcloud run services update <service> \
+        #       --update-env-vars=RAVEN_NEWS_BOT_PASSWORD=<pw>,\
+        #                         RAVEN_ECONOMIC_BOT_PASSWORD=<pw>
+        # The bot's news_bot/.env values are the source of truth —
+        # keep both in sync.
+        bot_accounts = [
+            {
+                "username": "raven_news",
+                "first_name": "Raven",
+                "last_name": "News",
+                "password_env": "RAVEN_NEWS_BOT_PASSWORD",
+            },
+            {
+                "username": "raven_economic",
+                "first_name": "Raven",
+                "last_name": "Economic",
+                "password_env": "RAVEN_ECONOMIC_BOT_PASSWORD",
+            },
+        ]
+
+        for acct in bot_accounts:
+            bot_pw = os.getenv(acct["password_env"], "")
+            if not bot_pw:
+                logger.warning(
+                    f"⚠️ {acct['password_env']} unset — skipping {acct['username']} bootstrap. "
+                    f"Bot login will continue to fail until operator sets this env var "
+                    f"on the Cloud Run service."
+                )
+                continue
+
+            row = db.execute(
+                text("SELECT id FROM users WHERE username = :u"),
+                {"u": acct["username"]}
+            ).fetchone()
+
+            hashed_pw = hash_password(bot_pw)
+
+            if not row:
+                # Bot account doesn't exist — create it. is_verified
+                # is left FALSE here; an operator can flip it to TRUE
+                # later via the admin endpoint if they want the blue
+                # tick on the bot's posts.
+                uid = str(uuid.uuid4())
+                db.execute(text("""
+                    INSERT INTO users
+                        (id, username, password_hash, first_name, last_name,
+                         birth_year, created_at)
+                    VALUES
+                        (:id, :username, :pw, :fn, :ln,
+                         2000, NOW())
+                """), {
+                    "id": uid,
+                    "username": acct["username"],
+                    "pw": hashed_pw,
+                    "fn": encrypt_text(acct["first_name"]),
+                    "ln": encrypt_text(acct["last_name"]),
+                })
+                logger.info(f"✅ Bot account created: {acct['username']}")
+            else:
+                # Re-stamp the password each boot so a stale NULL or
+                # mismatched hash gets corrected automatically.
+                db.execute(text(
+                    "UPDATE users SET password_hash = :pw WHERE username = :u"
+                ), {"pw": hashed_pw, "u": acct["username"]})
+                logger.info(f"✅ Bot account password restored: {acct['username']}")
+
+        db.commit()
+
+        # ── 5. Simulation personas (20 social-feed inhabitants) ──
+        #
+        # 🔴 Bootstrap routine: server creates the 20 simulation
+        # persona accounts at every cold start, reading their secret
+        # passwords from a single JSON env var
+        # `RAVEN_SIM_PERSONAS_JSON`. Bypasses the per-IP register
+        # rate-limit (5/hr/IP) that the client-side orchestrator
+        # would otherwise hit when trying to bootstrap all 20 from a
+        # single launchd machine.
+        #
+        # Schema of the env var (decoded JSON):
+        #   { "<username>": "<password>", ... }
+        # The first/last name + birth_year + email metadata lives
+        # statically in SIM_PERSONAS below — clients only ever need
+        # to know the password.
+        SIM_PERSONAS = [
+            {"u": "sarah_chen",        "fn": "Sarah",      "ln": "Chen",       "by": 1999},
+            {"u": "alexander_petrov",  "fn": "Alexander",  "ln": "Petrov",     "by": 1992},
+            {"u": "charlie_williams",  "fn": "Charlie",    "ln": "Williams",   "by": 2004},
+            {"u": "jose_martinez",     "fn": "Jose",       "ln": "Martinez",   "by": 1995},
+            {"u": "layla_karimi",      "fn": "لیلا",        "ln": "کریمی",       "by": 1988},
+            {"u": "marcus_obrien",     "fn": "Marcus",     "ln": "O'Brien",    "by": 2000},
+            {"u": "yuki_tanaka",       "fn": "Yuki",       "ln": "Tanaka",     "by": 1997},
+            {"u": "niloofar_ahmadi",   "fn": "نیلوفر",      "ln": "احمدی",       "by": 1985},
+            {"u": "daniel_kovacs",     "fn": "Daniel",     "ln": "Kovács",     "by": 1993},
+            {"u": "sofia_esposito",    "fn": "Sofia",      "ln": "Esposito",   "by": 1996},
+            {"u": "reza_mostafavi",    "fn": "رضا",         "ln": "مصطفوی",      "by": 1998},
+            {"u": "hannah_goldstein",  "fn": "Hannah",     "ln": "Goldstein",  "by": 1991},
+            {"u": "omar_haddad",       "fn": "Omar",       "ln": "Haddad",     "by": 2001},
+            {"u": "maryam_bakhtiari",  "fn": "مریم",        "ln": "بختیاری",     "by": 1974},
+            {"u": "liam_walsh",        "fn": "Liam",       "ln": "Walsh",      "by": 2002},
+            {"u": "priya_sharma",      "fn": "Priya",      "ln": "Sharma",     "by": 1990},
+            {"u": "arman_tehrani",     "fn": "آرمان",       "ln": "تهرانی",      "by": 1979},
+            {"u": "beatriz_costa",     "fn": "Beatriz",    "ln": "Costa",      "by": 1998},
+            {"u": "setareh_ghasemi",   "fn": "ستاره",       "ln": "قاسمی",       "by": 2005},
+            {"u": "felix_bauer",       "fn": "Felix",      "ln": "Bauer",      "by": 1981},
+        ]
+        sim_pw_json = os.getenv("RAVEN_SIM_PERSONAS_JSON", "")
+        if not sim_pw_json:
+            logger.info("⏭️  RAVEN_SIM_PERSONAS_JSON unset — skipping simulation bootstrap")
+        else:
+            try:
+                import json as _json_mod
+                sim_passwords = _json_mod.loads(sim_pw_json)
+                created = 0
+                updated = 0
+                for sp in SIM_PERSONAS:
+                    pw = sim_passwords.get(sp["u"])
+                    if not pw:
+                        continue
+                    pwhash = hash_password(pw)
+                    email = f"{sp['u']}@raven-sim.invalid"
+                    import hashlib
+                    email_hash = hashlib.sha256(email.lower().encode()).hexdigest()
+                    row = db.execute(
+                        text("SELECT id FROM users WHERE username = :u"),
+                        {"u": sp["u"]},
+                    ).fetchone()
+                    if not row:
+                        uid = str(uuid.uuid4())
+                        db.execute(text("""
+                            INSERT INTO users
+                                (id, username, password_hash, first_name, last_name,
+                                 birth_year, email, email_hash, email_verified,
+                                 is_verified, is_premium, created_at)
+                            VALUES
+                                (:id, :u, :pw, :fn, :ln,
+                                 :by, :em, :eh, TRUE,
+                                 FALSE, FALSE, NOW())
+                        """), {
+                            "id": uid, "u": sp["u"], "pw": pwhash,
+                            "fn": encrypt_text(sp["fn"]),
+                            "ln": encrypt_text(sp["ln"]),
+                            "by": sp["by"], "em": encrypt_text(email),
+                            "eh": email_hash,
+                        })
+                        created += 1
+                    else:
+                        db.execute(text(
+                            "UPDATE users SET password_hash = :pw WHERE username = :u"
+                        ), {"pw": pwhash, "u": sp["u"]})
+                        updated += 1
+                db.commit()
+                logger.info(f"✅ Simulation personas: {created} created, {updated} updated (of {len(SIM_PERSONAS)})")
+            except Exception as sim_err:
+                db.rollback()
+                logger.warning(f"⚠️ Simulation persona bootstrap failed: {sim_err}")
+
     except Exception as e:
         db.rollback()
-        logger.warning(f"⚠️ Admin/reviewer user setup failed: {e}")
+        logger.warning(f"⚠️ Admin/reviewer/bot/sim user setup failed: {e}")
     finally:
         db.close()
 

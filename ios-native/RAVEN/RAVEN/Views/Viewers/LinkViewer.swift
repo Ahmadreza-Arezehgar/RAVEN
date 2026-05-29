@@ -66,6 +66,17 @@ struct LinkPreviewCard: View {
         .buttonStyle(.plain)
         .frame(maxWidth: 220)
         .task {
+            // 🟥 ROUND 31 (2026-05-17) — speed up SFSafariViewController.
+            //
+            // The first SFSafariViewController per session paid the
+            // full TLS + DNS cost in the foreground (2-3 s on a slow
+            // cell network).  Now that this card is on screen, the
+            // user is likely about to tap it — pre-warm the TLS
+            // handshake to that host so the eventual sheet present
+            // skips the cold-start delay.  Cheap, idempotent, and
+            // capped to Safari-safe URLs inside the helper itself.
+            SafariSheet.prewarm([url])
+
             await fetchMetadata()
         }
     }

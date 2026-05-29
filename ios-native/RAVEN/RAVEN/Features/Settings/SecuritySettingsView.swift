@@ -173,6 +173,25 @@ struct SecuritySettingsView: View {
                     .buttonStyle(.plain)
                     #endif
                 }
+
+                // 🔴 ROUND 26 — v1.7 NEXT: 3-of-5 social key recovery.
+                // Discovery surface for the new Shamir+ECIES feature;
+                // crypto lives in SocialRecoveryService. The view is
+                // a demo today and gets full contact-picker wiring
+                // in the next round.
+                SettingsSection(title: "Account Recovery") {
+                    NavigationLink {
+                        SocialRecoverySetupView()
+                    } label: {
+                        SettingsNavigationRow(
+                            title: "Social Recovery (3-of-5)",
+                            subtitle: "Recover your key with 3 of 5 trusted contacts",
+                            icon: "person.3.sequence.fill",
+                            iconColor: .purple
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
             }
             .padding(16)
         }

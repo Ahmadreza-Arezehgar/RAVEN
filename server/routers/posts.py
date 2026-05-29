@@ -1,5 +1,5 @@
 
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Request, BackgroundTasks
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
 from pydantic import BaseModel
@@ -7,7 +7,7 @@ from typing import List, Optional
 from datetime import datetime
 
 from database import get_db
-from models import User, Post, PostLike, Repost, Comment, PostView, ContentConsumption, MeshViewReceipt
+from models import User, Post, PostLike, PostBookmark, Repost, Comment, PostView, ContentConsumption, MeshViewReceipt
 from routers.users import get_current_user
 from encryption import encrypt_text, decrypt_text
 from middleware.rate_limit import rate_limiter
@@ -32,10 +32,37 @@ def build_full_url(request: Request, path: str) -> str:
     return f"{base_url}{path}"
 
 # Request/Response models
+class PostMediaItem(BaseModel):
+    """A single media item for a multi-media post.
+
+    🟥 ROUND 46 (2026-05-17) — fixes the video-rendering regression.
+    iOS has been sending this via the `media_items` field but the
+    server's CreatePostRequest didn't define the field, so Pydantic
+    silently dropped it. As a result every video in a multi-media
+    post was lost (only the URLs in `image_urls` survived, and iOS
+    pre-filters that list to image-only). Defining the schema
+    surface here lets the server read the explicit per-item type
+    and write PostMedia rows with `media_type='video'` when iOS
+    says so — no more relying on URL-extension sniffing which
+    fails for GCS signed URLs whose extension is hidden behind
+    query parameters.
+    """
+    url: str
+    media_type: Optional[str] = "image"   # "image" | "video"
+    thumbnail_url: Optional[str] = None    # Required for videos (poster frame)
+
 class CreatePostRequest(BaseModel):
     content: str
     image_url: Optional[str] = None  # Legacy single image (backward compat)
     image_urls: Optional[List[str]] = None  # Multi-image support (max 4)
+    # 🟥 ROUND 46 (2026-05-17) — mixed media with explicit type.
+    # iOS sends this with one entry per attached photo OR video,
+    # carrying `media_type` so videos no longer have to be sniffed
+    # from a URL extension that may be missing (GCS signed URLs).
+    # When present, the create_post handler iterates THIS list and
+    # ignores `image_urls` for media-row creation — the legacy
+    # field is preserved only for older clients.
+    media_items: Optional[List[PostMediaItem]] = None
     is_local: bool = True
     visibility: str = "public"  # public, friends, local
     latitude: Optional[float] = None
@@ -129,7 +156,17 @@ def get_post_stats(db: Session, post_id: str, current_user_id: str) -> dict:
     likes = db.query(PostLike).filter(PostLike.post_id == post_id).count()
     
     # Count comments
-    comments = db.query(Comment).filter(Comment.post_id == post_id).count()
+    # 🔴 BUG FIX (2026-05-21) — comment-count vs comment-list mismatch.
+    # The comment LIST endpoint (`comments.py::get_post_comments`)
+    # filters `is_hidden != True`, but this COUNT did not — so a post
+    # with a single hidden comment showed "1 comment" while the
+    # comment sheet rendered empty ("the app says there's a comment
+    # but shows nothing"). Filter `is_hidden` here too so the count
+    # matches exactly what the list returns.
+    comments = db.query(Comment).filter(
+        Comment.post_id == post_id,
+        Comment.is_hidden != True
+    ).count()
     
     # Count reposts
     reposts = db.query(Repost).filter(Repost.original_post_id == post_id).count()
@@ -155,6 +192,220 @@ def get_post_stats(db: Session, post_id: str, current_user_id: str) -> dict:
     }
 
 
+# 🟥 ROUND 45 (2026-05-17) — multi-media + video rendering fix.
+#
+# Bug: every feed endpoint (search, /feed, /feed/local, /feed/friends,
+# post-detail, share-detail) built `PostResponse` WITHOUT setting the
+# `media=[...]` field.  Result on iOS:
+#   • Multi-image posts collapsed to a single image (only legacy
+#     `image_url` came through).
+#   • Videos lost their `media_type='video'` flag and rendered as
+#     images (PostMedia.isVideo fell back to URL extension sniff
+#     which fails when GCS URLs omit the extension).
+#
+# Fix: helper that bulk-loads PostMedia rows for a batch of post IDs
+# and returns a `{post_id: [PostMediaResponse]}` map.  Each feed
+# handler calls this once, then passes the right list into each
+# PostResponse it builds.  Single SQL query for N posts (not N+1).
+#
+# media_type is preserved as-stored in DB.  Server still hardcodes
+# 'image' on /api/posts upload (line ~638) — that's a separate
+# fix (server needs to sniff URL extension and set 'video' when
+# appropriate).  But for existing posts whose `media_type` was set
+# correctly at some point, this restores them.
+from models import PostMedia as _PostMediaModel
+
+# ════════════════════════════════════════════════════════════════════
+# 🟥 ROUND 51 (2026-05-17) — GCS signed-URL refresh on read.
+#
+# Bug: existing video / multi-media posts go DEAD ~15 minutes after
+# upload.  Reason: `_upload_to_gcs` stores a V4-signed URL with a
+# 15-minute TTL into `post_media.url` and `posts.image_url` (round-26
+# hardening — no eternal-public-read URLs in DB dumps).  iOS just
+# uses the URL as returned by /feed; once expired GCS returns 403.
+# iOS has no re-sign fallback (no calls to /api/uploads/sign-read in
+# the swift codebase).
+#
+# Fix: on every feed read, swap any stored signed URL for a FRESH
+# 1-hour signed URL.  Cheap (no DB write, just `blob.generate_signed_url`
+# locally), transparent, and bounded — 1 hour TTL gives slow-network
+# clients enough time to download without re-fetching the feed.
+#
+# Pre-condition for prod: the Cloud Run service account must have
+# `roles/iam.serviceAccountTokenCreator` (same IAM grant that
+# _upload_to_gcs documents — both share the same signing path).
+# Without it, signing falls back to the unsigned legacy URL, which
+# only works if the bucket is public-read.
+# ════════════════════════════════════════════════════════════════════
+from typing import Optional as _Optional
+
+
+def _refresh_signed_url(url: _Optional[str]) -> _Optional[str]:
+    """Re-sign a GCS-stored URL with a fresh 1-hour TTL, OR nullify
+    legacy dead URLs.
+
+    Pass through:
+      • None / empty
+      • GCS URLs we can't parse (returns original)
+      • Third-party CDN / live legacy paths (returns original)
+
+    Returns:
+      • A NEW signed URL on success
+      • `None` when the URL points to the now-defunct legacy Cloud
+        Run host whose files were lost in the GCS migration (so iOS
+        renders the post as text-only instead of a broken thumbnail).
+      • The original URL on any unhandled error.
+    """
+    if not url:
+        return url
+
+    # 🟥 ROUND 53 (2026-05-17) — nullify legacy dead URLs.
+    #
+    # Discovery: a user reported "old multi-media + video posts
+    # don't load". Tracing the actual URLs returned by /api/posts/user
+    # showed every legacy media post points to:
+    #   http://hybrid-messenger-api-516053629173.us-central1.run.app/uploads/...
+    #
+    # That host is the OLD pre-GCS Cloud Run service in us-central1.
+    # It returns 404 on every probe (deleted/expired). The files
+    # were never copied into the `raven-media-uploads` GCS bucket
+    # (verified — every UUID grep returns "matched no objects").
+    # The files are GONE.
+    #
+    # Behaviour without this guard: iOS receives the dead URL, tries
+    # to load it, rejects the `http://` scheme outright (round-25
+    # hardening), and the post renders with a broken-image placeholder
+    # box and no text — the user-reported "empty box" symptom.
+    #
+    # Fix: return None for any URL matching the dead-host pattern.
+    # `_load_media_map_for_posts` falls back to `media.url` when the
+    # re-sign returns None, so we need an explicit sentinel — return
+    # None and the caller drops the row from the response.
+    DEAD_LEGACY_HOSTS = (
+        "hybrid-messenger-api-516053629173.us-central1.run.app",
+        # Add more legacy hosts here if they're discovered.
+    )
+    for dead in DEAD_LEGACY_HOSTS:
+        if dead in url:
+            print(f"☠️ [SignRefresh] DEAD-LEGACY URL nullified — file lost in GCS migration: {url[:100]}")
+            return None
+
+    # Identify GCS storage URLs by the canonical host. We handle both
+    # the legacy `https://storage.googleapis.com/{bucket}/{path}` form
+    # AND already-signed URLs (which have the same host + query
+    # params). Either way we re-extract the object path and re-sign.
+    needle = "storage.googleapis.com/"
+    if needle not in url:
+        return url
+
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        # parsed.path is `/{bucket}/{object_path}` (signed URLs use
+        # the same path shape as unsigned). Strip the leading "/" +
+        # bucket prefix.
+        path = parsed.path.lstrip("/")
+        # First path segment is the bucket name (the URL form
+        # `https://storage.googleapis.com/{bucket}/{object_path}`).
+        if "/" not in path:
+            return url
+        bucket_name, object_path = path.split("/", 1)
+        if not object_path:
+            return url
+
+        # Re-sign via the existing GCS helper. Importing here so the
+        # feed handlers don't pay the import cost on every call when
+        # GCS isn't configured.
+        from routers.uploads import _get_gcs_bucket
+        bucket = _get_gcs_bucket()
+        if bucket is None:
+            return url  # dev mode — no GCS, leave URL alone
+        # If the bucket in the URL differs from our configured bucket,
+        # don't touch it (cross-bucket asset; out of our control).
+        if bucket.name != bucket_name:
+            return url
+
+        from datetime import timedelta as _td
+        blob = bucket.blob(object_path)
+        # 🔴 ROUND 31 (2026-05-18) — Cloud Run signing fix.
+        # Same root cause as the upload-side bug: metadata-server
+        # credentials have no private key, so the default sign call
+        # raises "you need a private key to sign credentials". This
+        # caused EVERY feed refresh to log a stack trace and serve
+        # the stored URL as-is — which is fine the first time but
+        # 403s after the original 15-min TTL expires. End result for
+        # the user: old image/video posts that "load the first time
+        # but break later". Use the IAM signBlob path via
+        # `_get_signing_credentials` so signing works without a key.
+        from routers.uploads import _get_signing_credentials
+        sa_email, access_token = _get_signing_credentials()
+        sign_kwargs = {
+            "version": "v4",
+            "expiration": _td(hours=1),
+            "method": "GET",
+        }
+        if sa_email and access_token:
+            sign_kwargs["service_account_email"] = sa_email
+            sign_kwargs["access_token"] = access_token
+        signed = blob.generate_signed_url(**sign_kwargs)
+        return signed
+    except Exception as e:
+        # Never break the feed because of signing edge cases. Log
+        # and return original URL — iOS will show an expired-URL
+        # broken thumbnail, same as before R51.
+        print(f"⚠️ [SignRefresh] could not re-sign url, returning as-is: {type(e).__name__}: {e}")
+        return url
+
+
+def _load_media_map_for_posts(db: Session, request: Request, post_ids: list) -> dict:
+    """Bulk-load PostMedia for a list of post IDs.
+
+    Returns dict mapping post_id -> sorted-by-order [PostMediaResponse].
+    Posts with no media are absent from the map (caller treats as None).
+
+    🟥 ROUND 51: re-signs the GCS URL for each media item so feeds
+    never serve stale (expired) signed URLs. Without this every
+    existing video/image post goes 403 after 15 minutes.
+    """
+    if not post_ids:
+        return {}
+    rows = db.query(_PostMediaModel).filter(
+        _PostMediaModel.post_id.in_(post_ids)
+    ).order_by(_PostMediaModel.post_id, _PostMediaModel.order_index).all()
+
+    grouped: dict = {}
+    for media in rows:
+        # Re-sign before building the absolute URL. _refresh_signed_url
+        # only touches GCS URLs; local-dev paths fall through unchanged
+        # and `build_full_url` adds the Cloud Run host prefix.
+        #
+        # 🟥 ROUND 53 (2026-05-17) — when the URL points to the dead
+        # legacy host (file lost in GCS migration), `_refresh_signed_url`
+        # returns None on purpose. DROP the media row entirely rather
+        # than serve a known-bad URL — the post then renders as
+        # text-only on iOS, which is a far cleaner UX than a broken
+        # thumbnail with an empty box.
+        fresh_url = _refresh_signed_url(media.url)
+        if fresh_url is None:
+            continue
+        grouped.setdefault(media.post_id, []).append(
+            PostMediaResponse(
+                id=media.id,
+                url=build_full_url(request, fresh_url),
+                order_index=media.order_index,
+                # Preserve media_type as stored.  Defaults to 'image'
+                # on the model side if NULL, but we pass it through
+                # so videos correctly surface 'video' when set.
+                media_type=media.media_type or "image",
+                top_comments=None,  # top_comments are per-media + expensive;
+                                    # the dedicated per-post helper handles
+                                    # post-detail loads.  Feed cards don't
+                                    # render them.
+            )
+        )
+    return grouped
+
+
 def get_batch_post_stats(db: Session, post_ids: list, current_user_id: str) -> dict:
     """Batch-fetch stats for multiple posts in 5 queries instead of 5 per post.
     
@@ -171,9 +422,16 @@ def get_batch_post_stats(db: Session, post_ids: list, current_user_id: str) -> d
     likes_map = dict(likes_rows)
     
     # 2. Batch count comments per post
+    # 🔴 BUG FIX (2026-05-21) — must filter `is_hidden != True` so the
+    # feed's per-post comment count matches the comment-list endpoint
+    # (which excludes hidden comments). Without this the post card
+    # shows "N comments" but the comment sheet renders fewer.
     comments_rows = db.query(
         Comment.post_id, func.count(Comment.id)
-    ).filter(Comment.post_id.in_(post_ids)).group_by(Comment.post_id).all()
+    ).filter(
+        Comment.post_id.in_(post_ids),
+        Comment.is_hidden != True
+    ).group_by(Comment.post_id).all()
     comments_map = dict(comments_rows)
     
     # 3. Batch count reposts per post
@@ -230,9 +488,13 @@ def get_batch_post_stats(db: Session, post_ids: list, current_user_id: str) -> d
 
 
 def get_voice_and_collab_fields(post, db=None, author=None) -> dict:
-    """Extract voice post and collaborative post fields from a Post model."""
+    """Extract voice post and collaborative post fields from a Post model.
+
+    🟥 ROUND 51 — re-sign voice_url so expired GCS signed URLs get
+    refreshed on every feed read. See `_refresh_signed_url` doc.
+    """
     fields = {
-        "voice_url": getattr(post, 'voice_url', None),
+        "voice_url": _refresh_signed_url(getattr(post, 'voice_url', None)),
         "voice_duration": getattr(post, 'voice_duration', None),
         "waveform": None,
         "co_authors": None,
@@ -402,7 +664,7 @@ def search_posts(
                 author_username=author.username if author else "Unknown",
                 author_avatar=build_full_url(request, author.avatar_path) if author else None,
                 content=content,
-                image_url=build_full_url(request, post.image_url),
+                image_url=build_full_url(request, _refresh_signed_url(post.image_url)),
                 timestamp=post.timestamp,
                 edited_at=post.edited_at,
                 likes=stats["likes"],
@@ -483,6 +745,7 @@ def consume_content(
 def create_post(
     request: Request,
     req: CreatePostRequest,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -522,7 +785,7 @@ def create_post(
                 author_username=post_author.username if post_author else "Unknown",
                 author_avatar=build_full_url(request, post_author.avatar_path) if post_author else None,
                 content=decrypt_text(existing.content),
-                image_url=build_full_url(request, existing.image_url),
+                image_url=build_full_url(request, _refresh_signed_url(existing.image_url)),
                 timestamp=existing.timestamp,
                 edited_at=existing.edited_at,
                 likes=stats['likes'],
@@ -557,13 +820,52 @@ def create_post(
         # Compute geohash for efficient radius queries
         geohash_val = encode_geohash(lat, lng, precision=7)
     
-    # Use client-provided post_id if available (for mesh post sync)
-    # For mesh-originated posts, use the original author ID from the mesh envelope
+    # 🔴 hacker-audit 2026-05-19 — mesh post author-spoof close.
+    #
+    # PREVIOUSLY: any client could POST {mesh_origin: true,
+    # author_id: <victim>, content: "..."} and the server stored
+    # the post with `author_id = victim`. The optional fields
+    # `mesh_signature` / `mesh_signer_key` (below) were ACCEPTED
+    # and stored unchanged but NEVER verified server-side — so a
+    # forged sig or no sig at all both passed. This is the same
+    # bridge-spoof pattern messages.py had (round 26) and that
+    # we hardened in the round-1 audit. Concrete attack:
+    #   1. Attacker creates account A.
+    #   2. POST /api/posts/create with mesh_origin=true,
+    #      author_id="<celebrity user_id>", content="endorsement".
+    #   3. Server stores post as celebrity's; mesh_origin badge in
+    #      the iOS UI is the LESS-SUSPICIOUS variant ("verified
+    #      offline-mesh post") — anti-trust signal flipped.
+    #
+    # FIX: a mesh-origin upload claiming a different author MUST
+    # carry an Ed25519 signature from the claimed author's identity
+    # key, verified server-side against `content`. If missing or
+    # invalid, fall back to `author_id = current_user.id` and
+    # ignore the mesh_origin flag. Bridges that legitimately
+    # forward signed mesh posts are unaffected; spoofers without a
+    # valid sig get attributed to themselves instead of the victim.
     actual_author_id = current_user.id
-    if req.mesh_origin and req.author_id:
-        # Gateway bridge: preserve original author
-        actual_author_id = req.author_id
-        print(f"🌐 [GATEWAY] Mesh post from original author {req.author_id[:8]}... uploaded by gateway {current_user.id[:8]}...")
+    use_mesh_origin_flag = bool(req.mesh_origin)
+    if req.mesh_origin and req.author_id and req.author_id != current_user.id:
+        sig_ok = False
+        if req.mesh_signature and req.mesh_signer_key:
+            try:
+                from services.mesh_crypto import verify_message_signature
+                sig_ok = verify_message_signature(
+                    content=req.content or "",
+                    signature_b64=req.mesh_signature,
+                    public_key_b64=req.mesh_signer_key,
+                )
+            except Exception as _e:
+                sig_ok = False
+                print(f"⚠️ [PostCreate] mesh sig verify crashed ({type(_e).__name__}): rejecting attribution")
+        if sig_ok:
+            actual_author_id = req.author_id
+            print(f"🌐 [GATEWAY] Mesh post from {req.author_id[:8]} VERIFIED, uploaded by gateway {current_user.id[:8]}")
+        else:
+            # Attribution refused — store as the uploader's own post.
+            use_mesh_origin_flag = False
+            print(f"🚨 [GATEWAY] mesh_origin author spoof attempt: claimed {req.author_id[:8]} but no valid sig — attributing to gateway {current_user.id[:8]}")
     
     post_data = {
         'author_id': actual_author_id,
@@ -592,10 +894,15 @@ def create_post(
     if req.post_id:
         post_data['id'] = req.post_id
     
-    # Set mesh origin flag if from gateway bridge
-    if req.mesh_origin:
+    # Set mesh origin flag if from gateway bridge AND attribution
+    # passed the sig check above (use_mesh_origin_flag). Otherwise
+    # the post is just a normal user post that the attacker tried
+    # to mis-attribute — we already attributed it to them.
+    if use_mesh_origin_flag:
         post_data['mesh_origin'] = True
-        # Phase 2: Store Ed25519 signature from origin device
+        # Phase 2: Store Ed25519 signature from origin device.
+        # By this point sig is verified (or absent because uploader
+        # is the original author).
         if req.mesh_signature:
             post_data['mesh_signature'] = req.mesh_signature
         if req.mesh_signer_key:
@@ -616,37 +923,103 @@ def create_post(
     db.refresh(post)
     print(f"✅ [PostCreate] COMMITTED post_id={post.id[:8]} client_request_id={crid[:8]}")
     
-    # Invalidate feed caches on new post
+    # Invalidate feed caches on new post.
+    # 🔴 ROUND 71 phase 3: include `feed:recommended:*` — the delete
+    # path (posts.py:2247-2250) clears it but create did not, so a
+    # newly-created post was hidden from the recommendation surface
+    # until TTL_FEED (60s) elapsed.
     cache.invalidate("feed:global:*")
     cache.invalidate("feed:local:*")
     cache.invalidate("feed:friends:*")
+    cache.invalidate("feed:recommended:*")
     
     # Create PostMedia records for multi-image posts
+    # 🟥 ROUND 46 (2026-05-17) — multi-media + video FIX, part 2.
+    #
+    # Round 45 fixed the FEED side (returning `media=[...]` in
+    # /feed responses) but left the WRITE side broken: iOS sends
+    # `media_items: [{url, media_type, thumbnail_url}, ...]` but
+    # the server only read `req.image_urls` (a flat URL list with
+    # no per-item type info). iOS pre-filters `image_urls` to
+    # images only, so:
+    #   • Multi-media posts (image + video): video dropped on write.
+    #   • Video-only posts: zero PostMedia rows, video URL lost.
+    #
+    # Now we prefer `req.media_items` (new path) and fall back to
+    # `req.image_urls` for older clients. URL-extension sniffing
+    # is kept as a last-resort for the legacy fallback only — GCS
+    # signed URLs hide the extension behind `?X-Goog-...` query
+    # params, so the only reliable signal for new clients is the
+    # explicit `media_type` field the client sets when it
+    # uploads.
     media_responses = []
-    print(f"🔍 DEBUG create_post: req.image_urls = {req.image_urls}")  # Debug log
-    if req.image_urls and len(req.image_urls) > 0:
-        from models import PostMedia
-        import uuid as uuid_mod
-        max_media = 10 if current_user.is_premium else 4  # RAVEN+: 10, Free: 4
-        for idx, url in enumerate(req.image_urls[:max_media]):
-            media_id = str(uuid_mod.uuid4())  # Generate ID explicitly (SQLAlchemy default doesn't run until commit)
+    print(f"🔍 DEBUG create_post: req.image_urls = {req.image_urls} media_items.count={len(req.media_items) if req.media_items else 0}")
+
+    _VIDEO_EXTS = {"mp4", "mov", "m4v", "avi", "webm", "mkv", "qt"}
+    def _sniff_media_type(url: str) -> str:
+        # Strip query params before checking extension.
+        clean = url.split("?", 1)[0]
+        ext = clean.rsplit(".", 1)[-1].lower() if "." in clean else ""
+        return "video" if ext in _VIDEO_EXTS else "image"
+
+    from models import PostMedia
+    import uuid as uuid_mod
+    max_media = 10 if current_user.is_premium else 4  # RAVEN+: 10, Free: 4
+
+    # PREFER `media_items` (Round 46 path) over `image_urls` (legacy).
+    # iOS clients on app version >= R46 always send media_items;
+    # older clients still send image_urls and nothing else.
+    if req.media_items and len(req.media_items) > 0:
+        for idx, item in enumerate(req.media_items[:max_media]):
+            url = item.url
+            if not url:
+                continue
+            # Trust the client's explicit type; fall back to sniff
+            # only when the field is missing/empty.
+            media_type = item.media_type or _sniff_media_type(url)
+            if media_type not in {"image", "video"}:
+                media_type = "image"   # defensive
+            media_id = str(uuid_mod.uuid4())
             media = PostMedia(
                 id=media_id,
                 post_id=post.id,
                 url=url,
                 order_index=idx,
-                media_type='image'
+                media_type=media_type
             )
             db.add(media)
             media_responses.append(PostMediaResponse(
                 id=media_id,
                 url=build_full_url(request, url),
                 order_index=idx,
-                media_type='image',
+                media_type=media_type,
                 top_comments=None
             ))
         db.commit()
-        print(f"🖼️ Created {len(media_responses)} PostMedia records for post {post.id[:8]}")
+        print(f"🖼️ [Round46] Created {len(media_responses)} PostMedia rows from media_items for post {post.id[:8]}")
+    elif req.image_urls and len(req.image_urls) > 0:
+        # Legacy path (older iOS / Android / Mac clients without
+        # the media_items field). Sniff URL extension for type.
+        for idx, url in enumerate(req.image_urls[:max_media]):
+            media_id = str(uuid_mod.uuid4())
+            sniffed_type = _sniff_media_type(url)
+            media = PostMedia(
+                id=media_id,
+                post_id=post.id,
+                url=url,
+                order_index=idx,
+                media_type=sniffed_type
+            )
+            db.add(media)
+            media_responses.append(PostMediaResponse(
+                id=media_id,
+                url=build_full_url(request, url),
+                order_index=idx,
+                media_type=sniffed_type,
+                top_comments=None
+            ))
+        db.commit()
+        print(f"🖼️ [Legacy] Created {len(media_responses)} PostMedia rows from image_urls for post {post.id[:8]}")
     
     content_preview = req.content[:50] if req.content else "(image only)"
     print(f"📝 Post created by {current_user.username}: {content_preview}... [visibility={req.visibility}]")
@@ -687,13 +1060,27 @@ def create_post(
             if subscriber_user and subscriber_user.push_token and subscriber_user.push_platform == "ios":
                 prefs = APNsService.should_send_push(subscriber_user, "new_post")
                 if prefs["allowed"]:
-                    asyncio.ensure_future(apns.send_new_post_notification(
+                    # 🔴 BUG FIX (2026-05-20) — was `asyncio.ensure_future(...)`
+                    # which crashed with `RuntimeError: no current event
+                    # loop in thread 'AnyIO worker thread'` on every
+                    # subscriber push. `create_post` is a SYNC endpoint
+                    # → FastAPI runs it in a threadpool worker → those
+                    # workers have no asyncio loop attached → ensure_future
+                    # raised. The whole endpoint returned HTTP 500
+                    # AFTER the post was already committed, so iOS saw
+                    # a "failed" post (and any uploaded image went
+                    # orphan in GCS, presenting as "media not loading").
+                    # FastAPI's BackgroundTasks safely schedules the
+                    # coroutine after the response is sent and is
+                    # thread-aware. Same behavior, no crash.
+                    background_tasks.add_task(
+                        apns.send_new_post_notification,
                         device_token=subscriber_user.push_token,
                         author_name=author_name,
                         post_preview=post_preview,
                         post_id=post.id,
-                        author_id=current_user.id
-                    ))
+                        author_id=current_user.id,
+                    )
                 else:
                     print(f"📱 ⏭️ New post push skipped for {subscriber_user.username} (disabled)")
         
@@ -716,7 +1103,7 @@ def create_post(
         author_username=resp_username,
         author_avatar=resp_avatar,
         content=decrypt_text(post.content),
-        image_url=build_full_url(request, post.image_url),
+        image_url=build_full_url(request, _refresh_signed_url(post.image_url)),
         media=media_responses if media_responses else None,  # Multi-image support
         timestamp=post.timestamp,
         edited_at=post.edited_at,
@@ -789,19 +1176,21 @@ def get_feed(
     author_ids = list(set(p.author_id for p in posts))
     authors_map = {u.id: u for u in db.query(User).filter(User.id.in_(author_ids)).all()} if author_ids else {}
     stats_map = get_batch_post_stats(db, post_ids, current_user.id)
-    
+    media_map = _load_media_map_for_posts(db, request, post_ids)  # Round 45
+
     result = []
     for post in posts:
         author = authors_map.get(post.author_id)
         stats = stats_map.get(post.id, {"likes": 0, "comments": 0, "reposts": 0, "is_liked": False, "is_reposted": False})
-        
+
         result.append(PostResponse(
             id=post.id,
             author_id=post.author_id,
             author_username=author.username if author else "Unknown",
             author_avatar=build_full_url(request, author.avatar_path) if author else None,
             content=decrypt_text(post.content),
-            image_url=build_full_url(request, post.image_url),
+            image_url=build_full_url(request, _refresh_signed_url(post.image_url)),
+            media=media_map.get(post.id),  # Round 45 — multi-media + video
             timestamp=post.timestamp,
             edited_at=post.edited_at,
             likes=stats["likes"],
@@ -818,10 +1207,10 @@ def get_feed(
             comment_preview_user_ids=stats.get("comment_preview_user_ids", []),
                 **get_voice_and_collab_fields(post, db, author=author)
         ))
-    
+
     # Cache result
     cache.set(cache_key, [r.dict() for r in result], ttl=TTL_FEED)
-    
+
     return result
 
 
@@ -963,10 +1352,20 @@ def get_local_feed(
             query = query.filter(Post.timestamp < cursor_dt)
         except ValueError:
             pass
-    else:
+
+    # 🔴 BUG FIX (2026-05-16): SQLAlchemy requires `.order_by()` to
+    # come BEFORE `.limit()` / `.offset()` — chaining them in the
+    # other order throws InvalidRequestError("Query.order_by() being
+    # called on a Query which already has LIMIT or OFFSET applied")
+    # at runtime. The previous version called `.offset()` in the
+    # non-cursor branch above and then `.order_by(...).limit(...)`
+    # below, which 500'd every offset-paginated request to
+    # /api/posts/feed/local (including the iOS Local tab's initial
+    # fetch). Apply order_by first, then offset/limit.
+    query = query.order_by(Post.timestamp.desc())
+    if not cursor:
         query = query.offset(offset)
-    
-    posts = query.order_by(Post.timestamp.desc()).limit(limit * 3).all()  # Fetch extra for scoring
+    posts = query.limit(limit * 3).all()  # Fetch extra for scoring
     total_fetched = len(posts)  # Track actual DB rows consumed for pagination
     
     # Debug: log voice post counts for feed diagnostics
@@ -979,7 +1378,12 @@ def get_local_feed(
     author_ids = list(set(p.author_id for p in posts))
     authors_map = {u.id: u for u in db.query(User).filter(User.id.in_(author_ids)).all()} if author_ids else {}
     stats_map = get_batch_post_stats(db, post_ids, current_user.id)
-    
+    # Round 45: bulk-load PostMedia so feed cards render multi-image
+    # albums + videos correctly (was: only legacy image_url, which
+    # collapsed multi-media to a single image and erased video
+    # mediaType info).
+    media_map = _load_media_map_for_posts(db, request, post_ids)
+
     # Score and filter posts
     scored_posts = []
     for post in posts:
@@ -1015,7 +1419,8 @@ def get_local_feed(
                 author_username=author.username if author else "Unknown",
                 author_avatar=build_full_url(request, author.avatar_path) if author else None,
                 content=decrypt_text(post.content),
-                image_url=build_full_url(request, post.image_url),
+                image_url=build_full_url(request, _refresh_signed_url(post.image_url)),
+                media=media_map.get(post.id),  # Round 45 — multi-media + video
                 timestamp=post.timestamp,
                 edited_at=post.edited_at,
                 likes=stats["likes"],
@@ -1129,29 +1534,52 @@ def get_friends_feed(
             query = query.filter(Post.timestamp < cursor_dt)
         except ValueError:
             pass
-    else:
+
+    # 🔴 ROUND 26 (2026-05-16) — REAL ROOT-CAUSE FIX.
+    #   Bug discovered via live test: `/api/posts/feed/friends`
+    #   threw `sqlalchemy.exc.InvalidRequestError: Query.order_by()
+    #   being called on a Query which already has LIMIT or OFFSET
+    #   applied`. The original code called `.offset(offset)` in the
+    #   else-branch above BEFORE `.order_by()` / `.limit()` on the
+    #   line below, which SQLAlchemy refuses (because mixing
+    #   order_by after offset/limit produces semantically-undefined
+    #   results in the SQL spec).
+    #
+    #   This was EXACTLY the same bug that hit `feed/local` in an
+    #   earlier round — fixed there by reordering, but the same
+    #   pattern existed verbatim in `feed/friends` and went
+    #   unnoticed until live-testing exposed it as 500s on the
+    #   user's friends-only feed.
+    #
+    #   FIX: always order BEFORE applying offset/limit. The
+    #   cursor-filter branch is a Post.timestamp filter so it's
+    #   safe to apply in either order, but for clarity we keep
+    #   it above the order_by call.
+    query = query.order_by(Post.timestamp.desc())
+    if not cursor:
         query = query.offset(offset)
-    
-    posts = query.order_by(Post.timestamp.desc()).limit(limit).all()
+    posts = query.limit(limit).all()
 
     # Batch-load authors and stats (eliminates N+1)
     post_ids = [p.id for p in posts]
     author_ids = list(set(p.author_id for p in posts))
     authors_map = {u.id: u for u in db.query(User).filter(User.id.in_(author_ids)).all()} if author_ids else {}
     stats_map = get_batch_post_stats(db, post_ids, current_user.id)
-    
+    media_map = _load_media_map_for_posts(db, request, post_ids)  # Round 45
+
     result = []
     for post in posts:
         author = authors_map.get(post.author_id)
         stats = stats_map.get(post.id, {"likes": 0, "comments": 0, "reposts": 0, "is_liked": False, "is_reposted": False})
-        
+
         result.append(PostResponse(
             id=post.id,
             author_id=post.author_id,
             author_username=author.username if author else "Unknown",
             author_avatar=build_full_url(request, author.avatar_path) if author else None,
             content=decrypt_text(post.content),
-            image_url=build_full_url(request, post.image_url),
+            image_url=build_full_url(request, _refresh_signed_url(post.image_url)),
+            media=media_map.get(post.id),  # Round 45 — multi-media + video
             timestamp=post.timestamp,
             edited_at=post.edited_at,
             likes=stats["likes"],
@@ -1169,7 +1597,7 @@ def get_friends_feed(
             comment_preview_user_ids=stats.get("comment_preview_user_ids", []),
                 **get_voice_and_collab_fields(post, db, author=author)
         ))
-    
+
     has_more = len(result) == limit  # If we got exactly limit posts, there are likely more
     next_offset = offset + len(result)
     
@@ -1187,13 +1615,23 @@ async def toggle_like_post(
 ):
     """Toggle like on a post (one like per user)."""
     post = db.query(Post).filter(Post.id == post_id).first()
-    
+
     if not post:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Post not found"
         )
-    
+
+    # 🔴 ROUND 70 — gate likes on visibility. Previously a non-friend
+    # could like a friends-only post and the like-notification would
+    # be pushed to the author, leaking that the non-friend reached
+    # the post (existence oracle + privacy break).
+    if not _can_user_access_post(post, current_user.id, db):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Post not found"
+        )
+
     # Check if already liked by this user
     existing_like = db.query(PostLike).filter(
         PostLike.post_id == post_id,
@@ -1220,10 +1658,17 @@ async def toggle_like_post(
             notif = Notification(
                 user_id=post.author_id,
                 type="like",
+                # 🔵 (2026-05-23) — Instagram-style notification row
+                # needs the liker's avatar (row leading-edge) and the
+                # post's thumbnail (row trailing-edge). Carry both in
+                # the notification data so iOS doesn't have to make
+                # extra round-trips when rendering the list.
                 data=json.dumps({
                     "post_id": post_id,
                     "liker_id": current_user.id,
                     "liker_username": current_user.username,
+                    "liker_avatar": current_user.avatar_path,
+                    "post_image_url": post.image_url,
                 }),
                 timestamp=datetime.utcnow(),
                 is_read=False
@@ -1287,13 +1732,22 @@ def repost_post(
 ):
     """Repost a post (with optional quote)."""
     post = db.query(Post).filter(Post.id == post_id).first()
-    
+
     if not post:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Post not found"
         )
-    
+
+    # 🔴 ROUND 70 — gate reposts on visibility. Reposting a friends-
+    # only post broadcasts it to the reposter's own feed surface,
+    # bypassing the author's friend-only intent entirely.
+    if not _can_user_access_post(post, current_user.id, db):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Post not found"
+        )
+
     # Check if already reposted
     existing_repost = db.query(Repost).filter(
         Repost.original_post_id == post_id,
@@ -1357,7 +1811,16 @@ def record_view(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Post not found"
         )
-    
+
+    # 🔴 ROUND 70 — gate view records on visibility. Non-friends
+    # incrementing the view count on a friends-only post was a
+    # cheap "this post exists" oracle + skewed analytics.
+    if not _can_user_access_post(post, current_user.id, db):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Post not found"
+        )
+
     # Hash userId with server salt for privacy
     viewer_key = hashlib.sha256(
         f"{current_user.id}{SERVER_SALT}".encode()
@@ -1414,11 +1877,89 @@ def get_user_posts(
     db: Session = Depends(get_db),
     limit: int = 50
 ):
-    """Get all posts by a specific user."""
-    posts = db.query(Post).filter(
+    """Get all posts by a specific user.
+
+    🔴 ROUND 70 (2026-05-23) — hacker-audit POSTS-IDOR-CRIT-1
+    (CRITICAL: visibility filter was missing → friends-only posts
+    returned to anyone who hit this endpoint with a userId).
+
+    Visibility rules enforced now:
+      • author viewing their own posts → return all (incl. private)
+      • visibility='public' → anyone
+      • visibility='local' → anyone (local-feed posts are geo-bounded
+        at fetch time elsewhere; this endpoint shows the author's
+        timeline which always includes their local posts)
+      • visibility='friends' → only mutual friends (FriendRequest
+        accepted in either direction)
+      • visibility='private' → only the author
+      • visibility NULL/unset → treat as 'public' (legacy posts)
+    """
+    from sqlalchemy import or_, and_
+    from models import FriendRequest, Block
+
+    is_self = (user_id == current_user.id)
+    # Determine friend status once per request (cheaper than per-row).
+    is_friend = False
+    if not is_self:
+        is_friend = db.query(FriendRequest).filter(
+            FriendRequest.status == "accepted",
+            or_(
+                and_(FriendRequest.requester_id == current_user.id,
+                     FriendRequest.recipient_id == user_id),
+                and_(FriendRequest.requester_id == user_id,
+                     FriendRequest.recipient_id == current_user.id),
+            )
+        ).first() is not None
+
+        # 🔴 ROUND 71 S6: bidirectional block exclusion. A blocked
+        # author's profile feed must return empty to the blockee, and
+        # vice versa.
+        blocked = db.query(Block).filter(
+            or_(
+                and_(Block.blocker_id == current_user.id, Block.blocked_id == user_id),
+                and_(Block.blocker_id == user_id, Block.blocked_id == current_user.id),
+            )
+        ).first()
+        if blocked is not None:
+            return []
+
+        # 🔴 ROUND 71 S6: gate by author's `is_private` flag. Round-70
+        # added per-post visibility filtering but ignored the
+        # account-level privacy bit. A private user's posts with
+        # `visibility IN (NULL,'public','local')` still leaked to
+        # non-friends.
+        author_row = db.query(User).filter(User.id == user_id).first()
+        if author_row is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        if bool(getattr(author_row, "is_private", False)) and not is_friend:
+            return []
+
+    if is_self:
+        # Author sees everything (incl. private drafts).
+        visibility_filter = True  # noqa: E712 — pass-through
+    elif is_friend:
+        # Friends see public + local + friends; never private.
+        visibility_filter = or_(
+            Post.visibility.is_(None),
+            Post.visibility == "public",
+            Post.visibility == "local",
+            Post.visibility == "friends",
+        )
+    else:
+        # Strangers see public + local only.
+        visibility_filter = or_(
+            Post.visibility.is_(None),
+            Post.visibility == "public",
+            Post.visibility == "local",
+        )
+
+    posts_query = db.query(Post).filter(
         Post.author_id == user_id,
-        Post.is_hidden != True
-    ).order_by(Post.timestamp.desc()).limit(limit).all()
+        Post.is_hidden != True,
+    )
+    if visibility_filter is not True:
+        posts_query = posts_query.filter(visibility_filter)
+    posts = posts_query.order_by(Post.timestamp.desc()).limit(limit).all()
     
     author = db.query(User).filter(User.id == user_id).first()
     
@@ -1432,7 +1973,7 @@ def get_user_posts(
             author_username=author.username if author else "Unknown",
             author_avatar=build_full_url(request, author.avatar_path) if author else None,
             content=decrypt_text(post.content),
-            image_url=build_full_url(request, post.image_url),
+            image_url=build_full_url(request, _refresh_signed_url(post.image_url)),
             timestamp=post.timestamp,
             edited_at=post.edited_at,
             likes=stats["likes"],
@@ -1458,15 +1999,37 @@ def get_post(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Get a single post by ID."""
+    """Get a single post by ID.
+
+    🔴 hacker-audit 2026-05-19 — sibling fix to ai.py and /transcribe.
+    PREVIOUSLY this endpoint returned `decrypt_text(post.content)` for
+    ANY post_id, regardless of visibility. Friends-only and (any
+    future) private posts were directly readable by anyone who knew
+    the UUID. UUIDs leak through groups, mentions, share links, error
+    logs, the mesh-receipt path, and (historically) pre-round-26 mesh
+    envelopes which embedded media URLs alongside the post id. The
+    `/feed/friends` endpoint correctly scopes results to the caller's
+    friend graph, but this single-post lookup bypassed all of that.
+    Now we gate on the same `_can_user_access_post` helper that
+    `/transcribe` and `/api/ai/ask` (also fixed) use, so visibility
+    semantics stay identical across the three reader paths.
+    """
     post = db.query(Post).filter(Post.id == post_id).first()
-    
+
     if not post or post.is_hidden:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Post not found"
         )
-    
+
+    if not _can_user_access_post(post, current_user.id, db):
+        # 404 (not 403) so an attacker fishing for UUIDs can't
+        # distinguish "exists but private" from "doesn't exist".
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Post not found",
+        )
+
     author = db.query(User).filter(User.id == post.author_id).first()
     stats = get_post_stats(db, post.id, current_user.id)
     
@@ -1476,7 +2039,7 @@ def get_post(
         author_username=author.username if author else "Unknown",
         author_avatar=build_full_url(request, author.avatar_path) if author else None,
         content=decrypt_text(post.content),
-        image_url=build_full_url(request, post.image_url),
+        image_url=build_full_url(request, _refresh_signed_url(post.image_url)),
         timestamp=post.timestamp,
         edited_at=post.edited_at,
         likes=stats["likes"],
@@ -1539,7 +2102,7 @@ def edit_post(
         author_username=author.username if author else "Unknown",
         author_avatar=build_full_url(request, author.avatar_path) if author else None,
         content=decrypt_text(post.content),
-        image_url=build_full_url(request, post.image_url),
+        image_url=build_full_url(request, _refresh_signed_url(post.image_url)),
         timestamp=post.timestamp,
         edited_at=post.edited_at,
         likes=stats["likes"],
@@ -1585,34 +2148,120 @@ def delete_post(
         )
     
     try:
-        from models import PostMedia, CommentVote, SeenPost, Mention, UserEvent
-        
+        from models import PostMedia, CommentVote, SeenPost, Mention, UserEvent, PostBookmark, Notification
+
+        # 🔴 ROUND 71 S5: snapshot every media URL before delete so we
+        # can purge the GCS blobs afterwards. Previously the DB row +
+        # PostMedia rows vanished but the underlying blobs persisted
+        # forever in `raven-media-uploads`. Defeated the round-26
+        # ephemerality intent.
+        media_urls: list[str] = []
+        if post.image_url:
+            media_urls.append(post.image_url)
+        if post.voice_url:
+            media_urls.append(post.voice_url)
+        for pm in db.query(PostMedia).filter(PostMedia.post_id == post_id).all():
+            if pm.url:
+                media_urls.append(pm.url)
+            # Some PostMedia rows carry a separate thumbnail URL.
+            tn = getattr(pm, "thumbnail_url", None)
+            if tn:
+                media_urls.append(tn)
+
         # 1. Delete CommentVotes on this post's comments (no cascade from Comment → CommentVote)
         comment_ids = [c.id for c in db.query(Comment.id).filter(Comment.post_id == post_id).all()]
         if comment_ids:
             db.query(CommentVote).filter(CommentVote.comment_id.in_(comment_ids)).delete(synchronize_session=False)
-        
+
         # 2. Delete mentions referencing this post
         db.query(Mention).filter(Mention.post_id == post_id).delete(synchronize_session=False)
-        
+
         # 3. Delete user event tracking records
         db.query(UserEvent).filter(UserEvent.post_id == post_id).delete(synchronize_session=False)
-        
+
         # 3. Delete seen/consumption records
         db.query(SeenPost).filter(SeenPost.post_id == post_id).delete(synchronize_session=False)
         db.query(ContentConsumption).filter(ContentConsumption.content_id == post_id).delete(synchronize_session=False)
-        
+
         # 4. Delete mesh view receipts
         db.query(MeshViewReceipt).filter(MeshViewReceipt.post_id == post_id).delete(synchronize_session=False)
-        
+
         # 5. Delete post interactions (likes, reposts, views)
         db.query(PostLike).filter(PostLike.post_id == post_id).delete(synchronize_session=False)
         db.query(Repost).filter(Repost.original_post_id == post_id).delete(synchronize_session=False)
         db.query(PostView).filter(PostView.post_id == post_id).delete(synchronize_session=False)
-        
+
+        # 🔴 ROUND 71 FIX-UP: PostBookmark + Notification cascades.
+        # PostBookmark has no DB-level cascade on its post_id FK, so
+        # the `db.delete(post)` below would raise IntegrityError on
+        # Postgres when ANY user had bookmarked the deleted post.
+        # Also drop notification rows that reference this post via
+        # the JSON `data.post_id` field so users don't tap a 404
+        # ghost notification.
+        db.query(PostBookmark).filter(PostBookmark.post_id == post_id).delete(synchronize_session=False)
+        # Notification.data is a JSON string; subscriber notifications
+        # (posts.py:1040) write `"postId"` (camelCase), while the
+        # rest of the codebase writes `"post_id"`. Match both keys
+        # so deleting a post wipes ghost notifications from every
+        # producer. SQLite + Postgres both handle these LIKEs.
+        _post_id_snake = f'%"post_id":%"{post_id}"%'
+        _post_id_camel = f'%"postId":%"{post_id}"%'
+        db.query(Notification).filter(
+            or_(
+                Notification.data.like(_post_id_snake),
+                Notification.data.like(_post_id_camel),
+            )
+        ).delete(synchronize_session=False)
+
         # 6. Delete the post (Comments + PostMedia cascade via ORM relationship)
         db.delete(post)
         db.commit()
+
+        # 🔴 ROUND 71 S5: best-effort GCS blob purge AFTER DB commit.
+        # Per-blob failures swallowed so one bad path doesn't block
+        # others. Same parsing logic as `_purge_expired_for_user`.
+        if media_urls:
+            try:
+                from routers.uploads import _get_gcs_bucket
+                bucket = _get_gcs_bucket()
+                if bucket is not None:
+                    for url in media_urls:
+                        try:
+                            object_path = None
+                            if url.startswith("http"):
+                                base = url.split("?", 1)[0]
+                                marker = f"/{bucket.name}/"
+                                idx = base.find(marker)
+                                if idx >= 0:
+                                    object_path = base[idx + len(marker):]
+                            else:
+                                object_path = url.lstrip("/")
+                            if object_path:
+                                bucket.blob(object_path).delete()
+                                print(f"🗑️ [Delete] GCS blob purged: {object_path[:60]}")
+                        except Exception as e:
+                            print(f"⚠️ [Delete] GCS blob purge failed for {url[:40]}: {type(e).__name__}: {e}")
+            except Exception as e:
+                print(f"⚠️ [Delete] GCS bucket unavailable for cleanup: {e}")
+
+        # 🔴 ROUND 71 S5: invalidate feed caches so deleted post
+        # disappears from other viewers within seconds rather than
+        # waiting for TTL_FEED (30s).
+        # 🔴 ROUND 71 FIX-UP: import was wrong (`services.cache` →
+        # module lives at `cache.py`) and method was wrong
+        # (`delete_pattern` → method is `invalidate`). The bare
+        # except swallowed both errors so the invalidation was a
+        # silent no-op. Fixed both per the existing usage at
+        # posts.py:927-929.
+        try:
+            from cache import cache as _cache
+            _cache.invalidate("feed:global:*")
+            _cache.invalidate("feed:friends:*")
+            _cache.invalidate("feed:local:*")
+            _cache.invalidate("feed:recommended:*")
+            _cache.invalidate(f"post:{post_id}")
+        except Exception as _cache_err:
+            print(f"⚠️ [Delete] feed cache invalidation failed: {_cache_err}")
         
         print(f"🗑️ Post deleted by {current_user.username}: {post_id[:8]}...")
         
@@ -1741,9 +2390,15 @@ async def _run_post_transcription(post_id: str):
         db.commit()
         
         gemini = get_gemini_service()
-        
-        # Resolve voice URL — may be relative path
-        audio_url = post.voice_url
+
+        # 🔴 ROUND 71 S7: re-sign the GCS URL before handing it to
+        # Gemini. The stored `voice_url` is a 1-hour signed URL minted
+        # at upload time; if the user requests transcription after
+        # expiry (and there's nothing stopping that — uploads can be
+        # weeks old), Gemini's fetch returns 403 and the post
+        # permanently flips to `failed`. `_refresh_signed_url` mints a
+        # fresh 15-min URL each call.
+        audio_url = _refresh_signed_url(post.voice_url) or post.voice_url
         if not audio_url.startswith("http"):
             # Build full URL from config/env
             base = os.environ.get("SERVER_BASE_URL", "").rstrip("/")
@@ -1784,6 +2439,46 @@ async def _run_post_transcription(post_id: str):
 from fastapi import BackgroundTasks as _BT
 
 
+def _can_user_access_post(post: Post, user_id: str, db: Session) -> bool:
+    """
+    🔴 ROUND 26 → ROUND 70 — visibility gate for ANY per-post action.
+
+    Authorized parties:
+      • post author (always)
+      • anyone, when post.visibility ∈ {None, '', 'public'}
+      • anyone, when post.visibility == 'local' (geo-bounded at fetch)
+      • mutual friends (accepted FriendRequest either direction)
+        when post.visibility == 'friends'
+      • author only, when post.visibility == 'private'
+
+    🔴 ROUND 70 fix: the round-26 version returned False for
+    visibility=='friends' even for legit friends — that broke direct-
+    fetch / transcribe for friends posts entirely AND masked the
+    matching IDOR in /api/posts/user/{id} (separately fixed in round 70).
+    Now: query FriendRequest accepted-either-direction.
+    """
+    if post.author_id == user_id:
+        return True
+    visibility = (post.visibility or "public").lower().strip()
+    if visibility in ("", "public", "local"):
+        return True
+    if visibility == "friends":
+        from sqlalchemy import or_, and_
+        from models import FriendRequest
+        is_friend = db.query(FriendRequest).filter(
+            FriendRequest.status == "accepted",
+            or_(
+                and_(FriendRequest.requester_id == user_id,
+                     FriendRequest.recipient_id == post.author_id),
+                and_(FriendRequest.requester_id == post.author_id,
+                     FriendRequest.recipient_id == user_id),
+            )
+        ).first() is not None
+        return is_friend
+    # 'private' or any unknown future value → author only.
+    return False
+
+
 @router.post("/{post_id}/transcribe")
 async def transcribe_voice_post(
     post_id: str,
@@ -1792,34 +2487,49 @@ async def transcribe_voice_post(
     db: Session = Depends(get_db)
 ):
     """Trigger transcription for a voice post. Idempotent."""
-    # ═══ Premium Rate Limit (3/day for free users, unlimited for premium) ═══
-    from middleware.premium_rate_limit import check_ai_quota
-    check_ai_quota(current_user)
+    # 🔴 ROUND 71 S8: REORDERED to check cache + visibility BEFORE
+    # check_ai_quota. Previously a free user hitting an already-ready
+    # post or a non-friend post burned 1 of their 3 daily uses on a
+    # request that returned cached/404. Now: existence + access +
+    # cache short-circuit run first; quota is only charged for an
+    # actual new Gemini job.
     post = db.query(Post).filter(Post.id == post_id).first()
     if not post:
         raise HTTPException(status_code=404, detail="Post not found")
-    
+
+    # 🔴 ROUND 26 — MEDIA-HIGH-10: gate on visibility/author.
+    if not _can_user_access_post(post, current_user.id, db):
+        # 404 hides existence from fishing attackers.
+        raise HTTPException(status_code=404, detail="Post not found")
+
     if not post.voice_url:
         raise HTTPException(status_code=400, detail="Not a voice post")
-    
-    # Idempotent: return cached if ready
+
+    # Idempotent: return cached if ready (no quota charge).
     if post.transcript_status == "ready":
         return {
             "status": "ready",
             "language": post.transcript_language,
             "text": post.transcript_text
         }
-    
-    # Already pending/processing — don't re-queue
+
+    # 🔴 ROUND 71 S8: also short-circuit pending/processing BEFORE
+    # quota charge — repeat polls during an in-flight job must not
+    # consume daily budget.
     if post.transcript_status in ("pending", "processing"):
         return {"status": post.transcript_status}
-    
+
+    # ═══ Premium Rate Limit (3/day for free users, unlimited for premium) ═══
+    # Only reached when this call is genuinely going to enqueue work.
+    from middleware.premium_rate_limit import check_ai_quota
+    check_ai_quota(current_user)
+
     # Queue transcription
     post.transcript_status = "pending"
     db.commit()
-    
+
     background_tasks.add_task(_run_post_transcription, post_id)
-    
+
     print(f"🎙️ Queued post transcription: {post_id[:8]}… by {current_user.username}")
     return {"status": "pending"}
 
@@ -1834,9 +2544,116 @@ def get_post_transcript(
     post = db.query(Post).filter(Post.id == post_id).first()
     if not post:
         raise HTTPException(status_code=404, detail="Post not found")
-    
+
+    # 🔴 ROUND 26 — MEDIA-HIGH-10: same gate as /transcribe — the
+    # transcript content has the same sensitivity as the audio.
+    if not _can_user_access_post(post, current_user.id, db):
+        raise HTTPException(status_code=404, detail="Post not found")
+
     return {
         "status": post.transcript_status or "none",
         "language": post.transcript_language,
         "text": post.transcript_text
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 🔴 ROUND 26 — POST BOOKMARKS (save-for-later)
+#
+# iOS has been POST/DELETE-ing `/api/posts/{id}/bookmark` since release
+# day but the endpoints didn't exist server-side, so every tap was
+# silently 404-ing and the optimistic bookmark UI got rolled back as
+# soon as the network call returned. Adding the endpoints + backing
+# table (see `models.PostBookmark` + migration in `main.py`).
+#
+# Bookmarks are PRIVATE: counts are never returned to other users,
+# bookmark events never push a notification to the post author, and
+# the only listing endpoint (GET /me/bookmarks) is scoped to the
+# calling user.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@router.post("/{post_id}/bookmark")
+def bookmark_post(
+    post_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Save a post to the caller's private bookmarks. Idempotent."""
+    post = db.query(Post).filter(Post.id == post_id).first()
+    if not post:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Post not found"
+        )
+
+    # 🔴 ROUND 70 — gate bookmarks on visibility. A non-friend
+    # bookmarking a friends-only post would later re-fetch the post
+    # via /me/bookmarks → exfiltrating the friends-only content via
+    # the bookmark surface.
+    if not _can_user_access_post(post, current_user.id, db):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Post not found"
+        )
+
+    existing = db.query(PostBookmark).filter(
+        PostBookmark.post_id == post_id,
+        PostBookmark.user_id == current_user.id,
+    ).first()
+    if existing:
+        return {"status": "already_bookmarked", "action": "noop", "is_bookmarked": True}
+
+    bookmark = PostBookmark(
+        post_id=post_id,
+        user_id=current_user.id,
+    )
+    db.add(bookmark)
+    db.commit()
+
+    print(f"🔖 {current_user.username} bookmarked post {post_id[:8]}…")
+    return {"status": "ok", "action": "bookmarked", "is_bookmarked": True}
+
+
+@router.delete("/{post_id}/bookmark")
+def unbookmark_post(
+    post_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Remove a bookmark. Idempotent — missing row returns success too."""
+    bookmark = db.query(PostBookmark).filter(
+        PostBookmark.post_id == post_id,
+        PostBookmark.user_id == current_user.id,
+    ).first()
+
+    if bookmark:
+        db.delete(bookmark)
+        db.commit()
+        print(f"🔖 {current_user.username} unbookmarked post {post_id[:8]}…")
+        return {"status": "ok", "action": "unbookmarked", "is_bookmarked": False}
+
+    return {"status": "not_bookmarked", "action": "noop", "is_bookmarked": False}
+
+
+@router.get("/me/bookmarks")
+def list_my_bookmarks(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    limit: int = 50,
+    offset: int = 0,
+):
+    """Return the caller's bookmarked posts, newest first."""
+    rows = db.query(PostBookmark).filter(
+        PostBookmark.user_id == current_user.id
+    ).order_by(PostBookmark.timestamp.desc()).offset(offset).limit(limit).all()
+
+    return {
+        "bookmarks": [
+            {"post_id": r.post_id, "saved_at": r.timestamp.isoformat()}
+            for r in rows
+        ],
+        "total": db.query(PostBookmark).filter(
+            PostBookmark.user_id == current_user.id
+        ).count(),
     }

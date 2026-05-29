@@ -187,12 +187,20 @@ struct HashtagView: View {
     
     private func toggleFollow() async {
         Haptics.light()
-        
+
         let safeTag = hashtag.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? hashtag
-        
+
         // Optimistic UI update — toggle immediately for snappy UX
         let wasFollowing = isFollowing
         isFollowing.toggle()
+
+        // 🔴 ROUND 26 — unified user-action telemetry (haptic + bg server log).
+        UserActionTelemetry.shared.record(
+            wasFollowing ? .unfollow : .follow,
+            targetId: hashtag,
+            targetType: nil,
+            metadata: ["scope": "hashtag"]
+        )
         
         do {
             struct FollowRequest: Encodable {
