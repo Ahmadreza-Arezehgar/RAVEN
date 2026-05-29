@@ -14,7 +14,11 @@ actor RelayQueueRepository {
     static let shared = RelayQueueRepository()
     
     private let db = DatabaseService.shared
-    
+
+    /// Hard cap on queued relay rows — bounds disk/memory if a peer floods the
+    /// store-and-forward queue (DoS guard). Newest rows are kept on overflow.
+    private static let maxQueuedRelays = 2000
+
     // MARK: - Public API
     
     /// Add a relay envelope to the persistent queue
@@ -30,6 +34,19 @@ actor RelayQueueRepository {
             VALUES (?, ?, ?, ?)
             """,
             params: [envelope.clientMessageId, jsonStr, now, envelope.ttlSeconds]
+        )
+
+        // 🔴 AUDIT 2026-05-29 (#101) — bound the queue under a flood. ISO8601
+        // created_at sorts chronologically, so keep the newest maxQueuedRelays
+        // and evict older rows. The row just inserted (created_at = now) is
+        // always retained.
+        try? await db.execute(
+            """
+            DELETE FROM relay_queue WHERE message_id NOT IN (
+                SELECT message_id FROM relay_queue ORDER BY created_at DESC LIMIT ?
+            )
+            """,
+            params: [Self.maxQueuedRelays]
         )
     }
     

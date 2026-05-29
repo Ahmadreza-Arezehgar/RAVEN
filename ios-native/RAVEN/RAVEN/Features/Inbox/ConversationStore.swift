@@ -219,15 +219,34 @@ class ConversationStore {
         // inbox preview) hold plaintext already; only peer-authored
         // bodies need unwrapping. On decrypt failure the original
         // text is preserved unchanged so diagnostic info isn't lost.
-        if !isOutgoing,
-           let incomingText = normalizedMessage.text,
-           E2EEMessagePipeline.isEncrypted(incomingText) {
-            let plaintext = await E2EEMessagePipeline.unwrapIncoming(
-                text: incomingText,
-                senderUserId: peerId,
-                messageId: normalizedMessage.id
-            )
-            normalizedMessage.text = plaintext
+        if !isOutgoing, let wire = normalizedMessage.text, !wire.isEmpty {
+            // 🔴 AUDIT 2026-05-29 — route on groupKeyVersion FIRST, mirroring
+            // handleIncomingMessages (the batch path). Group AES-GCM ciphertext
+            // has NO RVNS/RVNP magic prefix, so the 1:1 E2EEMessagePipeline
+            // branch below never caught it; group messages delivered via this
+            // single-message path rendered/stored as raw base64 ciphertext.
+            if let version = normalizedMessage.groupKeyVersion,
+               let groupId = normalizedMessage.roomId, !groupId.isEmpty {
+                if let plain = await GroupKeyService.shared.decrypt(
+                    wire, groupId: groupId, version: version
+                ) {
+                    normalizedMessage.text = plain
+                    await MessageEncryptionStatusStore.shared
+                        .record(.sealed, for: normalizedMessage.id)
+                } else {
+                    normalizedMessage.text = "🔒 [Encrypted message — could not decrypt]"
+                    await MessageEncryptionStatusStore.shared
+                        .record(.sealedButFailed, for: normalizedMessage.id)
+                }
+            } else if E2EEMessagePipeline.isEncrypted(wire) {
+                // 1:1 sealed body — unwrap via the 1:1 pipeline.
+                let plaintext = await E2EEMessagePipeline.unwrapIncoming(
+                    text: wire,
+                    senderUserId: peerId,
+                    messageId: normalizedMessage.id
+                )
+                normalizedMessage.text = plaintext
+            }
         }
         // Bug 3 fix: Multi-layer group detection — don't rely solely on in-memory array.
         // 1. Check in-memory conversations (fast path)
@@ -729,6 +748,10 @@ class ConversationStore {
             }
             conversations[index].unreadCount = 0
             lastMsgId = conversations[index].lastMessage?.id
+            // 🔴 AUDIT 2026-05-29 — refresh the app-icon badge on read. Previously
+            // only sortConversations() did this, so the badge stayed stale until
+            // the next sort/APNs event.
+            updateAppBadge()
         }
         
         // 2. Update DB locally ALWAYS to prevent stuck badges
@@ -926,6 +949,8 @@ class ConversationStore {
             updated[index].unreadCount = 0
         }
         conversations = updated
+        // 🔴 AUDIT 2026-05-29 — keep the app-icon badge in sync on mark-all-read.
+        updateAppBadge()
         
         // 2. Update Local DB
         for roomId in unreadRoomIds {

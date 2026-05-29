@@ -15,7 +15,11 @@ actor PendingGroupMessageRepository {
     static let shared = PendingGroupMessageRepository()
     
     private let db = DatabaseService.shared
-    
+
+    /// Hard cap on limbo rows — bounds storage if a peer sprays envelopes for
+    /// non-existent groups (DoS guard). Newest rows are kept on overflow.
+    private static let maxPendingRows = 2000
+
     // MARK: - Table DDL
     
     static func tableCreationSQL() -> [String] {
@@ -48,7 +52,18 @@ actor PendingGroupMessageRepository {
             """,
             params: [envelope.clientMessageId, envelope.recipientId, jsonStr, now]
         )
-        
+
+        // 🔴 AUDIT 2026-05-29 (#101) — bound the limbo table under a flood;
+        // keep the newest maxPendingRows (the just-inserted row is retained).
+        try? await db.execute(
+            """
+            DELETE FROM pending_group_messages WHERE client_message_id NOT IN (
+                SELECT client_message_id FROM pending_group_messages ORDER BY created_at DESC LIMIT ?
+            )
+            """,
+            params: [Self.maxPendingRows]
+        )
+
         #if DEBUG
         print("📦 [PendingGroup] Stored message \(envelope.clientMessageId.prefix(8)) for unknown group \(envelope.recipientId.prefix(8))")
         #endif

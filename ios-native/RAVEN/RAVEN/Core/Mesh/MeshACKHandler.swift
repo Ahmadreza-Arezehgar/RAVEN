@@ -36,15 +36,11 @@ actor MeshACKHandler {
         // Clean old entries periodically
         cleanExpiredEntries()
         
-        if seenMessageIds[messageId] != nil {
-            logger.debug("Duplicate message detected: \(messageId, privacy: .private)")
-            return true
-        }
-
-        // Mark as seen
-        seenMessageIds[messageId] = Date()
-        logger.debug("New message registered: \(messageId, privacy: .private)")
-        return false
+        // READ-ONLY: do NOT mark as seen here. Callers MUST call markAsSeen(_:)
+        // only AFTER the message is durably persisted. Marking pre-persist
+        // burned the ID for 7 days (maxCacheAge), so a re-sprayed copy of a
+        // message whose insert later failed was silently dropped forever.
+        return seenMessageIds[messageId] != nil
     }
     
     /// Mark a message as seen (call when processing incoming message)

@@ -1718,16 +1718,29 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
             #if DEBUG
             print("⚠️ [App] Duplicate mesh message (DB) - sending ACK only")
             #endif
+            // Already durably persisted — safe to record as seen and ACK.
+            await MeshACKHandler.shared.markAsSeen(message.id)
             await MeshACKHandler.shared.sendDeliveryACK(for: message.id, toSenderId: message.senderId)
             return
         }
-        
-        // Insert message
-        try? await messageRepo.upsert(message)
+
+        // Insert message. If the insert FAILS we must NOT mark the ID as seen
+        // and must NOT ACK — returning without either lets the sender re-spray
+        // so the message isn't silently lost (the dedup cache previously burned
+        // the ID for 7 days even when the insert failed).
+        do {
+            try await messageRepo.upsert(message)
+        } catch {
+            logger.error("[MESH] upsert FAILED for \(message.id, privacy: .private) — not ACKing so sender retries: \(error.localizedDescription, privacy: .public)")
+            return
+        }
         #if DEBUG
         print("📥 [MESH] ✅ Message inserted to DB: \(message.id.prefix(8))")
         #endif
-        
+
+        // Durably persisted — now it's safe to record as seen for dedup.
+        await MeshACKHandler.shared.markAsSeen(message.id)
+
         // Update conversation directly (don't use handleIncomingMessage as it has duplicate check)
         let currentUserId = await KeychainService.shared.getUserId() ?? ""
         do {
@@ -1740,9 +1753,10 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
             print("📥 [MESH] ✅ Conversation updated for roomId=\(message.roomId?.prefix(8) ?? "nil")")
             #endif
         } catch {
-            #if DEBUG
-            print("📥 [MESH] ❌ applyMessage FAILED: \(error)")
-            #endif
+            // Message row is already persisted (not lost — chat open / next
+            // loadFromDB surfaces it); only the inbox preview/sort update failed.
+            // Log in release so this isn't silently swallowed.
+            logger.error("[MESH] applyMessage FAILED for \(message.id, privacy: .private): \(error.localizedDescription, privacy: .public)")
         }
         
         // Reload conversations UI
