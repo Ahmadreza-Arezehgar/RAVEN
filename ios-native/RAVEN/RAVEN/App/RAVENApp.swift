@@ -1608,7 +1608,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
                 //   security gain of MESH-CRIT-1 (no auto-downgrade
                 //   on SEND) is preserved — this is only the
                 //   RECEIVE-side render fallback.
-                if level == .legacyClient || level == .suspectedLegacy {
+                if (level == .legacyClient || level == .suspectedLegacy) && FeatureFlag.legacyPlaintextRender.isEnabled {
                     let legacy = MessageContentSealer.unsealLegacyText(wire)
                     message.text = legacy.plaintext
                     await MessageEncryptionStatusStore.shared
@@ -1653,17 +1653,23 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
                     // and proactively flag the sender as
                     // `.suspectedLegacy` so the next message renders
                     // through the explicit rescue path above.
-                    if !wire.isEmpty,
+                    // 🔴 AUDIT 2026-05-29 (#95 / H8.F1) — gate the raw-plaintext
+                    // render behind a default-OFF flag and, critically, do NOT
+                    // auto-promote the sender to .suspectedLegacy. The previous
+                    // code rendered any valid-UTF-8 wire from an .unknown peer as
+                    // plaintext and pinned that peer to legacy forever — a durable
+                    // confidentiality-downgrade primitive. Default is now the
+                    // secure placeholder in the else branch.
+                    if FeatureFlag.legacyPlaintextRender.isEnabled,
+                       !wire.isEmpty,
                        wire.count <= 16 * 1024,
                        Data(wire.utf8).count == wire.utf8.count,
                        let _ = String(data: Data(wire.utf8), encoding: .utf8) {
                         message.text = wire
                         await MessageEncryptionStatusStore.shared
                             .record(.plaintextLegacy, for: envelope.clientMessageId)
-                        await PeerProtocolCapabilityStore.shared
-                            .record(.suspectedLegacy, for: envelope.senderId)
                         #if DEBUG
-                        print("📡 [App] Mesh recv (round-30 rescue): unknown-level peer \(envelope.senderId.prefix(8)) shipped raw plaintext (\(wire.count) chars) — accepting because BLE signature already verified upstream. Marked sender as suspectedLegacy.")
+                        print("📡 [App] Mesh recv (legacy render, flag ON): unknown-level peer \(envelope.senderId.prefix(8)) raw plaintext (\(wire.count) chars) — NOT pinning to legacy.")
                         #endif
                     } else {
                         // Genuinely garbage bytes → strict behaviour.

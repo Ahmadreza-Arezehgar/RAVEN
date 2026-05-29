@@ -981,7 +981,14 @@ enum MeshGroupBroadcaster {
         // 🔐 ROUND 75 Phase 2 — legacy plaintext fallback ONLY when at
         // least one member has no ATSAM pairing. When every member is
         // covered by ATSAM, the plaintext key is never on the wire.
-        if !unrootedMembers.isEmpty {
+        //
+        // 🔴 AUDIT 2026-05-29 (#97 / H8.F5) — this fallback puts the RAW AES
+        // group key into MeshEnvelope.text in cleartext over BLE, so any
+        // passive listener in range captures it and can decrypt the group.
+        // It is now gated behind a default-OFF feature flag. When disabled
+        // (the default), unrooted members receive the key via the targeted
+        // ATSAM path once a post-quantum pair is established — never cleartext.
+        if !unrootedMembers.isEmpty && FeatureFlag.legacyPlaintextGroupKey.isEnabled {
             var envelope = MeshEnvelope(
                 clientMessageId: "groupKey-\(groupId)-v\(version)-\(UUID().uuidString.prefix(8))",
                 roomId: groupId,

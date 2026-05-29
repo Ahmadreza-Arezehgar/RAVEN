@@ -22,6 +22,8 @@ enum FeatureFlag: String, CaseIterable {
     case proximaVault      = "proxima_vault_v3_1_2"
     case proximaVaultStealth = "proxima_vault_stealth_v3_2"
     case atsam             = "atsam_v1_stage1"
+    case legacyPlaintextGroupKey = "legacy_plaintext_group_key_v1"
+    case legacyPlaintextRender = "legacy_plaintext_render_v1"
 
     /// Human-readable display name for settings UI.
     var displayName: String {
@@ -37,6 +39,8 @@ enum FeatureFlag: String, CaseIterable {
         case .proximaVault:       return "PROXIMA-VAULT (OTP)"
         case .proximaVaultStealth: return "PV-Stealth (rotating tags)"
         case .atsam:              return "ATSAM hybrid pairing"
+        case .legacyPlaintextGroupKey: return "Legacy Plaintext Group Key"
+        case .legacyPlaintextRender: return "Legacy Plaintext Render"
         }
     }
 
@@ -79,6 +83,10 @@ enum FeatureFlag: String, CaseIterable {
             // sessions keep working but new pairs fall back to the
             // pre-ATSAM Noise IK path.
             return "Post-quantum hybrid pairing root + HKDF key tree (Raven's production security protocol, on by default)"
+        case .legacyPlaintextGroupKey:
+            return "DANGER: broadcasts the group key in cleartext over BLE to members without a post-quantum pair. Off by default — the key is otherwise withheld until pairing."
+        case .legacyPlaintextRender:
+            return "DANGER: render raw mesh wire from unknown/legacy peers as plaintext. Off by default — undecryptable mesh messages otherwise show a placeholder."
         }
     }
 
@@ -96,6 +104,8 @@ enum FeatureFlag: String, CaseIterable {
         case .proximaVault:       return "key.viewfinder"
         case .proximaVaultStealth: return "eye.slash.fill"
         case .atsam:              return "atom"
+        case .legacyPlaintextGroupKey: return "exclamationmark.lock"
+        case .legacyPlaintextRender: return "eye.trianglebadge.exclamationmark"
         }
     }
     
@@ -187,5 +197,18 @@ enum FeatureFlag: String, CaseIterable {
 
     static var isATSAMEnabled: Bool {
         FeatureFlag.atsam.isEnabled
+    }
+
+    /// Default OFF. When off, the cleartext group-key broadcast fallback in
+    /// GroupService.broadcastKey is suppressed (audit 2026-05-29, #97/H8.F5).
+    static var isLegacyPlaintextGroupKeyEnabled: Bool {
+        FeatureFlag.legacyPlaintextGroupKey.isEnabled
+    }
+
+    /// Default OFF. When off, undecryptable mesh wire renders as a placeholder
+    /// instead of raw plaintext, and senders are never pinned to legacy
+    /// (audit 2026-05-29, #95/H8.F1).
+    static var isLegacyPlaintextRenderEnabled: Bool {
+        FeatureFlag.legacyPlaintextRender.isEnabled
     }
 }
