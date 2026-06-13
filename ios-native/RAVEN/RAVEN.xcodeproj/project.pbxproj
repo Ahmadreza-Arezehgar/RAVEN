@@ -242,7 +242,6 @@
 		82AF0621D02FDE740738234F /* GlassNavBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = A24B0071BA60FB3A8F24E666 /* GlassNavBar.swift */; };
 		82F87A56824B6F52401E9460 /* PresentationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91945FDC5EB94A063F8046DD /* PresentationView.swift */; };
 		83621723CE8CF1B0E680714A /* GHVerifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9FFEDB4361A37D23EFB753D /* GHVerifier.swift */; };
-		83643442B73B99B5DFE1C581 /* RevenueCat in Frameworks */ = {isa = PBXBuildFile; productRef = 010B97869A2EDB1F4B61E8B1 /* RevenueCat */; };
 		84633CBD11D02E4AB6B2FE1D /* X3DH.swift in Sources */ = {isa = PBXBuildFile; fileRef = B16D7B8F984E68C712BE3163 /* X3DH.swift */; };
 		8480495DA0C1B09350B0AC48 /* ChatMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 940B0DD357723D66D484EADF /* ChatMessage.swift */; };
 		849F913859E4F75643818245 /* MeshCryptoService.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC7E3F7E3B80DD73A6C65081 /* MeshCryptoService.swift */; };
@@ -1171,7 +1170,6 @@
 				5157BB032F2D369C003B3AB8 /* GoogleSignIn in Frameworks */,
 				5157BB052F2D369C003B3ABA /* GoogleSignInSwift in Frameworks */,
 				F503642FD16698774552E23D /* SQLCipher in Frameworks */,
-				83643442B73B99B5DFE1C581 /* RevenueCat in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -2583,7 +2581,6 @@
 				5157BB062F2D369C003B3ABB /* GoogleSignInSwift */,
 				51784DE62F329757006BC45A /* LiveKit */,
 				521FEB9344DC6D60786129F5 /* SQLCipher */,
-				010B97869A2EDB1F4B61E8B1 /* RevenueCat */,
 			);
 			productName = RAVEN;
 			productReference = 2544E5B1E7659A7BA6F06444 /* RAVEN.app */;
@@ -2671,7 +2668,6 @@
 				5157BB022F2D369C003B3AB7 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */,
 				51784DE52F329757006BC45A /* XCRemoteSwiftPackageReference "client-sdk-swift" */,
 				3C8B25AF49760BBD3F6B67BA /* XCRemoteSwiftPackageReference "SQLCipher" */,
-				4DC43ADCE45E2D2BA38A8C0A /* XCRemoteSwiftPackageReference "purchases-ios-spm" */,
 			);
 			productRefGroup = 068F80C7519D0528FB08E821 /* Products */;
 			projectDirPath = "";
@@ -3774,14 +3770,6 @@
 				version = 0.0.4;
 			};
 		};
-		4DC43ADCE45E2D2BA38A8C0A /* XCRemoteSwiftPackageReference "purchases-ios-spm" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/RevenueCat/purchases-ios-spm.git";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 5.0.0;
-			};
-		};
 		5157BB022F2D369C003B3AB7 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/google/GoogleSignIn-iOS";
@@ -3801,11 +3789,6 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		010B97869A2EDB1F4B61E8B1 /* RevenueCat */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 4DC43ADCE45E2D2BA38A8C0A /* XCRemoteSwiftPackageReference "purchases-ios-spm" */;
-			productName = RevenueCat;
-		};
 		5157BB042F2D369C003B3AB9 /* GoogleSignIn */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 5157BB022F2D369C003B3AB7 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */;

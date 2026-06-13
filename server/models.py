@@ -43,7 +43,12 @@ class User(Base):
     # one extra column read on the existing user-fetch query.
     tokens_invalidated_at = Column(DateTime, nullable=True)
     is_verified = Column(Boolean, default=False)  # Verified badge (blue tick)
-    is_premium = Column(Boolean, default=False)   # RAVEN+ subscription (golden crown)
+    # MESSENGER PIVOT (2026-06): RAVEN+ subscription removed — every account is
+    # premium for free. Default True, and premium_expires_at left NULL (= a
+    # permanent grant), so the lazy-expiry downgrade in users.py never fires.
+    # One-time migration for existing rows:
+    #   UPDATE users SET is_premium = true, premium_expires_at = NULL;
+    is_premium = Column(Boolean, default=True)   # all features free for everyone
     premium_expires_at = Column(DateTime, nullable=True)  # When subscription expires (null = permanent)
     verified_at = Column(DateTime, nullable=True)  # When identity verification was approved
     verification_badge_type = Column(String, default='identity', nullable=True)  # identity, business, creator

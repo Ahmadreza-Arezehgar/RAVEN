@@ -83,15 +83,6 @@
       }
     },
     {
-      "identity" : "purchases-ios-spm",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/RevenueCat/purchases-ios-spm.git",
-      "state" : {
-        "revision" : "98435c3d7b0f6210b2303fc7f2ec09510d4790b6",
-        "version" : "5.74.0"
-      }
-    },
-    {
       "identity" : "sqlcipher",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/stoneburner/SQLCipher.git",

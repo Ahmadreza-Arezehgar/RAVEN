@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from database import engine, Base
-from routers import auth, users, messages, posts, uploads, comments, search, counts, voice, backup, subscriptions, notifications, devices, knowledge, groups, reports, blocks, debug_email, ai, events, recommendation, hashtags, admin, presence, contacts, rooms, livekit, mentions, verification_identity, discovery, data_export, webhook_revenuecat, snaps, message_requests, channels, stats, atsam_prekey, mesh, public, attest
+from routers import auth, users, messages, posts, uploads, comments, search, counts, voice, backup, subscriptions, notifications, devices, knowledge, groups, reports, blocks, debug_email, ai, events, recommendation, hashtags, admin, presence, contacts, rooms, livekit, mentions, verification_identity, discovery, data_export, snaps, message_requests, channels, stats, atsam_prekey, mesh, public, attest
 import models  # ✅ CRITICAL: Import all models to register them with Base.metadata
 from logging_config import configure_secure_logging
 import os
@@ -1070,7 +1070,6 @@ app.include_router(rooms.router)  # Audio rooms (Clubhouse-like)
 app.include_router(livekit.router)  # LiveKit token generation
 app.include_router(mentions.router)  # @mention tracking and notifications
 app.include_router(data_export.router)  # GDPR-style "Download My Data"
-app.include_router(webhook_revenuecat.router)  # RevenueCat payment webhooks
 app.include_router(snaps.router)  # Ephemeral photo messages
 app.include_router(message_requests.router)  # Message request accept/decline
 app.include_router(channels.router)  # Broadcast channels (Telegram-style)

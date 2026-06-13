@@ -22,10 +22,12 @@ struct PremiumLimits {
     }
     
     /// Convenience accessor for current premium status.
-    /// Returns true if EITHER the live RevenueCat status or the persisted
-    /// cache says premium — prevents Ghost Mode leaks on cold start.
+    /// MESSENGER PIVOT (2026-06): RAVEN+ subscription removed — every feature
+    /// is free for everyone, so this is hardcoded `true`. All thresholds below
+    /// therefore resolve to the former RAVEN+ tier (2 GB uploads, lossless
+    /// media, 10-min voice, unlimited AI, 72h/50-hop mesh, Ghost Mode, …).
     nonisolated(unsafe) static var isPremium: Bool {
-        SubscriptionService.shared.isPremium || isPremiumCached
+        true
     }
     
     // ═══════════════════════════════════════════════════════════════════

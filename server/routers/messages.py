@@ -391,13 +391,9 @@ async def send_message(
     ).first() is not None
     
     if not are_friends:
-        # Non-friends: only RAVEN+ users can send message requests
-        if not getattr(current_user, 'is_premium', False):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Only RAVEN+ users can send message requests to non-friends"
-            )
-        
+        # MESSENGER PIVOT (2026-06): subscription removed — sending a message
+        # request to a non-friend is free for everyone (previously RAVEN+ only).
+
         # Look up or create a MessageRequest row
         msg_request = db.query(MessageRequest).filter(
             MessageRequest.sender_id == current_user.id,
