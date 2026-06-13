@@ -190,7 +190,6 @@
 		699494391A4C64905E80CA9C /* EditRecipe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 149129F092F88C093B686993 /* EditRecipe.swift */; };
 		6999D3F7E23220142F18887C /* MyQRCodeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58EB746CE4984776EA79B5B8 /* MyQRCodeView.swift */; };
 		69AA36BC95769525BB610773 /* TrustIndicator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B3180AB80AD49C2609074B5 /* TrustIndicator.swift */; };
-		69C996E3DE490F63D2E0C9E0 /* ActiveIntentCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49E8A6957FA9026AA90590A3 /* ActiveIntentCard.swift */; };
 		6A46863FC1F60483C0889D62 /* PrivacySettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1275BC26B1AB83079513DD75 /* PrivacySettingsView.swift */; };
 		6AB7B2F4B1146FA966C369AF /* MessageStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78987C8DA1C8D8E8BF114041 /* MessageStore.swift */; };
 		6BAC89E0A5A095025DD10312 /* AccountsCarousel.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAA2B9A1C2837761FB4589CD /* AccountsCarousel.swift */; };
@@ -276,7 +275,6 @@
 		939457C82FFEBD9B2A8B715D /* CropOverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FA4EDFBDD7A524F8A864072 /* CropOverlayView.swift */; };
 		94A01AF6D73B4A149876049A /* Club.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF315F38846A43E8A0054DB9 /* Club.swift */; };
 		95F893ABF8DE2704294E63B9 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 9788A1872451B15183194D45 /* Assets.xcassets */; };
-		976D80DA62726FF98F67A888 /* AnnounceTravelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32AC10AB2E22DD59200EFC42 /* AnnounceTravelView.swift */; };
 		97D07EDF56BA4106A5735D69 /* ClubService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13DB3E47358445DC86353890 /* ClubService.swift */; };
 		9962BBBD4BDF587E50D4B2DB /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B6B16355719ECD2685832396 /* Foundation.framework */; };
 		9A1E9151350FF377D07DF20C /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7EC34E60BF2DE97008EF940 /* NotificationService.swift */; };
@@ -316,7 +314,6 @@
 		AC95A5E18F55628AA70A0B60 /* DesignSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83E43A3075CD75A8D98910DC /* DesignSettingsView.swift */; };
 		ACA048770E815D7755563571 /* SecurityConstants.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3595CAE5EB005862E23250C7 /* SecurityConstants.swift */; };
 		ACS_BUILD_001 /* AvatarCacheService.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACS_FILEREF_001 /* AvatarCacheService.swift */; };
-		AEFDC9468351D1B849AAEBA4 /* TravelListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56E81F9509C99E1DFEA396D6 /* TravelListView.swift */; };
 		AF6581E90BBF8FD0C4EB0D9C /* LiquidGlassComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCB312536B096C4CCAD60643 /* LiquidGlassComponents.swift */; };
 		AI_BUILD_001 /* AudioItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = AI_FILEREF_001 /* AudioItem.swift */; };
 		AL1234567890ABCD12345678 /* AuthLandingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AL2234567890ABCD12345678 /* AuthLandingView.swift */; };
@@ -665,7 +662,6 @@
 		2EB6F3500CBA0FF9883C7A0B /* ReadReceiptStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ReadReceiptStore.swift; sourceTree = "<group>"; };
 		2F7FBA02D6144327A24C00B8 /* ClubMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClubMapView.swift; sourceTree = "<group>"; };
 		30023C6094666B2BF2F407EC /* E2EEService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = E2EEService.swift; sourceTree = "<group>"; };
-		32AC10AB2E22DD59200EFC42 /* AnnounceTravelView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AnnounceTravelView.swift; sourceTree = "<group>"; };
 		3595CAE5EB005862E23250C7 /* SecurityConstants.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SecurityConstants.swift; sourceTree = "<group>"; };
 		37B7B8D0890A4A8696929DA8 /* ClubListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClubListView.swift; sourceTree = "<group>"; };
 		387B41CE88812989083A5ED9 /* SelectMembersView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SelectMembersView.swift; path = ../../Groups/SelectMembersView.swift; sourceTree = "<group>"; };
@@ -700,7 +696,6 @@
 		46D0B61C3669F1F7D465A889 /* AudioRoomManager.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AudioRoomManager.swift; sourceTree = "<group>"; };
 		47D098DD72F1414ABF33E54C /* VaultRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RAVEN/Features/Vault/VaultRepository.swift; sourceTree = SOURCE_ROOT; };
 		48BE7BC422FDD05A99455973 /* PeerProtocolCapabilityStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PeerProtocolCapabilityStore.swift; sourceTree = "<group>"; };
-		49E8A6957FA9026AA90590A3 /* ActiveIntentCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ActiveIntentCard.swift; sourceTree = "<group>"; };
 		4A1F1D9EB88130DC353BF7E9 /* ChatMessage+RouteLabel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = "ChatMessage+RouteLabel.swift"; sourceTree = "<group>"; };
 		4A2B3C4D5E6F4A2B3C4D5E6F /* RUMRelayService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RUMRelayService.swift; sourceTree = "<group>"; };
 		4A78723702638BF052074739 /* ATSAMMLKem.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMMLKem.swift; sourceTree = "<group>"; };
@@ -741,7 +736,6 @@
 		55F58676C59BE4713F2046C4 /* NotificationsListView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NotificationsListView.swift; sourceTree = "<group>"; };
 		5625DCAB549B421CBBEE4AA4 /* EchoRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EchoRepository.swift; sourceTree = "<group>"; };
 		565F182CD43AED35E32682B2 /* MessageRouter.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MessageRouter.swift; path = RAVEN/Core/Mesh/MessageRouter.swift; sourceTree = "<group>"; };
-		56E81F9509C99E1DFEA396D6 /* TravelListView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TravelListView.swift; sourceTree = "<group>"; };
 		57E3CD269488745FE38D2463 /* SwipeReplyModifier.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Modifiers/SwipeReplyModifier.swift; sourceTree = "<group>"; };
 		587193F5374400847B89D49B /* NetworkMonitor.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NetworkMonitor.swift; sourceTree = "<group>"; };
 		58EB746CE4984776EA79B5B8 /* MyQRCodeView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MyQRCodeView.swift; sourceTree = "<group>"; };
@@ -2133,9 +2127,6 @@
 		B379C959B5CAF3725A4DA71B /* Mule */ = {
 			isa = PBXGroup;
 			children = (
-				32AC10AB2E22DD59200EFC42 /* AnnounceTravelView.swift */,
-				49E8A6957FA9026AA90590A3 /* ActiveIntentCard.swift */,
-				56E81F9509C99E1DFEA396D6 /* TravelListView.swift */,
 			);
 			path = Mule;
 			sourceTree = "<group>";
@@ -3116,9 +3107,6 @@
 				D2A51B5072944AA21971AF4E /* GatewaySettingsView.swift in Sources */,
 				228B691CFBC23FFAC534D698 /* TravelIntent.swift in Sources */,
 				3B8FF0E57BF7251A31FB82F4 /* MuleService.swift in Sources */,
-				976D80DA62726FF98F67A888 /* AnnounceTravelView.swift in Sources */,
-				69C996E3DE490F63D2E0C9E0 /* ActiveIntentCard.swift in Sources */,
-				AEFDC9468351D1B849AAEBA4 /* TravelListView.swift in Sources */,
 				CD92D3B936B11DA1CE232F76 /* RatchetCrypto.swift in Sources */,
 				9C62655133CE23351C250DCA /* RatchetHeader.swift in Sources */,
 				DFF4C363D1F8C35392019FB7 /* PreKeyBundle.swift in Sources */,
