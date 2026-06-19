@@ -543,10 +543,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         BLEMeshEngine.shared.onACKReceived = { ack in
             Task { await Self.handleMeshACK(ack) }
         }
-        BLEMeshEngine.shared.onMeshPostReceived = { envelope in
-            Task { await MeshPostService.shared.handleIncoming(envelope) }
-        }
-        
+
         #if DEBUG
         print("📡 [App] Bluetooth Mesh started synchronously ✅")
         #endif
@@ -580,22 +577,10 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
                 print("📡 [App] Database & mesh sync ready ✅")
                 #endif
                 
-                // 🚀 Pre-warm FeedStore cache — triggers eager SQLite read
-                // so cached posts are in memory BEFORE FeedView appears.
-                // This access creates the singleton which fires warmCacheOnStartup().
-                await MainActor.run { _ = FeedStore.shared }
-                #if DEBUG
-                print("🚀 [App] FeedStore cache pre-warmed ✅")
-                #endif
-                
-                // 🌐 Register mesh-native feature handlers (Echo, Club, Vault)
+                // 🌐 Register mesh-native feature handlers (Vault)
                 await MainActor.run {
-                    EchoService.shared.registerMeshHandlers()
-                    ClubService.shared.registerMeshHandlers()
                     VaultService.shared.registerMeshHandlers()
                 }
-                // Restore active Club session if any
-                await ClubService.shared.restoreActiveSession()
                 #if DEBUG
                 print("🌐 [App] Mesh feature handlers registered ✅")
                 #endif

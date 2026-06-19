@@ -60,11 +60,7 @@ final class BlockService {
         // 1. Optimistic UI: Add to block list and INSTANTLY remove content from feeds
         await MainActor.run {
             blockedUserIds.insert(userId)
-            
-            // APPLE GUIDELINE 1.2: Instantly remove blocked user's content from all feeds
-            FeedStore.shared.mergedLocalPosts.removeAll { $0.authorId == userId }
-            FeedStore.shared.friendsPosts.removeAll { $0.authorId == userId }
-            FeedStore.shared.recommendedPosts.removeAll { $0.authorId == userId }
+            // Instantly hide the blocked user's conversations.
             ConversationStore.shared.conversations.removeAll { !$0.isGroup && $0.peer.userId == userId }
         }
         

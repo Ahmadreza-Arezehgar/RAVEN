@@ -1432,14 +1432,6 @@ struct ChatView: View {
         // compiler into a 60-second timeout. Hoisting it out keeps
         // the modifier compilation cheap.
         .fullScreenCover(item: $selectedChatVideo) { video in
-            let media = PostMedia(
-                id: video.id.uuidString,
-                url: video.url.absoluteString,
-                orderIndex: 0,
-                mediaType: "video",
-                thumbnailUrl: nil,
-                topComments: nil
-            )
             // 🔴 ROUND 70 — wrap chat-bubble video in the secure
             // host so screen recording / AirPlay can't lift vault
             // video frames. Detection: a vault video URL ends in
@@ -1451,14 +1443,8 @@ struct ChatView: View {
                 let lower = video.url.absoluteString.lowercased()
                 return lower.hasSuffix(".vlt") || lower.contains(".vlt?")
             }()
-            FullScreenVideoPlayer(
-                media: [media],
-                startIndex: 0,
-                startTime: .zero,
-                chapters: [],
-                post: nil
-            )
-            .vaultScreenshotProtected(isVaultVideo)
+            ChatFullScreenVideoPlayer(url: video.url)
+                .vaultScreenshotProtected(isVaultVideo)
         }
         .sheet(isPresented: $showVaultSheet) {
             VaultLockSheet(vaultLock: $pendingVaultLock)
@@ -1717,52 +1703,6 @@ struct ChatView: View {
             // Reset the window.
             screenshotCount = 0
             screenshotWindowHadVault = false
-        }
-    }
-
-    private func publishMessageToFeed(_ message: ChatMessage, visibility: String) async {
-        let text = message.text ?? ""
-        let clientPostId = UUID().uuidString
-        let draft = LocalPostDraft(
-            clientPostId: clientPostId,
-            authorId: AuthService.shared.currentUser?.id ?? "",
-            authorUsername: AuthService.shared.currentUser?.username ?? "",
-            authorAvatar: AuthService.shared.currentUser?.avatarPath,
-            content: text,
-            imageUrl: message.attachmentUrl,
-            imageUrls: message.attachmentUrl != nil ? [message.attachmentUrl!] : nil,
-            visibility: visibility,
-            latitude: nil,
-            longitude: nil,
-            status: .posted,
-            timestamp: Date(),
-            initialSend: "internet",
-            voiceUrl: message.type == .voice ? message.attachmentUrl : nil,
-            voiceDuration: message.audioDurationSeconds,
-            waveform: nil
-        )
-        await FeedStore.shared.insertDraft(draft)
-        do {
-            struct CreatePostBody: Encodable {
-                let content: String
-                let visibility: String
-                let imageUrl: String?
-                let voiceUrl: String?
-                let voiceDuration: Int?
-            }
-            let _: Post = try await NetworkService.shared.post(
-                path: "/api/posts/create",
-                body: CreatePostBody(
-                    content: text,
-                    visibility: visibility,
-                    imageUrl: message.attachmentUrl,
-                    voiceUrl: message.type == .voice ? message.attachmentUrl : nil,
-                    voiceDuration: message.audioDurationSeconds
-                )
-            )
-            Haptics.success()
-        } catch {
-            Haptics.error()
         }
     }
 
@@ -2138,8 +2078,8 @@ struct ChatView: View {
             isGroupChat: conversation.isGroup,
             isChannel: conversation.isChannel,
             isPrivateChannel: conversation.channelType == "private",
-            onPublish: { visibility in
-                Task { await publishMessageToFeed(message, visibility: visibility) }
+            onPublish: { _ in
+                // Posts/feed removed in the messenger pivot — no-op.
             },
             onTogglePin: {
                 let mid = serverIdOrLocal(message)
@@ -3397,11 +3337,6 @@ struct MessageBubbleView: View {
     private var effectiveType: MessageType {
         if message.type == .text,
            let text = message.text {
-            if text.contains("\"postId\""),
-               text.contains("\"authorUsername\""),
-               PostSharePayload.decode(from: text) != nil {
-                return .postShare
-            }
             if text.contains("\"userId\""),
                text.contains("\"username\""),
                text.contains("\"displayName\""),
@@ -3589,16 +3524,8 @@ struct MessageBubbleView: View {
                     statusIcon: isFromMe ? statusIcon : nil
                 )
                 .vaultScreenshotProtected(isVaultVoice)
-
-                // Transcription chip — glass style below capsule
-                if let serverId = message.serverId ?? (message.id.count > 8 ? message.id : nil) {
-                    TranscriptPill(
-                        contentId: serverId,
-                        contentType: .message(isGroup: isGroupChat, groupId: groupId)
-                    )
-                }
             }
-            
+
         case .file:
             // Legacy video bubbles sit in the DB as `type=.file` with
             // a video MIME / `.mp4` filename. Sniff and route through
@@ -3621,7 +3548,9 @@ struct MessageBubbleView: View {
             LocationMessageView(message: message, isFromMe: isFromMe, onTap: onLocationTap)
             
         case .postShare:
-            PostShareMessageView(message: message, isFromMe: isFromMe)
+            // Posts were removed in the messenger pivot; render any legacy
+            // post-share message as plain text rather than a post card.
+            mentionHighlightedText
 
         case .contactCard:
             ContactCardMessageView(message: message, isFromMe: isFromMe)
@@ -5813,243 +5742,6 @@ struct LocationMessageView: View {
         }
     }
 }
-
-// MARK: - Post Share Message View (Liquid Glass Capsule Card)
-struct PostShareMessageView: View {
-    let message: ChatMessage
-    let isFromMe: Bool
-    
-    @State private var isExpanded = false
-    
-    private var payload: PostSharePayload? {
-        guard let text = message.text else { return nil }
-        // Filter out raw encrypted / failed-decrypt content
-        if text.hasPrefix("gAAAA") || text.hasPrefix("eyJ") || text.contains("DECRYPT_FAILED") {
-            return nil
-        }
-        return PostSharePayload.decode(from: text)
-    }
-    
-    /// Delivery-based accent color
-    private var accentColor: Color {
-        switch message.deliveryAuthority {
-        case .mesh: return .purple
-        case .server: return .blue
-        case .unknown: return .gray
-        }
-    }
-    
-    /// Status icon (sent messages only)
-    @ViewBuilder
-    private var statusIcon: some View {
-        switch message.status {
-        case .sent, .accepted:
-            Image(systemName: "checkmark")
-                .font(.system(size: 9, weight: .bold))
-                .foregroundStyle(accentColor.opacity(0.7))
-        case .delivered:
-            Image(systemName: "checkmark")
-                .font(.system(size: 9, weight: .bold))
-                .foregroundStyle(accentColor)
-        case .read:
-            HStack(spacing: -3) {
-                Image(systemName: "checkmark")
-                Image(systemName: "checkmark")
-            }
-            .font(.system(size: 9, weight: .bold))
-            .foregroundStyle(accentColor)
-        case .failed:
-            Image(systemName: "exclamationmark.circle.fill")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.red)
-        default:
-            EmptyView()
-        }
-    }
-    
-    var body: some View {
-        VStack(alignment: isFromMe ? .trailing : .leading, spacing: 4) {
-            // ── Card ──
-            VStack(alignment: .leading, spacing: 0) {
-                // Header: "↪ Shared Post"
-                HStack(spacing: 5) {
-                    Image(systemName: "arrowshape.turn.up.forward.fill")
-                        .font(.system(size: 9, weight: .semibold))
-                    Text("Shared Post")
-                        .font(.system(size: 11, weight: .semibold))
-                }
-                .foregroundStyle(.secondary.opacity(0.7))
-                .padding(.horizontal, 14)
-                .padding(.top, 10)
-                .padding(.bottom, 6)
-                
-                if let payload = payload {
-                    // ── Author row ──
-                    HStack(spacing: 8) {
-                        // Avatar circle with gradient
-                        ZStack {
-                            Circle()
-                                .fill(
-                                    LinearGradient(
-                                        colors: [
-                                            accentColor.opacity(0.5),
-                                            accentColor.opacity(0.25)
-                                        ],
-                                        startPoint: .topLeading,
-                                        endPoint: .bottomTrailing
-                                    )
-                                )
-                            Text(String(payload.authorUsername.prefix(1)).uppercased())
-                                .font(.system(size: 11, weight: .bold, design: .rounded))
-                                .foregroundStyle(.white)
-                        }
-                        .frame(width: 26, height: 26)
-                        
-                        Text("@\(payload.authorUsername)")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(accentColor)
-                        
-                        Spacer()
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.bottom, 8)
-                    
-                    // ── Post content (full, no truncation) ──
-                    if !payload.textPreview.isEmpty {
-                        Text(payload.textPreview)
-                            .font(.system(size: 14))
-                            .foregroundStyle(.primary.opacity(0.88))
-                            .fixedSize(horizontal: false, vertical: true)
-                            .padding(.horizontal, 14)
-                            .padding(.bottom, payload.thumbUrl != nil ? 8 : 10)
-                    }
-                    
-                    // ── Thumbnail (adaptive, rounded mask) ──
-                    // Uses CachedAsyncImage so link previews don't re-fetch
-                    // every time the message bubble enters the viewport.
-                    if let thumbUrl = payload.thumbUrl, let url = URL(string: thumbUrl) {
-                        CachedAsyncImage(url: url) { image in
-                            image
-                                .resizable()
-                                .aspectRatio(contentMode: .fill)
-                                .frame(maxWidth: .infinity)
-                                .frame(maxHeight: 200)
-                                .clipped()
-                        } placeholder: {
-                            Rectangle()
-                                .fill(Color.primary.opacity(0.04))
-                                .frame(height: 100)
-                                .overlay {
-                                    ProgressView()
-                                        .tint(.secondary.opacity(0.5))
-                                }
-                        }
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                        .padding(.horizontal, 10)
-                        .padding(.bottom, 10)
-                    }
-                } else {
-                    // ── Decrypt / decode failure fallback ──
-                    HStack(spacing: 10) {
-                        ZStack {
-                            Circle()
-                                .fill(.ultraThinMaterial)
-                                .frame(width: 36, height: 36)
-                            Image(systemName: "lock.fill")
-                                .font(.system(size: 14, weight: .medium))
-                                .foregroundStyle(.secondary.opacity(0.7))
-                        }
-                        
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Unable to decrypt this post")
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundStyle(.secondary)
-                            Text("Content unavailable")
-                                .font(.system(size: 11))
-                                .foregroundStyle(.secondary.opacity(0.6))
-                        }
-                        
-                        Spacer()
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.bottom, 12)
-                }
-                
-                // ── Bottom row: timestamp + status ──
-                HStack(spacing: 4) {
-                    Text(message.timestamp, style: .time)
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(.secondary.opacity(0.6))
-                    
-                    if isFromMe {
-                        statusIcon
-                    }
-                }
-                .padding(.horizontal, 14)
-                .padding(.bottom, 10)
-            }
-            .frame(maxWidth: 280)
-            .background(.ultraThinMaterial)
-            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .stroke(
-                        LinearGradient(
-                            colors: [
-                                Color.white.opacity(0.2),
-                                Color.white.opacity(0.05)
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        lineWidth: 0.7
-                    )
-            )
-            .shadow(color: .black.opacity(0.08), radius: 12, y: 4)
-            .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-            .onTapGesture {
-                Haptics.light()
-                // ⚡ Tap = open the shared post in the feed. If the payload
-                // didn't decode (encrypted / not yet received), fall back
-                // to the previous expand-card behaviour.
-                if let postId = payload?.postId, !postId.isEmpty {
-                    DeepLinkRouter.shared.route(to: .post(postId: postId))
-                } else {
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
-                        isExpanded.toggle()
-                    }
-                }
-            }
-            .onLongPressGesture {
-                // Long-press still toggles the expanded preview without leaving the chat
-                Haptics.light()
-                withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
-                    isExpanded.toggle()
-                }
-            }
-        }
-    }
-}
-
-#Preview {
-    NavigationStack {
-        ChatView(conversation: Conversation(
-            roomId: "test_123",
-            peer: .init(userId: "123", username: "testuser", firstName: "Test", lastName: "User", avatarPath: nil),
-            lastMessage: nil,
-            unreadCount: 0,
-            isPinned: false,
-            isMuted: false,
-            updatedAt: Date()
-        ))
-    }
-}
-
-
-
-
-// MARK: - Mesh Delivery Badge
-/// Minimal badge showing mesh delivery path - only displayed for mesh messages
 private struct MeshDeliveryBadge: View {
     let message: ChatMessage
     let isFromMe: Bool
@@ -6526,6 +6218,50 @@ struct ChatVideoPreviewItem: Identifiable {
         self.url = url
         self.fileName = fileName
         self.messageId = messageId
+    }
+}
+
+// MARK: - Chat Full-Screen Video Player
+/// Minimal full-screen AVKit player for chat-bubble videos. Replaces the
+/// feed gallery's `FullScreenVideoPlayer` (removed in the messenger pivot) —
+/// chat only ever plays a single local/remote video URL, so we don't need the
+/// gallery / chapters / post plumbing the old player carried.
+struct ChatFullScreenVideoPlayer: View {
+    let url: URL
+    @Environment(\.dismiss) private var dismiss
+    @State private var player: AVPlayer?
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Color.black.ignoresSafeArea()
+
+            if let player {
+                VideoPlayer(player: player)
+                    .ignoresSafeArea()
+            }
+
+            Button {
+                player?.pause()
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .padding(12)
+                    .background(.ultraThinMaterial, in: Circle())
+            }
+            .padding(.top, 12)
+            .padding(.trailing, 16)
+        }
+        .onAppear {
+            let p = AVPlayer(url: url)
+            player = p
+            p.play()
+        }
+        .onDisappear {
+            player?.pause()
+            player = nil
+        }
     }
 }
 

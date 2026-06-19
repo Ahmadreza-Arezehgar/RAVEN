@@ -61,7 +61,6 @@ final class WatchSnapshotProjector {
         guard !didStart else { return }
         didStart = true
 
-        observeFeedStore()
         observeConversationStore()
         observeWatchIntents()
         observeIncomingMessages()
@@ -164,17 +163,6 @@ final class WatchSnapshotProjector {
 
     // MARK: - Observe store changes
 
-    private func observeFeedStore() {
-        // FeedStore is ObservableObject + @Published. Hop to main so
-        // `schedulePush` runs on the actor it's declared on.
-        FeedStore.shared.objectWillChange
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                Task { @MainActor in self?.schedulePush() }
-            }
-            .store(in: &cancellables)
-    }
-
     /// ConversationStore uses the Swift Observation framework
     /// (`@Observable`), so we observe it with `withObservationTracking`
     /// and self-re-arm on every fired change.
@@ -246,7 +234,6 @@ final class WatchSnapshotProjector {
         let snapshot: [String: Any] = [
             "c": buildConversations(),
             "n": buildNotifications(),
-            "f": buildFeed(),
             "ts": Date().timeIntervalSince1970,
         ]
         WatchBridgeService.shared.pushApplicationContext(snapshot)
@@ -275,29 +262,6 @@ final class WatchSnapshotProjector {
                 "u":  conv.unreadCount,
                 "g":  conv.isGroup,
                 "ai": initial,
-            ]
-        }
-    }
-
-    private func buildFeed() -> [[String: Any]] {
-        // For Watch we use the "merged local" feed since that mirrors
-        // what the iPhone Home tab shows first. Cap at 20 to keep the
-        // WCSession context payload under the 64 KB limit even when
-        // posts have long text.
-        let posts = FeedStore.shared.mergedLocalPosts.prefix(20)
-        return posts.map { p -> [String: Any] in
-            let initial = String(p.authorUsername.prefix(1)).uppercased()
-            let hasMedia = (p.media?.isEmpty == false) || (p.imageUrl != nil)
-            return [
-                "id":  p.id,
-                "an":  p.authorUsername,
-                "ai":  initial,
-                "txt": String(p.content.prefix(280)),
-                "ts":  p.timestamp.timeIntervalSince1970,
-                "lc":  p.likes,
-                "cc":  p.comments,
-                "lm":  p.isLiked,
-                "hm":  hasMedia,
             ]
         }
     }

@@ -654,9 +654,6 @@ class AuthService {
         // 4. Clear in-memory stores
         await MainActor.run {
             ConversationStore.shared.conversations = []
-            FeedStore.shared.mergedLocalPosts = []
-            FeedStore.shared.friendsPosts = []
-            FeedStore.shared.recommendedPosts = []
             NotificationStore.shared.notifications = []
             ContactsService.shared.contacts = []
             ContactsService.shared.matches = []

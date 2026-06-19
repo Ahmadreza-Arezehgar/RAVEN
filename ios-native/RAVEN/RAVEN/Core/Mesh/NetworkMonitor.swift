@@ -288,9 +288,6 @@ final class NetworkMonitor: ObservableObject, NetworkStatusProviding {
         
         // Flush offline read queue
         await PendingReadService.shared.sync()
-        
-        // Sync mesh view receipts to server
-        await MeshViewReceiptService.shared.syncIfOnline()
     }
     
     // MARK: - Private Helpers

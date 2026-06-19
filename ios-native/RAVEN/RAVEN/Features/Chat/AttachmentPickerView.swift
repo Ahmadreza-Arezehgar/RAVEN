@@ -153,6 +153,17 @@ struct DropletButtonStyle: ButtonStyle {
     }
 }
 
+// MARK: - Binding-based single-image picker
+/// Avatar picker used by AccountView / EditProfileView. The original
+/// `ImagePicker` lived in a now-deleted feed file; this binding-based adapter
+/// wraps the surviving callback-based `ImagePickerView`.
+struct ImagePicker: View {
+    @Binding var image: UIImage?
+    var body: some View {
+        ImagePickerView(onImage: { image = $0 })
+    }
+}
+
 // MARK: - Image & Video Picker (PHPicker)
 struct ImagePickerView: UIViewControllerRepresentable {
     let onImage: (UIImage) -> Void

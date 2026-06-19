@@ -84,7 +84,6 @@
 		33398753D087343613BD3F5F /* AuthGateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 558936F70AC3A2A610073CD0 /* AuthGateView.swift */; };
 		33595E88603F154D7C18380A /* VaultModeSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 048FC01795342E1FADE259AC /* VaultModeSettingsView.swift */; };
 		34F28621F8EC29C4E0003C4F /* AccountSettingsList.swift in Sources */ = {isa = PBXBuildFile; fileRef = 408653A89799DF0C0AE97CE1 /* AccountSettingsList.swift */; };
-		35CA760CEDFEA61DF8649660 /* RoomsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BFFDDF6FA621857A60AEDAAD /* RoomsView.swift */; };
 		360BE38F0A7572528211C698 /* DoubleRatchet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8A326D17276905E5635A269 /* DoubleRatchet.swift */; };
 		3968C1377D7C92BA3A5303B6 /* RavenShareExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 3AA92DCCAFF66D50930E422D /* RavenShareExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		397EC88857462C194073BFC4 /* ReadReceiptService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A2FBCE7BF37FCF05F35992A /* ReadReceiptService.swift */; };
@@ -218,7 +217,6 @@
 		8F512B9E7E2B1907E2B22872 /* SnapshotProtection.swift in Sources */ = {isa = PBXBuildFile; fileRef = E42EFA6134BD5F4B9F58152A /* SnapshotProtection.swift */; };
 		900886A9AAC1192E4755DFD0 /* ATSAMMismatchBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1CEABD134762AA2C9914EC7 /* ATSAMMismatchBanner.swift */; };
 		907B4B1ADBF7E57773529F88 /* ReadReceiptStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2EB6F3500CBA0FF9883C7A0B /* ReadReceiptStore.swift */; };
-		916EDEAF4C9D57FB0B99796B /* PublicProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EA37FC3AE87448E5B58A200 /* PublicProfileView.swift */; };
 		9206F98D1CA5D21EFAB29942 /* PencilKitCanvasView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0877DD315E846334CC5D577E /* PencilKitCanvasView.swift */; };
 		939457C82FFEBD9B2A8B715D /* CropOverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FA4EDFBDD7A524F8A864072 /* CropOverlayView.swift */; };
 		95F893ABF8DE2704294E63B9 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 9788A1872451B15183194D45 /* Assets.xcassets */; };
@@ -286,7 +284,6 @@
 		BDFA378B60FCF53F34AB9F21 /* NotificationsSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6843AAA4DCF0DE03EF8FB9CC /* NotificationsSettingsView.swift */; };
 		BE7917FEC7FE4360A15BF92C /* WatchSnapshotProjector.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7DC2CE00EFF475583D88E86 /* WatchSnapshotProjector.swift */; };
 		BEE3EE6B5C92A4E0201362F1 /* FindFriendsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1750831C58A60E1156CB1DC /* FindFriendsView.swift */; };
-		BELL_BUILD_001 /* ProfileBellSettingsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = BELL_FILEREF_001 /* ProfileBellSettingsSheet.swift */; };
 		BF1234567890ABCD12345678 /* BloomFilter.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF2234567890ABCD12345678 /* BloomFilter.swift */; };
 		BF182AC552970372DDCAB9D6 /* ExportSettingsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2EA29B867912ED205BF95EA3 /* ExportSettingsSheet.swift */; };
 		BFCA8CC43178C181B28C4712 /* ConversationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23F5F66FBE3DA26FA2F20A0A /* ConversationStore.swift */; };
@@ -372,7 +369,6 @@
 		FEC46CC6DF25207991FF2E3E /* SecuritySettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1F3C7251AD59AD803910A19 /* SecuritySettingsView.swift */; };
 		FF5EAA9C61716D573FA5DA73 /* TransportTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 98069C49110F27EEE6B5DBF7 /* TransportTypes.swift */; };
 		FFE79819F28FA72A378C353D /* ATSAMSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B826616D8EB87DA086C4FF48 /* ATSAMSettingsView.swift */; };
-		FLS_BUILD_001 /* FollowListSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = FLS_FILEREF_001 /* FollowListSheet.swift */; };
 		GBP1234567890ABCDEEEE0008 /* GatewayBeaconPinStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = GBP2234567890ABCDEEEE0008 /* GatewayBeaconPinStore.swift */; };
 		GS1234567890ABCD12345678 /* GatewayScore.swift in Sources */ = {isa = PBXBuildFile; fileRef = GS2234567890ABCD12345678 /* GatewayScore.swift */; };
 		HB1234567890ABCD12345678 /* Haptics.swift in Sources */ = {isa = PBXBuildFile; fileRef = HB2234567890ABCD12345678 /* Haptics.swift */; };
@@ -576,7 +572,6 @@
 		4ADCEFED219F2D87B74146A6 /* BLEMeshEngine+AdaptiveSpray.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = "BLEMeshEngine+AdaptiveSpray.swift"; sourceTree = "<group>"; };
 		4C1075986F81FA958E8B88B7 /* AppLockView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RAVEN/Features/Security/AppLockView.swift; sourceTree = SOURCE_ROOT; };
 		4DD6A4DC027AF687AB9EC0DE /* ChatEncryptionSummaryChip.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ChatEncryptionSummaryChip.swift; sourceTree = "<group>"; };
-		4EA37FC3AE87448E5B58A200 /* PublicProfileView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PublicProfileView.swift; sourceTree = "<group>"; };
 		4EB0D00A5EBC96EAF057C4A2 /* LocationAttachSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LocationAttachSheet.swift; path = RAVEN/Features/Chat/Location/LocationAttachSheet.swift; sourceTree = "<group>"; };
 		4EBC6383A3214968B185F181 /* PVPadUsageWarning.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PVPadUsageWarning.swift; sourceTree = "<group>"; };
 		4F37906B770052239F99E0A0 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
@@ -636,7 +631,6 @@
 		6C1A980DEEB9E369B7938693 /* VideoPrefetcher.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = VideoPrefetcher.swift; path = Services/VideoPrefetcher.swift; sourceTree = "<group>"; };
 		6C501317A1BBC976D7C71613 /* OnboardingView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
 		6CA8693CC5EBA03E6DE6A61C /* E2EEBootstrap.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = E2EEBootstrap.swift; sourceTree = "<group>"; };
-		6CAD57BD3185C43FC3B71A11 /* PublicProfileView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PublicProfileView.swift; sourceTree = "<group>"; };
 		6D1819C5C98998BE28B07C91 /* EmojiPickerSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = EmojiPickerSheet.swift; path = RAVEN/Features/Chat/EmojiPickerSheet.swift; sourceTree = "<group>"; };
 		6E095ECDF0EAB857600F593D /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/WatchOS.platform/Developer/SDKs/WatchOS11.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
 		6F2C0D1CB7EC1248A4B27343 /* MeshACKHandler.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MeshACKHandler.swift; sourceTree = "<group>"; };
@@ -747,10 +741,8 @@
 		BD58BF74AC6465CB5B3406C0 /* NicknameService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = NicknameService.swift; path = RAVEN/Core/Storage/NicknameService.swift; sourceTree = "<group>"; };
 		BED4C4F06D2C43D2BE9E2337 /* InAppBrowserSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = InAppBrowserSheet.swift; sourceTree = "<group>"; };
 		BEF3BEA38B036BF656B4E77C /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
-		BELL_FILEREF_001 /* ProfileBellSettingsSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ProfileBellSettingsSheet.swift; sourceTree = "<group>"; };
 		BF2234567890ABCD12345678 /* BloomFilter.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BloomFilter.swift; sourceTree = "<group>"; };
 		BF8E7D6C5B4A39281706F5E4 /* SealedSenderEnvelope.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SealedSenderEnvelope.swift; sourceTree = "<group>"; };
-		BFFDDF6FA621857A60AEDAAD /* RoomsView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RoomsView.swift; sourceTree = "<group>"; };
 		C0E5F7DAFC9D08E508183C11 /* FiltersToolView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FiltersToolView.swift; sourceTree = "<group>"; };
 		C1448A9CBB4AA06129A1656A /* ATSAMConstants.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMConstants.swift; sourceTree = "<group>"; };
 		C1F20574C011004900373610 /* ArchivedConversationsView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ArchivedConversationsView.swift; sourceTree = "<group>"; };
@@ -853,7 +845,6 @@
 		FD1B28AC64F2282BF0B2E7AD /* LocationManager.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LocationManager.swift; path = RAVEN/Core/Services/LocationManager.swift; sourceTree = "<group>"; };
 		FD812684EDAC62410FFBA24B /* LottieView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = LottieView.swift; sourceTree = "<group>"; };
 		FF74E95BDCF7E96F1E50E8D6 /* PeerKeyDirectory.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PeerKeyDirectory.swift; path = RAVEN/Core/Security/PeerKeyDirectory.swift; sourceTree = SOURCE_ROOT; };
-		FLS_FILEREF_001 /* FollowListSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FollowListSheet.swift; sourceTree = "<group>"; };
 		GBP2234567890ABCDEEEE0008 /* GatewayBeaconPinStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayBeaconPinStore.swift; sourceTree = "<group>"; };
 		GS2234567890ABCD12345678 /* GatewayScore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GatewayScore.swift; sourceTree = "<group>"; };
 		HB2234567890ABCD12345678 /* Haptics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Haptics.swift; sourceTree = "<group>"; };
@@ -1027,7 +1018,6 @@
 		099058A3E3E58E30FDD46CAA /* Profile */ = {
 			isa = PBXGroup;
 			children = (
-				6CAD57BD3185C43FC3B71A11 /* PublicProfileView.swift */,
 			);
 			path = Profile;
 			sourceTree = "<group>";
@@ -1369,10 +1359,7 @@
 		5157BB392F2E1FD2003B3AB7 /* Profile */ = {
 			isa = PBXGroup;
 			children = (
-				4EA37FC3AE87448E5B58A200 /* PublicProfileView.swift */,
 				537BA16ABE5E4230BF2D30B5 /* UserProfileView.swift */,
-				FLS_FILEREF_001 /* FollowListSheet.swift */,
-				BELL_FILEREF_001 /* ProfileBellSettingsSheet.swift */,
 				DEDB23CD57D1821FBB888A85 /* EditProfileView.swift */,
 			);
 			path = Profile;
@@ -1591,7 +1578,6 @@
 		634F1836687B8E4A85AD84A0 /* Rooms */ = {
 			isa = PBXGroup;
 			children = (
-				BFFDDF6FA621857A60AEDAAD /* RoomsView.swift */,
 			);
 			name = Rooms;
 			path = Rooms;
@@ -2463,7 +2449,6 @@
 				0AEF2FFF425377A0B7CC8FD6 /* TimeFormatter.swift in Sources */,
 				2E788F98C1121CBCC671BDB8 /* InboxView.swift in Sources */,
 				31B24F9DB9DACAD77D9C8611 /* NotificationsView.swift in Sources */,
-				35CA760CEDFEA61DF8649660 /* RoomsView.swift in Sources */,
 				0ABCFE0F8EF41F6468E4DAF6 /* RootView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -2639,10 +2624,7 @@
 				B67A0FDF651604464D2DEB9C /* MessageRouter.swift in Sources */,
 				MMS2602645390CDEF87654321 /* MeshMediaSealer.swift in Sources */,
 				246633D2166805F38F394CC3 /* MeshEnvelope.swift in Sources */,
-				916EDEAF4C9D57FB0B99796B /* PublicProfileView.swift in Sources */,
 				39F9718B233B4DBC9C28AE84 /* UserProfileView.swift in Sources */,
-				FLS_BUILD_001 /* FollowListSheet.swift in Sources */,
-				BELL_BUILD_001 /* ProfileBellSettingsSheet.swift in Sources */,
 				4FDF3215D6EB010860107CA7 /* NotificationsListView.swift in Sources */,
 				3CC9096D8D7CF65CE1D332C4 /* RadialMenuFAB.swift in Sources */,
 				MGE1234567890ABCD12345678 /* MeshGatewayEnvelope.swift in Sources */,

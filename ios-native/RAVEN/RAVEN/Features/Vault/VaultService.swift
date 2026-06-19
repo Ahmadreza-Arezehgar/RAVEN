@@ -46,7 +46,29 @@ final class VaultService: ObservableObject {
         guard let data = try? JSONEncoder().encode(vaultCreatorSecrets) else { return }
         UserDefaults.standard.set(data, forKey: Self.vaultSecretsDefaultsKey)
     }
-    
+
+    // MARK: - Anonymous Pseudonym
+    /// Deterministic, privacy-preserving creator handle for a vault. Replaces
+    /// the old Echo pseudonym generator (removed in the messenger pivot) with a
+    /// self-contained derivation: SHA256(userId) → "Adjective Animal".
+    private static let pseudonymAdjectives = [
+        "Crimson", "Azure", "Silent", "Golden", "Cobalt", "Amber", "Violet",
+        "Shadow", "Ivory", "Ember", "Frost", "Lunar", "Solar", "Onyx", "Jade", "Slate"
+    ]
+    private static let pseudonymAnimals = [
+        "Fox", "Falcon", "Otter", "Lynx", "Heron", "Wolf", "Raven", "Stag",
+        "Marten", "Osprey", "Ibis", "Adder", "Owl", "Hawk", "Crane", "Seal"
+    ]
+
+    static func anonymousPseudonym(for userId: String) -> String {
+        let digest = SHA256.hash(data: Data(userId.utf8))
+        let bytes = Array(digest)
+        let adj = pseudonymAdjectives[Int(bytes[0]) % pseudonymAdjectives.count]
+        let animal = pseudonymAnimals[Int(bytes[1]) % pseudonymAnimals.count]
+        let suffix = Int(bytes[2]) % 100
+        return "\(adj) \(animal) \(suffix)"
+    }
+
     // MARK: - Registration
     
     func registerMeshHandlers() {
@@ -77,7 +99,7 @@ final class VaultService: ObservableObject {
         
         let contentId = UUID().uuidString
         let userId = await KeychainService.shared.getUserId() ?? ""
-        let pseudonym = Echo.generatePseudonym(for: userId)
+        let pseudonym = Self.anonymousPseudonym(for: userId)
         
         // Get target H3 cell(s)
         let targetCell = H3Lite.latLngToCell(lat: targetLat, lng: targetLng, resolution: resolution)

@@ -406,7 +406,6 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
     
     var onMessageReceived: ((MeshEnvelope) -> Void)?
     var onACKReceived: ((MeshACKEnvelope) -> Void)?
-    var onMeshPostReceived: ((MeshPostEnvelope) -> Void)?
     var onPeerConnected: ((String) -> Void)?  // Called with peerId when peer fully connects
     
     // MARK: - Feature Handler Registry
@@ -1881,70 +1880,6 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
             } else if k == MeshInventoryKind.want.rawValue {
                 if let wantFrame = try? decoder.decode(WantFrame.self, from: data) { await handleWant(wantFrame, from: deviceId) }
                 return
-            } else if k == "mesh_post_v1" {
-                let postId = jsonDict["pid"] as? String ?? ""
-                
-                // 💡 PRE-VERIFICATION DEDUP: Check duplicates BEFORE Ed25519 validation
-                let alreadySeen = processedLock.withLock { () -> Bool in
-                    let exists = processedMessages[postId] != nil
-                    if !exists { processedMessages[postId] = Date() }
-                    return exists
-                }
-                if alreadySeen { return }
-                
-                if let postEnvelope = try? decoder.decode(MeshPostEnvelope.self, from: data) {
-                    guard !postEnvelope.postId.isEmpty, !postEnvelope.authorId.isEmpty else {
-                        _ = processedLock.withLock { processedMessages.removeValue(forKey: postId) }
-                        return
-                    }
-
-                    if postEnvelope.signature != nil {
-                        guard postEnvelope.isSignatureValid() else {
-                            _ = processedLock.withLock { processedMessages.removeValue(forKey: postId) }
-                            return
-                        }
-                        if let signerKey = postEnvelope.signerPublicKey {
-                            let authorId = postEnvelope.authorId
-                            let myUserId = await KeychainService.shared.getUserId() ?? ""
-                            if authorId == myUserId {
-                                // Own post echo: still must be signed by our key.
-                                if signerKey != DeviceIdentityService.shared.publicKeyBase64 {
-                                    _ = processedLock.withLock { processedMessages.removeValue(forKey: postId) }
-                                    return
-                                }
-                            }
-                            // 🔴 ROUND 26 (2026-05-17) — CRITICAL FIX (audit Q6).
-                            //
-                            // PREVIOUSLY: posts from strangers (authors NOT
-                            // in our FriendDeviceRepository.trustedDevices)
-                            // were silently rejected here. This broke the
-                            // entire point of the mesh-only Local feed —
-                            // public posts from nearby strangers are
-                            // EXACTLY what that feature is for, and they
-                            // by definition won't be in our friend repo.
-                            // The Local tab stayed empty when offline,
-                            // making the "RAVEN works without internet"
-                            // headline feature dead-on-arrival.
-                            //
-                            // FIX: the Ed25519 signature check at line
-                            // 1853 already proves authorship by *some*
-                            // keyholder. For PUBLIC posts that's enough
-                            // — spam/abuse is handled by per-author mute
-                            // + the seen-dedup, not by friendship status.
-                            // The own-post-echo check above (line 1860)
-                            // still protects against someone forging
-                            // OUR userId — they need our actual key,
-                            // which they can't get.
-                            //
-                            // Trust gate remains on 1:1 / group messages
-                            // (handled in MeshCryptoService.verifySignature
-                            // via the pinned-identity-key check from
-                            // MESH-HIGH-4 round 26).
-                        }
-                    }
-                    await MainActor.run { self.onMeshPostReceived?(postEnvelope) }
-                }
-                return
             } else if k == "raven.gateway.beacon.v1" {
                 // Beacon from a neighbour advertising itself as a gateway.
                 // The MVP doesn't pick gateways yet (single-hop two-phone
@@ -3076,7 +3011,6 @@ extension BLEMeshEngine: CBPeripheralDelegate {
                 self.drainPendingFromOutbox()
                 self.drainRelayQueue(to: peer.deviceId)
                 Task {
-                    await MeshPostService.shared.drainMeshPosts(to: peer.deviceId)
                     await self.initiateInventoryExchange(with: peer.deviceId)
                     // PRoPHET: Record encounter for delivery predictability
                     let encounterId = peer.userId ?? peer.deviceId
@@ -3610,13 +3544,6 @@ extension BLEMeshEngine: CBPeripheralManagerDelegate {
         flushQueueIfNeeded()
         drainPendingFromDB()
         drainPendingFromOutbox()
-        
-        // Drain mesh posts to newly subscribed peer
-        let subscriberDeviceId = getSnapshot().first { $0.peripheral.identifier == central.identifier }?.deviceId
-            ?? central.identifier.uuidString
-        Task {
-            await MeshPostService.shared.drainMeshPosts(to: subscriberDeviceId)
-        }
         
         if runtimeProfile == .backgroundBridge {
             BackgroundMeshManager.shared.beginBackgroundTask(

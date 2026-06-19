@@ -290,6 +290,15 @@ extension PhoneBridge: WCSessionDelegate {
         }
     }
 
+    #if os(iOS)
+    // Required by WCSessionDelegate on iOS only (not watchOS). Present so the
+    // watch target still satisfies the protocol when its sources are compiled
+    // under the iOS SDK (e.g. an embedded-watch build via -sdk iphonesimulator).
+    // No-ops; never invoked on watchOS.
+    nonisolated func sessionDidBecomeInactive(_ session: WCSession) {}
+    nonisolated func sessionDidDeactivate(_ session: WCSession) {}
+    #endif
+
     nonisolated func sessionReachabilityDidChange(_ session: WCSession) {
         Task { @MainActor in
             self.isReachable = session.isReachable && session.activationState == .activated

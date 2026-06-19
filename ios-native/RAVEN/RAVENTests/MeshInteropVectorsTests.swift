@@ -182,36 +182,6 @@ final class MeshInteropVectorsTests: XCTestCase {
             "Either iOS or Windows changed the canonical form — fix BOTH.")
     }
 
-    // ─── Mesh post signing ───────────────────────────────────────────
-
-    /// Twin: `MeshPostEnvelope_SigningData_MatchesPipeFormat` (C#).
-    func testMeshPostSigningData() {
-        let post = MeshPostEnvelope(
-            postId: "post-1",
-            authorId: "alice",
-            authorUsername: "@alice",
-            authorAvatar: "https://cdn.example.com/a.jpg",
-            createdAt: 1_700_000_000.5,
-            scope: "public",
-            text: "hello mesh",
-            ttlHops: 5,
-            ttlSeconds: 86_400,
-            hopCount: 0,
-            routePath: [],
-            originDeviceId: "fp",
-            initialSend: "internet",
-            signature: nil,
-            signerPublicKey: "SPK",
-            showOnRavenShot: nil, latitude: nil, longitude: nil
-        )
-
-        let signingString = String(data: post.signingData(), encoding: .utf8) ?? ""
-        let expected = "POST|post-1|alice|@alice|https://cdn.example.com/a.jpg|hello mesh|1700000000500|public|SPK"
-
-        XCTAssertEqual(signingString, expected,
-            "MeshPostEnvelope.signingData() drifted from the C# twin.")
-    }
-
     // ─── ACK signing ─────────────────────────────────────────────────
 
     /// Twin: `MeshACKEnvelope_SigningData_MatchesPipeFormat` (C#).

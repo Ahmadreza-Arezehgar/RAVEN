@@ -22,28 +22,18 @@ struct RootView: View {
     @State private var selectedTab: Int = 0
 
     var body: some View {
+        // Messenger pivot: Feed (Echo Wall) and Rooms tabs removed — the watch
+        // is now Inbox + Alerts only.
         TabView(selection: $selectedTab) {
             InboxView()
                 .containerBackground(.purple.gradient, for: .tabView)
                 .tabItem { Label("Inbox", systemImage: "message.fill") }
                 .tag(0)
 
-            FeedView()
-                .containerBackground(.blue.gradient, for: .tabView)
-                .tabItem { Label("Feed", systemImage: "square.stack.fill") }
-                .tag(1)
-
-            if !store.snapshot.rooms.isEmpty {
-                RoomsView()
-                    .containerBackground(.orange.gradient, for: .tabView)
-                    .tabItem { Label("Rooms", systemImage: "mic.fill") }
-                    .tag(2)
-            }
-
             NotificationsView()
                 .containerBackground(.pink.gradient, for: .tabView)
                 .tabItem { Label("Alerts", systemImage: "bell.fill") }
-                .tag(3)
+                .tag(1)
         }
         .tabViewStyle(.verticalPage)
         .overlay(alignment: .top) {
@@ -66,11 +56,8 @@ struct RootView: View {
             // every tab once with enough dwell time to screenshot, then
             // exits and leaves the user on the last tab.
             if UserDefaults.standard.bool(forKey: "RAVENWatchAutoTour") {
-                let stops: [Int] = store.snapshot.rooms.isEmpty ? [1, 3] : [1, 2, 3]
-                for tab in stops {
-                    try? await Task.sleep(nanoseconds: 2_500_000_000)
-                    withAnimation { selectedTab = tab }
-                }
+                try? await Task.sleep(nanoseconds: 2_500_000_000)
+                withAnimation { selectedTab = 1 }
             }
         }
     }
