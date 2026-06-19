@@ -16,6 +16,5 @@ struct RavenWidgetsBundle: WidgetBundle {
             RavenWidgetsControl()
         }
         RavenWidgetsLiveActivity()
-        AudioRoomLiveActivity()
     }
 }
