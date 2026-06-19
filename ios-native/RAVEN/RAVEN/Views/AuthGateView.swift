@@ -57,6 +57,7 @@ struct DisplayNameSetupView: View {
     @State private var authService = AuthService.shared
     @State private var name: String = ""
     @State private var isSubmitting = false
+    @State private var errorText: String?
     @FocusState private var focused: Bool
 
     private var trimmed: String {
@@ -109,6 +110,15 @@ struct DisplayNameSetupView: View {
             .disabled(trimmed.isEmpty || isSubmitting)
             .padding(.horizontal, 24)
 
+            if let errorText {
+                Text(errorText)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+                    .transition(.opacity)
+            }
+
             Spacer()
         }
         .navigationBarHidden(true)
@@ -118,8 +128,17 @@ struct DisplayNameSetupView: View {
     private func submit() {
         guard !trimmed.isEmpty, !isSubmitting else { return }
         isSubmitting = true
-        Task {
-            await authService.registerLocalIdentity(displayName: trimmed)
+        errorText = nil
+        // On success, AuthGateView swaps this view out for the main shell, so we
+        // only need to handle the FAILURE path here — otherwise the button would
+        // spin on "Creating identity…" forever (the bug live-testing surfaced
+        // when the Keychain was unavailable).
+        Task { @MainActor in
+            let ok = await authService.registerLocalIdentity(displayName: trimmed)
+            if !ok {
+                isSubmitting = false
+                errorText = "Couldn't create your identity on this device. Please try again."
+            }
         }
     }
 }

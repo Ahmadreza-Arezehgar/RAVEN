@@ -96,10 +96,14 @@ class AuthService {
 
     /// Serverless registration: persist the chosen display name and (re)build
     /// the local identity. Call from the onboarding display-name screen.
-    func registerLocalIdentity(displayName: String) async {
+    /// Returns `true` on success; `false` if device-key generation failed
+    /// (e.g. the Keychain is unavailable) so the caller can surface an error
+    /// instead of spinning on "Creating identity…" forever.
+    @discardableResult
+    func registerLocalIdentity(displayName: String) async -> Bool {
         let trimmed = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
         UserDefaults.standard.set(trimmed.isEmpty ? "Raven User" : trimmed, forKey: Self.localDisplayNameKey)
-        await bootstrapLocalIdentity()
+        return await bootstrapLocalIdentity()
     }
     
     // MARK: - Register
