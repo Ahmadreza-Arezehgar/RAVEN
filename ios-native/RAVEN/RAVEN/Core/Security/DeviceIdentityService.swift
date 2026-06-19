@@ -133,6 +133,18 @@ final class DeviceIdentityService {
         return publicKeyData?.base64EncodedString()
     }
 
+    /// The 32-byte Ed25519 seed (CryptoKit `rawRepresentation`) backing this
+    /// device's signing identity. The serverless libp2p bridge boots its host
+    /// from this same key so a device's libp2p PeerID derives from the same
+    /// public key as its fingerprint — a QR-scanned contact's PeerID is then
+    /// computable locally, no directory needed. Stays in-process: it is handed
+    /// to the in-app libp2p host and never transmitted.
+    var deviceSigningSeed: Data? {
+        keyCacheLock.lock()
+        defer { keyCacheLock.unlock() }
+        return cachedPrivateKey?.rawRepresentation
+    }
+
     // Sync helpers that wrap the locks so async callers don't invoke
     // `NSLock.lock/unlock` directly (Swift 6 flags that as an error).
     private func currentCachedKeys() -> (Curve25519.Signing.PrivateKey?, Curve25519.Signing.PublicKey?) {

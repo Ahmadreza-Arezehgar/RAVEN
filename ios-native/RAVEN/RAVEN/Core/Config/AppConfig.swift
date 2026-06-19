@@ -36,6 +36,20 @@ enum AppConfig {
         "https://raven-server-516053629173.europe-west1.run.app",  // 🇧🇪 Belgium
     ]
     
+    // MARK: - Serverless Bridge (libp2p)
+
+    /// Comma-separated libp2p bootstrap multiaddrs for the serverless bridge
+    /// (DHT discovery + Circuit Relay v2 rendezvous). Empty by default — the
+    /// libp2p host still starts (direct + relayed dials degrade gracefully),
+    /// but discovery is limited until at least one relay/bootstrap peer is set.
+    ///
+    /// Override at runtime (e.g. from remote-config) by writing the key
+    /// `raven.libp2p.bootstrap` to `UserDefaults.standard`. Example value:
+    /// `/dns4/relay.example.com/tcp/4001/p2p/12D3Koo...`.
+    static var libp2pBootstrapCSV: String {
+        UserDefaults.standard.string(forKey: "raven.libp2p.bootstrap") ?? ""
+    }
+
     /// The API base URL to use based on environment
     static var apiBaseURL: String {
         #if DEBUG

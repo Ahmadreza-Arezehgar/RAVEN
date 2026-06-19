@@ -273,26 +273,18 @@ final class MeshGatewayService: ObservableObject {
             return
         }
 
-        // Bug fix (2026-05-15): iOS used to POST to a stub
-        // `/api/gateway/relay` that the server silently dropped (TODO
-        // for v1.7). Switch to the production-ready
-        // `/api/mesh/bridge-envelope` endpoint that the Mac native build
-        // already uses — the server stores it for 24h, fans out to
-        // online WS clients, and serves it to reconnecting clients via
-        // `/api/mesh/pending-bridges`. Wire format: opaque base64 of
-        // the raw payload + an idempotency key (we reuse the nonce).
+        // Push the opaque envelope across the internet via the active bridge
+        // transport. Post-pivot this is the serverless libp2p transport
+        // (`MeshBridge.transport`) — DHT discovery + Circuit Relay v2 — instead
+        // of the old `/api/mesh/bridge-envelope` server endpoint. Wire format:
+        // opaque base64 of the raw payload + an idempotency key (we reuse the
+        // nonce). `recipientHint` carries the destination peer for the
+        // transport to route to.
         do {
-            struct BridgeBody: Encodable {
-                let envelope_b64: String
-                let idempotency_key: String
-            }
-            struct BridgeResp: Decodable { let accepted: Bool; let duplicate: Bool }
-            let _: BridgeResp = try await NetworkService.shared.post(
-                path: "/api/mesh/bridge-envelope",
-                body: BridgeBody(
-                    envelope_b64: req.payload.base64EncodedString(),
-                    idempotency_key: req.nonce.base64EncodedString()
-                )
+            try await MeshBridge.transport.uploadEnvelope(
+                req.payload.base64EncodedString(),
+                idempotencyKey: req.nonce.base64EncodedString(),
+                recipientHint: req.recipientHint
             )
             stats.messagesForwardedOutbound += 1
             stats.bytesRelayed += req.payload.count

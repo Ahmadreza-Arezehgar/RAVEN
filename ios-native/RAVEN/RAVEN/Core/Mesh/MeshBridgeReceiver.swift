@@ -70,7 +70,12 @@ final class MeshBridgeReceiver: NSObject, ObservableObject {
     /// connect. Idempotent + cheap when there's nothing pending.
     func drainPendingBridges() async {
         do {
-            let envelopes = try await NetworkService.shared.pendingBridges(since: lastSyncAt)
+            // Route through the active bridge transport. The serverless libp2p
+            // transport is push-based (inbound envelopes arrive on its
+            // delegate → `ingest(...)`), so `drainPending` returns an empty
+            // batch and this becomes a cheap no-op; a server-backed transport
+            // would return its pending slice here.
+            let envelopes = try await MeshBridge.transport.drainPending(since: lastSyncAt)
             var counter = 0
             for env in envelopes {
                 if await ingest(
@@ -264,40 +269,5 @@ final class MeshBridgeReceiver: NSObject, ObservableObject {
         let removed = keyOrder.prefix(drop)
         keyOrder.removeFirst(drop)
         for k in removed { seenKeys.remove(k) }
-    }
-}
-
-// MARK: - NetworkService extension
-
-extension NetworkService {
-    /// Wire-compatible with the Mac App native build.
-    /// `GET /api/mesh/pending-bridges?since=<iso>`.
-    func pendingBridges(since: Date? = nil) async throws -> [PendingBridgeEnvelope] {
-        struct Wrapper: Decodable {
-            let envelopes: [PendingBridgeEnvelope]
-        }
-        var queryItems: [URLQueryItem] = []
-        if let since {
-            let iso = ISO8601DateFormatter()
-            iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            queryItems.append(URLQueryItem(name: "since", value: iso.string(from: since)))
-        }
-        let response: Wrapper = try await get(
-            path: "/api/mesh/pending-bridges",
-            queryItems: queryItems
-        )
-        return response.envelopes
-    }
-}
-
-struct PendingBridgeEnvelope: Decodable {
-    let idempotencyKey: String
-    let envelopeB64: String
-    let bridgedAt: Date
-
-    enum CodingKeys: String, CodingKey {
-        case idempotencyKey = "idempotency_key"
-        case envelopeB64 = "envelope_b64"
-        case bridgedAt = "bridged_at"
     }
 }

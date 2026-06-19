@@ -145,6 +145,18 @@ struct RAVENApp: App {
                     // observers + starts the score-tick timer.
                     MeshGatewayService.shared.bootstrap()
 
+                    // Boot the serverless internet-bridge transport (libp2p:
+                    // DHT discovery + Circuit Relay v2). The host identity is
+                    // this device's Ed25519 key, so its PeerID derives from the
+                    // same public key as the fingerprint. No-op stub until the
+                    // RavenLibp2p.xcframework is embedded (see LIBP2P_BRIDGE_PLAN.md).
+                    if let seed = DeviceIdentityService.shared.deviceSigningSeed {
+                        LibP2PBridgeTransport.shared.configure(
+                            identitySeed: seed,
+                            bootstrapCSV: AppConfig.libp2pBootstrapCSV
+                        )
+                    }
+
                     // Round 24 — drain any QR friend-requests the
                     // user queued while offline. Hooks
                     // .networkStatusChanged so the actor's flush()

@@ -135,6 +135,15 @@ protocol BridgeTransport: AnyObject {
     var isConnected: Bool { get }
 }
 
+/// Central accessor for the active internet-bridge transport. Post-pivot the
+/// server is off, so this resolves to the serverless libp2p transport.
+/// `MeshGatewayService` (upload) and `MeshBridgeReceiver` (drain) route through
+/// `MeshBridge.transport` rather than calling `NetworkService` directly. Held
+/// as a `var` so tests can inject a mock.
+enum MeshBridge {
+    static var transport: BridgeTransport = LibP2PBridgeTransport.shared
+}
+
 /// Serverless libp2p bridge transport.
 ///
 /// Wraps the go-libp2p host compiled via `gomobile bind`
