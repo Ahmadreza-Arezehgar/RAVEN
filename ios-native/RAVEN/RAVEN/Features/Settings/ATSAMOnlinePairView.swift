@@ -364,7 +364,9 @@ final class ATSAMOnlinePairModel: ObservableObject {
                 peerXPub: bundle.xPub,
                 peerPQPub: bundle.pqPub,
                 context: Data("raven-online-v1".utf8),
-                pairingNonce: nil
+                pairingNonce: nil,
+                selfUserId: localUserId,
+                peerUserId: peerId
             )
 
             // Deposit the pair-init for the peer.
@@ -374,6 +376,17 @@ final class ATSAMOnlinePairModel: ObservableObject {
                 outgoingCiphertext: result.outgoingCiphertext,
                 pairingNonce: result.transcript.pairingNonce,
                 context: "raven-online-v1"
+            )
+
+            // 🔑 Persist the derived root so the ATSAM message sealer
+            // actually activates for this peer. Without this the root is
+            // discarded and `ATSAMMessageSealer.seal` always returns nil,
+            // so every message silently falls back to the legacy path —
+            // ATSAM never protects a live message. Keyed by the PEER's
+            // userId, matching seal (root(for: recipientUserId)) and
+            // unseal (root(for: senderUserId)).
+            try await ATSAMRootStorage.shared.setRoot(
+                result.root, transcript: result.transcript, for: peerId
             )
 
             // Derive the safety number from the root + sorted
@@ -447,13 +460,24 @@ final class ATSAMOnlinePairModel: ObservableObject {
                 peerPQPub: peerPQPub,
                 incomingCiphertext: incomingCT,
                 context: Data(init_.context.utf8),
-                pairingNonce: nonce
+                pairingNonce: nonce,
+                selfUserId: localUserId,
+                peerUserId: init_.fromUser
             )
             let safetyNumber = computeSafetyNumber(
                 root: result.root,
                 userA: localUserId,
                 userB: init_.fromUser
             )
+
+            // 🔑 Persist the derived root so the ATSAM sealer activates
+            // for this peer. Keyed by the PEER's userId (init_.fromUser)
+            // so unseal (root(for: senderUserId)) finds it on receive and
+            // seal (root(for: recipientUserId)) finds it on reply.
+            try await ATSAMRootStorage.shared.setRoot(
+                result.root, transcript: result.transcript, for: init_.fromUser
+            )
+
             try await ATSAMPrekeyService.ackPairInit(id: init_.id)
             pendingInits.removeAll { $0.id == init_.id }
             lastPairOutcome = PairOutcome(
