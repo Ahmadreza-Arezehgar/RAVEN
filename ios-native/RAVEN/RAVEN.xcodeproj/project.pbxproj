@@ -69,7 +69,6 @@
 		1EB90B8CAE17656451DE09F4 /* MainShellView.swift in Sources */ = {isa = PBXBuildFile; fileRef = MS2234567890ABCD12345678 /* MainShellView.swift */; };
 		1ED5AB5091345102006A6B27 /* ConversationRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = 892FE5A24AB1762A534207D9 /* ConversationRepository.swift */; };
 		1F12F5D38A4AC46C5572E8C4 /* AccountView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9AF700954FAA3844C3B83D7 /* AccountView.swift */; };
-		2040BE34A98DA5BF5AA812B2 /* FloatingActionButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1E904486039F07D33387258 /* FloatingActionButton.swift */; };
 		227101255466443012454941 /* MPCTransportService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 002321610551231541640116 /* MPCTransportService.swift */; };
 		228B691CFBC23FFAC534D698 /* TravelIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BCC5702D07BE5DF4AF1B885 /* TravelIntent.swift */; };
 		22DC6E4933ABB7047645682C /* LocationAttachSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EB0D00A5EBC96EAF057C4A2 /* LocationAttachSheet.swift */; };
@@ -909,7 +908,6 @@
 		C08D267FF29E5110C43ED33D /* FeedView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FeedView.swift; sourceTree = "<group>"; };
 		C0E5F7DAFC9D08E508183C11 /* FiltersToolView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FiltersToolView.swift; sourceTree = "<group>"; };
 		C1448A9CBB4AA06129A1656A /* ATSAMConstants.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMConstants.swift; sourceTree = "<group>"; };
-		C1E904486039F07D33387258 /* FloatingActionButton.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FloatingActionButton.swift; sourceTree = "<group>"; };
 		C1F20574C011004900373610 /* ArchivedConversationsView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ArchivedConversationsView.swift; sourceTree = "<group>"; };
 		C1F3C7251AD59AD803910A19 /* SecuritySettingsView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SecuritySettingsView.swift; sourceTree = "<group>"; };
 		C383A9DBA4B1E209921AB26D /* ATSAMOnlinePairView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMOnlinePairView.swift; sourceTree = "<group>"; };
@@ -1259,7 +1257,6 @@
 				0CBCF4EDBAE3B6D70C5F4E80 /* EmptyMessagesStateView.swift */,
 				5DCBC1E064E54B2B8CC4931D /* StateViews.swift */,
 				79DB65C412919E6034D4FB53 /* HashtagText.swift */,
-				C1E904486039F07D33387258 /* FloatingActionButton.swift */,
 				A6ABD9B973FC0A6818E4DC3B /* UserPreviewCard.swift */,
 				D6A17C543F11F3BC467A5032 /* RadialMenuFAB.swift */,
 				E864E83F0DC978CC4230EA21 /* RavenDesignTokens.swift */,
@@ -2916,7 +2913,6 @@
 				5157BB5D2F2EDACD003B3AB7 /* PairingView.swift in Sources */,
 				5157BB5E2F2EDACD003B3AB7 /* DeviceIdentitySettingsView.swift in Sources */,
 				2BEA7A8C92C7394AABF2D8AF /* HashtagText.swift in Sources */,
-				2040BE34A98DA5BF5AA812B2 /* FloatingActionButton.swift in Sources */,
 				B979D336D1BE01779FA26889 /* NotificationStore.swift in Sources */,
 				1A2F9EC16A11F72D2C2AF9C0 /* MarkupEditorView.swift in Sources */,
 				7EC6F11F88B3C01C5E9C6BCD /* SwipeReplyModifier.swift in Sources */,

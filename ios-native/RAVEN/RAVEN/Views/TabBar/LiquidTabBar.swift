@@ -171,7 +171,7 @@ struct LiquidTabBar: View {
 
 // MARK: - Preview
 #Preview {
-    @Previewable @State var tab: AppTab = .home
+    @Previewable @State var tab: AppTab = .messages
     
     ZStack {
         Color.black

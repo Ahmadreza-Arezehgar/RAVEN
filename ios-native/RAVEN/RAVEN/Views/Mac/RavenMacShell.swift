@@ -21,62 +21,42 @@ import SwiftUI
 // MARK: - Sidebar destinations
 // ──────────────────────────────────────────────────────────────────────────
 
+// MESSENGER PIVOT (2026-06): two sections — Chats + Settings (mirrors the iOS
+// two-tab shell). Feed / Rooms / Discover / RavenShot were removed.
 enum MacSidebarItem: String, CaseIterable, Identifiable, Hashable {
-    case feed       = "Feed"
-    case messages   = "Messages"
-    case rooms      = "Rooms"
-    case discover   = "Discover"
-    case ravenshot  = "RavenShot"
-    case account    = "Account"
+    case messages   = "Chats"
+    case account    = "Settings"
 
     var id: String { rawValue }
 
     var icon: String {
         switch self {
-        case .feed:      return "newspaper.fill"
         case .messages:  return "message.fill"
-        case .rooms:     return "waveform.circle.fill"
-        case .discover:  return "magnifyingglass"
-        case .ravenshot: return "map.fill"
-        case .account:   return "person.crop.circle.fill"
+        case .account:   return "gearshape.fill"
         }
     }
 
-    /// Accent tint per section — picks up by `.tint(_:)` and bleeds into
-    /// the Liquid Glass selection capsule.
+    /// Accent tint per section — bleeds into the Liquid Glass selection capsule.
     var tint: Color {
         switch self {
-        case .feed:      return .blue
         case .messages:  return .purple
-        case .rooms:     return .pink
-        case .discover:  return .green
-        case .ravenshot: return .orange
         case .account:   return .gray
         }
     }
 
-    /// Matches the equivalent AppTab on iOS — used so the same
-    /// underlying state model can drive both shells.
+    /// Matches the equivalent AppTab on iOS so the same state model drives both.
     var iosTab: AppTab? {
         switch self {
-        case .feed:      return .home
         case .messages:  return .messages
-        case .discover:  return .discover
         case .account:   return .account
-        case .rooms, .ravenshot: return nil  // dedicated Mac sections
         }
     }
 
-    /// Cmd+N where N maps to the index in `allCases`. Used for keyboard
-    /// shortcut routing.
+    /// Cmd+N keyboard-shortcut routing.
     var keyboardShortcut: KeyEquivalent {
         switch self {
-        case .feed:      return "1"
-        case .messages:  return "2"
-        case .rooms:     return "3"
-        case .discover:  return "4"
-        case .ravenshot: return "5"
-        case .account:   return "6"
+        case .messages:  return "1"
+        case .account:   return "2"
         }
     }
 }
@@ -178,39 +158,17 @@ struct RavenMacShell: View {
     @ViewBuilder
     private var sectionDetail: some View {
         switch selection {
-        case .feed:
-            FeedView()
         case .messages:
-            // Reuse iOS InboxView — works on Catalyst with sensible
-            // defaults; we wrap it in a NavigationStack so detail
-            // pushes (chat) layer on top of inbox.
+            // Reuse iOS InboxView — works on Catalyst; wrapped in a
+            // NavigationStack so the chat detail pushes on top of the inbox.
             NavigationStack {
                 InboxView()
-                    .navigationTitle("Messages")
-            }
-        case .rooms:
-            NavigationStack {
-                RoomListView()
-                    .navigationTitle("Audio Rooms")
-            }
-        case .discover:
-            NavigationStack {
-                DiscoverView()
-                    .navigationTitle("Discover")
-            }
-        case .ravenshot:
-            // RavenShot map — wrap in NavigationStack so toolbar lands.
-            // The view's `isPresented` binding is a sheet-dismiss switch on
-            // iOS; on Mac the section is permanent so we hand it a constant
-            // `true` and ignore the toggle.
-            NavigationStack {
-                RavenShotView(isPresented: .constant(true))
-                    .navigationTitle("RavenShot")
+                    .navigationTitle("Chats")
             }
         case .account:
             NavigationStack {
                 AccountView()
-                    .navigationTitle("Account")
+                    .navigationTitle("Settings")
             }
         }
     }

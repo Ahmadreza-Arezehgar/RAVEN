@@ -188,7 +188,7 @@ struct HapticTabBar: View {
         VStack {
             Spacer()
             HapticTabBar(
-                selected: .constant(.home),
+                selected: .constant(.messages),
                 badgeCount: 3,
                 actionsProvider: { _ in
                     [

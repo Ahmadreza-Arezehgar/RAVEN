@@ -9,46 +9,40 @@ struct TabAction: Identifiable {
     let handler: () -> Void
 }
 
-// MARK: - App Tab Enum (Order: Home → Messages → Discover → Account)
+// MARK: - App Tab Enum
+//
+// MESSENGER PIVOT (2026-06): collapsed from 4 tabs (Home/Messages/Discover/
+// Account) to 2 — Chats + Settings. The case names `.messages`/`.account` are
+// kept (so the tab-bar components don't churn); only their labels changed.
 enum AppTab: Int, CaseIterable {
-    case home = 0
-    case messages = 1
-    case discover = 2
-    case account = 3
-    
+    case messages = 0   // "Chats"
+    case account  = 1   // "Settings"
+
     var title: String {
         switch self {
-        case .home: return "home".localized
-        case .messages: return "messages".localized
-        case .discover: return "discover".localized
-        case .account: return "account".localized
+        case .messages: return "Chats"
+        case .account:  return "Settings"
         }
     }
-    
+
     var icon: String {
         switch self {
-        case .home: return "house"
         case .messages: return "bubble.left.and.bubble.right"
-        case .discover: return "magnifyingglass"
-        case .account: return "person.circle"
+        case .account:  return "gearshape"
         }
     }
-    
+
     var selectedIcon: String {
         switch self {
-        case .home: return "house.fill"
         case .messages: return "bubble.left.and.bubble.right.fill"
-        case .discover: return "magnifyingglass"
-        case .account: return "person.circle.fill"
+        case .account:  return "gearshape.fill"
         }
     }
-    
+
     var accessibilityName: String {
         switch self {
-        case .home: return "Home"
-        case .messages: return "Messages"
-        case .discover: return "Discover"
-        case .account: return "Account"
+        case .messages: return "Chats"
+        case .account:  return "Settings"
         }
     }
 }
