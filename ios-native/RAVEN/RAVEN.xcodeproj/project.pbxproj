@@ -148,6 +148,7 @@
 		5D4E9DD69AA339815F85D1E3 /* ToastItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8840EAAE3F5F9C3A73C187C9 /* ToastItem.swift */; };
 		5E3098E3A18FD7D95FAFB43A /* BBESlot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 832C8B418D26879F92AF43AD /* BBESlot.swift */; };
 		61A91CAB9942A20455929287 /* QuickReplySheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A73ABE65437152A16103313 /* QuickReplySheet.swift */; };
+		67A59FEE502B09BDD8872314 /* MeshInteropVectorsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 15B36E34E30E171DA9D47854 /* MeshInteropVectorsTests.swift */; };
 		68034A09A2A82AA42300EE39 /* MeshACKHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F2C0D1CB7EC1248A4B27343 /* MeshACKHandler.swift */; };
 		681F06B665D45BEE82FE1BC0 /* MeshSuccessToast.swift in Sources */ = {isa = PBXBuildFile; fileRef = 252E31D8C42B9DBC820F559B /* MeshSuccessToast.swift */; };
 		682AF5248D378CE0801BDAB1 /* CoverTrafficEmitter.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6ECFCA8BCF060BAA3342643 /* CoverTrafficEmitter.swift */; };
@@ -251,6 +252,7 @@
 		ABV2604645390CDEF87654321 /* AlbumBubbleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABV2604645390CDEF12345678 /* AlbumBubbleView.swift */; };
 		AC95A5E18F55628AA70A0B60 /* DesignSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83E43A3075CD75A8D98910DC /* DesignSettingsView.swift */; };
 		ACA048770E815D7755563571 /* SecurityConstants.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3595CAE5EB005862E23250C7 /* SecurityConstants.swift */; };
+		ACC42800CC3E77CCFDC334F9 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B6B16355719ECD2685832396 /* Foundation.framework */; };
 		ACS_BUILD_001 /* AvatarCacheService.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACS_FILEREF_001 /* AvatarCacheService.swift */; };
 		AF6581E90BBF8FD0C4EB0D9C /* LiquidGlassComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCB312536B096C4CCAD60643 /* LiquidGlassComponents.swift */; };
 		AI_BUILD_001 /* AudioItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = AI_FILEREF_001 /* AudioItem.swift */; };
@@ -313,6 +315,7 @@
 		CDS_BUILD_001 /* ChatChromePreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = CDS_FILEREF_001 /* ChatChromePreferences.swift */; };
 		CDS_BUILD_002 /* ChatDetailSections.swift in Sources */ = {isa = PBXBuildFile; fileRef = CDS_FILEREF_002 /* ChatDetailSections.swift */; };
 		CDS_BUILD_003 /* ChatDetailSheets.swift in Sources */ = {isa = PBXBuildFile; fileRef = CDS_FILEREF_003 /* ChatDetailSheets.swift */; };
+		CF6F0582EF17D1BCC03C805C /* E2EERatchetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A882C069EB8ED4E7A736D581 /* E2EERatchetTests.swift */; };
 		CG_BUILD_001 /* CrashGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = CG_FILEREF_001 /* CrashGuard.swift */; };
 		CM1234567890ABCD12345678 /* ContextMenuTabItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM2234567890ABCD12345678 /* ContextMenuTabItem.swift */; };
 		D02093C7A0F24BF3B34DCB00 /* VaultLockSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08502C43F172469DB7E735B9 /* VaultLockSheet.swift */; };
@@ -342,6 +345,7 @@
 		E979FD7267BEC4D904649879 /* TabPager.swift in Sources */ = {isa = PBXBuildFile; fileRef = TP2234567890ABCD12345678 /* TabPager.swift */; };
 		EB7D788F93029959CFC11715 /* FullScreenImageViewer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81EED4FF1C595A9D2C6356EE /* FullScreenImageViewer.swift */; };
 		ECEAE418F6AAF8722F68D38C /* ComposeFAB.swift in Sources */ = {isa = PBXBuildFile; fileRef = 754A56795F5EB931E25A465E /* ComposeFAB.swift */; };
+		ED2BCE86767953D0D35B26F2 /* KeyBackupServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12FD2A1C31D0CBB45A5E1464 /* KeyBackupServiceTests.swift */; };
 		EDBF4EC6E4871DC1C55318C0 /* RelayReceipt.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3397C365AA11ECF59A599C8 /* RelayReceipt.swift */; };
 		EFEF0C69D1C91E1E98320717 /* HopMACChain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8928A6E365DB471828D3463B /* HopMACChain.swift */; };
 		EN_STRINGS_BUILD_001 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = EN_STRINGS_FILEREF_001 /* Localizable.strings */; };
@@ -417,6 +421,13 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		07E13D470B7CFDEA0B1F0DF8 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 1781F676DEDF5767F3243DB0 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 730950AD798A77AD508AA9E2;
+			remoteInfo = RAVEN;
+		};
 		51F30F5E2F4BBC8F00F4CA42 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 1781F676DEDF5767F3243DB0 /* Project object */;
@@ -482,6 +493,7 @@
 		01597C194B704D9DACFDD069 /* MeshBridgeReceiver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MeshBridgeReceiver.swift; path = RAVEN/Core/Mesh/MeshBridgeReceiver.swift; sourceTree = "<group>"; };
 		044948033590CEB4F8159DC6 /* MeshGhostRouteAdapter.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MeshGhostRouteAdapter.swift; sourceTree = "<group>"; };
 		048FC01795342E1FADE259AC /* VaultModeSettingsView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VaultModeSettingsView.swift; sourceTree = "<group>"; };
+		05AA2DFF9F02958C23571862 /* RAVENTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = RAVENTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		0697AB0E928E98C717D04918 /* RootView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		073F40F4584ADA7F26B70600 /* GHErrors.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GHErrors.swift; sourceTree = "<group>"; };
 		075E216BF1E3737448F79746 /* PVKeyMaterial.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PVKeyMaterial.swift; sourceTree = "<group>"; };
@@ -501,11 +513,13 @@
 		0F5193D552DE038A5321D355 /* NotificationPipeline.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = NotificationPipeline.swift; path = RAVEN/Core/Notifications/NotificationPipeline.swift; sourceTree = "<group>"; };
 		1190122660C1ACB62E12D867 /* DeepLinkRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeepLinkRouter.swift; sourceTree = "<group>"; };
 		1275BC26B1AB83079513DD75 /* PrivacySettingsView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PrivacySettingsView.swift; sourceTree = "<group>"; };
+		12FD2A1C31D0CBB45A5E1464 /* KeyBackupServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KeyBackupServiceTests.swift; sourceTree = "<group>"; };
 		1457CBC83D6BDD5AA559E7FD /* InboxView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = InboxView.swift; sourceTree = "<group>"; };
 		149129F092F88C093B686993 /* EditRecipe.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = EditRecipe.swift; sourceTree = "<group>"; };
 		14BF57EF1C8F5D93444D5685 /* SeenByUser.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SeenByUser.swift; sourceTree = "<group>"; };
 		14EBE3D4C2EC1550E0499023 /* PDFPreviewController.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PDFPreviewController.swift; sourceTree = "<group>"; };
 		151BAC9DF8AE15887A028E6C /* GhostRouteOnlineService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GhostRouteOnlineService.swift; sourceTree = "<group>"; };
+		15B36E34E30E171DA9D47854 /* MeshInteropVectorsTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MeshInteropVectorsTests.swift; sourceTree = "<group>"; };
 		192322424653426161442784 /* DeliveryPredictabilityRepository.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DeliveryPredictabilityRepository.swift; sourceTree = "<group>"; };
 		19303A03CE200353DDE8C607 /* CreateGroupConfirmView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CreateGroupConfirmView.swift; path = ../../Groups/CreateGroupConfirmView.swift; sourceTree = "<group>"; };
 		19A2CBF82A02E598B34C336F /* LanguageSettingsView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = LanguageSettingsView.swift; sourceTree = "<group>"; };
@@ -700,6 +714,7 @@
 		A6CFB7BB19F99B3314B9A0FF /* PVWegmanCarter.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PVWegmanCarter.swift; sourceTree = "<group>"; };
 		A730FE082836A9D60117A79E /* PeerVerificationStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PeerVerificationStore.swift; sourceTree = "<group>"; };
 		A7DC2CE00EFF475583D88E86 /* WatchSnapshotProjector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchSnapshotProjector.swift; sourceTree = "<group>"; };
+		A882C069EB8ED4E7A736D581 /* E2EERatchetTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = E2EERatchetTests.swift; sourceTree = "<group>"; };
 		A89D73C3CC8FAF76D8630D31 /* StorageSettingsView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = StorageSettingsView.swift; sourceTree = "<group>"; };
 		A8A326D17276905E5635A269 /* DoubleRatchet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DoubleRatchet.swift; sourceTree = "<group>"; };
 		AA2B3C4D5E6FAA2B3C4D5E6F /* NoiseSession.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NoiseSession.swift; sourceTree = "<group>"; };
@@ -955,6 +970,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		EA3E151AE8C364E5F0F28538 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				ACC42800CC3E77CCFDC334F9 /* Foundation.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		FRAMEWORKS123456789ABC /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -1003,6 +1026,7 @@
 				D9577879AEF6C43A93774DB6 /* RAVEN-Watch.app */,
 				3AA92DCCAFF66D50930E422D /* RavenShareExtension.appex */,
 				D2D2F2AE366D74EBB54607DA /* RAVENNotificationService.appex */,
+				05AA2DFF9F02958C23571862 /* RAVENTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -1623,6 +1647,17 @@
 			path = Models;
 			sourceTree = "<group>";
 		};
+		7E5BDA194C6B8632813379C5 /* RAVENTests */ = {
+			isa = PBXGroup;
+			children = (
+				A882C069EB8ED4E7A736D581 /* E2EERatchetTests.swift */,
+				12FD2A1C31D0CBB45A5E1464 /* KeyBackupServiceTests.swift */,
+				15B36E34E30E171DA9D47854 /* MeshInteropVectorsTests.swift */,
+			);
+			name = RAVENTests;
+			path = RAVENTests;
+			sourceTree = SOURCE_ROOT;
+		};
 		8049D195EDA8E288B1D4F468 /* Hashtags */ = {
 			isa = PBXGroup;
 			children = (
@@ -2077,6 +2112,7 @@
 				5C3FFE18B605E2A43DA66C0C /* RAVEN-Watch */,
 				DA124F7907BA4239A12D721E /* RavenShareExtension */,
 				F6A1CBF1DD56D54C9C710C45 /* RAVENNotificationService */,
+				7E5BDA194C6B8632813379C5 /* RAVENTests */,
 			);
 			sourceTree = "<group>";
 		};
@@ -2288,6 +2324,24 @@
 			productReference = 2544E5B1E7659A7BA6F06444 /* RAVEN.app */;
 			productType = "com.apple.product-type.application";
 		};
+		841745DB97CD1E6FD90640B3 /* RAVENTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 38EA756B781AD84C22C32AAE /* Build configuration list for PBXNativeTarget "RAVENTests" */;
+			buildPhases = (
+				9DA6359664084785D1A542BA /* Sources */,
+				EA3E151AE8C364E5F0F28538 /* Frameworks */,
+				CF2961BFCE14FB04C1D483DE /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				43C6F9141947E5A0C09735FD /* PBXTargetDependency */,
+			);
+			name = RAVENTests;
+			productName = RAVENTests;
+			productReference = 05AA2DFF9F02958C23571862 /* RAVENTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 		A1109D389BF69A41DB1B3F7A /* RAVENNotificationService */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = BEE721AB4F910E41A84B7A33 /* Build configuration list for PBXNativeTarget "RAVENNotificationService" */;
@@ -2380,6 +2434,7 @@
 				AE64034E31B334A9CA08AF0B /* RAVEN-Watch */,
 				C73452FE6576F6727D62AB39 /* RavenShareExtension */,
 				A1109D389BF69A41DB1B3F7A /* RAVENNotificationService */,
+				841745DB97CD1E6FD90640B3 /* RAVENTests */,
 			);
 		};
 /* End PBXProject section */
@@ -2429,6 +2484,13 @@
 				RU_STRINGS_BUILD_001 /* Localizable.strings in Resources */,
 				CADB33BC6700DC77F5B3AF8C /* PrivacyInfo.xcprivacy in Resources */,
 				SK_BUILD_001 /* Configuration.storekit in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		CF2961BFCE14FB04C1D483DE /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -2843,6 +2905,16 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		9DA6359664084785D1A542BA /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				CF6F0582EF17D1BCC03C805C /* E2EERatchetTests.swift in Sources */,
+				ED2BCE86767953D0D35B26F2 /* KeyBackupServiceTests.swift in Sources */,
+				67A59FEE502B09BDD8872314 /* MeshInteropVectorsTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		B9304378CE89323E90275D17 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -2854,6 +2926,12 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		43C6F9141947E5A0C09735FD /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = RAVEN;
+			target = 730950AD798A77AD508AA9E2 /* RAVEN */;
+			targetProxy = 07E13D470B7CFDEA0B1F0DF8 /* PBXContainerItemProxy */;
+		};
 		51F30F5F2F4BBC8F00F4CA42 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			platformFilters = (
@@ -2983,6 +3061,25 @@
 				SWIFT_VERSION = 5.0;
 			};
 			name = Debug;
+		};
+		3A9334CDF6C854B8CD0EAFCC /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGNING_ALLOWED = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = RAVENTests;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				PRODUCT_BUNDLE_IDENTIFIER = app.raven.ios.RAVENTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/RAVEN.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/RAVEN";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
 		};
 		3DF54B37DD809C22D4CD2641 /* Release */ = {
 			isa = XCBuildConfiguration;
@@ -3215,6 +3312,24 @@
 			};
 			name = Release;
 		};
+		AC175E38B1882EC0FC527E53 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGNING_ALLOWED = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = RAVENTests;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				PRODUCT_BUNDLE_IDENTIFIER = app.raven.ios.RAVENTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/RAVEN.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/RAVEN";
+			};
+			name = Debug;
+		};
 		BF1177353BD7DC19AD8E3278 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -3342,6 +3457,15 @@
 			buildConfigurations = (
 				075A3F45448538490E577636 /* Debug */,
 				9E4B6119718769058EA9DAB2 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		38EA756B781AD84C22C32AAE /* Build configuration list for PBXNativeTarget "RAVENTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				3A9334CDF6C854B8CD0EAFCC /* Release */,
+				AC175E38B1882EC0FC527E53 /* Debug */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

@@ -149,7 +149,7 @@ final class MeshInteropVectorsTests: XCTestCase {
     func testSecureMeshEnvelopeSigningDataMatchesPipeFormat() {
         // Build the same envelope as the C# test.
         let env = SecureMeshEnvelope(
-            id: "msg-001",
+            clientMessageId: "msg-001",
             roomId: "room-A",
             senderId: "alice",
             senderName: "Alice",
@@ -175,11 +175,22 @@ final class MeshInteropVectorsTests: XCTestCase {
         let signingBytes = env.signingData()
         let signingString = String(data: signingBytes, encoding: .utf8) ?? ""
 
-        let expected = "msg-001|room-A|alice|Alice|bob|0|AAAAAAAAAAAAAAAAAAAAAA==|PUBKEYBASE64|1700000000000|fp-XXXX|hi|||||||||"
+        // iOS ground-truth canonical form. After `text` the empty optional
+        // fields are, in order: mediaUrl | thumbnailUrl | fileName | mimeType |
+        // fileSize | audioDuration | mediaSealed | replyToMessageId |
+        // replyToTextPreview | replyToSenderName  (10 fields → 10 trailing pipes).
+        // NOTE: `mediaSealed` (round 26 — binds the sealed media blob into the
+        // signature) is currently MISSING from the Windows C# twin
+        // (RAVEN-Windows/src/Mesh/MeshEnvelope.cs SigningData), as are the
+        // conditional `gkv:`/`pk:` (round 46) fields — so iOS↔Windows DM
+        // signatures do NOT verify cross-platform until C# is brought in line.
+        // Do NOT "fix" this by dropping mediaSealed on iOS (that would weaken the
+        // media-injection binding); port the missing fields to C# instead.
+        let expected = "msg-001|room-A|alice|Alice|bob|0|AAAAAAAAAAAAAAAAAAAAAA==|PUBKEYBASE64|1700000000000|fp-XXXX|hi||||||||||"
 
         XCTAssertEqual(signingString, expected,
-            "SecureMeshEnvelope.signingData() drifted from the C# twin. " +
-            "Either iOS or Windows changed the canonical form — fix BOTH.")
+            "SecureMeshEnvelope.signingData() drifted from the iOS canonical form. " +
+            "If this changed intentionally, update the Windows C# twin in lockstep.")
     }
 
     // ─── ACK signing ─────────────────────────────────────────────────
@@ -190,7 +201,7 @@ final class MeshInteropVectorsTests: XCTestCase {
             originalMessageId: "msg-1",
             senderId: "alice",
             recipientId: "bob",
-            status: "delivered",
+            status: .delivered,
             timestamp: 1_700_000_000.0
         )
         let signingString = String(data: ack.signingData(), encoding: .utf8) ?? ""
