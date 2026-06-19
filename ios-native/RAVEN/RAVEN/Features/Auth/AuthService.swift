@@ -41,8 +41,66 @@ class AuthService {
     }
     var isEmailVerified: Bool { currentUser?.emailVerified ?? false }
     var needsEmailVerification: Bool { isAuthenticated && !isEmailVerified }
-    
+
     private init() {}
+
+    // MARK: - Serverless (key-based) identity
+    //
+    // Messenger pivot: the device's on-device Ed25519 keypair
+    // (DeviceIdentityService) IS the account. Registration = generate/load
+    // the keypair + pick a local display name. No server, no email, no
+    // password, no token. `currentUser.id` becomes the device fingerprint,
+    // which the whole messaging/mesh layer already uses for sender/recipient
+    // addressing — so peers identify each other by fingerprint (exchanged via
+    // QR / proximity), with zero server.
+
+    /// UserDefaults key for the locally-chosen display name.
+    private static let localDisplayNameKey = "raven.local.displayName"
+
+    /// Whether the user has explicitly chosen a display name yet. (A keypair
+    /// always exists after first launch; this tracks the one-time name step.)
+    var hasChosenLocalDisplayName: Bool {
+        UserDefaults.standard.string(forKey: Self.localDisplayNameKey)?.isEmpty == false
+    }
+
+    /// Build `currentUser` from the on-device keypair. No server. Always
+    /// succeeds once DeviceIdentityService can produce a fingerprint.
+    @discardableResult
+    func bootstrapLocalIdentity() async -> Bool {
+        do {
+            try await DeviceIdentityService.shared.initialize()
+        } catch {
+            #if DEBUG
+            print("❌ [Auth] DeviceIdentity init failed: \(error)")
+            #endif
+            bootState = .unauthenticated
+            return false
+        }
+        guard let fingerprint = DeviceIdentityService.shared.fingerprint else {
+            bootState = .unauthenticated
+            return false
+        }
+        let name = UserDefaults.standard.string(forKey: Self.localDisplayNameKey) ?? "Raven User"
+        currentUser = User(
+            localId: fingerprint,
+            displayName: name,
+            publicKey: DeviceIdentityService.shared.publicKeyBase64
+        )
+        requiresUsernameSetup = false
+        bootState = .authenticated
+        #if DEBUG
+        print("🔑 [Auth] Serverless identity ready — fingerprint \(fingerprint)")
+        #endif
+        return true
+    }
+
+    /// Serverless registration: persist the chosen display name and (re)build
+    /// the local identity. Call from the onboarding display-name screen.
+    func registerLocalIdentity(displayName: String) async {
+        let trimmed = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        UserDefaults.standard.set(trimmed.isEmpty ? "Raven User" : trimmed, forKey: Self.localDisplayNameKey)
+        await bootstrapLocalIdentity()
+    }
     
     // MARK: - Register
     
@@ -720,11 +778,20 @@ class AuthService {
     // MARK: - Check Session (Bootstrap)
     
     func checkExistingSession() async {
+        // 🔑 SERVERLESS IDENTITY (messenger pivot): the on-device Ed25519
+        // keypair IS the account. No server token is required — the app
+        // always boots into a local key-based identity. The server-based
+        // bootstrap below is dead while serverless mode is active, but kept
+        // (unreferenced) until the legacy auth methods are removed.
+        await bootstrapLocalIdentity()
+    }
+
+    func checkExistingSessionServerLegacy() async {
         guard await KeychainService.shared.getToken() != nil else {
             bootState = .unauthenticated
             return
         }
-        
+
         // 🚀 FAST PATH: لاگین آنی از روی کَش (بدون انتظار برای اینترنت)
         if let cached = loadCachedUserProfile() {
             currentUser = cached

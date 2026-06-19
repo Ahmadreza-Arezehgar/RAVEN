@@ -156,6 +156,36 @@ struct User: Identifiable, Codable {
     }
 }
 
+// MARK: - Local (serverless) identity
+extension User {
+    /// Build a `User` from the on-device keypair — SERVERLESS identity.
+    /// `id` is the device fingerprint (from DeviceIdentityService); there is
+    /// no server account, no email, no password. Flags are set so the
+    /// AuthGate routes straight to the main app (emailVerified=true bypasses
+    /// the OTP gate; authMethod=.password avoids the OAuth phone screen;
+    /// isPremium=true since the subscription was removed).
+    init(localId id: String, displayName: String, publicKey: String?) {
+        self.id = id
+        self.username = displayName
+        self.email = nil
+        self.phone = nil
+        self.firstName = nil
+        self.lastName = nil
+        self.bio = nil
+        self.avatarPath = nil
+        self.tags = nil
+        self.birthday = nil
+        self.publicKey = publicKey
+        self.createdAt = nil
+        self.emailVerified = true
+        self.phoneVerified = false
+        self.isVerified = false
+        self.isPremium = true
+        self.authMethod = .password
+        self.friendship = nil
+    }
+}
+
 // MARK: - Auth Responses
 struct TokenResponse: Codable {
     let userId: String
