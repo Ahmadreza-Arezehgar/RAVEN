@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 // MARK: - Group Service
 
@@ -1009,6 +1010,13 @@ enum MeshGroupBroadcaster {
             envelope.isGroup = true
             envelope.payloadKind = "group_key"
 
+            // Release-visible audit trail. This path is gated behind a DANGER,
+            // default-OFF flag (legacyPlaintextGroupKey) and is only reached for
+            // members without an ATSAM pair, but if an operator ever enables it
+            // we want the cleartext-key emission recorded in production logs.
+            // Member ids stay private; only the count is logged in release.
+            Logger(subsystem: "app.raven.ios", category: "Groups")
+                .warning("LEGACY PLAINTEXT group_key broadcast for \(unrootedMembers.count, privacy: .public) unrooted member(s) — gid=\(groupId.prefix(8), privacy: .public) v=\(version, privacy: .public)")
             #if DEBUG
             print("⚠️ [GroupBroadcaster] LEGACY PLAINTEXT group_key broadcast (no ATSAM root for \(unrootedMembers.count) member(s): \(unrootedMembers.map { $0.prefix(8) }.joined(separator: ","))) gid=\(groupId.prefix(8)) v=\(version)")
             #endif
