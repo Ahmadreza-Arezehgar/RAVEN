@@ -24,8 +24,6 @@
 		0AD017B5225AEFFFF8925135 /* PeerIDRotator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B58B212892FD5350228B3229 /* PeerIDRotator.swift */; };
 		0AEF2FFF425377A0B7CC8FD6 /* TimeFormatter.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE0C4011C9412EB65F185B0A /* TimeFormatter.swift */; };
 		0B5F415ADF33037C23EE3C6F /* ATSAMKeyTree.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3CBB282C73677BF2525AA1C4 /* ATSAMKeyTree.swift */; };
-		A0E6F1A1B2C3D4E5F6A7B8C9 /* ATSAMMessageSealer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1F7E2B0C3D4E5F6A7B8C9D0 /* ATSAMMessageSealer.swift */; };
-		A2E6F1A2B2C3D4E5F6A7B8CA /* ATSAMRootStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2F7E2B1C3D4E5F6A7B8C9D1 /* ATSAMRootStorage.swift */; };
 		0BCA030FC19A539FD2356543 /* StateViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DCBC1E064E54B2B8CC4931D /* StateViews.swift */; };
 		0C48749A2E1A4E16A5DD72EF /* VaultLock.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF136377C5F94C249A72EEEA /* VaultLock.swift */; };
 		0CBDA6B91A295A9B05212C24 /* RavenLogoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6416504D89E6062E37F73557 /* RavenLogoView.swift */; };
@@ -230,10 +228,12 @@
 		9F06AB52463548F69FAA73DD /* LocationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD1B28AC64F2282BF0B2E7AD /* LocationManager.swift */; };
 		9F5834250DACB777414CBA86 /* SeenByUser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14BF57EF1C8F5D93444D5685 /* SeenByUser.swift */; };
 		A029A56B15F241738E495DAB /* RavenMaterials.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB1C5386B0874302942A2B3D /* RavenMaterials.swift */; };
+		A0E6F1A1B2C3D4E5F6A7B8C9 /* ATSAMMessageSealer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1F7E2B0C3D4E5F6A7B8C9D0 /* ATSAMMessageSealer.swift */; };
 		A0F70B9D28174DF1A526DB4F /* H3Lite.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E92DFB31E1C4340BEA283F8 /* H3Lite.swift */; };
 		A175795BD4C630DAD74CE72B /* AboutView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 463A7D156F7CE04B152CAC28 /* AboutView.swift */; };
 		A211157C6C1FA9375BE84ACE /* PVErrors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74EB6D4C29B0333F285539C8 /* PVErrors.swift */; };
 		A2CC9EFFCD8FB96C65C86D93 /* MessageService.swift in Sources */ = {isa = PBXBuildFile; fileRef = DFD28B56CDFCD18022438CC4 /* MessageService.swift */; };
+		A2E6F1A2B2C3D4E5F6A7B8CA /* ATSAMRootStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2F7E2B1C3D4E5F6A7B8C9D1 /* ATSAMRootStorage.swift */; };
 		A480417A6BCEBD7D131154DE /* AdjustToolView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CDC27D26846E85F05CA88B11 /* AdjustToolView.swift */; };
 		A55BFBD0886CD56E4BBF4B36 /* PDFPreviewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14EBE3D4C2EC1550E0499023 /* PDFPreviewController.swift */; };
 		A593CCBCD585EB509D2E98ED /* RAVENNotificationService.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = D2D2F2AE366D74EBB54607DA /* RAVENNotificationService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -272,6 +272,7 @@
 		B67A0FDF651604464D2DEB9C /* MessageRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E628CB902A1E3FBCB591132 /* MessageRouter.swift */; };
 		B6C04718A042CCDAC8BAB1A6 /* BackgroundMeshManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = D881B3F38B9356138B1E338A /* BackgroundMeshManager.swift */; };
 		B81F7F15B5CCD1351C813E5E /* SafariSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A88198DE2FA840C0DCD3A73 /* SafariSheet.swift */; };
+		B8FDA13799CDD59F05A9F3A7 /* RavenLibp2p.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 86A218C4F3E3F425F6F1F868 /* RavenLibp2p.xcframework */; };
 		B945797841064524BD02E5C9 /* VaultListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54057AD1F8704A0F91C55B34 /* VaultListView.swift */; };
 		B979D336D1BE01779FA26889 /* NotificationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFA3A73BBD1062BFD88B5443 /* NotificationStore.swift */; };
 		BA2B3C4D5E6FBA2B3C4D5E6F /* NoiseSessionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA2B3C4D5E6FCA2B3C4D5E6F /* NoiseSessionStore.swift */; };
@@ -547,8 +548,6 @@
 		3C272FB219D37B204FF48697 /* AttachmentService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentService.swift; sourceTree = "<group>"; };
 		3C9D778C694F5AF7FAA7DFE4 /* PushNotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushNotificationService.swift; sourceTree = "<group>"; };
 		3CBB282C73677BF2525AA1C4 /* ATSAMKeyTree.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMKeyTree.swift; sourceTree = "<group>"; };
-		B1F7E2B0C3D4E5F6A7B8C9D0 /* ATSAMMessageSealer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMMessageSealer.swift; sourceTree = "<group>"; };
-		B2F7E2B1C3D4E5F6A7B8C9D1 /* ATSAMRootStorage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMRootStorage.swift; sourceTree = "<group>"; };
 		3D94CE26D3F61E87F2BDEBB8 /* BackgroundMeshSettingsView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BackgroundMeshSettingsView.swift; sourceTree = "<group>"; };
 		3FA4EDFBDD7A524F8A864072 /* CropOverlayView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CropOverlayView.swift; sourceTree = "<group>"; };
 		3FFE0C56B6B9D2C0EBD4D432 /* PVConstants.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PVConstants.swift; sourceTree = "<group>"; };
@@ -659,6 +658,7 @@
 		83B63645056A0F4D0AC52432 /* PeerIdentityRegistry.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PeerIdentityRegistry.swift; sourceTree = "<group>"; };
 		83E43A3075CD75A8D98910DC /* DesignSettingsView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DesignSettingsView.swift; sourceTree = "<group>"; };
 		857C1A2C97E06268310A15B3 /* MessagePreviewFormatter.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MessagePreviewFormatter.swift; sourceTree = "<group>"; };
+		86A218C4F3E3F425F6F1F868 /* RavenLibp2p.xcframework */ = {isa = PBXFileReference; includeInIndex = 1; name = RavenLibp2p.xcframework; path = Libp2pBridge/RavenLibp2p.xcframework; sourceTree = SOURCE_ROOT; };
 		8762D3F4CB5A6ACD6744218B /* VideoPreviewBeforeSendSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VideoPreviewBeforeSendSheet.swift; sourceTree = "<group>"; };
 		87C74DAA3994A0127FDAC229 /* PQNoiseSession.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PQNoiseSession.swift; sourceTree = "<group>"; };
 		88396600E4C0EA27E69E615C /* MessageRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageRepository.swift; sourceTree = "<group>"; };
@@ -717,9 +717,11 @@
 		AI_FILEREF_001 /* AudioItem.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AudioItem.swift; path = Models/AudioItem.swift; sourceTree = "<group>"; };
 		APS_FILEREF_001 /* AudioPlaybackStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AudioPlaybackStore.swift; path = Services/AudioPlaybackStore.swift; sourceTree = "<group>"; };
 		B16D7B8F984E68C712BE3163 /* X3DH.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = X3DH.swift; sourceTree = "<group>"; };
+		B1F7E2B0C3D4E5F6A7B8C9D0 /* ATSAMMessageSealer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMMessageSealer.swift; sourceTree = "<group>"; };
 		B28EA58A80D2707A508DDD72 /* RavenShareExtension.entitlements */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.entitlements; path = RavenShareExtension.entitlements; sourceTree = "<group>"; };
 		B2C115D2097C53FF5B92BE94 /* MessageContentSealer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MessageContentSealer.swift; path = RAVEN/Core/Security/MessageContentSealer.swift; sourceTree = SOURCE_ROOT; };
 		B2CA747A7248288D92B5680C /* RavenLogger.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RavenLogger.swift; sourceTree = "<group>"; };
+		B2F7E2B1C3D4E5F6A7B8C9D1 /* ATSAMRootStorage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMRootStorage.swift; sourceTree = "<group>"; };
 		B3397C365AA11ECF59A599C8 /* RelayReceipt.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RelayReceipt.swift; sourceTree = "<group>"; };
 		B40956140F00B5BC5A043B81 /* ChatDetailsView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ChatDetailsView.swift; sourceTree = "<group>"; };
 		B40EEB1B765F082D2902B428 /* ImageQualitySheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ImageQualitySheet.swift; sourceTree = "<group>"; };
@@ -961,6 +963,7 @@
 				5157BB032F2D369C003B3AB8 /* GoogleSignIn in Frameworks */,
 				5157BB052F2D369C003B3ABA /* GoogleSignInSwift in Frameworks */,
 				F503642FD16698774552E23D /* SQLCipher in Frameworks */,
+				B8FDA13799CDD59F05A9F3A7 /* RavenLibp2p.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1478,6 +1481,7 @@
 				51F30F4E2F4BBC8F00F4CA42 /* SwiftUI.framework */,
 				B8ABC42F7844171E60B6A7A4 /* watchOS */,
 				24433F2DCDA555AE4C40FBC6 /* iOS */,
+				86A218C4F3E3F425F6F1F868 /* RavenLibp2p.xcframework */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -2990,6 +2994,10 @@
 				CURRENT_PROJECT_VERSION = 2026052701;
 				DEVELOPMENT_TEAM = 72QQ5Q324C;
 				ENABLE_PREVIEWS = YES;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Libp2pBridge",
+				);
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = RAVEN/Info.plist;
 				INFOPLIST_KEY_CFBundleIconName = AppIcon;
@@ -3008,6 +3016,10 @@
 				);
 				MARKETING_VERSION = 1.71;
 				ONLY_ACTIVE_ARCH = YES;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lresolv",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = app.raven.ios;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -3240,6 +3252,10 @@
 				CURRENT_PROJECT_VERSION = 2026052701;
 				DEVELOPMENT_TEAM = 72QQ5Q324C;
 				ENABLE_PREVIEWS = YES;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Libp2pBridge",
+				);
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = RAVEN/Info.plist;
 				INFOPLIST_KEY_CFBundleIconName = AppIcon;
@@ -3257,6 +3273,10 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.71;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lresolv",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = app.raven.ios;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";

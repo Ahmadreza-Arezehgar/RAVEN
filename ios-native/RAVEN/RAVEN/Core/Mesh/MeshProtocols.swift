@@ -160,7 +160,7 @@ enum MeshBridge {
 #if canImport(RavenLibp2p)
 import RavenLibp2p
 
-final class LibP2PBridgeTransport: NSObject, BridgeTransport, RavenbridgeDelegate {
+final class LibP2PBridgeTransport: NSObject, BridgeTransport, RavenbridgeDelegateProtocol {
     static let shared = LibP2PBridgeTransport()
     private override init() { super.init() }
 
@@ -171,12 +171,22 @@ final class LibP2PBridgeTransport: NSObject, BridgeTransport, RavenbridgeDelegat
     /// Call once at startup with the device Ed25519 seed (32-byte CryptoKit
     /// `rawRepresentation`) + comma-separated libp2p bootstrap multiaddrs
     /// (from remote-config). Boots the libp2p host (DHT + Circuit Relay v2).
+    ///
+    /// `RavenbridgeNewNode` is a gomobile free function, so its trailing
+    /// `error` is an `NSError` out-param (not a Swift `throws`); the instance
+    /// methods (`start`/`send`) *are* imported as throwing.
     func configure(identitySeed: Data, bootstrapCSV: String) {
         guard node == nil else { return }
+        var err: NSError?
+        guard let n = RavenbridgeNewNode(identitySeed, self, &err), err == nil else {
+            #if DEBUG
+            print("❌ [libp2p] NewNode failed: \(String(describing: err))")
+            #endif
+            return
+        }
         do {
-            let n = try RavenbridgeNewNode(identitySeed, self)
-            node = n
             try n.start(bootstrapCSV)
+            node = n
             localPeerID = n.peerID()
         } catch {
             #if DEBUG
@@ -195,12 +205,13 @@ final class LibP2PBridgeTransport: NSObject, BridgeTransport, RavenbridgeDelegat
     /// callback and go straight to MeshBridgeReceiver — nothing to poll.
     func drainPending(since: Date?) async throws -> [BridgeEnvelopeItem] { [] }
 
-    // MARK: RavenbridgeDelegate (callbacks arrive on a background thread)
-    func onEnvelope(_ envelopeB64: String?, idempotencyKey: String?) {
+    // MARK: RavenbridgeDelegateProtocol (callbacks arrive on a background thread;
+    // the gomobile protocol is `@objc`, so the methods must be too).
+    @objc func onEnvelope(_ envelopeB64: String?, idempotencyKey: String?) {
         guard let env = envelopeB64, let key = idempotencyKey else { return }
         Task { _ = await MeshBridgeReceiver.shared.ingest(envelopeB64: env, idempotencyKey: key, bridgedAt: Date()) }
     }
-    func onStatus(_ connected: Bool, peerID: String?) {
+    @objc func onStatus(_ connected: Bool, peerID: String?) {
         isConnected = connected
         if let peerID { localPeerID = peerID }
     }
