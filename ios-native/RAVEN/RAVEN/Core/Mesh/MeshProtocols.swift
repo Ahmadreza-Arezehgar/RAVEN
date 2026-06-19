@@ -144,6 +144,62 @@ enum MeshBridge {
     static var transport: BridgeTransport = LibP2PBridgeTransport.shared
 }
 
+// MARK: - libp2p PeerID derivation
+//
+// A RAVEN device's libp2p host boots from its Ed25519 device key, so its PeerID
+// is derived deterministically from the *public* half — which means a contact's
+// PeerID is computable locally from their device identity key (no directory).
+// This mirrors go-libp2p's `peer.IDFromPublicKey`:
+//   1. marshal the public key as the libp2p `PublicKey` protobuf
+//      (field 1 KeyType=Ed25519(1), field 2 Data=raw 32-byte key) → 36 bytes.
+//   2. since that is ≤ 42 bytes, the PeerID multihash uses the *identity* hash
+//      (code 0x00): 0x00 || len(0x24) || marshaled  → 38 bytes.
+//   3. base58btc-encode the multihash → "12D3Koo…".
+enum Libp2pPeerID {
+    /// Derive the canonical libp2p PeerID string ("12D3Koo…") from a raw
+    /// 32-byte Ed25519 public key. Returns nil if the key isn't 32 bytes.
+    static func fromEd25519(_ publicKey: Data) -> String? {
+        guard publicKey.count == 32 else { return nil }
+        // libp2p PublicKey protobuf: 0x08 0x01 (Type=Ed25519) | 0x12 0x20 (Data, len 32) | <key>
+        var marshaled: [UInt8] = [0x08, 0x01, 0x12, 0x20]
+        marshaled.append(contentsOf: publicKey)
+        // Identity multihash: code 0x00, length 0x24 (36), then the marshaled key.
+        var mh: [UInt8] = [0x00, UInt8(marshaled.count)]
+        mh.append(contentsOf: marshaled)
+        return base58btc(mh)
+    }
+
+    /// Whether a string already looks like a libp2p PeerID (so callers can pass
+    /// a PeerID through untouched rather than resolving a userId).
+    static func looksLikePeerID(_ s: String) -> Bool {
+        s.hasPrefix("12D3Koo") || s.hasPrefix("Qm") || s.hasPrefix("bafz")
+    }
+
+    /// Bitcoin/IPFS base58 alphabet.
+    private static let alphabet = Array("123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz")
+
+    private static func base58btc(_ bytes: [UInt8]) -> String {
+        var digits: [Int] = [0]
+        for byte in bytes {
+            var carry = Int(byte)
+            for i in 0..<digits.count {
+                carry += digits[i] << 8
+                digits[i] = carry % 58
+                carry /= 58
+            }
+            while carry > 0 {
+                digits.append(carry % 58)
+                carry /= 58
+            }
+        }
+        var out = ""
+        // Each leading 0x00 byte → a leading '1'.
+        for byte in bytes { if byte == 0 { out.append("1") } else { break } }
+        for d in digits.reversed() { out.append(alphabet[d]) }
+        return out
+    }
+}
+
 /// Serverless libp2p bridge transport.
 ///
 /// Wraps the go-libp2p host compiled via `gomobile bind`
@@ -197,14 +253,24 @@ final class LibP2PBridgeTransport: NSObject, BridgeTransport, RavenbridgeDelegat
 
     func uploadEnvelope(_ envelopeB64: String, idempotencyKey: String, recipientHint: String?) async throws {
         guard let node else { throw BridgeTransportError.notConnected }
-        // ⚠️ INCOMPLETE (remaining bridge work): `recipientHint` here is the
-        // caller's recipient *user-ID hash* (see GatewayRelayRequest), but
-        // `node.send` does `peer.Decode(peerIDStr)` and needs a real libp2p
-        // PeerID. Until a resolver maps the recipient's Ed25519 device key →
-        // PeerID (derivable locally from a QR-exchanged contact key, no
-        // directory), this throws and the outbound bridge is a no-op. The BLE
-        // mesh + inbound bridge are unaffected. See LIBP2P_BRIDGE_PLAN.md.
-        guard let peerID = recipientHint, !peerID.isEmpty else { throw BridgeTransportError.notConnected }
+        guard let hint = recipientHint, !hint.isEmpty else { throw BridgeTransportError.notConnected }
+        // `node.send` needs a real libp2p PeerID (it does peer.Decode). Resolve
+        // the caller's `recipientHint`:
+        //   • already a PeerID ("12D3Koo…") → use as-is;
+        //   • otherwise a RAVEN userId → derive the contact's PeerID from their
+        //     pinned Ed25519 identity key (the same key their libp2p host boots
+        //     from — see Libp2pPeerID), no directory needed.
+        // If it's neither (e.g. an opaque relay hash we hold no identity key
+        // for), we can't route it — fail rather than dial a bogus peer.
+        let peerID: String
+        if Libp2pPeerID.looksLikePeerID(hint) {
+            peerID = hint
+        } else if let idKey = await PeerKeyDirectory.shared.identityKey(for: hint),
+                  let derived = Libp2pPeerID.fromEd25519(idKey) {
+            peerID = derived
+        } else {
+            throw BridgeTransportError.notConnected
+        }
         try node.send(peerID, envelopeB64: envelopeB64, idempotencyKey: idempotencyKey)
     }
 

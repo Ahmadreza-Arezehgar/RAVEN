@@ -216,4 +216,23 @@ final class MeshInteropVectorsTests: XCTestCase {
         let signingString = String(data: stop.signingData(), encoding: .utf8) ?? ""
         XCTAssertEqual(signingString, "STOP|msg-1|1700000000000")
     }
+
+    // ─── libp2p PeerID derivation ────────────────────────────────────
+
+    /// Authoritative vector from go-libp2p `peer.IDFromPublicKey` for the
+    /// Ed25519 seed 01 02 … 20 (generated via Libp2pBridge/cmd/peeridvec).
+    /// Verifies the pure-Swift `Libp2pPeerID.fromEd25519` matches the Go host
+    /// byte-for-byte — so a contact's PeerID derived locally from their pinned
+    /// identity key is the SAME id their libp2p host advertises.
+    func testLibp2pPeerIDFromEd25519MatchesGoVector() throws {
+        var seed = Data()
+        for i in 1...32 { seed.append(UInt8(i)) }
+        let pub = try Curve25519.Signing.PrivateKey(rawRepresentation: seed)
+            .publicKey.rawRepresentation
+        // Sanity: CryptoKit's Ed25519 public key matches the Go-printed value.
+        XCTAssertEqual(pub.map { String(format: "%02x", $0) }.joined(),
+                       "79b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664")
+        XCTAssertEqual(Libp2pPeerID.fromEd25519(pub),
+                       "12D3KooWJ1TsijH7H5F74hfAD5XishQz3sxrmAtVY37GtNd9CqYf")
+    }
 }
