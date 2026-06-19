@@ -79,6 +79,19 @@ public sealed class SecureMeshEnvelope
     [JsonPropertyName("gf"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public GeoFence? GeoFence { get; set; }
 
+    // Round 26 — sealed-media metadata (JSON "msl"). Bound into SigningData
+    // (iOS appends it unconditionally between audioDuration and replyToMessageId).
+    [JsonPropertyName("msl"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? MediaSealed { get; set; }
+
+    // Round 46 — group key version (JSON "gkv") + payload-kind discriminator
+    // (JSON "pk"). Both bound into SigningData when set.
+    [JsonPropertyName("gkv"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? GroupKeyVersion { get; set; }
+
+    [JsonPropertyName("pk"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? PayloadKind { get; set; }
+
     /// <summary>
     /// Canonical bytes-to-sign for Ed25519. MUST match iOS
     /// `SecureMeshEnvelope.signingData()` byte-for-byte (see §D Rule 1).
@@ -115,6 +128,10 @@ public sealed class SecureMeshEnvelope
         AppendPipe(sb, MimeType ?? string.Empty);
         AppendPipe(sb, FileSize.HasValue ? FileSize.Value.ToString(CultureInfo.InvariantCulture) : string.Empty);
         AppendPipe(sb, AudioDuration.HasValue ? AudioDuration.Value.ToString(CultureInfo.InvariantCulture) : string.Empty);
+        // Round 26 — sealed-media blob, bound so a relay can't substitute
+        // attacker ciphertext. iOS appends this UNCONDITIONALLY (empty when nil),
+        // between audioDuration and replyToMessageId.
+        AppendPipe(sb, MediaSealed ?? string.Empty);
         AppendPipe(sb, ReplyToMessageId ?? string.Empty);
         AppendPipe(sb, ReplyToTextPreview ?? string.Empty);
         AppendPipe(sb, ReplyToSenderName ?? string.Empty);
@@ -125,6 +142,17 @@ public sealed class SecureMeshEnvelope
             AppendPipe(sb, GeoFence.RadiusInCells.ToString(CultureInfo.InvariantCulture));
             // Swift bool `description` → "true" / "false". MUST match exactly.
             AppendPipe(sb, GeoFence.DeliverOnlyInside ? "true" : "false");
+        }
+
+        // Round 46 — bind groupKeyVersion + payloadKind. iOS appends each only
+        // when set, gkv before pk, as literal "gkv:<n>" / "pk:<s>".
+        if (GroupKeyVersion.HasValue)
+        {
+            AppendPipe(sb, "gkv:" + GroupKeyVersion.Value.ToString(CultureInfo.InvariantCulture));
+        }
+        if (!string.IsNullOrEmpty(PayloadKind))
+        {
+            AppendPipe(sb, "pk:" + PayloadKind);
         }
 
         return Encoding.UTF8.GetBytes(sb.ToString());

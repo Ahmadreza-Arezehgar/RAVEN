@@ -156,8 +156,11 @@ public class InteropVectorsTests
         var s = Encoding.UTF8.GetString(bytes);
 
         // Expected — pipe-delimited, mutable DTN fields excluded, 1700000000 → 1700000000000 ms.
+        // After `text` the empty optional fields are: mediaUrl|thumbnailUrl|fileName|
+        // mimeType|fileSize|audioDuration|mediaSealed|replyToMessageId|replyToTextPreview|
+        // replyToSenderName (10 fields → 10 trailing pipes). Matches iOS byte-for-byte.
         Assert.Equal(
-            "msg-001|room-A|alice|Alice|bob|0|AAAAAAAAAAAAAAAAAAAAAA==|PUBKEYBASE64|1700000000000|fp-XXXX|hi|||||||||",
+            "msg-001|room-A|alice|Alice|bob|0|AAAAAAAAAAAAAAAAAAAAAA==|PUBKEYBASE64|1700000000000|fp-XXXX|hi||||||||||",
             s);
     }
 
