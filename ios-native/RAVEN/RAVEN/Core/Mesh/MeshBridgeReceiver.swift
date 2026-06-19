@@ -179,6 +179,25 @@ final class MeshBridgeReceiver: NSObject, ObservableObject {
                 logger.debug("reject: signature missing or invalid (\(idempotencyKey, privacy: .private))")
                 return
             }
+
+            // 🔒 Identity binding — parity with the BLE path's verifySignature
+            // Step 2 (MeshCryptoService.swift:173). A valid signature only proves
+            // the signer holds `signerPublicKey`; it does NOT prove they are
+            // `senderId`. Without this, any peer who can reach us over the
+            // serverless libp2p bridge could self-sign an envelope claiming
+            // someone else's senderId and impersonate a contact. Reject when the
+            // claimed sender already has known trusted devices and the signer is
+            // not one of them; allow an unknown sender through (first contact /
+            // TOFU) so we don't drop a legitimate first message — the same
+            // posture the BLE ingest path takes.
+            if signerStr != DeviceIdentityService.shared.publicKeyBase64 {
+                let trusted = await FriendDeviceRepository.shared.getTrustedDevices(forUser: envelope.senderId)
+                if !trusted.isEmpty && !trusted.contains(where: { $0.publicKeyBase64 == signerStr }) {
+                    logger.debug("reject: bridge sender impersonation — signer key not trusted for \(envelope.senderId, privacy: .private)")
+                    return
+                }
+            }
+
             let preview = (envelope.text ?? "[non-text]").prefix(60)
             logger.debug("decrypted from \(envelope.senderName, privacy: .private): \(preview, privacy: .private)")
             // Cross-channel dedup: the same envelope can arrive once

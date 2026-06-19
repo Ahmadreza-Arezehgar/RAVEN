@@ -197,6 +197,13 @@ final class LibP2PBridgeTransport: NSObject, BridgeTransport, RavenbridgeDelegat
 
     func uploadEnvelope(_ envelopeB64: String, idempotencyKey: String, recipientHint: String?) async throws {
         guard let node else { throw BridgeTransportError.notConnected }
+        // ⚠️ INCOMPLETE (remaining bridge work): `recipientHint` here is the
+        // caller's recipient *user-ID hash* (see GatewayRelayRequest), but
+        // `node.send` does `peer.Decode(peerIDStr)` and needs a real libp2p
+        // PeerID. Until a resolver maps the recipient's Ed25519 device key →
+        // PeerID (derivable locally from a QR-exchanged contact key, no
+        // directory), this throws and the outbound bridge is a no-op. The BLE
+        // mesh + inbound bridge are unaffected. See LIBP2P_BRIDGE_PLAN.md.
         guard let peerID = recipientHint, !peerID.isEmpty else { throw BridgeTransportError.notConnected }
         try node.send(peerID, envelopeB64: envelopeB64, idempotencyKey: idempotencyKey)
     }
