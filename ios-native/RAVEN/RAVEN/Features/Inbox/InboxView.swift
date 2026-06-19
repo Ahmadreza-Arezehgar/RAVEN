@@ -56,8 +56,14 @@ struct InboxView: View {
                 if conversationStore.isLoading && conversationStore.conversations.isEmpty {
                     GlassShimmerLoadingView()
                 }
-                // 2. Error state (with retry)
-                else if let error = conversationStore.error, conversationStore.conversations.isEmpty {
+                // 2. Error state (with retry) — but NOT for the serverless
+                // build's expected "no reachable server" errors, which would
+                // otherwise show a bogus "Session expired - please log in
+                // again" on a fresh local identity. Those fall through to the
+                // empty inbox below.
+                else if let error = conversationStore.error,
+                        conversationStore.conversations.isEmpty,
+                        !isExpectedServerlessError(error) {
                     ErrorStateView(
                         message: errorMessageFor(error),
                         error: error,
@@ -289,6 +295,19 @@ struct InboxView: View {
             }
         }
         return "Couldn't load messages"
+    }
+
+    /// In the serverless build there is no server session, so an
+    /// unauthorized / unreachable-server failure on the conversation load is
+    /// the EXPECTED state — not something to surface as "session expired".
+    /// The inbox is driven by local storage + mesh; show the empty state
+    /// instead of a scary error the user can do nothing about.
+    private func isExpectedServerlessError(_ error: Error) -> Bool {
+        guard let apiError = error as? APIError else { return true } // network / unreachable
+        switch apiError {
+        case .unauthorized, .serverError: return true
+        default: return false
+        }
     }
 }
 

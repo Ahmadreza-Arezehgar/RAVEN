@@ -7,16 +7,9 @@ struct AccountSettingsContent: View {
     @State private var showEditProfile = false
     @State private var showSignOutSheet = false
     @State private var showCloseAccountSheet = false
-    @State private var showFriendRequests = false
-    @State private var showPaywall = false
-    @State private var pendingRequestsCount = 0
-    @State private var showInviteFriends = false
-    
+
     var body: some View {
         VStack(spacing: 20) {
-            // MARK: - RAVEN+ Banner
-            ravenPlusBanner
-            
             // MARK: - Profile Section
             GlassSettingsCard {
                 Button {
@@ -36,74 +29,12 @@ struct AccountSettingsContent: View {
                 
                 GlassDivider()
                 
-                Button {
-                    showFriendRequests = true
-                } label: {
-                    GlassSettingsRow(
-                        title: "follow_requests".localized,
-                        icon: "person.fill.badge.plus",
-                        iconColor: DS.accentBlue,
-                        badge: pendingRequestsCount > 0 ? "\(pendingRequestsCount)" : nil,
-                        showChevron: true
-                    )
-                }
-                .buttonStyle(.plain)
-                
-                GlassDivider()
-                
                 NavigationLink {
                     FindContactsView()
                 } label: {
                     GlassSettingsRow(
                         title: "find_friends".localized,
                         icon: "person.crop.circle.badge.checkmark",
-                        iconColor: DS.accentBlue,
-                        showChevron: true
-                    )
-                }
-                .buttonStyle(.plain)
-                
-                GlassDivider()
-
-                NavigationLink {
-                    VerificationView()
-                } label: {
-                    GlassSettingsRow(
-                        title: "verification".localized,
-                        icon: "checkmark.seal.fill",
-                        iconColor: DS.accentBlue,
-                        showChevron: true
-                    )
-                }
-                .buttonStyle(.plain)
-
-                GlassDivider()
-
-                // ✨ Refer a friend → 1 month Raven+ free for both sides
-                Button {
-                    showInviteFriends = true
-                } label: {
-                    GlassSettingsRow(
-                        title: "Invite friends · 1 month Raven+",
-                        icon: "gift.fill",
-                        iconColor: DS.accentPurple,
-                        showChevron: true
-                    )
-                }
-                .buttonStyle(.plain)
-                .sheet(isPresented: $showInviteFriends) {
-                    InviteFriendsSheet()
-                }
-
-                GlassDivider()
-
-                // 🖥️ Linked devices — see every signed-in device, revoke any.
-                NavigationLink {
-                    LinkedDevicesView()
-                } label: {
-                    GlassSettingsRow(
-                        title: "Linked devices",
-                        icon: "laptopcomputer.and.iphone",
                         iconColor: DS.accentBlue,
                         showChevron: true
                     )
@@ -376,103 +307,6 @@ struct AccountSettingsContent: View {
         }
         .sheet(isPresented: $showCloseAccountSheet) {
             CloseAccountConfirmSheet()
-        }
-        .sheet(isPresented: $showFriendRequests) {
-            FriendRequestsView()
-        }
-        .sheet(isPresented: $showPaywall) {
-            RavenPlusPaywallView()
-        }
-        .task {
-            await fetchPendingRequestsCount()
-        }
-    }
-    
-    // MARK: - RAVEN+ Banner
-    
-    /// Calm blue accent for the banner
-    private static let bannerBlue = Color(red: 0.176, green: 0.498, blue: 0.976) // #2D7FF9
-    /// Soft gold for crown icon
-    private static let bannerGold = Color(red: 0.788, green: 0.659, blue: 0.298) // #C9A84C
-    
-    @ViewBuilder
-    private var ravenPlusBanner: some View {
-        if SubscriptionService.shared.isPremium {
-            // Active subscriber badge — glass + soft gold crown + blue border
-            HStack(spacing: 12) {
-                Image(systemName: "crown.fill")
-                    .font(.system(size: 18))
-                    .foregroundStyle(Self.bannerGold)
-                
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Raven+ Active")
-                        .font(.system(size: 16, weight: .bold, design: .rounded))
-                    Text("All premium features unlocked")
-                        .font(.system(size: 13))
-                        .foregroundStyle(.secondary)
-                }
-                
-                Spacer()
-                
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 22))
-                    .foregroundStyle(.green)
-            }
-            .padding(16)
-            .background(.ultraThinMaterial)
-            .clipShape(RoundedRectangle(cornerRadius: DS.radiusCard, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: DS.radiusCard, style: .continuous)
-                    .strokeBorder(Self.bannerBlue.opacity(0.25), lineWidth: 1)
-            )
-        } else {
-            // Upgrade banner — glass + subtle blue, calm copy
-            Button {
-                Haptics.light()
-                showPaywall = true
-            } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: "crown.fill")
-                        .font(.system(size: 18))
-                        .foregroundStyle(Self.bannerGold)
-                    
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Upgrade to Raven+")
-                            .font(.system(size: 16, weight: .bold, design: .rounded))
-                            .foregroundStyle(.primary)
-                        Text("Raven+ features")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                    }
-                    
-                    Spacer()
-                    
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.secondary.opacity(0.5))
-                }
-                .padding(16)
-                .background(.ultraThinMaterial)
-                .clipShape(RoundedRectangle(cornerRadius: DS.radiusCard, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: DS.radiusCard, style: .continuous)
-                        .strokeBorder(Self.bannerBlue.opacity(0.3), lineWidth: 1)
-                )
-            }
-            .buttonStyle(.plain)
-        }
-    }
-    
-    private func fetchPendingRequestsCount() async {
-        do {
-            let requests: [FriendRequest] = try await NetworkService.shared.get(path: "/api/users/follow-requests")
-            await MainActor.run {
-                pendingRequestsCount = requests.count
-            }
-        } catch {
-            #if DEBUG
-            print("❌ Failed to fetch friend requests count: \(error)")
-            #endif
         }
     }
 }
