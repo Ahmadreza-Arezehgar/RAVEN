@@ -135,31 +135,79 @@ protocol BridgeTransport: AnyObject {
     var isConnected: Bool { get }
 }
 
-/// Serverless libp2p bridge transport — STUB.
+/// Serverless libp2p bridge transport.
 ///
-/// Phase B target: wraps a go-libp2p host compiled via `gomobile bind`
-/// (`RavenLibp2p.xcframework`). The host identity is RAVEN's existing
-/// Ed25519 device key (DeviceIdentityService), so its libp2p PeerID derives
-/// from the same public key as the device fingerprint — a QR-scanned
-/// contact's PeerID is computable locally with no directory. Until the
-/// native xcframework is built + bound, every call is a no-op/throw.
+/// Wraps the go-libp2p host compiled via `gomobile bind`
+/// (Libp2pBridge/RavenLibp2p.xcframework). The host identity is RAVEN's
+/// existing Ed25519 device key, so its libp2p PeerID derives from the same
+/// public key as the device fingerprint — a QR-scanned contact's PeerID is
+/// computable locally, no directory. Guarded by `#if canImport(RavenLibp2p)`:
+/// the real implementation activates once the xcframework is embedded
+/// (Xcode → Embed & Sign); until then it is a no-op stub so the app builds.
+/// See Libp2pBridge/README.md and LIBP2P_BRIDGE_PLAN.md.
 ///
-/// See docs/libp2p-bridge-plan.md for the build pipeline + milestones.
+/// NOTE: the `canImport` branch is not compiled until the framework is linked,
+/// so verify it on first integration (gomobile-generated symbol names).
+#if canImport(RavenLibp2p)
+import RavenLibp2p
+
+final class LibP2PBridgeTransport: NSObject, BridgeTransport, RavenbridgeDelegate {
+    static let shared = LibP2PBridgeTransport()
+    private override init() { super.init() }
+
+    private var node: RavenbridgeNode?
+    private(set) var isConnected: Bool = false
+    private(set) var localPeerID: String = ""
+
+    /// Call once at startup with the device Ed25519 seed (32-byte CryptoKit
+    /// `rawRepresentation`) + comma-separated libp2p bootstrap multiaddrs
+    /// (from remote-config). Boots the libp2p host (DHT + Circuit Relay v2).
+    func configure(identitySeed: Data, bootstrapCSV: String) {
+        guard node == nil else { return }
+        do {
+            let n = try RavenbridgeNewNode(identitySeed, self)
+            node = n
+            try n.start(bootstrapCSV)
+            localPeerID = n.peerID()
+        } catch {
+            #if DEBUG
+            print("❌ [libp2p] start failed: \(error)")
+            #endif
+        }
+    }
+
+    func uploadEnvelope(_ envelopeB64: String, idempotencyKey: String, recipientHint: String?) async throws {
+        guard let node else { throw BridgeTransportError.notConnected }
+        guard let peerID = recipientHint, !peerID.isEmpty else { throw BridgeTransportError.notConnected }
+        try node.send(peerID, envelopeB64: envelopeB64, idempotencyKey: idempotencyKey)
+    }
+
+    /// libp2p is push-based: inbound envelopes arrive on the RavenbridgeDelegate
+    /// callback and go straight to MeshBridgeReceiver — nothing to poll.
+    func drainPending(since: Date?) async throws -> [BridgeEnvelopeItem] { [] }
+
+    // MARK: RavenbridgeDelegate (callbacks arrive on a background thread)
+    func onEnvelope(_ envelopeB64: String?, idempotencyKey: String?) {
+        guard let env = envelopeB64, let key = idempotencyKey else { return }
+        Task { _ = await MeshBridgeReceiver.shared.ingest(envelopeB64: env, idempotencyKey: key, bridgedAt: Date()) }
+    }
+    func onStatus(_ connected: Bool, peerID: String?) {
+        isConnected = connected
+        if let peerID { localPeerID = peerID }
+    }
+}
+#else
+/// No-op stub until RavenLibp2p.xcframework is embedded (Libp2pBridge/README.md).
 final class LibP2PBridgeTransport: BridgeTransport {
     static let shared = LibP2PBridgeTransport()
     private init() {}
-
-    /// Flips to true once `Start(privKey:bootstrap:)` on the native host succeeds.
     private(set) var isConnected: Bool = false
-
+    func configure(identitySeed: Data, bootstrapCSV: String) {}
     func uploadEnvelope(_ envelopeB64: String, idempotencyKey: String, recipientHint: String?) async throws {
-        // TODO(Phase B): RavenLibp2p.send(peerID: recipientHint, envelopeB64:, idemKey:)
         throw BridgeTransportError.notImplemented
     }
-
     func drainPending(since: Date?) async throws -> [BridgeEnvelopeItem] {
-        // TODO(Phase B): RavenLibp2p.drain() — inbound envelopes arrive via the
-        // /raven/bridge/1.0.0 stream handler and are queued in the native host.
         throw BridgeTransportError.notImplemented
     }
 }
+#endif
