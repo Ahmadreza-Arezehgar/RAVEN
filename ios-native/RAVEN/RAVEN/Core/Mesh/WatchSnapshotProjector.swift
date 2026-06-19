@@ -62,8 +62,6 @@ final class WatchSnapshotProjector {
         didStart = true
 
         observeFeedStore()
-        observeRoomService()
-        observeAudioRoom()
         observeConversationStore()
         observeWatchIntents()
         observeIncomingMessages()
@@ -177,27 +175,6 @@ final class WatchSnapshotProjector {
             .store(in: &cancellables)
     }
 
-    private func observeRoomService() {
-        RoomService.shared.objectWillChange
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                Task { @MainActor in self?.schedulePush() }
-            }
-            .store(in: &cancellables)
-    }
-
-    private func observeAudioRoom() {
-        // LiveKit can call back on a non-main queue, hence the explicit
-        // hop. Without it `schedulePush()` would warn under
-        // `-enable-actor-data-race-checks`.
-        AudioRoomManager.shared.objectWillChange
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                Task { @MainActor in self?.schedulePush() }
-            }
-            .store(in: &cancellables)
-    }
-
     /// ConversationStore uses the Swift Observation framework
     /// (`@Observable`), so we observe it with `withObservationTracking`
     /// and self-re-arm on every fired change.
@@ -269,7 +246,6 @@ final class WatchSnapshotProjector {
         let snapshot: [String: Any] = [
             "c": buildConversations(),
             "n": buildNotifications(),
-            "r": buildRooms(),
             "f": buildFeed(),
             "ts": Date().timeIntervalSince1970,
         ]
@@ -322,27 +298,6 @@ final class WatchSnapshotProjector {
                 "cc":  p.comments,
                 "lm":  p.isLiked,
                 "hm":  hasMedia,
-            ]
-        }
-    }
-
-    private func buildRooms() -> [[String: Any]] {
-        // RoomService.liveRooms is the list of rooms the user could
-        // join right now. We show up to 6. We do NOT try to resolve an
-        // active-speaker display name on the iPhone — the LiveKit
-        // RemoteParticipant API doesn't carry our profile name cheaply,
-        // and the Watch row still reads fine without it.
-        let live = RoomService.shared.liveRooms.prefix(6)
-        let joinedId = RoomService.shared.currentRoom?.room.id
-        let mgr = AudioRoomManager.shared
-
-        return live.map { room -> [String: Any] in
-            let isJoined = (room.id == joinedId && mgr.isConnected)
-            return [
-                "id":  room.id,
-                "n":   room.title,
-                "pc":  room.participantCount,
-                "j":   isJoined,
             ]
         }
     }

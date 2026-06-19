@@ -107,15 +107,8 @@ final class AudioPlaybackStore {
             return
         }
         
-        // Configure audio session — avoid clobbering voiceChat if user is in a room
-        if RoomService.shared.isInRoom {
-            try? AVAudioSession.sharedInstance().setCategory(
-                .playAndRecord, mode: .voiceChat,
-                options: [.mixWithOthers, .defaultToSpeaker]
-            )
-        } else {
-            try? AVAudioSession.sharedInstance().setCategory(.playback)
-        }
+        // Voice-message playback (audio rooms removed in the messenger pivot).
+        try? AVAudioSession.sharedInstance().setCategory(.playback)
         // ⚠️ Bug 2 fix: setActive can block main thread for seconds during
         // audio hardware negotiation (e.g. with Spotify). Run on background thread.
         // Wrapped in Task since play() is not async — player setup continues after activation.

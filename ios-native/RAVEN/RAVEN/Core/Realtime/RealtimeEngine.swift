@@ -540,25 +540,7 @@ class RealtimeEngine: @unchecked Sendable {
                     throw DecodingError.dataCorruptedError(in: container, debugDescription: "Cannot parse date: \(dateString)")
                 }
                 
-                // 🆕 Audio-room realtime events (join/leave/raise-hand/role/
-                // mute/kick/end). Server fans out via the same /ws/inbox
-                // channel; we sniff the `type` field and route. Subscribers
-                // (LiveRoomView, RoomListView) listen for "RoomEventReceived".
-                if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                   let typeStr = json["type"] as? String,
-                   typeStr == "room_event" {
-                    Task { @MainActor in
-                        NotificationCenter.default.post(
-                            name: NSNotification.Name("RoomEventReceived"),
-                            object: nil,
-                            userInfo: json
-                        )
-                    }
-                    #if DEBUG
-                    print("🎙️ [RealtimeEngine] Room event: \(json["event"] ?? "?") room=\((json["room_id"] as? String)?.prefix(8) ?? "?")")
-                    #endif
-                    return
-                }
+                // (Audio-room realtime events removed in the messenger pivot.)
 
                 // Chat sidecar events (fan out via NotificationCenter so
                 // the open ChatView / MessageStore / reaction store can
@@ -1404,17 +1386,6 @@ class RealtimeEngine: @unchecked Sendable {
                     preview: preview,
                     avatarURL: resolveAvatarURL(),
                     postId: postId
-                ))
-            }
-
-        case "audio_room", "audio_room_join":
-            let host = resolveSenderName(nil)
-            let title = (payload["room_title"] as? String) ?? "Voice Room"
-            let action = type == "audio_room_join" ? "joined" : "started"
-            Task { @MainActor in
-                NotificationPipeline.shared.enqueue(ToastItem.appUpdate(
-                    title: "🎙 \(title)",
-                    message: "\(host) \(action) the room"
                 ))
             }
 

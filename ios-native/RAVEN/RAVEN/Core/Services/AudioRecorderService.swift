@@ -183,17 +183,10 @@ final class AudioRecorderService: NSObject {
         recorder.stop()
         stopMeteringTimer()
         
-        // Only deactivate session if user is NOT in an Audio Room
-        // Bug 2 fix: RoomService is @MainActor — use Task dispatch instead of assumeIsolated,
-        // because handleAudioInterruption can fire on a background thread (phone call, alarm)
-        Task { @MainActor in
-            let inRoom = RoomService.shared.isInRoom
-            if !inRoom {
-                // ⚡ FIX: setActive(false) is blocking — run on background (fire-and-forget)
-                Task.detached(priority: .background) {
-                    try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-                }
-            }
+        // Deactivate the audio session after recording (audio rooms removed in
+        // the messenger pivot). setActive(false) is blocking — run off-main.
+        Task.detached(priority: .background) {
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         }
         
         guard let url = recordingURL else { return }
