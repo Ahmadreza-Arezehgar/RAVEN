@@ -623,12 +623,15 @@ actor NetworkService {
             if scope == .restricted && !isAllowedForRestricted(path: path) {
                 throw APIError.restricted
             }
-        } else {
-            #if DEBUG
-            print("⚠️ [NetworkService] NO TOKEN for request: \(path)")
-            #endif
+        } else if !isPublicEndpoint(path: path) {
+            // Serverless / not-logged-in: there is no bearer token, so an authed
+            // endpoint would just 401 against the (now-off) server and spam the
+            // logs + waste battery/network. Fail fast instead of firing a doomed
+            // request — callers already treat `.unauthorized` as "no server".
+            // Public auth endpoints (isPublicEndpoint) still go through.
+            throw APIError.unauthorized
         }
-        
+
         // Encode body
         if let body = body {
             request.httpBody = try encoder.encode(body)
@@ -935,6 +938,21 @@ actor NetworkService {
             "/api/auth/refresh"
         ]
         return allowedPaths.contains(path)
+    }
+
+    /// Endpoints that legitimately work without a bearer token (token-issuing
+    /// auth + recovery). Everything else is short-circuited when no token is
+    /// present so the serverless build doesn't fire doomed authed requests.
+    private func isPublicEndpoint(path: String) -> Bool {
+        let publicPaths = [
+            "/api/auth/register",
+            "/api/auth/login",
+            "/api/auth/send-code",
+            "/api/auth/verify-code",
+            "/api/auth/resend-code",
+            "/api/auth/refresh"
+        ]
+        return publicPaths.contains { path.hasPrefix($0) }
     }
     
     // MARK: - Token Refresh (Task-based Single-Flight)
