@@ -10,6 +10,12 @@ import Foundation
 import Security
 import CryptoKit
 import os
+#if canImport(UIKit)
+import UIKit
+#endif
+#if targetEnvironment(macCatalyst) || os(macOS)
+import IOKit
+#endif
 
 fileprivate let logger = Logger(subsystem: "app.raven.ios", category: "Identity")
 
@@ -467,27 +473,119 @@ final class DeviceIdentityService {
         ]
         
         let status = SecItemAdd(addQuery as CFDictionary, nil)
+        if status == errSecMissingEntitlement {
+            // No team Keychain group — Mac Catalyst without entitlement, or an
+            // unsigned/CI/simulator build. Persist into the encrypted file
+            // fallback instead of failing identity creation outright. NEVER
+            // happens on a healthy signed iOS device (the Keychain works), so
+            // production at-rest protection is unchanged.
+            keychainUnavailable = true
+            var dict = readFallbackDict()
+            dict[tag] = data.base64EncodedString()
+            writeFallbackDict(dict)
+            return
+        }
         guard status == errSecSuccess else {
             throw IdentityError.keychainStoreFailed(status)
         }
     }
-    
+
     private func loadFromKeychain(tag: String) -> Data? {
+        if keychainUnavailable {
+            return readFallbackDict()[tag].flatMap { Data(base64Encoded: $0) }
+        }
         let query: [String: Any] = [
             kSecClass as String: kSecClassKey,
             kSecAttrApplicationTag as String: Data(tag.utf8),
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne
         ]
-        
+
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
-        
+
+        if status == errSecMissingEntitlement {
+            keychainUnavailable = true
+            return readFallbackDict()[tag].flatMap { Data(base64Encoded: $0) }
+        }
+
         guard status == errSecSuccess else {
             return nil
         }
-        
+
         return result as? Data
+    }
+
+    // MARK: - Keychain-unavailable fallback (encrypted file)
+    //
+    // When SecItem returns errSecMissingEntitlement (-34018) the device keys
+    // can't live in the Keychain (Mac Catalyst without a team group, or an
+    // unsigned/CI/simulator build). Rather than break identity creation, the
+    // keys are persisted in an AES-GCM-encrypted, .completeFileProtection file
+    // whose key derives from a device-stable secret (hardware UUID on Mac,
+    // identifierForVendor on iOS). This is a degraded-mode safety net only — it
+    // never runs on a healthy signed iOS device, so the normal Keychain-backed
+    // at-rest protection is unchanged.
+
+    /// Sticky — set on the first -34018; routes all device-key I/O to the file
+    /// fallback for the process lifetime.
+    private var keychainUnavailable = false
+
+    private static let fallbackURL: URL = {
+        let base = (try? FileManager.default.url(
+            for: .applicationSupportDirectory, in: .userDomainMask,
+            appropriateFor: nil, create: true)) ?? FileManager.default.temporaryDirectory
+        let dir = base.appendingPathComponent("RAVEN", isDirectory: true)
+        try? FileManager.default.createDirectory(
+            at: dir, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700])
+        return dir.appendingPathComponent("device_keys_fallback.bin")
+    }()
+
+    private static func deviceStableSecret() -> Data? {
+        #if targetEnvironment(macCatalyst) || os(macOS)
+        let svc = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPlatformExpertDevice"))
+        guard svc != 0 else { return nil }
+        defer { IOObjectRelease(svc) }
+        guard let cf = IORegistryEntryCreateCFProperty(svc, "IOPlatformUUID" as CFString, kCFAllocatorDefault, 0),
+              let uuid = cf.takeRetainedValue() as? String else { return nil }
+        return Data(uuid.utf8)
+        #elseif canImport(UIKit)
+        return UIDevice.current.identifierForVendor.map { Data($0.uuidString.utf8) }
+        #else
+        return nil
+        #endif
+    }
+
+    private static func fallbackKey() -> SymmetricKey? {
+        guard let secret = deviceStableSecret(), !secret.isEmpty else { return nil }
+        return HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: SymmetricKey(data: secret),
+            salt: Data("raven.deviceidentity.fallback.salt.v1".utf8),
+            info: Data("raven.deviceidentity.fallback.keys".utf8),
+            outputByteCount: 32
+        )
+    }
+
+    private func readFallbackDict() -> [String: String] {
+        guard let key = Self.fallbackKey(),
+              let blob = try? Data(contentsOf: Self.fallbackURL),
+              let box = try? AES.GCM.SealedBox(combined: blob),
+              let pt = try? AES.GCM.open(box, using: key),
+              let dict = try? JSONDecoder().decode([String: String].self, from: pt) else {
+            return [:]
+        }
+        return dict
+    }
+
+    private func writeFallbackDict(_ dict: [String: String]) {
+        guard let key = Self.fallbackKey(),
+              let pt = try? JSONEncoder().encode(dict),
+              let box = try? AES.GCM.seal(pt, using: key),
+              let combined = box.combined else {
+            return
+        }
+        try? combined.write(to: Self.fallbackURL, options: [.atomic, .completeFileProtection])
     }
     
     // MARK: - Errors
