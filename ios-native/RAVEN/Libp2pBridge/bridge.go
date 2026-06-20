@@ -162,8 +162,15 @@ func (n *Node) connectBootstrap(ctx context.Context, csv string) {
 	}
 }
 
+// streamReadTimeout bounds how long a single inbound frame may take. Without it
+// a peer that opens a /raven/bridge stream and stalls mid-frame pins a goroutine
+// indefinitely (slow-loris / resource exhaustion).
+const streamReadTimeout = 30 * time.Second
+
 func (n *Node) handleStream(s network.Stream) {
 	defer s.Close()
+	// Slow-loris guard: fail the whole frame read if the peer stalls.
+	_ = s.SetReadDeadline(time.Now().Add(streamReadTimeout))
 	r := bufio.NewReader(s)
 
 	// Frame: [4-byte big-endian len][envelope bytes][2-byte idemKey len][idemKey].

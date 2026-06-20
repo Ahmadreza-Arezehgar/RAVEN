@@ -870,6 +870,12 @@ final class GroupKeyService {
     ///   - Caller MUST verify the receiver is a current member of
     ///     `groupId` per the local GroupRepository.
     ///   - We refuse keys that don't decode to 32 bytes (AES-256).
+    /// Latest group-key version we hold locally (0 if none). Used by the
+    /// serverless kick-rekey to mint version N+1 without a server round-trip.
+    func currentLocalVersion(for groupId: String) -> Int {
+        latest[groupId]?.version ?? 0
+    }
+
     @discardableResult
     func ingestMeshKey(groupId: String, version: Int, keyB64: String) -> Bool {
         guard let raw = Data(base64Encoded: keyB64), raw.count == 32 else {

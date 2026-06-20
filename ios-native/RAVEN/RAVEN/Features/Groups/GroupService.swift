@@ -1,5 +1,6 @@
 import Foundation
 import os
+import CryptoKit
 
 // MARK: - Group Service
 
@@ -527,26 +528,57 @@ final class GroupService {
                 case newKeyVersion = "new_key_version"
             }
         }
-        let resp: KickResponse = try await network.post(
-            path: "/api/groups/\(groupId)/members/\(userId)/kick",
-            body: Empty()
-        )
+        do {
+            let resp: KickResponse = try await network.post(
+                path: "/api/groups/\(groupId)/members/\(userId)/kick",
+                body: Empty()
+            )
+            #if DEBUG
+            print("🦶 [GroupService] Kicked \(userId.prefix(8)) from \(groupId.prefix(8)) → key v\(resp.newKeyVersion ?? -1)")
+            #endif
+
+            // 🔐 FORWARD SECRECY (server path):
+            // Server rotated the per-group AES key. Evict our cached key so the
+            // next mesh-broadcast encryption fetches the fresh version.
+            await GroupKeyService.shared.reset(for: groupId)
+
+            // Refetch group to get updated member list
+            let updated: ChatGroup = try await network.get(path: "/api/groups/\(groupId)")
+            try await groupRepo.upsert(updated)
+            return updated
+        } catch {
+            // 🔐 SERVERLESS forward-secrecy rekey: the server is off, so rotate
+            // the group key locally and distribute it over mesh to the REMAINING
+            // members only. Without this a kicked-but-in-BLE-range member keeps
+            // decrypting every future message under the un-rotated key.
+            return try await serverlessKickRekey(groupId: groupId, kickedUserId: userId)
+        }
+    }
+
+    /// Forward-secure member removal with NO server: drop the member from local
+    /// group state, mint a fresh 32-byte group key at version N+1, adopt it, and
+    /// ATSAM-broadcast it to the remaining members only (broadcastKey reads the
+    /// now-updated local member list, so the kicked member is excluded and the
+    /// new key never reaches them).
+    private func serverlessKickRekey(groupId: String, kickedUserId: String) async throws -> ChatGroup {
+        guard var group = try? await groupRepo.get(groupId: groupId) else {
+            throw GroupError.groupNotFound
+        }
+        // 1. Remove the kicked member FIRST so the rekey broadcast excludes them.
+        group.members?.removeAll { $0.userId == kickedUserId }
+        try await groupRepo.upsert(group)
+
+        // 2. Mint a fresh AES-256 key at version N+1 and adopt it locally.
+        let newVersion = await GroupKeyService.shared.currentLocalVersion(for: groupId) + 1
+        let newKeyB64 = SymmetricKey(size: .bits256).withUnsafeBytes { Data(Array($0)).base64EncodedString() }
+        _ = await GroupKeyService.shared.ingestMeshKey(groupId: groupId, version: newVersion, keyB64: newKeyB64)
+
+        // 3. Distribute to the remaining members over mesh (per-recipient ATSAM).
+        await MeshGroupBroadcaster.broadcastKey(groupId: groupId, version: newVersion, keyB64: newKeyB64)
         #if DEBUG
-        print("🦶 [GroupService] Kicked \(userId.prefix(8)) from \(groupId.prefix(8)) → key v\(resp.newKeyVersion ?? -1)")
+        print("🦶 [GroupService] SERVERLESS kick \(kickedUserId.prefix(8)) from \(groupId.prefix(8)) → rekeyed to v\(newVersion), broadcast to \(group.members?.count ?? 0) remaining")
         #endif
-
-        // 🔐 FORWARD SECRECY:
-        // Server has rotated the per-group AES key. Evict our cached key for
-        // this group so the very next mesh-broadcast encryption fetches the
-        // fresh version. Without this, the kicked member (who still holds
-        // v(N-1)) could decrypt every future message because every remaining
-        // member kept encrypting with the SAME v(N-1) they had cached.
-        await GroupKeyService.shared.reset(for: groupId)
-
-        // Refetch group to get updated member list
-        let updated: ChatGroup = try await network.get(path: "/api/groups/\(groupId)")
-        try await groupRepo.upsert(updated)
-        return updated
+        return group
     }
     
     /// Promote a member to admin (admin only)
