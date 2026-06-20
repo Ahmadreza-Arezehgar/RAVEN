@@ -294,9 +294,14 @@ final class DeviceIdentityService {
         try storeKey(attestation, tag: prevAttestationTag,
                      accessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly)
 
-        // 4. Swap in the new keys
+        // 4. Swap in the new keys. SECURITY: the new PRIVATE signing key must
+        // keep the same strong access class generateNewIdentity uses
+        // (WhenPasscodeSetThisDeviceOnly) — otherwise the 180-day rotation
+        // silently downgrades every device's identity key to AfterFirstUnlock,
+        // weakening at-rest protection on real iOS. Only the PUBLIC half stays
+        // AfterFirstUnlock so background tasks can read it.
         try storeKey(newPrivateKey.rawRepresentation, tag: privateKeyTag,
-                     accessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly)
+                     accessible: kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly)
         try storeKey(newPublicKey.rawRepresentation, tag: publicKeyTag,
                      accessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly)
         updateCachedKeys(privateKey: newPrivateKey, publicKey: newPublicKey)

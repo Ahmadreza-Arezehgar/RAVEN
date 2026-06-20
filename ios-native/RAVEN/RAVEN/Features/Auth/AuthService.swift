@@ -80,6 +80,12 @@ class AuthService {
             bootState = .unauthenticated
             return false
         }
+        // Persist the fingerprint as the canonical serverless self-id so
+        // KeychainService.getUserId() — which the mesh/bridge/crypto layer reads
+        // for `isForMe`, signing and addressing — returns OUR identity, not an
+        // empty (fresh install) or stale server-era UUID. Without this the bridge
+        // drops legitimate inbound messages and the device seals under the wrong id.
+        try? await KeychainService.shared.saveUserId(fingerprint)
         let name = UserDefaults.standard.string(forKey: Self.localDisplayNameKey) ?? "Raven User"
         currentUser = User(
             localId: fingerprint,

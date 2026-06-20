@@ -126,7 +126,18 @@ actor KeychainService {
         if let fromDisk { cachedUserId = fromDisk }
         return fromDisk
     }
-    
+
+    /// Persist the SERVERLESS self-id (the device fingerprint) so getUserId()
+    /// returns it even with no server token. Previously the user_id slot was
+    /// written ONLY by saveToken, so a serverless device had an empty (fresh)
+    /// or stale server-era self-id — breaking the bridge `isForMe` check and
+    /// making the device sign/seal under the wrong identity. Call from
+    /// AuthService.bootstrapLocalIdentity.
+    func saveUserId(_ userId: String) throws {
+        try save(key: userIdKey, value: userId)
+        cachedUserId = userId
+    }
+
     func upgradeToFullToken(_ newToken: String) throws {
         try save(key: tokenKey, value: newToken)
         try save(key: scopeKey, value: TokenScope.full.rawValue)

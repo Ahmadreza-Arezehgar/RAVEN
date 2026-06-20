@@ -199,6 +199,23 @@ struct FriendQRPayload: Codable {
                 #endif
                 return nil
             }
+
+            // 🔴 SERVERLESS IDENTITY BINDING (SEC-CRIT). A valid signature only
+            // proves the QR's maker controls `identityPubBase64` — NOT that they
+            // are `userId`. In the serverless model a user's id IS the
+            // fingerprint of their identity key, so REQUIRE
+            // userId == deriveFingerprint(identityKey). Without this an attacker
+            // self-signs a QR carrying VICTIM's userId + their OWN keys (a valid
+            // self-signature over their own key) and the scanner would pin the
+            // attacker's keys as a trusted device under the victim's userId —
+            // full MITM of every future DM addressed to the victim.
+            let derivedId = DeviceIdentityService.deriveFingerprint(from: identityRaw)
+            guard payload.userId == derivedId else {
+                #if DEBUG
+                print("🟡 [FriendQR] rejected — userId does not match identity-key fingerprint (claimed=\(payload.userId.prefix(8)) derived=\(derivedId.prefix(8))). Possible impersonation QR.")
+                #endif
+                return nil
+            }
         } catch {
             #if DEBUG
             print("🟡 [FriendQR] rejected — could not load identity key: \(error.localizedDescription)")
