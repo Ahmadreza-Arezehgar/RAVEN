@@ -306,6 +306,29 @@ struct ScanQRCodeView: View {
         print("📤 [QR] Sending friend request to user: \(userId)")
         #endif
 
+        // 🔑 SERVERLESS contact-add. Persist the scanned peer as a trusted
+        // local contact (keys pinned from the user-verified QR) so they show
+        // up in New Chat and DMs seal end-to-end — with NO server. Without
+        // this the agreement key was pinned but the contact never surfaced
+        // anywhere, so a scanned peer wasn't chattable.
+        if let payload = scannedPayload,
+           let idB64 = payload.identityPubBase64,
+           let identityKey = Data(base64Encoded: idB64), identityKey.count == 32 {
+            let agreementKey = payload.agreementPubBase64.flatMap { Data(base64Encoded: $0) }
+            let fingerprint = payload.fingerprint
+                ?? DeviceIdentityService.deriveFingerprint(from: identityKey)
+            let device = FriendDevice(
+                friendUserId: userId,
+                fingerprint: fingerprint,
+                publicKey: identityKey,
+                agreementPublicKey: agreementKey,
+                trustState: .trusted,           // QR is out-of-band, user-verified
+                verifiedAt: Date(),
+                deviceName: payload.displayName ?? payload.username
+            )
+            Task { try? await FriendDeviceRepository.shared.upsert(device) }
+        }
+
         // 🟦 ROUND 50 — offline mesh fallback. Broadcast over BLE mesh
         // in parallel with the server POST (signed; receivers verify).
         Task {

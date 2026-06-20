@@ -113,56 +113,69 @@ struct NewChatView: View {
     // MARK: - Actions
     
     private func loadFriends() async {
-        // 🟥 ROUND 40 (2026-05-17) — offline-first friend list.
-        //
-        // Always render cached friends FIRST so the user sees
-        // something instantly, even on a cold launch.  Then refresh
-        // from the network in the background only when online.
-        // Cache lives in UserDefaults under `raven_friends_cache`
-        // (see GroupService.fetchFriends:563).  RAVENApp launches
-        // a pre-warm task (Round 40 in RAVENApp.swift) so the
-        // cache is populated as soon as the app is online for
-        // the first time, not just on first open of this picker.
-        if let cached = GroupService.shared.getCachedFriends(), !cached.isEmpty {
-            self.friends = cached
-            self.isLoading = false
-        } else {
-            self.isLoading = true
-        }
+        // 🔑 SERVERLESS-FIRST contacts. The primary source is now the local
+        // contact store (FriendDeviceRepository) — peers added out-of-band via
+        // QR scan / mesh, with their keys pinned. These ALWAYS show, with or
+        // without a server, so a scanned contact is immediately chattable. The
+        // legacy server friends list + cache are merged in when available.
+        let local = await localContacts()
 
+        var combined = local
+        if let cached = GroupService.shared.getCachedFriends(), !cached.isEmpty {
+            combined = Self.mergeFriends(local, cached)
+        }
+        self.friends = combined
+        self.isLoading = combined.isEmpty
         self.errorMessage = nil
 
-        // Skip network entirely if offline (whether cache is empty
-        // or not).  When the cache is empty + offline, the user
-        // sees the "no internet, no cached friends yet" message
-        // instead of an infinite spinner.
+        // Try the (legacy) server friends list only if online. In the
+        // serverless build this fast-fails with .unauthorized — that's fine,
+        // we keep the local contacts and don't surface a scary error.
         guard NetworkMonitor.shared.isOnline else {
             self.isLoading = false
-            if self.friends.isEmpty {
-                self.errorMessage = "You're offline and don't have a cached friends list yet. Open RAVEN once online so we can pre-warm the list, then it'll work offline."
-            }
+            if self.friends.isEmpty { self.errorMessage = Self.noContactsMessage }
             return
         }
 
         do {
             let fetched = try await GroupService.shared.fetchFriends()
-            withAnimation {
-                self.friends = fetched
-            }
+            withAnimation { self.friends = Self.mergeFriends(local, fetched) }
         } catch {
-            if self.friends.isEmpty {
-                // Show user-friendly message instead of raw NSURLErrorDomain
-                if (error as? URLError)?.code == .notConnectedToInternet {
-                    self.errorMessage = "You're offline and don't have a cached friends list yet. Open RAVEN once online so we can pre-warm the list, then it'll work offline."
-                } else {
-                    self.errorMessage = "Couldn't load friends. Please try again."
-                }
-            }
-            // If we DO have cached friends, silently keep showing them
-            // — better than wiping the list on a transient network blip.
+            // Keep local + cached; only message when there's truly nothing.
+            if self.friends.isEmpty { self.errorMessage = Self.noContactsMessage }
         }
 
         self.isLoading = false
+    }
+
+    private static let noContactsMessage =
+        "No contacts yet. Scan a contact's QR code (Settings → Find Friends, or their profile) to add them — chats work over mesh, no account needed."
+
+    /// Locally-known contacts: every distinct peer we hold a trusted device
+    /// for, surfaced as a pickable friend keyed by userId. The display name
+    /// comes from the device label captured at QR-scan / mesh time.
+    private func localContacts() async -> [GroupFriendInfo] {
+        let devices = await FriendDeviceRepository.shared.getAllTrustedDevices()
+        let myId = AuthService.shared.currentUser?.id
+        var byUser: [String: GroupFriendInfo] = [:]
+        for d in devices where d.friendUserId != myId && !d.friendUserId.isEmpty {
+            if byUser[d.friendUserId] == nil {
+                let name = d.deviceName ?? ""
+                byUser[d.friendUserId] = GroupFriendInfo(
+                    id: d.friendUserId,
+                    username: name,
+                    displayName: name.isEmpty ? nil : name,
+                    avatarUrl: nil
+                )
+            }
+        }
+        return Array(byUser.values).sorted { $0.safeDisplayName < $1.safeDisplayName }
+    }
+
+    private static func mergeFriends(_ a: [GroupFriendInfo], _ b: [GroupFriendInfo]) -> [GroupFriendInfo] {
+        var byId: [String: GroupFriendInfo] = [:]
+        for f in a + b where byId[f.id] == nil { byId[f.id] = f }
+        return Array(byId.values).sorted { $0.safeDisplayName < $1.safeDisplayName }
     }
     
     private func selectFriend(_ friend: GroupFriendInfo) {
