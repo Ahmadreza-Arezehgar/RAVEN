@@ -12,6 +12,8 @@ struct NewChatView: View {
     @State private var searchText = ""
     @State private var isLoading = true
     @State private var errorMessage: String?
+    @State private var showScanner = false
+    @State private var showMyQR = false
     
     private var filteredFriends: [GroupFriendInfo] {
         if searchText.isEmpty {
@@ -26,21 +28,23 @@ struct NewChatView: View {
                 if isLoading {
                     ProgressView()
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if let error = errorMessage {
-                    ContentUnavailableView {
-                        Label("Error", systemImage: "exclamationmark.triangle")
-                    } description: {
-                        Text(error)
-                    } actions: {
-                        Button("Try Again") {
-                            Task { await loadFriends() }
-                        }
-                    }
                 } else if friends.isEmpty {
                     ContentUnavailableView {
-                        Label("No Friends", systemImage: "person.2.slash")
+                        Label("No contacts yet", systemImage: "qrcode.viewfinder")
                     } description: {
-                        Text("Add friends to start chatting with them.")
+                        Text(errorMessage ?? "Add a contact by scanning their QR code — chats work over mesh, no account needed.")
+                    } actions: {
+                        Button {
+                            showScanner = true
+                        } label: {
+                            Label("Scan QR Code", systemImage: "qrcode.viewfinder")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        Button {
+                            showMyQR = true
+                        } label: {
+                            Label("Show My QR Code", systemImage: "qrcode")
+                        }
                     }
                 } else {
                     friendsList
@@ -52,8 +56,30 @@ struct NewChatView: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
                 }
+                ToolbarItem(placement: .primaryAction) {
+                    Menu {
+                        Button {
+                            showScanner = true
+                        } label: {
+                            Label("Scan a Contact's QR", systemImage: "qrcode.viewfinder")
+                        }
+                        Button {
+                            showMyQR = true
+                        } label: {
+                            Label("My QR Code", systemImage: "qrcode")
+                        }
+                    } label: {
+                        Image(systemName: "qrcode.viewfinder")
+                    }
+                }
             }
-            .searchable(text: $searchText, prompt: "Search friends")
+            .searchable(text: $searchText, prompt: "Search contacts")
+            .sheet(isPresented: $showScanner, onDismiss: { Task { await loadFriends() } }) {
+                ScanQRCodeView()
+            }
+            .sheet(isPresented: $showMyQR) {
+                MyQRCodeView()
+            }
         }
         .scrollDismissesKeyboard(.interactively)
         .simultaneousGesture(TapGesture().onEnded { hideKeyboard() })
