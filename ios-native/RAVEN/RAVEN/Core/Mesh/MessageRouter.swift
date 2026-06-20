@@ -113,9 +113,15 @@ final class MessageRouter: ObservableObject {
             // Without this, DeliveryJobRunner never picks up messages sent via
             // MessageRouter. MessageRouter only handles text messages, which
             // are always allowed over both server and mesh.
+            //
+            // Serverless: only create the .server job when we actually hold a
+            // session token. Otherwise that job 401s and retries forever
+            // against the turned-off backend (battery drain) — mesh + bridge
+            // carry the message.
+            let hasServerSession = await KeychainService.shared.getToken() != nil
             try await DeliveryJobRepository.shared.createJobs(
                 messageId: mid,
-                channels: [.server, .mesh]
+                channels: hasServerSession ? [.server, .mesh] : [.mesh]
             )
         } catch {
             await MainActor.run { box.end() }
