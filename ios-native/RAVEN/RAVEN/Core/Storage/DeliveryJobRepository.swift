@@ -13,6 +13,11 @@ import Foundation
 enum JobChannel: String, Codable {
     case server = "server"
     case mesh = "mesh"
+    /// Serverless internet delivery via the libp2p bridge (DHT + Circuit
+    /// Relay v2). Only created when a relay/bootstrap node is configured
+    /// (`AppConfig.libp2pBootstrapCSV` non-empty) so we never enqueue a
+    /// doomed job that retries forever against a non-existent relay.
+    case bridge = "bridge"
 }
 
 // MARK: - Job State

@@ -108,6 +108,10 @@ class DeliveryJobRunner {
             await net.syncControlPlaneIfNeeded(force: false)
             await processServerJobs(ignoreBackoff: ignoreBackoff)
             await processBridgeUplinks()
+            // 3. Serverless internet delivery for our OWN messages via the
+            //    libp2p bridge (own-traffic, distinct from processBridgeUplinks
+            //    which relays OTHER peers' queued envelopes).
+            await processBridgeChannelJobs(ignoreBackoff: ignoreBackoff)
         }
         
         // 3. Cleanup old jobs periodically
@@ -135,7 +139,141 @@ class DeliveryJobRunner {
         }
     }
 
-    
+    // MARK: - Bridge Channel Jobs (own-traffic libp2p internet delivery)
+
+    /// Deliver our OWN 1:1 messages over the serverless libp2p bridge.
+    ///
+    /// Distinct from `processBridgeUplinks` (which relays OTHER peers' queued
+    /// envelopes). A `.bridge` job is only ever created (MessageRouter) when a
+    /// relay/bootstrap node is configured, but we re-check here so a config
+    /// change leaves the jobs pending rather than failing.
+    ///
+    /// We build the SAME `EncryptedMeshPayload` the 1:1 point-to-point mesh
+    /// send produces — body sealed end-to-end (RVNS1) AND the whole envelope
+    /// AES-GCM-encrypted to the recipient's X25519 agreement key, signed with
+    /// our Ed25519 key — so the relay in the middle can't read it and the
+    /// bridge receiver (`MeshBridgeReceiver.decryptAndPublish`) decodes it
+    /// byte-for-byte the same as a relayed envelope.
+    private func processBridgeChannelJobs(ignoreBackoff: Bool) async {
+        // No relay configured → leave jobs pending (don't burn attempts).
+        guard !AppConfig.libp2pBootstrapCSV.isEmpty else { return }
+        do {
+            let jobs = try await DeliveryJobRepository.shared.getReadyJobs(channel: .bridge, ignoreBackoff: ignoreBackoff)
+            guard !jobs.isEmpty else { return }
+
+            for job in jobs {
+                if try await StopCacheRepository.shared.isStopped(job.messageId) {
+                    try await DeliveryJobRepository.shared.markStopped(messageId: job.messageId)
+                    continue
+                }
+                guard let messageRow = try? await getMessageRow(job.messageId) else {
+                    // Message deleted — drop the orphan job.
+                    try await DeliveryJobRepository.shared.markStopped(messageId: job.messageId)
+                    continue
+                }
+
+                do {
+                    try await DeliveryJobRepository.shared.markInProgress(messageId: job.messageId, channel: .bridge)
+
+                    guard let message = parseMessage(messageRow) else {
+                        throw JobError.invalidMessage
+                    }
+                    guard message.type == .text || message.type == .location || message.type == .system else {
+                        try await DeliveryJobRepository.shared.markDelivered(messageId: job.messageId, channel: .bridge)
+                        continue
+                    }
+
+                    // Bridge is 1:1 only. Group internet fan-out would need a
+                    // per-member dial; groups go over mesh. A group message has
+                    // a local Group row matching its roomId.
+                    // NB: use markDelivered(.bridge) — NOT markStopped — to take
+                    // the bridge job out of rotation, since markStopped kills
+                    // ALL channels (the mesh job must keep carrying the message).
+                    let recipientId = message.recipientId
+                    if recipientId.isEmpty {
+                        try await DeliveryJobRepository.shared.markDelivered(messageId: job.messageId, channel: .bridge)
+                        continue
+                    }
+                    if let rid = message.roomId, !rid.isEmpty {
+                        let groupExists = (try? await GroupRepository().get(groupId: rid)) != nil
+                        if groupExists {
+                            try await DeliveryJobRepository.shared.markDelivered(messageId: job.messageId, channel: .bridge)
+                            continue
+                        }
+                    }
+
+                    var envelope = message.toMeshEnvelope()
+
+                    // Seal the 1:1 body end-to-end (RVNS1) unless it already is
+                    // — identical fail-closed posture to the mesh-retry path.
+                    if let plain = message.text, !plain.isEmpty {
+                        let alreadySealed: Bool = {
+                            guard let data = Data(base64Encoded: plain), data.count >= 8 else { return false }
+                            let s = String(data: data.prefix(5), encoding: .ascii) ?? ""
+                            return s == "RVNS1" || s == "RVNA1" || s == "RVNP1"
+                        }()
+                        if !alreadySealed {
+                            let sealed = await MessageContentSealer.seal(
+                                plaintext: plain,
+                                recipientUserId: recipientId,
+                                recipientAgreementPubKey: nil,
+                                msgId: message.id
+                            )
+                            guard sealed.isEncrypted, !sealed.base64.isEmpty else {
+                                // Can't guarantee E2EE — keep pending, retry later.
+                                try await DeliveryJobRepository.shared.incrementAttempt(
+                                    messageId: job.messageId, channel: .bridge, error: "seal-unavailable")
+                                continue
+                            }
+                            envelope.text = sealed.base64
+                        }
+                    }
+
+                    // Transport-encrypt the whole envelope to the recipient's
+                    // X25519 agreement key (so the relay can't read metadata).
+                    guard let agreementKey = await PeerKeyDirectory.shared.ensureAgreementKey(for: recipientId),
+                          agreementKey.count == 32,
+                          let sharedKey = DeviceIdentityService.shared.deriveSharedSecret(with: agreementKey) else {
+                        // No pinned key for this peer yet (add them via QR) —
+                        // keep pending; a later retry succeeds once pinned.
+                        try await DeliveryJobRepository.shared.incrementAttempt(
+                            messageId: job.messageId, channel: .bridge, error: "no-agreement-key",
+                            retryAfter: 300)
+                        continue
+                    }
+
+                    let secureEnvelope = envelope.toSecureEnvelope()
+                    let encrypted = try await MeshCryptoService.shared.encryptEnvelope(secureEnvelope, sharedKey: sharedKey)
+                    let payloadB64 = try JSONEncoder().encode(encrypted).base64EncodedString()
+
+                    try await MeshBridge.transport.uploadEnvelope(
+                        payloadB64,
+                        idempotencyKey: message.id,
+                        recipientHint: recipientId
+                    )
+
+                    // Stream write to the peer succeeded → delivered on this
+                    // channel (overall delivery state still tracked via ACK).
+                    try await DeliveryJobRepository.shared.markDelivered(messageId: job.messageId, channel: .bridge)
+                    #if DEBUG
+                    print("[JobRunner] ✅ bridge sent: \(job.messageId.prefix(8))")
+                    #endif
+                } catch {
+                    // Peer unreachable / relay down → exponential backoff.
+                    let delay = min(TimeInterval(15 * pow(1.5, Double(job.attempts))), 3600)
+                    try? await DeliveryJobRepository.shared.incrementAttempt(
+                        messageId: job.messageId, channel: .bridge,
+                        error: error.localizedDescription, retryAfter: delay)
+                }
+            }
+        } catch {
+            #if DEBUG
+            print("❌ [JobRunner] Bridge-channel processing error: \(error)")
+            #endif
+        }
+    }
+
+
     // MARK: - Mesh Jobs
     
     private func processMeshJobs(ignoreBackoff: Bool) async {

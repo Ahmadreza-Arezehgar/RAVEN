@@ -119,9 +119,19 @@ final class MessageRouter: ObservableObject {
             // against the turned-off backend (battery drain) — mesh + bridge
             // carry the message.
             let hasServerSession = await KeychainService.shared.getToken() != nil
+            // Serverless internet path: add a .bridge job ONLY when a
+            // relay/bootstrap node is configured. Without one the libp2p
+            // transport can't discover the peer (empty DHT), so the job would
+            // retry forever and drain the battery — mesh carries the message
+            // until the relay infra exists. The bridge processor itself skips
+            // group sends and fail-closes when the recipient's key is unknown.
+            var channels: [JobChannel] = hasServerSession ? [.server, .mesh] : [.mesh]
+            if !AppConfig.libp2pBootstrapCSV.isEmpty && !receiverId.isEmpty {
+                channels.append(.bridge)
+            }
             try await DeliveryJobRepository.shared.createJobs(
                 messageId: mid,
-                channels: hasServerSession ? [.server, .mesh] : [.mesh]
+                channels: channels
             )
         } catch {
             await MainActor.run { box.end() }
