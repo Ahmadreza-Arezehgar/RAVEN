@@ -237,7 +237,7 @@ class DeliveryJobRunner {
                         let alreadySealed: Bool = {
                             guard let data = Data(base64Encoded: plain), data.count >= 8 else { return false }
                             let s = String(data: data.prefix(5), encoding: .ascii) ?? ""
-                            return s == "RVNS1" || s == "RVNA1" || s == "RVNP1"
+                            return s == "RVNS1" || s == "RVNA1" || s == "RVNP1" || s == "RVNH1"
                         }()
                         if !alreadySealed {
                             let sealed = await MessageContentSealer.seal(
@@ -428,7 +428,7 @@ class DeliveryJobRunner {
                             guard let data = Data(base64Encoded: plain),
                                   data.count >= 8 else { return false }
                             let s = String(data: data.prefix(5), encoding: .ascii) ?? ""
-                            return s == "RVNS1" || s == "RVNA1" || s == "RVNP1"
+                            return s == "RVNS1" || s == "RVNA1" || s == "RVNP1" || s == "RVNH1"
                         }()
                         if !alreadySealed {
                             let sealed = await MessageContentSealer.seal(

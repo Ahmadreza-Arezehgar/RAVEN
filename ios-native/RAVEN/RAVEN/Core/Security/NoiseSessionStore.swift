@@ -171,6 +171,50 @@ final class NoiseSessionStore {
         return (payload, m2, pid)
     }
 
+    // MARK: - Stateless 1-RTT IK (serverless, no cached session)
+
+    /// Write a Noise IK message-1 to `peerStaticKey` carrying `payload`, WITHOUT
+    /// caching a pending session. This is the serverless first-contact path: two
+    /// peers who have only exchanged static keys out-of-band (QR) can seal each
+    /// message as a self-contained IK M1 (fresh ephemeral ⇒ forward secrecy),
+    /// and the recipient reads it with `openHandshake1Stateless`. No M2 / no
+    /// pairing round-trip is needed for the body to be delivered + read.
+    func writeHandshake1Stateless(
+        toPeer peerStaticKey: Curve25519.KeyAgreement.PublicKey,
+        payload: Data
+    ) -> Data? {
+        let session: NoiseSession
+        do {
+            session = try DeviceIdentityService.shared.withAgreementPrivateKey { ourStatic in
+                try NoiseSession(role: .initiator, staticKey: ourStatic, peerStaticKey: peerStaticKey)
+            } ?? { throw StoreError.identityNotInitialized }()
+        } catch {
+            return nil
+        }
+        return try? session.writeMessage1(payload: payload)
+    }
+
+    /// Read the payload embedded in a Noise IK message-1 WITHOUT caching a
+    /// transport session (the symmetric counterpart of `writeHandshake1Stateless`).
+    /// Not storing a transport pair keeps the scheme symmetric: our reply also
+    /// goes out as our own IK M1, so we never half-open a session the peer can't
+    /// complete. Returns (payload, recovered sender static key) or nil.
+    func openHandshake1Stateless(message1: Data) -> (payload: Data, peerStatic: Data)? {
+        let session: NoiseSession
+        do {
+            session = try DeviceIdentityService.shared.withAgreementPrivateKey { ourStatic in
+                try NoiseSession(role: .responder, staticKey: ourStatic, peerStaticKey: nil)
+            } ?? { throw StoreError.identityNotInitialized }()
+        } catch {
+            return nil
+        }
+        guard let payload = try? session.readMessage1(message1),
+              let peerStatic = session.peerStaticKey else {
+            return nil
+        }
+        return (payload, peerStatic.rawRepresentation)
+    }
+
     // MARK: - Transport mode
 
     /// Encrypt `plaintext` with the cached transport key for `peerID`.

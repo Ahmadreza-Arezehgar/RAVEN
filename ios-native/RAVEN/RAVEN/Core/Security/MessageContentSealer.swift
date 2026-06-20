@@ -53,6 +53,10 @@ enum MessageContentSealer {
     // aligned with `VaultFileCrypto`'s `RVNV1` header.
     static let sealedMagic   = Data([0x52, 0x56, 0x4E, 0x53, 0x31, 0x00, 0x00, 0x00])  // RVNS1\0\0\0
     static let plainMagic    = Data([0x52, 0x56, 0x4E, 0x50, 0x31, 0x00, 0x00, 0x00])  // RVNP1\0\0\0
+    /// Serverless first-contact: the body rides inside a self-contained Noise IK
+    /// message-1 (1-RTT, fresh ephemeral). Lets two peers who only exchanged
+    /// static keys via QR seal/open E2E without a prior pairing handshake.
+    static let handshakeMagic = Data([0x52, 0x56, 0x4E, 0x48, 0x31, 0x00, 0x00, 0x00]) // RVNH1\0\0\0
     static let magicLength   = 8
 
     /// Protocol domain string mixed into the AAD. Bumping this
@@ -277,6 +281,29 @@ enum MessageContentSealer {
                     reason: .noiseTransport
                 )
             }
+
+            // No established transport session → land the body 1-RTT inside a
+            // self-contained Noise IK message-1 addressed to the recipient's
+            // static key. The receiver opens it statelessly — this is what makes
+            // a purely serverless QR-only contact E2E without any pairing
+            // round-trip (previously this fell through to RVNP1 plaintext).
+            if let peerStatic = try? Curve25519.KeyAgreement.PublicKey(rawRepresentation: pub) {
+                let m1: Data? = await MainActor.run {
+                    NoiseSessionStore.shared.writeHandshake1Stateless(toPeer: peerStatic, payload: body)
+                }
+                if let m1 {
+                    var hsWire = Data()
+                    hsWire.append(handshakeMagic)
+                    hsWire.append(m1)
+                    if hsWire.count <= maxWireBytes {
+                        return SealedContent(
+                            base64: hsWire.base64EncodedString(),
+                            isEncrypted: true,
+                            reason: .noiseTransport
+                        )
+                    }
+                }
+            }
         }
 
         // Fallback: prefix with the plaintext magic so the receiver
@@ -404,6 +431,36 @@ enum MessageContentSealer {
             // Magic matched but AEAD failed → either tampered, peer
             // re-paired, or sender shipped under wrong root.
             return UnsealedContent(plaintext: "", isEncrypted: true, reason: .decryptFailed)
+        }
+
+        if magic == handshakeMagic {
+            // Serverless first-contact: the body rode inside a Noise IK
+            // message-1. Open it statelessly (no cached session) and surface the
+            // embedded payload. The IK handshake authenticates the sender (we
+            // recover their static key); on mesh/bridge the envelope's Ed25519
+            // signature + identity binding authenticate it again at the
+            // transport layer.
+            guard rest.count >= minSealedRest else {
+                return UnsealedContent(plaintext: "", isEncrypted: true, reason: .decryptFailed)
+            }
+            let opened: (payload: Data, peerStatic: Data)? = await MainActor.run {
+                NoiseSessionStore.shared.openHandshake1Stateless(message1: rest)
+            }
+            guard let opened, let str = String(data: opened.payload, encoding: .utf8) else {
+                return UnsealedContent(plaintext: "", isEncrypted: true, reason: .decryptFailed)
+            }
+            // If the caller told us who the sender should be, the static key the
+            // IK handshake recovered MUST match — else it's an impersonation.
+            if let expected = senderAgreementPubKey, expected.count == 32, opened.peerStatic != expected {
+                return UnsealedContent(plaintext: "", isEncrypted: true, reason: .decryptFailed)
+            }
+            // Replay guard keyed on the recovered sender + msgId (mirrors RVNS1).
+            let hsPeerPID = peerID(fromPublicKey: opened.peerStatic)
+            if await Self.replayWindow.isReplay(peerPID: hsPeerPID, msgId: msgId) {
+                return UnsealedContent(plaintext: "", isEncrypted: true, reason: .decryptFailed)
+            }
+            await Self.replayWindow.record(peerPID: hsPeerPID, msgId: msgId)
+            return UnsealedContent(plaintext: str, isEncrypted: true, reason: .noiseTransport)
         }
 
         if magic == sealedMagic {
