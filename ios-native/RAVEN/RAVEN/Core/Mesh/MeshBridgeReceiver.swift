@@ -191,10 +191,24 @@ final class MeshBridgeReceiver: NSObject, ObservableObject {
             // TOFU) so we don't drop a legitimate first message — the same
             // posture the BLE ingest path takes.
             if signerStr != DeviceIdentityService.shared.publicKeyBase64 {
+                // Gather EVERY key we already associate with this senderId —
+                // trusted FriendDevices AND an out-of-band-pinned identity key
+                // (QR), matching the BLE path's posture. If we know any, the
+                // signer MUST be one of them; otherwise it's impersonation.
                 let trusted = await FriendDeviceRepository.shared.getTrustedDevices(forUser: envelope.senderId)
-                if !trusted.isEmpty && !trusted.contains(where: { $0.publicKeyBase64 == signerStr }) {
-                    logger.debug("reject: bridge sender impersonation — signer key not trusted for \(envelope.senderId, privacy: .private)")
-                    return
+                let pinnedIdentity = await PeerKeyDirectory.shared.identityKey(for: envelope.senderId)
+                var knownKeys = Set(trusted.map { $0.publicKeyBase64 })
+                if let pinnedIdentity { knownKeys.insert(pinnedIdentity.base64EncodedString()) }
+                if !knownKeys.isEmpty {
+                    guard knownKeys.contains(signerStr) else {
+                        logger.debug("reject: bridge signer not a known key for \(envelope.senderId, privacy: .private) — impersonation")
+                        return
+                    }
+                } else {
+                    // True first contact (no FriendDevice, no pinned identity).
+                    // Accept as TOFU but DO NOT auto-pin — the conversation is
+                    // unverified until the user adds the contact out-of-band (QR).
+                    logger.debug("bridge first-contact (TOFU, unverified) from \(envelope.senderId, privacy: .private)")
                 }
             }
 
