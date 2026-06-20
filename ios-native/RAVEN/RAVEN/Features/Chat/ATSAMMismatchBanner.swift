@@ -42,6 +42,10 @@ struct ATSAMMismatchBanner: View {
     /// for per-peer change notifications.
     @State private var visible: Bool = false
     @State private var autoDismissTask: Task<Void, Never>? = nil
+    /// Why the banner is showing — drives the copy. `.suspectedLegacy` in the
+    /// serverless build means "we have no pinned key for this peer yet" (they
+    /// aren't added), which is very different from a confirmed `.legacyClient`.
+    @State private var level: PeerProtocolLevel = .unknown
 
     // Observed once at view init; SwiftUI keeps the dependency
     // automatically because we read `bumps[peerUserId]` in body.
@@ -81,6 +85,18 @@ struct ATSAMMismatchBanner: View {
         }
     }
 
+    // MARK: - Copy (differentiates "not added yet" from a real older client)
+
+    private var bannerTitle: String {
+        level == .legacyClient ? "Older RAVEN" : "Key not exchanged"
+    }
+
+    private var bannerSubtitle: String {
+        level == .legacyClient
+            ? "\(peerDisplayName) hasn't updated — some E2EE features off"
+            : "Add \(peerDisplayName) (scan their QR) to send securely"
+    }
+
     // MARK: - Capsule body
 
     /// Round-26 liquid-glass capsule. Layout reads left-to-right:
@@ -102,10 +118,10 @@ struct ATSAMMismatchBanner: View {
             }
 
             VStack(alignment: .leading, spacing: 1) {
-                Text("Older RAVEN")
+                Text(bannerTitle)
                     .font(.system(size: 12.5, weight: .semibold))
                     .foregroundStyle(.primary)
-                Text("\(peerDisplayName) hasn't updated — some E2EE features off")
+                Text(bannerSubtitle)
                     .font(.system(size: 10.5))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -147,7 +163,9 @@ struct ATSAMMismatchBanner: View {
 
     private func refresh() async {
         let show = await PeerProtocolCapabilityStore.shared.shouldShowBanner(for: peerUserId)
+        let lvl = await PeerProtocolCapabilityStore.shared.level(for: peerUserId)
         await MainActor.run {
+            self.level = lvl
             if show != visible {
                 withAnimation { visible = show }
                 if show {
