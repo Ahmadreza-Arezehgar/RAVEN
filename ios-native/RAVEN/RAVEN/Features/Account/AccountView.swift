@@ -19,12 +19,22 @@ struct AccountView: View {
     @State private var isUploadingAvatar = false
     @State private var showEditProfile = false  // Edit Profile sheet
     
-    @State private var showSettingsSheet = false
+    @State private var showQR = false   // redesign — identity hero → My QR Code
 
     // Expanded header height
     private let expandedHeight: CGFloat = 260
     private let collapsedHeight: CGFloat = 84
     private let collapseDistance: CGFloat = 160
+
+    // Top safe-area inset read straight from the key window — robust even
+    // though the shell's TabPager ignores the container safe area (a SwiftUI
+    // GeometryReader would report 0 inside that ignoring context).
+    private var safeTop: CGFloat {
+        (UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap { $0.windows }
+            .first { $0.isKeyWindow }?.safeAreaInsets.top) ?? 47
+    }
 
     // 0 = expanded, 1 = collapsed
     private var progress: CGFloat {
@@ -35,69 +45,39 @@ struct AccountView: View {
     }
 
     var body: some View {
-        GeometryReader { geo in
-            let safeTop = geo.safeAreaInsets.top
+        ZStack {
+            // Adaptive backdrop: deep base + a soft violet aura at the top so
+            // the identity hero reads as the focal point (RAVEN's look — dark,
+            // futuristic, faint violet glow — while still adapting to light).
+            SettingsBackdrop()
 
-            ZStack(alignment: .top) {
-
-                // Background - adaptive for light/dark mode
-                Color(.systemBackground)
-                    .ignoresSafeArea()
-
-                // ✅ Scroll Content
-                ScrollView(showsIndicators: false) {
-                    VStack(spacing: 14) {
-
-                        // Offset tracker at TOP of scroll content
-                        GeometryReader { proxy in
-                            let offsetY = proxy.frame(in: .named("accountScroll")).minY
-                            Color.clear
-                                .onChange(of: offsetY) { _, newValue in
-                                    scrollY = newValue
-                                    handleScrollDirection(offset: newValue)
-                                }
-                                .onAppear {
-                                    scrollY = offsetY
-                                }
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 18) {
+                    RavenIdentityHero(
+                        user: authService.currentUser,
+                        onCameraTap: {
+                            Haptics.light()
+                            showImagePicker = true
+                        },
+                        onQRTap: {
+                            Haptics.light()
+                            showQR = true
+                        },
+                        onEditTap: {
+                            Haptics.light()
+                            showEditProfile = true
                         }
-                        .frame(height: 1)
+                    )
 
-                        // Spacer for header
-                        Color.clear
-                            .frame(height: expandedHeight + safeTop + 12)
-
-                        // Settings is reachable via the gear button in the
-                        // header (always visible, expanded or collapsed).
-                        // No duplicate pill row here.
-
-
-                        // Trailing breathing room above bottom tab bar
-                        Color.clear.frame(height: 120)
-                    }
+                    // Settings sections, now INLINE (was a gear → modal sheet —
+                    // an awkward extra hop on a near-empty profile screen).
+                    AccountSettingsContent()
                 }
-                .coordinateSpace(name: "accountScroll")
-
-                // ✅ Pinned Header overlay - allows touches to pass through to content
-                ProfileHeaderPinned(
-                    user: authService.currentUser,
-                    safeTop: safeTop,
-                    expandedHeight: expandedHeight,
-                    collapsedHeight: collapsedHeight,
-                    progress: progress,
-                    onCameraTap: {
-                        Haptics.light()
-                        showImagePicker = true
-                    },
-                    onEditTap: {
-                        Haptics.light()
-                        showEditProfile = true
-                    },
-                    onSettingsTap: {
-                        Haptics.light()
-                        showSettingsSheet = true
-                    }
-                )
-                // Note: Hit testing enabled for camera button, edit button, and settings button
+                .padding(.horizontal, 16)
+                // The shell's TabPager ignores the top safe area, so pad the
+                // hero clear of the status bar / Dynamic Island ourselves.
+                .padding(.top, safeTop + 10)
+                .padding(.bottom, 130) // clear the floating tab bar
             }
         }
         .navigationBarHidden(true)
@@ -132,15 +112,8 @@ struct AccountView: View {
         .sheet(isPresented: $showEditProfile) {
             EditProfileView()
         }
-        .sheet(isPresented: $showSettingsSheet) {
-            NavigationStack {
-                AccountSettingsList()
-                    .toolbar {
-                        ToolbarItem(placement: .cancellationAction) {
-                            Button("Done") { showSettingsSheet = false }
-                        }
-                    }
-            }
+        .sheet(isPresented: $showQR) {
+            MyQRCodeView()
         }
     }
     
@@ -590,5 +563,155 @@ struct ProfileAvatarView: View {
 
     var body: some View {
         GlassAvatar(name: initials, path: avatarPath, size: size, showGlow: false)
+    }
+}
+
+// MARK: - Settings Redesign — adaptive backdrop with a faint violet aura
+private struct SettingsBackdrop: View {
+    var body: some View {
+        Color(.systemGroupedBackground)
+            .overlay(alignment: .top) {
+                RadialGradient(
+                    colors: [DS.accentPurple.opacity(0.16), .clear],
+                    center: .top, startRadius: 0, endRadius: 440
+                )
+            }
+            .ignoresSafeArea()
+    }
+}
+
+// MARK: - Settings Redesign — Identity / Security hero
+private struct RavenIdentityHero: View {
+    let user: User?
+    var onCameraTap: () -> Void
+    var onQRTap: () -> Void
+    var onEditTap: () -> Void
+
+    private var fingerprint: String { DeviceIdentityService.shared.fingerprint ?? "—" }
+
+    var body: some View {
+        VStack(spacing: 13) {
+            // Avatar — violet glow ring + camera badge
+            ZStack(alignment: .bottomTrailing) {
+                ZStack {
+                    Circle()
+                        .fill(DS.accentPurple.opacity(0.35))
+                        .frame(width: 106, height: 106)
+                        .blur(radius: 20)
+                    GlassAvatar(name: user?.displayName ?? "?", path: user?.avatarPath, size: 92, showGlow: false)
+                        .overlay(
+                            Circle().stroke(
+                                LinearGradient(colors: [DS.accentPurple, DS.accentBlue],
+                                               startPoint: .topLeading, endPoint: .bottomTrailing),
+                                lineWidth: 2.5)
+                        )
+                }
+                Button(action: onCameraTap) {
+                    Image(systemName: "camera.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 30, height: 30)
+                        .background(Circle().fill(DS.accentPurple))
+                        .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 2.5))
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.top, 4)
+
+            // Name (+ verified)
+            HStack(spacing: 6) {
+                Text(user?.displayName ?? "You")
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                if user?.isVerified == true {
+                    Image(systemName: "checkmark.seal.fill")
+                        .font(.system(size: 16))
+                        .foregroundStyle(DS.accentBlue)
+                }
+            }
+
+            if let uname = user?.username, !uname.isEmpty {
+                Text("@\(uname)")
+                    .font(.system(size: 15))
+                    .foregroundStyle(.secondary)
+            }
+
+            // Fingerprint / safety-number chip → tap for QR
+            Button(action: onQRTap) {
+                HStack(spacing: 8) {
+                    Image(systemName: "qrcode").font(.system(size: 13, weight: .semibold))
+                    Text(fingerprint).font(.system(size: 14, weight: .semibold, design: .monospaced))
+                    Image(systemName: "chevron.right").font(.system(size: 10, weight: .bold)).opacity(0.5)
+                }
+                .foregroundStyle(DS.accentPurple)
+                .padding(.horizontal, 14).padding(.vertical, 8)
+                .background(Capsule().fill(DS.accentPurple.opacity(0.12)))
+                .overlay(Capsule().stroke(DS.accentPurple.opacity(0.25), lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+
+            // Security posture
+            HStack(spacing: 8) {
+                SecurityPill(icon: "lock.shield.fill", text: "End-to-end encrypted", tint: .green)
+                SecurityPill(icon: "key.fill", text: "No account", tint: DS.accentBlue)
+            }
+            .padding(.top, 2)
+
+            // Quick actions
+            HStack(spacing: 10) {
+                HeroActionButton(title: "My QR Code", icon: "qrcode", action: onQRTap)
+                HeroActionButton(title: "Edit Profile", icon: "pencil", action: onEditTap)
+            }
+            .padding(.top, 6)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 22)
+        .padding(.horizontal, 18)
+        .background(RoundedRectangle(cornerRadius: 26, style: .continuous).fill(.ultraThinMaterial))
+        .overlay(
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
+                .stroke(
+                    LinearGradient(colors: [DS.accentPurple.opacity(0.55), DS.accentBlue.opacity(0.18)],
+                                   startPoint: .topLeading, endPoint: .bottomTrailing),
+                    lineWidth: 1)
+        )
+        .shadow(color: DS.accentPurple.opacity(0.18), radius: 22, x: 0, y: 8)
+    }
+}
+
+private struct SecurityPill: View {
+    let icon: String
+    let text: String
+    let tint: Color
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: icon).font(.system(size: 11, weight: .semibold))
+            Text(text).font(.system(size: 12, weight: .medium))
+        }
+        .foregroundStyle(tint)
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .background(Capsule().fill(tint.opacity(0.12)))
+    }
+}
+
+private struct HeroActionButton: View {
+    let title: String
+    let icon: String
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 7) {
+                Image(systemName: icon).font(.system(size: 14, weight: .semibold))
+                Text(title).font(.system(size: 15, weight: .semibold))
+            }
+            .foregroundStyle(.primary)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 11)
+            .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(.ultraThinMaterial))
+            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Color.primary.opacity(0.12), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
     }
 }
