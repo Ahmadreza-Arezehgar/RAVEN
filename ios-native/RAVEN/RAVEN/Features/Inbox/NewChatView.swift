@@ -14,7 +14,8 @@ struct NewChatView: View {
     @State private var errorMessage: String?
     @State private var showScanner = false
     @State private var showMyQR = false
-    
+    @State private var pendingRemove: GroupFriendInfo?   // swipe-to-remove confirm
+
     private var filteredFriends: [GroupFriendInfo] {
         if searchText.isEmpty {
             return friends
@@ -131,9 +132,45 @@ struct NewChatView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    Button(role: .destructive) {
+                        Haptics.light()
+                        pendingRemove = friend
+                    } label: {
+                        Label("Remove", systemImage: "person.crop.circle.badge.xmark")
+                    }
+                }
             }
         }
         .listStyle(.plain)
+        .confirmationDialog(
+            "Remove contact?",
+            isPresented: Binding(get: { pendingRemove != nil }, set: { if !$0 { pendingRemove = nil } }),
+            titleVisibility: .visible,
+            presenting: pendingRemove
+        ) { friend in
+            Button("Remove \(friend.safeDisplayName)", role: .destructive) {
+                Task { await removeContact(friend) }
+            }
+            Button("Cancel", role: .cancel) { pendingRemove = nil }
+        } message: { _ in
+            Text("This deletes their pinned keys from this device. You'll need to scan their QR code again to message them.")
+        }
+    }
+
+    /// Serverless contact removal — wipes EVERY pinned device for this peer
+    /// from the local trust store AND clears their cached agreement/identity
+    /// keys from PeerKeyDirectory, so they no longer surface as a contact and
+    /// can't be sealed to without a fresh out-of-band (QR) re-pin.
+    private func removeContact(_ friend: GroupFriendInfo) async {
+        let userId = friend.id
+        let devices = await FriendDeviceRepository.shared.getTrustedDevices(forUser: userId)
+        for d in devices {
+            try? await FriendDeviceRepository.shared.deleteDevice(d.fingerprint)
+        }
+        PeerKeyDirectory.shared.clearAgreementKey(for: userId)
+        pendingRemove = nil
+        await loadFriends()
     }
     
     // MARK: - Actions
