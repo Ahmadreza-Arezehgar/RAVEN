@@ -33,6 +33,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
+	relayclient "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/client"
 	multiaddr "github.com/multiformats/go-multiaddr"
 )
 
@@ -62,6 +63,12 @@ type Node struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
 	started  bool
+	// relays are the configured bootstrap/relay nodes (from bootstrapCSV).
+	// A mobile peer does not listen on a publicly dialable address, so it is
+	// only reachable THROUGH a relay it has reserved a slot on (AutoRelay).
+	// Send() therefore also constructs /<relay>/p2p-circuit addresses for the
+	// target from this list when the DHT can't supply a direct address.
+	relays []peer.AddrInfo
 }
 
 // NewNode builds (but does not start) a node from RAVEN's Ed25519 private key.
@@ -101,15 +108,24 @@ func (n *Node) Start(bootstrapCSV string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	n.ctx, n.cancel = ctx, cancel
 
-	h, err := libp2p.New(
+	// Parse the bootstrap multiaddrs into AddrInfos once: they double as the
+	// static relays for AutoRelay (so this mobile peer reserves a slot and
+	// becomes reachable via Circuit Relay v2) and as the circuit-address basis
+	// in Send().
+	relays := parseAddrInfos(bootstrapCSV)
+	n.relays = relays
+
+	opts := []libp2p.Option{
 		libp2p.Identity(n.priv),
 		libp2p.DefaultTransports,
 		libp2p.DefaultSecurity, // Noise + TLS
 		libp2p.NATPortMap(),
-		libp2p.EnableRelay(),         // use relays as a client
-		libp2p.EnableHolePunching(),  // DCUtR: upgrade relayed -> direct
+		libp2p.EnableRelay(),        // use relays as a client (dial + be dialed via relay)
+		libp2p.EnableHolePunching(), // DCUtR: upgrade relayed -> direct
 		libp2p.EnableNATService(),
-	)
+	}
+
+	h, err := libp2p.New(opts...)
 	if err != nil {
 		cancel()
 		return fmt.Errorf("libp2p.New: %w", err)
@@ -130,6 +146,12 @@ func (n *Node) Start(bootstrapCSV string) error {
 
 	// Connect to bootstrap peers, then bootstrap the DHT.
 	n.connectBootstrap(ctx, bootstrapCSV)
+	// Explicitly reserve a Circuit Relay v2 slot on each configured relay so
+	// this (mobile, non-listening) peer is reachable THROUGH the relay. We do
+	// this deterministically rather than relying on AutoRelay, which only
+	// reserves once AutoNAT decides we're unreachable — unreliable on a
+	// simulator/localhost where reachability is ambiguous.
+	n.reserveRelays(ctx)
 	if err := kdht.Bootstrap(ctx); err != nil {
 		// non-fatal: discovery degrades but direct/relayed dials may still work
 		fmt.Printf("[ravenbridge] dht bootstrap warning: %v\n", err)
@@ -142,7 +164,10 @@ func (n *Node) Start(bootstrapCSV string) error {
 	return nil
 }
 
-func (n *Node) connectBootstrap(ctx context.Context, csv string) {
+// parseAddrInfos turns a comma-separated list of full p2p multiaddrs
+// (/ip4/…/tcp/…/p2p/<id>) into AddrInfos, skipping malformed entries.
+func parseAddrInfos(csv string) []peer.AddrInfo {
+	var out []peer.AddrInfo
 	for _, raw := range strings.Split(csv, ",") {
 		raw = strings.TrimSpace(raw)
 		if raw == "" {
@@ -156,9 +181,30 @@ func (n *Node) connectBootstrap(ctx context.Context, csv string) {
 		if err != nil {
 			continue
 		}
+		out = append(out, *ai)
+	}
+	return out
+}
+
+func (n *Node) connectBootstrap(ctx context.Context, _ string) {
+	for i := range n.relays {
 		cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		_ = n.host.Connect(cctx, *ai)
+		_ = n.host.Connect(cctx, n.relays[i])
 		cancel()
+	}
+}
+
+// reserveRelays explicitly reserves a Circuit Relay v2 slot on each configured
+// relay so this (mobile, non-listening) peer can be dialed THROUGH the relay by
+// other RAVEN devices. Deterministic — does not wait on AutoNAT/AutoRelay.
+func (n *Node) reserveRelays(ctx context.Context) {
+	for i := range n.relays {
+		rctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		_, err := relayclient.Reserve(rctx, n.host, n.relays[i])
+		cancel()
+		if err != nil {
+			fmt.Printf("[ravenbridge] relay reservation failed for %s: %v\n", n.relays[i].ID, err)
+		}
 	}
 }
 
@@ -221,7 +267,7 @@ func readFull(r *bufio.Reader, buf []byte) (int, error) {
 // server bridge used; `idempotencyKey` dedups on the receiver.
 func (n *Node) Send(peerIDStr, envelopeB64, idempotencyKey string) error {
 	n.mu.Lock()
-	h, kdht, ctx := n.host, n.dht, n.ctx
+	h, kdht, ctx, relays := n.host, n.dht, n.ctx, n.relays
 	n.mu.Unlock()
 	if h == nil || kdht == nil {
 		return errors.New("node not started")
@@ -232,17 +278,33 @@ func (n *Node) Send(peerIDStr, envelopeB64, idempotencyKey string) error {
 		return fmt.Errorf("bad peer id: %w", err)
 	}
 
-	// Discover the peer over the DHT if we don't already have addrs.
-	dctx, dcancel := context.WithTimeout(ctx, 30*time.Second)
+	// Discover the peer over the DHT if we don't already have addrs (best
+	// effort; short timeout — the relay-circuit fallback below covers the
+	// common mobile case where the peer has no directly dialable address).
+	dctx, dcancel := context.WithTimeout(ctx, 12*time.Second)
 	ai, err := kdht.FindPeer(dctx, pid)
 	dcancel()
-	if err == nil {
+	if err == nil && len(ai.Addrs) > 0 {
 		h.Peerstore().AddAddrs(pid, ai.Addrs, 10*time.Minute)
+	}
+
+	// Relay-circuit fallback: a mobile peer doesn't listen on a dialable
+	// address — it's reachable only THROUGH a relay it reserved a slot on
+	// (AutoRelay). Construct /<relay>/p2p/<relayID>/p2p-circuit for the target
+	// from each configured relay so the swarm can dial it over the circuit.
+	for _, r := range relays {
+		suffix, serr := multiaddr.NewMultiaddr("/p2p/" + r.ID.String() + "/p2p-circuit")
+		if serr != nil {
+			continue
+		}
+		for _, ra := range r.Addrs {
+			h.Peerstore().AddAddrs(pid, []multiaddr.Multiaddr{ra.Encapsulate(suffix)}, 10*time.Minute)
+		}
 	}
 
 	cctx, ccancel := context.WithTimeout(ctx, 30*time.Second)
 	defer ccancel()
-	// Allow dialing through relays.
+	// Allow dialing through relays (limited/relayed connections).
 	cctx = network.WithAllowLimitedConn(cctx, "raven-bridge")
 	s, err := h.NewStream(cctx, pid, bridgeProtocol)
 	if err != nil {

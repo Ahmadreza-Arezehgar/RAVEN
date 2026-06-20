@@ -80,7 +80,13 @@ func main() {
 		),
 		libp2p.DefaultTransports,
 		libp2p.DefaultSecurity,
-		libp2p.EnableRelayService(), // Circuit Relay v2 server
+		// Force public reachability so the relay confidently runs the Circuit
+		// Relay v2 HOP service and advertises /libp2p/circuit/relay/0.2.0/hop.
+		// Without this, AutoNAT on a localhost/LAN box may classify the relay as
+		// private and the hop service stays off → client reservations fail with
+		// "protocols not supported: [/libp2p/circuit/relay/0.2.0/hop]".
+		libp2p.ForceReachabilityPublic(),
+		libp2p.EnableRelayService(), // Circuit Relay v2 server (hop)
 		libp2p.EnableNATService(),
 	)
 	if err != nil {
