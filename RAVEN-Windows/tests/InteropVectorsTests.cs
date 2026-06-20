@@ -164,6 +164,42 @@ public class InteropVectorsTests
             s);
     }
 
+    // ─── Sealed-Sender v2 (task_a1157777): signs over HASHES, not raw ids ──
+    // CRITICAL cross-platform gate: this MUST be byte-identical to iOS
+    // MeshInteropVectorsTests' v2 assertion or a sealed broadcast minted on one
+    // platform won't verify on the other.
+    [Fact]
+    public void SecureMeshEnvelope_SigningData_SealedV2_SignsOverHashes()
+    {
+        var env = new SecureMeshEnvelope
+        {
+            ClientMessageId = "msg-001",
+            RoomId = "room-A",
+            SenderId = "alice",          // present locally but NOT signed in v2
+            SenderName = "Alice",        // dropped (position 4 empty) in v2
+            RecipientId = "bob",         // not signed in v2 (hash carries it)
+            MessageType = 0,
+            Text = "hi",
+            Timestamp = 1700000000.0,
+            Nonce = "AAAAAAAAAAAAAAAAAAAAAA==",
+            SenderPublicKey = "PUBKEYBASE64",
+            OriginDeviceId = "fp-XXXX",
+            SealFormat = 2,
+            SenderIdHash = "aaaa1111bbbb2222cccc3333",
+            RecipientIdHash = "dddd4444eeee5555ffff6666",
+        };
+
+        var s = Encoding.UTF8.GetString(env.SigningData());
+
+        // pos 3 = senderIdHash, pos 4 = EMPTY (senderName dropped), pos 5 =
+        // recipientIdHash; raw alice/Alice/bob never appear; trailing "|sf:2".
+        Assert.Equal(
+            "msg-001|room-A|aaaa1111bbbb2222cccc3333||dddd4444eeee5555ffff6666|0|AAAAAAAAAAAAAAAAAAAAAA==|PUBKEYBASE64|1700000000000|fp-XXXX|hi|||||||||||sf:2",
+            s);
+        Assert.DoesNotContain("alice", s);
+        Assert.DoesNotContain("Alice", s);
+    }
+
     [Fact]
     public void SecureMeshEnvelope_SigningData_WithGeoFence_AppendsThreeFields()
     {

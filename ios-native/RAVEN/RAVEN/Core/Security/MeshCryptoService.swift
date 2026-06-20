@@ -669,6 +669,19 @@ struct SecureMeshEnvelope: Codable {
     // receiver. Bound into signingData() so a relay can't mutate.
     var payloadKind: String? = nil
 
+    // ── Sealed-Sender Broadcast v2 (task_a1157777) ──────────────────────────
+    // Carry the 24-hex identity-hash tokens through the SIGNED path so a sealed
+    // broadcast can strip the raw senderId/recipientId yet still be VERIFIED by
+    // a relay that doesn't know the sender (it signs over these hashes, not the
+    // raw ids — see signingData()'s sealFormat fork). `sealFormat` is the signed
+    // discriminator: nil/absent => v1 raw-id form (byte-identical to today);
+    // 2 => sealed v2 (hashes at positions 3/5, senderName dropped). It is bound
+    // into signingData as a trailing "|sf:2" so a relay can't downgrade v2→v1
+    // without invalidating the signature.
+    var senderIdHash: String? = nil
+    var recipientIdHash: String? = nil
+    var sealFormat: Int? = nil
+
     // Short CodingKeys for ~50% BLE payload reduction
     enum CodingKeys: String, CodingKey {
         case clientMessageId = "id"
@@ -703,6 +716,9 @@ struct SecureMeshEnvelope: Codable {
         case groupKeyVersion = "gkv"  // round 46 — was missing
         case geoFence = "gf"
         case payloadKind = "pk"       // round 46 — lifecycle event discriminator
+        case senderIdHash = "sih"     // sealed-sender v2 (task_a1157777)
+        case recipientIdHash = "rih"
+        case sealFormat = "sf"
     }
     
     /// Generate data for signing — covers IMMUTABLE fields only
@@ -717,12 +733,27 @@ struct SecureMeshEnvelope: Codable {
         data.append(delimiter)
         data.append(roomId.data(using: .utf8) ?? Data())
         data.append(delimiter)
-        data.append(senderId.data(using: .utf8) ?? Data())
-        data.append(delimiter)
-        data.append(senderName.data(using: .utf8) ?? Data())
-        data.append(delimiter)
-        data.append(recipientId.data(using: .utf8) ?? Data())
-        data.append(delimiter)
+        // ── Sealed-Sender v2 fork (task_a1157777) ──────────────────────────
+        // sealFormat == 2 signs over the identity HASHES that ride the wire,
+        // NOT the raw ids (which a sealed broadcast strips). senderName is
+        // dropped (position 4 empty) — receivers re-derive the display name
+        // from their local contacts, never from the wire. sealFormat == nil
+        // reproduces the v1 bytes EXACTLY (raw senderId|senderName|recipientId).
+        if sealFormat == 2 {
+            data.append((senderIdHash ?? "").data(using: .utf8) ?? Data())
+            data.append(delimiter)
+            data.append(Data())                       // senderName dropped
+            data.append(delimiter)
+            data.append((recipientIdHash ?? "").data(using: .utf8) ?? Data())
+            data.append(delimiter)
+        } else {
+            data.append(senderId.data(using: .utf8) ?? Data())
+            data.append(delimiter)
+            data.append(senderName.data(using: .utf8) ?? Data())
+            data.append(delimiter)
+            data.append(recipientId.data(using: .utf8) ?? Data())
+            data.append(delimiter)
+        }
         data.append(String(type).data(using: .utf8) ?? Data())
         data.append(delimiter)
         data.append(nonce.data(using: .utf8) ?? Data())
@@ -802,6 +833,14 @@ struct SecureMeshEnvelope: Codable {
         if let pk = payloadKind, !pk.isEmpty {
             data.append(delimiter)
             data.append("pk:\(pk)".data(using: .utf8) ?? Data())
+        }
+
+        // Sealed-sender v2 — bind the discriminator into the signature LAST
+        // (after gkv/pk) so a relay can't flip sf:2 → absent to silently
+        // re-interpret a sealed frame as v1. Absent for v1 ⇒ byte-identical.
+        if sealFormat == 2 {
+            data.append(delimiter)
+            data.append("sf:2".data(using: .utf8) ?? Data())
         }
 
         return data
@@ -920,7 +959,10 @@ extension MeshEnvelope {
             isGroup: isGroup,
             groupKeyVersion: groupKeyVersion,    // round 46 — was being dropped
             geoFence: geoFence,
-            payloadKind: payloadKind             // round 46 — lifecycle event discriminator
+            payloadKind: payloadKind,            // round 46 — lifecycle event discriminator
+            senderIdHash: senderIdHash,          // sealed-sender v2 (task_a1157777)
+            recipientIdHash: recipientIdHash,
+            sealFormat: sealFormat
         )
     }
 }
@@ -967,6 +1009,12 @@ extension SecureMeshEnvelope {
         // events to the dedicated handler (pk).
         env.groupKeyVersion = groupKeyVersion
         env.payloadKind = payloadKind
+        // sealed-sender v2 (task_a1157777) — carry the identity-hash tokens +
+        // discriminator back so the receive path can resolve + verify a sealed
+        // broadcast. (Closes the "hashes lost on the wire" data-loss bug.)
+        env.senderIdHash = senderIdHash
+        env.recipientIdHash = recipientIdHash
+        env.sealFormat = sealFormat
         return env
     }
 }

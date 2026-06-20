@@ -58,7 +58,11 @@ struct MeshEnvelope: Codable, Identifiable {
     // strictly additive and back-compatible.
     var senderIdHash: String? = nil
     var recipientIdHash: String? = nil
-    
+    /// Sealed-sender v2 discriminator (task_a1157777): nil/absent = v1 raw-id
+    /// form, 2 = sealed (signed over senderIdHash/recipientIdHash; raw ids
+    /// stripped on the wire). Bound into signingData as a trailing "|sf:2".
+    var sealFormat: Int? = nil
+
     // MARK: - Content
     
     let type: Int                    // MessageType raw value
@@ -206,6 +210,7 @@ struct MeshEnvelope: Codable, Identifiable {
         // Round 26 — MESH-CRIT-2 hashed identity tokens.
         case senderIdHash = "sih"
         case recipientIdHash = "rih"
+        case sealFormat = "sf"   // sealed-sender v2 (task_a1157777)
         // Round 46 — group-lifecycle discriminator (group_create, etc.)
         case payloadKind = "pk"
     }
@@ -335,6 +340,7 @@ extension MeshEnvelope {
         // v1.6 envelopes without these fields decode cleanly.
         self.senderIdHash = try c.decodeIfPresent(String.self, forKey: .senderIdHash)
         self.recipientIdHash = try c.decodeIfPresent(String.self, forKey: .recipientIdHash)
+        self.sealFormat = try c.decodeIfPresent(Int.self, forKey: .sealFormat)
         // Round 46 — payload-kind discriminator for group lifecycle
         // events (group_create, etc.). nil = normal chat message.
         self.payloadKind = try c.decodeIfPresent(String.self, forKey: .payloadKind)

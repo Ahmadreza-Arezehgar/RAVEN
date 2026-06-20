@@ -193,6 +193,52 @@ final class MeshInteropVectorsTests: XCTestCase {
             "If this changed intentionally, update the Windows C# twin in lockstep.")
     }
 
+    /// Sealed-Sender v2 (task_a1157777). Twin:
+    /// `SecureMeshEnvelope_SigningData_SealedV2_SignsOverHashes` (C#).
+    /// CROSS-PLATFORM GATE: the `expected` below was generated from the C#
+    /// SigningData() on this Mac and MUST stay byte-identical, or a sealed
+    /// broadcast minted on iOS won't verify on Windows (and vice-versa).
+    func testSecureMeshEnvelopeSigningDataSealedV2SignsOverHashes() {
+        var env = SecureMeshEnvelope(
+            clientMessageId: "msg-001",
+            roomId: "room-A",
+            senderId: "alice",   // present locally but NOT signed in v2
+            senderName: "Alice", // dropped (position 4 empty) in v2
+            recipientId: "bob",  // not signed in v2 — recipientIdHash carries it
+            type: 0,
+            text: "hi",
+            timestamp: 1_700_000_000.0,
+            sprayCounter: 5,
+            hopCount: 0,
+            hopLimit: 10,
+            routePath: ["fp-XXXX"],
+            originDeviceId: "fp-XXXX",
+            needsForwarding: true,
+            ttlSeconds: 86_400,
+            nonce: "AAAAAAAAAAAAAAAAAAAAAA==",
+            senderPublicKey: "PUBKEYBASE64",
+            mediaUrl: nil, thumbnailUrl: nil, fileName: nil, mimeType: nil,
+            fileSize: nil, audioDuration: nil,
+            replyToMessageId: nil, replyToTextPreview: nil, replyToSenderName: nil,
+            isBridged: nil, isGroup: nil, geoFence: nil
+        )
+        env.senderIdHash = "aaaa1111bbbb2222cccc3333"
+        env.recipientIdHash = "dddd4444eeee5555ffff6666"
+        env.sealFormat = 2
+
+        let signingString = String(data: env.signingData(), encoding: .utf8) ?? ""
+
+        // pos 3 = senderIdHash, pos 4 = EMPTY (senderName dropped), pos 5 =
+        // recipientIdHash; raw alice/Alice/bob never appear; trailing "|sf:2".
+        // Byte-identical to the C# twin's CANONICAL_V2 output.
+        let expected = "msg-001|room-A|aaaa1111bbbb2222cccc3333||dddd4444eeee5555ffff6666|0|AAAAAAAAAAAAAAAAAAAAAA==|PUBKEYBASE64|1700000000000|fp-XXXX|hi|||||||||||sf:2"
+
+        XCTAssertEqual(signingString, expected,
+            "Sealed v2 signingData drifted from the cross-platform canonical form.")
+        XCTAssertFalse(signingString.contains("alice"), "v2 must not leak the raw senderId")
+        XCTAssertFalse(signingString.contains("Alice"), "v2 must not leak senderName")
+    }
+
     // ─── ACK signing ─────────────────────────────────────────────────
 
     /// Twin: `MeshACKEnvelope_SigningData_MatchesPipeFormat` (C#).

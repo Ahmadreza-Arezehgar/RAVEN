@@ -92,6 +92,19 @@ public sealed class SecureMeshEnvelope
     [JsonPropertyName("pk"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? PayloadKind { get; set; }
 
+    // Sealed-sender v2 (task_a1157777) — 24-hex identity-hash tokens that ride
+    // the SIGNED wire so a relay can verify a sealed broadcast without knowing
+    // the sender. SealFormat is the signed discriminator (null/absent ⇒ v1,
+    // 2 ⇒ sealed). MUST mirror iOS SecureMeshEnvelope.
+    [JsonPropertyName("sih"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? SenderIdHash { get; set; }
+
+    [JsonPropertyName("rih"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? RecipientIdHash { get; set; }
+
+    [JsonPropertyName("sf"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? SealFormat { get; set; }
+
     /// <summary>
     /// Canonical bytes-to-sign for Ed25519. MUST match iOS
     /// `SecureMeshEnvelope.signingData()` byte-for-byte (see §D Rule 1).
@@ -113,9 +126,22 @@ public sealed class SecureMeshEnvelope
 
         Append(sb, ClientMessageId);
         AppendPipe(sb, RoomId);
-        AppendPipe(sb, SenderId);
-        AppendPipe(sb, SenderName);
-        AppendPipe(sb, RecipientId);
+        // Sealed-sender v2 fork (task_a1157777) — MUST match iOS
+        // SecureMeshEnvelope.signingData(): sealFormat==2 signs over the
+        // identity HASHES that ride the wire (raw ids stripped), senderName
+        // dropped; absent ⇒ v1 raw-id form, byte-identical to before.
+        if (SealFormat == 2)
+        {
+            AppendPipe(sb, SenderIdHash ?? string.Empty);    // pos 3 = hash
+            AppendPipe(sb, string.Empty);                     // pos 4 = senderName dropped
+            AppendPipe(sb, RecipientIdHash ?? string.Empty);  // pos 5 = hash
+        }
+        else
+        {
+            AppendPipe(sb, SenderId);
+            AppendPipe(sb, SenderName);
+            AppendPipe(sb, RecipientId);
+        }
         AppendPipe(sb, MessageType.ToString(CultureInfo.InvariantCulture));
         AppendPipe(sb, Nonce);
         AppendPipe(sb, SenderPublicKey);
@@ -153,6 +179,13 @@ public sealed class SecureMeshEnvelope
         if (!string.IsNullOrEmpty(PayloadKind))
         {
             AppendPipe(sb, "pk:" + PayloadKind);
+        }
+
+        // Sealed-sender v2 — bind the discriminator LAST (after gkv/pk) so a
+        // relay can't flip sf:2 → absent to re-read a sealed frame as v1.
+        if (SealFormat == 2)
+        {
+            AppendPipe(sb, "sf:2");
         }
 
         return Encoding.UTF8.GetBytes(sb.ToString());
