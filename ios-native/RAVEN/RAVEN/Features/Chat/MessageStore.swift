@@ -1093,9 +1093,21 @@ class MessageStore {
         
         // 1. Create persistent delivery jobs (server + mesh for TEXT only)
         let allowMesh = (message.type == .text || message.type == .location)  // Text + Location (~100 bytes) go via Mesh
+        // Serverless internet path: add a .bridge job (libp2p) for 1:1 text/location
+        // ONLY when a relay/bootstrap node is configured — otherwise the libp2p
+        // transport can't discover the peer and the job would retry forever
+        // (battery). Groups go over mesh; the bridge processor fail-closes on
+        // missing keys. Mirrors MessageRouter.send.
+        var jobChannels: [JobChannel] = allowMesh ? [.server, .mesh] : [.server]
+        if allowMesh && !isGroup && !recipientId.isEmpty && !AppConfig.libp2pBootstrapCSV.isEmpty {
+            jobChannels.append(.bridge)
+        }
+        #if DEBUG
+        print("🌉 [Send] mid=\(clientId.prefix(8)) channels=\(jobChannels.map { $0.rawValue }) isGroup=\(isGroup) bootstrap=\(AppConfig.libp2pBootstrapCSV.isEmpty ? "EMPTY" : "set")")
+        #endif
         try? await DeliveryJobRepository.shared.createJobs(
-            messageId: clientId, 
-            channels: allowMesh ? [.server, .mesh] : [.server]
+            messageId: clientId,
+            channels: jobChannels
         )
         
         // 🔴 ROUND 71 phase 3 follow-up #9 (2026-05-24) — track

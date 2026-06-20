@@ -327,6 +327,16 @@ struct ScanQRCodeView: View {
                 deviceName: payload.displayName ?? payload.username
             )
             Task { try? await FriendDeviceRepository.shared.upsert(device) }
+            // Also seed PeerKeyDirectory so the SERVERLESS readers resolve this
+            // peer without any server bundle: the mesh sealer (ensureAgreementKey)
+            // and the libp2p bridge PeerID resolver (identityKey). parseAndVerify
+            // already bound userId == deriveFingerprint(identityKey), so this is a
+            // verified out-of-band pin.
+            PeerKeyDirectory.shared.setVerifiedIdentity(
+                identityKey: identityKey,
+                agreementKey: agreementKey,
+                for: userId
+            )
         }
 
         // 🟦 ROUND 50 — offline mesh fallback. Broadcast over BLE mesh

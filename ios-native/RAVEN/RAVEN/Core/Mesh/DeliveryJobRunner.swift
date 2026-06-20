@@ -156,9 +156,17 @@ class DeliveryJobRunner {
     /// byte-for-byte the same as a relayed envelope.
     private func processBridgeChannelJobs(ignoreBackoff: Bool) async {
         // No relay configured → leave jobs pending (don't burn attempts).
-        guard !AppConfig.libp2pBootstrapCSV.isEmpty else { return }
+        guard !AppConfig.libp2pBootstrapCSV.isEmpty else {
+            #if DEBUG
+            print("🌉 [BridgeJobs] skip — no bootstrap configured")
+            #endif
+            return
+        }
         do {
             let jobs = try await DeliveryJobRepository.shared.getReadyJobs(channel: .bridge, ignoreBackoff: ignoreBackoff)
+            #if DEBUG
+            print("🌉 [BridgeJobs] \(jobs.count) bridge job(s) ready")
+            #endif
             guard !jobs.isEmpty else { return }
 
             for job in jobs {
@@ -204,8 +212,27 @@ class DeliveryJobRunner {
 
                     var envelope = message.toMeshEnvelope()
 
-                    // Seal the 1:1 body end-to-end (RVNS1) unless it already is
-                    // — identical fail-closed posture to the mesh-retry path.
+                    // Resolve the recipient's X25519 agreement key FIRST — both the
+                    // body sealer AND the transport encryption need it.
+                    guard let agreementKey = await PeerKeyDirectory.shared.ensureAgreementKey(for: recipientId),
+                          agreementKey.count == 32,
+                          let sharedKey = DeviceIdentityService.shared.deriveSharedSecret(with: agreementKey) else {
+                        // No pinned key for this peer yet (add them via QR) —
+                        // keep pending; a later retry succeeds once pinned.
+                        #if DEBUG
+                        print("🌉 [BridgeJobs] no-agreement-key for \(recipientId.prefix(8)) — pending")
+                        #endif
+                        try await DeliveryJobRepository.shared.incrementAttempt(
+                            messageId: job.messageId, channel: .bridge, error: "no-agreement-key",
+                            retryAfter: 300)
+                        continue
+                    }
+
+                    // Seal the 1:1 body end-to-end (RVNS1) unless it already is.
+                    // The whole envelope is ALSO AES-GCM-encrypted to the recipient
+                    // below, so the relay can't read the body even if the inner seal
+                    // is unavailable — hence we do NOT fail-closed here (unlike the
+                    // BLE broadcast path, which ships signed-but-unencrypted).
                     if let plain = message.text, !plain.isEmpty {
                         let alreadySealed: Bool = {
                             guard let data = Data(base64Encoded: plain), data.count >= 8 else { return false }
@@ -216,36 +243,26 @@ class DeliveryJobRunner {
                             let sealed = await MessageContentSealer.seal(
                                 plaintext: plain,
                                 recipientUserId: recipientId,
-                                recipientAgreementPubKey: nil,
+                                recipientAgreementPubKey: agreementKey,
                                 msgId: message.id
                             )
-                            guard sealed.isEncrypted, !sealed.base64.isEmpty else {
-                                // Can't guarantee E2EE — keep pending, retry later.
-                                try await DeliveryJobRepository.shared.incrementAttempt(
-                                    messageId: job.messageId, channel: .bridge, error: "seal-unavailable")
-                                continue
+                            if sealed.isEncrypted, !sealed.base64.isEmpty {
+                                envelope.text = sealed.base64
+                            } else {
+                                #if DEBUG
+                                print("🌉 [BridgeJobs] inner seal unavailable (reason=\(sealed.reason)); transport AES-GCM still protects body")
+                                #endif
                             }
-                            envelope.text = sealed.base64
                         }
-                    }
-
-                    // Transport-encrypt the whole envelope to the recipient's
-                    // X25519 agreement key (so the relay can't read metadata).
-                    guard let agreementKey = await PeerKeyDirectory.shared.ensureAgreementKey(for: recipientId),
-                          agreementKey.count == 32,
-                          let sharedKey = DeviceIdentityService.shared.deriveSharedSecret(with: agreementKey) else {
-                        // No pinned key for this peer yet (add them via QR) —
-                        // keep pending; a later retry succeeds once pinned.
-                        try await DeliveryJobRepository.shared.incrementAttempt(
-                            messageId: job.messageId, channel: .bridge, error: "no-agreement-key",
-                            retryAfter: 300)
-                        continue
                     }
 
                     let secureEnvelope = envelope.toSecureEnvelope()
                     let encrypted = try await MeshCryptoService.shared.encryptEnvelope(secureEnvelope, sharedKey: sharedKey)
                     let payloadB64 = try JSONEncoder().encode(encrypted).base64EncodedString()
 
+                    #if DEBUG
+                    print("🌉 [BridgeJobs] uploading mid=\(message.id.prefix(8)) → \(recipientId.prefix(8)) (\(payloadB64.count)B)")
+                    #endif
                     try await MeshBridge.transport.uploadEnvelope(
                         payloadB64,
                         idempotencyKey: message.id,
@@ -260,6 +277,9 @@ class DeliveryJobRunner {
                     #endif
                 } catch {
                     // Peer unreachable / relay down → exponential backoff.
+                    #if DEBUG
+                    print("🌉 [BridgeJobs] send failed for \(job.messageId.prefix(8)): \(error)")
+                    #endif
                     let delay = min(TimeInterval(15 * pow(1.5, Double(job.attempts))), 3600)
                     try? await DeliveryJobRepository.shared.incrementAttempt(
                         messageId: job.messageId, channel: .bridge,

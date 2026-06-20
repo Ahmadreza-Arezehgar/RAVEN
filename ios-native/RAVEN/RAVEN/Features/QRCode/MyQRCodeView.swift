@@ -86,42 +86,33 @@ struct MyQRCodeView: View {
                         dismiss()
                     }
                 }
+                #if DEBUG
+                // 🧪 DEBUG-only: copy the signed QR payload to the clipboard so
+                // it can be exchanged as text (sim/desktop testing, where there's
+                // no camera). Mirrors ScanQRCodeView's DEBUG paste button.
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Copy code") {
+                        if let s = qrPayloadString() {
+                            UIPasteboard.general.string = s
+                        }
+                    }
+                }
+                #endif
             }
         }
         .allowScreenshots()  // 📸 Allow screenshots for QR code sharing
     }
     
     // MARK: - Generate QR Code
-    private func generateQRCode() -> UIImage? {
+
+    /// Build the signed `raven://friend?v=2&d=…` payload string (the exact text
+    /// encoded into the QR image). Factored out so DEBUG builds can also copy it
+    /// to the clipboard for text-based contact exchange.
+    private func qrPayloadString() -> String? {
         guard let userId = authService.currentUser?.id else { return nil }
-
-        // 🔴 ROUND 24 — Offline-friendly QR.
-        // The previous payload (`raven://friend?user_id=UUID`)
-        // forced the scanner to call `/api/users/{id}` to fetch
-        // the display name AND the friend-request endpoint to
-        // record the relationship — both require internet. That
-        // broke "scan a QR to add a friend" the moment the user
-        // was offline.
-        //
-        // v2 packs everything the scanner needs (display name,
-        // X25519 agreement pub for sealed E2EE on first contact,
-        // Ed25519 identity pub for Safety Number, optional
-        // fingerprint) directly inside the URL as a base64 blob.
-        // The scanner stores the contact locally without any
-        // network hit, and queues the friend-request for when
-        // connectivity returns.
-        let agreementB64 = DeviceIdentityService.shared
-            .agreementPublicKeyData?
-            .base64EncodedString()
-        let identityB64 = DeviceIdentityService.shared
-            .publicKeyBase64
+        let agreementB64 = DeviceIdentityService.shared.agreementPublicKeyData?.base64EncodedString()
+        let identityB64 = DeviceIdentityService.shared.publicKeyBase64
         let fingerprint = DeviceIdentityService.shared.fingerprint
-
-        // 🔴 ROUND 70 — sign + timestamp the QR payload so a
-        // photographed QR can't be replayed beyond 24h, and a key
-        // substitution can't survive verification. The signature
-        // covers (userId, agreementPub, identityPub, issuedAt), all
-        // four fields verifiers will rebuild + check.
         let now = Date().timeIntervalSince1970
         let transcript = FriendQRPayload.canonicalTranscript(
             userId: userId,
@@ -129,15 +120,7 @@ struct MyQRCodeView: View {
             identityPubBase64: identityB64,
             issuedAt: now
         )
-        // DeviceIdentityService exposes `sign(_:)` as its canonical
-        // Ed25519 signing entry point — uses the cached identity
-        // private key with full memory hygiene. No explicit
-        // `withSigningPrivateKey` accessor is needed (and none
-        // exists; the agreement key has one because that lives on
-        // a separate keypair for X25519 ECDH).
-        let signatureB64: String? = DeviceIdentityService.shared
-            .sign(transcript)?
-            .base64EncodedString()
+        let signatureB64: String? = DeviceIdentityService.shared.sign(transcript)?.base64EncodedString()
         let payloadStruct = FriendQRPayload(
             userId: userId,
             displayName: authService.currentUser?.displayName,
@@ -148,11 +131,18 @@ struct MyQRCodeView: View {
             issuedAt: now,
             signatureB64: signatureB64
         )
-        // Fall back to v1 if encoding fails so a legacy-aware
-        // scanner can still pick up the userId.
-        let payload = payloadStruct.toQRString() ?? "raven://friend?user_id=\(userId)"
+        // Fall back to v1 if encoding fails so a legacy-aware scanner can still
+        // pick up the userId.
+        return payloadStruct.toQRString() ?? "raven://friend?user_id=\(userId)"
+    }
 
-        guard let data = payload.data(using: .utf8) else { return nil }
+    private func generateQRCode() -> UIImage? {
+        // v2 packs everything the scanner needs (display name, X25519 agreement
+        // pub for sealed E2EE on first contact, Ed25519 identity pub for Safety
+        // Number, optional fingerprint) directly inside the URL as a signed
+        // base64 blob — see qrPayloadString().
+        guard let payload = qrPayloadString(),
+              let data = payload.data(using: .utf8) else { return nil }
         
         filter.setValue(data, forKey: "inputMessage")
         filter.setValue("H", forKey: "inputCorrectionLevel") // High error correction

@@ -168,6 +168,24 @@ actor PeerKeyDirectory {
         negativeCache.removeValue(forKey: userId)
     }
 
+    /// Trusted out-of-band pin of BOTH the Ed25519 identity key and the
+    /// X25519 agreement key, from a user-verified QR scan (FriendQRPayload
+    /// .parseAndVerify has already proven `userId == deriveFingerprint(identityKey)`,
+    /// so the identity is authenticated — no server bundle needed). This is what
+    /// lets a purely serverless contact-add seed every consumer that reads the
+    /// directory: the mesh sealer (`ensureAgreementKey`), the libp2p bridge PeerID
+    /// resolver (`identityKey`), and the Safety Number sheet. Without it those
+    /// readers miss and fall through to the (turned-off) server fetch.
+    func setVerifiedIdentity(identityKey: Data, agreementKey: Data?, for userId: String) {
+        guard identityKey.count == 32, !userId.isEmpty else { return }
+        defaults.set(identityKey, forKey: identityPrefix + userId)
+        if let agreementKey, agreementKey.count == 32 {
+            defaults.set(agreementKey, forKey: keyPrefix + userId)
+        }
+        pendingIdentityChanges.remove(userId)
+        negativeCache.removeValue(forKey: userId)
+    }
+
     /// CHECK-ONLY observation API for the mesh handshake completion
     /// path. NEVER bootstraps first trust from a mesh-observed key —
     /// returns `false` when no cached key exists and the caller must
