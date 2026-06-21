@@ -77,7 +77,11 @@ enum MeshMediaSealer {
     /// Max raw file size we embed inline. Bigger files fall back to the legacy
     /// URL path (server, when one exists). Keeps a single envelope within what
     /// the bridge (bumped frame cap) + chunked BLE mesh can carry.
-    static let maxEmbedBytes = 10 * 1024 * 1024  // 10 MB raw
+    // 6 MB raw. After the content-key AES-GCM + base64 (mediaCipher) + the
+    // bridge's outer JSON+base64 the wire grows ~1.8×, so 6 MB stays well under
+    // the 24 MiB bridge frame cap. Photos compress below this; bigger files fall
+    // back to the legacy URL path.
+    static let maxEmbedBytes = 6 * 1024 * 1024
 
     /// True iff the envelope has any of the six legacy media fields
     /// populated. Used to skip the seal entirely on text-only sends.
