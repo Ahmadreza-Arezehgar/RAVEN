@@ -40,8 +40,11 @@ import (
 const bridgeProtocol = protocol.ID("/raven/bridge/1.0.0")
 
 // maxEnvelopeBytes caps a single inbound frame (defends against a hostile peer
-// streaming an unbounded "length"). Mirrors the server's 64 KiB bridge cap.
-const maxEnvelopeBytes = 64 * 1024
+// streaming an unbounded "length"). Bumped from 64 KiB to 24 MiB so a serverless
+// media message — which embeds the AES-encrypted photo/voice/file bytes inline
+// (MeshMediaSealer, capped at 10 MB raw ⇒ ~13 MB base64 + envelope) — fits in a
+// single bridge frame. Still a hard ceiling against an unbounded-length attack.
+const maxEnvelopeBytes = 24 * 1024 * 1024
 
 // Delegate is implemented on the Swift side. Calls arrive on background
 // goroutines — the Swift implementation must hop to its own actor/queue.

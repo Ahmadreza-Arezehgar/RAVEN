@@ -112,7 +112,11 @@ struct MeshEnvelope: Codable, Identifiable {
     /// etc.) compile without change — the sealer hooks in at the
     /// BLE chokepoints and populates this field in place.
     var mediaSealed: String? = nil
-    
+    /// Serverless media: AES-GCM ciphertext of the actual media bytes (base64),
+    /// encrypted under a random content key carried E2E-sealed in mediaSealed.
+    /// MeshMediaSealer.seal sets it from a local file; unseal consumes it.
+    var mediaCipher: String? = nil
+
     // MARK: - Reply Context
     
     var replyToMessageId: String?
@@ -198,6 +202,7 @@ struct MeshEnvelope: Codable, Identifiable {
         case fileSize = "fs"
         case audioDuration = "ad"
         case mediaSealed = "msl"   // round 26 — sealed media metadata blob
+        case mediaCipher = "mc"    // serverless inline media ciphertext
         case replyToMessageId = "rtid"
         case replyToTextPreview = "rttp"
         case replyToSenderName = "rtsn"
@@ -327,6 +332,7 @@ extension MeshEnvelope {
         // round 26 — sealed media metadata blob, populated by
         // `MeshMediaSealer.seal` before broadcast.
         self.mediaSealed = try c.decodeIfPresent(String.self, forKey: .mediaSealed)
+        self.mediaCipher = try c.decodeIfPresent(String.self, forKey: .mediaCipher)
         self.replyToMessageId = try c.decodeIfPresent(String.self, forKey: .replyToMessageId)
         self.replyToTextPreview = try c.decodeIfPresent(String.self, forKey: .replyToTextPreview)
         self.replyToSenderName = try c.decodeIfPresent(String.self, forKey: .replyToSenderName)
@@ -743,7 +749,11 @@ extension ChatMessage {
             routePath: routePath,
             originDeviceId: originDeviceId,
             needsForwarding: needsForwarding,
-            mediaUrl: attachmentUrl,
+            // Serverless media: when there's no server URL yet, carry the LOCAL
+            // file path so MeshMediaSealer.seal can read the bytes + embed them
+            // (encrypted) for delivery over mesh/bridge. A real https URL takes
+            // precedence (legacy server path); readLocalFile ignores http(s).
+            mediaUrl: attachmentUrl ?? localPath,
             thumbnailUrl: thumbnailUrl,
             fileName: fileName,
             mimeType: mimeType,

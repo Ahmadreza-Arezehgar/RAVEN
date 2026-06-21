@@ -142,6 +142,24 @@ actor AttachmentService {
     
     // MARK: - Send Image
     
+    /// Serverless media delivery: route the already-persisted media message over
+    /// BLE mesh + the libp2p bridge instead of a (dead) server upload. The
+    /// mesh/bridge send chokepoints (MeshMediaSealer.seal) read the local file
+    /// and embed the AES-encrypted bytes, so the photo/voice/file travels E2E
+    /// with NO server. The bridge job processor skips groups (mesh carries them).
+    private func routeMediaServerless(clientId: String) async {
+        var channels: [JobChannel] = [.mesh]
+        if !AppConfig.libp2pBootstrapCSV.isEmpty { channels.append(.bridge) }
+        try? await DeliveryJobRepository.shared.createJobs(messageId: clientId, channels: channels)
+        try? await messageRepo.updateDisplayState(clientMessageId: clientId, state: .ready, progress: 1.0)
+        await MainActor.run {
+            NotificationCenter.default.post(name: AttachmentService.messageInserted, object: nil)
+        }
+        #if DEBUG
+        print("📎 [Attachment] serverless media routed over \(channels.map { $0.rawValue }) for \(clientId.prefix(8))")
+        #endif
+    }
+
     func sendImage(
         _ image: UIImage,
         roomId: String,
@@ -265,6 +283,13 @@ actor AttachmentService {
         )
         await MainActor.run {
             NotificationCenter.default.post(name: AttachmentService.messageInserted, object: nil)
+        }
+
+        // SERVERLESS: with no backend token, don't dead-end on a server upload —
+        // deliver the encrypted media bytes over BLE mesh + the libp2p bridge.
+        if await KeychainService.shared.getToken() == nil {
+            await routeMediaServerless(clientId: clientId)
+            return
         }
 
         // ⚠️ PERSIST-FIRST: Check internet AFTER saving to DB so bubble stays visible with Retry
@@ -512,6 +537,13 @@ actor AttachmentService {
             NotificationCenter.default.post(name: AttachmentService.messageInserted, object: nil)
         }
         
+        // SERVERLESS: with no backend token, don't dead-end on a server upload —
+        // deliver the encrypted media bytes over BLE mesh + the libp2p bridge.
+        if await KeychainService.shared.getToken() == nil {
+            await routeMediaServerless(clientId: clientId)
+            return
+        }
+
         // ⚠️ PERSIST-FIRST: Check internet AFTER saving to DB so bubble stays visible with Retry
         guard NetworkMonitor.shared.isOnline else {
             try await messageRepo.updateDisplayState(clientMessageId: clientId, state: .failed, error: "No internet connection")
@@ -775,6 +807,13 @@ actor AttachmentService {
         )
         await MainActor.run {
             NotificationCenter.default.post(name: AttachmentService.messageInserted, object: nil)
+        }
+
+        // SERVERLESS: with no backend token, don't dead-end on a server upload —
+        // deliver the encrypted media bytes over BLE mesh + the libp2p bridge.
+        if await KeychainService.shared.getToken() == nil {
+            await routeMediaServerless(clientId: clientId)
+            return
         }
 
         // ⚠️ PERSIST-FIRST: Check internet AFTER saving to DB so bubble stays visible with Retry

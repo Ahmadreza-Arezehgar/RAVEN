@@ -72,7 +72,17 @@ actor MediaCacheService {
         guard !inFlight.contains(message.id) else { return }
         inFlight.insert(message.id)
         defer { inFlight.remove(message.id) }
-        
+
+        // SERVERLESS inline media: the bytes were embedded in the envelope and
+        // already written to a local file (file:// URL) by MeshMediaSealer on
+        // receive. There is NOTHING to download — just record local_path so the
+        // chat surface renders straight from disk.
+        if let att = message.attachmentUrl, att.hasPrefix("file://"),
+           let fileURL = URL(string: att), FileManager.default.fileExists(atPath: fileURL.path) {
+            try? await messageRepo.updateLocalPath(clientMessageId: message.id, localPath: fileURL.path)
+            return
+        }
+
         guard let remoteUrl = resolveRemoteURL(message.attachmentUrl) else {
             #if DEBUG
             print("⚠️ [MediaCache] No valid URL for message \(message.id.prefix(8))")

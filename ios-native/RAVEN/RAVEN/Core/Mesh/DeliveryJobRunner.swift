@@ -186,7 +186,8 @@ class DeliveryJobRunner {
                     guard let message = parseMessage(messageRow) else {
                         throw JobError.invalidMessage
                     }
-                    guard message.type == .text || message.type == .location || message.type == .system else {
+                    guard message.type == .text || message.type == .location || message.type == .system
+                        || message.type == .image || message.type == .voice || message.type == .file else {
                         try await DeliveryJobRepository.shared.markDelivered(messageId: job.messageId, channel: .bridge)
                         continue
                     }
@@ -255,6 +256,11 @@ class DeliveryJobRunner {
                             }
                         }
                     }
+
+                    // Serverless media: seal+embed any attachment bytes (same
+                    // chokepoint as the BLE path) so a photo/voice/file rides the
+                    // bridge with NO server. No-op for text.
+                    await MeshMediaSealer.seal(envelope: &envelope)
 
                     let secureEnvelope = envelope.toSecureEnvelope()
                     let encrypted = try await MeshCryptoService.shared.encryptEnvelope(secureEnvelope, sharedKey: sharedKey)
@@ -352,7 +358,8 @@ class DeliveryJobRunner {
                         throw JobError.invalidMessage
                     }
                     
-                    guard message.type == .text || message.type == .location || message.type == .system else {
+                    guard message.type == .text || message.type == .location || message.type == .system
+                        || message.type == .image || message.type == .voice || message.type == .file else {
                         try await DeliveryJobRepository.shared.markDelivered(messageId: job.messageId, channel: .mesh)
                         continue
                     }

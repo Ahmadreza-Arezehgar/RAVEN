@@ -53,6 +53,7 @@
 //
 
 import Foundation
+import CryptoKit
 
 enum MeshMediaSealer {
 
@@ -65,7 +66,18 @@ enum MeshMediaSealer {
         var mimeType: String?
         var fileSize: Int?
         var audioDuration: Int?
+        // Serverless media: a random AES-256 content key (base64). The ACTUAL
+        // media bytes are AES-GCM-encrypted with this key and ride OUTSIDE this
+        // bundle in the envelope's `mediaCipher` field (Noise messages cap at
+        // 64 KB, so big media can't live inside the Noise-sealed bundle — only
+        // the 32-byte key does). nil for legacy URL-only senders.
+        var contentKey: String? = nil
     }
+
+    /// Max raw file size we embed inline. Bigger files fall back to the legacy
+    /// URL path (server, when one exists). Keeps a single envelope within what
+    /// the bridge (bumped frame cap) + chunked BLE mesh can carry.
+    static let maxEmbedBytes = 10 * 1024 * 1024  // 10 MB raw
 
     /// True iff the envelope has any of the six legacy media fields
     /// populated. Used to skip the seal entirely on text-only sends.
@@ -92,7 +104,7 @@ enum MeshMediaSealer {
         // Nothing to seal — text-only / system message.
         guard hasMediaPayload(envelope) else { return }
 
-        let bundle = MediaBundle(
+        var bundle = MediaBundle(
             mediaUrl: envelope.mediaUrl,
             thumbnailUrl: envelope.thumbnailUrl,
             fileName: envelope.fileName,
@@ -100,6 +112,21 @@ enum MeshMediaSealer {
             fileSize: envelope.fileSize,
             audioDuration: envelope.audioDuration
         )
+
+        // SERVERLESS MEDIA: when the outbound mediaUrl is a LOCAL file (the
+        // sender can't upload to a server), encrypt its bytes with a random
+        // AES-256 content key and ship the ciphertext in envelope.mediaCipher;
+        // the key + metadata ride in this Noise-sealed bundle. The receiver
+        // recovers the key, AES-opens the cipher, writes it to a local file.
+        if let localBytes = Self.readLocalFile(bundle.mediaUrl), localBytes.count <= maxEmbedBytes {
+            let key = SymmetricKey(size: .bits256)
+            if let box = try? AES.GCM.seal(localBytes, using: key), let combined = box.combined {
+                envelope.mediaCipher = combined.base64EncodedString()
+                bundle.contentKey = key.withUnsafeBytes { Data(Array($0)).base64EncodedString() }
+                bundle.mediaUrl = nil
+                if bundle.fileSize == nil { bundle.fileSize = localBytes.count }
+            }
+        }
 
         guard let json = try? JSONEncoder().encode(bundle),
               let jsonStr = String(data: json, encoding: .utf8),
@@ -213,12 +240,27 @@ enum MeshMediaSealer {
 
         guard let jsonStr,
               let data = jsonStr.data(using: .utf8),
-              let bundle = try? JSONDecoder().decode(MediaBundle.self, from: data) else {
+              var bundle = try? JSONDecoder().decode(MediaBundle.self, from: data) else {
             // Decrypt or decode failed — leave legacy fields nil.
             // Clear `mediaSealed` so a downstream double-unseal
             // doesn't get confused.
             envelope.mediaSealed = nil
             return
+        }
+
+        // SERVERLESS MEDIA: recover the content key from the (Noise-sealed)
+        // bundle, AES-open the ciphertext that rode in envelope.mediaCipher,
+        // write the bytes to a local cache file, and point mediaUrl at it
+        // (file://) so the existing render path loads it with NO server. The
+        // AES-GCM tag fails closed on any relay tampering → media-missing.
+        if let keyB64 = bundle.contentKey, let keyData = Data(base64Encoded: keyB64),
+           let cipherB64 = envelope.mediaCipher, let cipher = Data(base64Encoded: cipherB64),
+           let box = try? AES.GCM.SealedBox(combined: cipher),
+           let raw = try? AES.GCM.open(box, using: SymmetricKey(data: keyData)),
+           let localURL = Self.writeLocalFile(raw, msgId: envelope.clientMessageId, fileName: bundle.fileName, mimeType: bundle.mimeType) {
+            bundle.mediaUrl = localURL.absoluteString
+            if bundle.fileSize == nil { bundle.fileSize = raw.count }
+            envelope.mediaCipher = nil  // consumed
         }
 
         envelope.mediaUrl       = bundle.mediaUrl
@@ -228,5 +270,55 @@ enum MeshMediaSealer {
         envelope.fileSize       = bundle.fileSize
         envelope.audioDuration  = bundle.audioDuration
         envelope.mediaSealed    = nil
+    }
+
+    // MARK: - Local file helpers (serverless inline media)
+
+    /// Read a genuinely-LOCAL media file for embedding. Returns nil for http(s)
+    /// URLs (those are already a server-hosted blob, not ours to inline) and for
+    /// missing files.
+    private static func readLocalFile(_ urlString: String?) -> Data? {
+        guard let s = urlString, !s.isEmpty,
+              !s.hasPrefix("http://"), !s.hasPrefix("https://") else { return nil }
+        let url: URL
+        if s.hasPrefix("file://") {
+            guard let u = URL(string: s) else { return nil }
+            url = u
+        } else {
+            url = URL(fileURLWithPath: s)
+        }
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return try? Data(contentsOf: url)
+    }
+
+    /// Write received inline media bytes to a stable local cache file and return
+    /// its file:// URL. Keyed on the message id so re-delivery is idempotent.
+    private static func writeLocalFile(_ raw: Data, msgId: String, fileName: String?, mimeType: String?) -> URL? {
+        let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("raven_media", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let nameExt = (fileName as NSString?)?.pathExtension ?? ""
+        let ext = !nameExt.isEmpty ? nameExt : (extForMime(mimeType) ?? "bin")
+        let safe = msgId.replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: ":", with: "_")
+        let url = dir.appendingPathComponent("\(safe).\(ext)")
+        // Idempotent: if we already wrote this message's media, reuse it.
+        if FileManager.default.fileExists(atPath: url.path) { return url }
+        do { try raw.write(to: url, options: .atomic); return url } catch { return nil }
+    }
+
+    private static func extForMime(_ mime: String?) -> String? {
+        switch mime {
+        case "image/jpeg": return "jpg"
+        case "image/png": return "png"
+        case "image/gif": return "gif"
+        case "image/heic", "image/heif": return "heic"
+        case "image/webp": return "webp"
+        case "audio/m4a", "audio/mp4", "audio/x-m4a": return "m4a"
+        case "audio/aac": return "aac"
+        case "audio/mpeg": return "mp3"
+        case "video/mp4", "video/quicktime": return "mp4"
+        case "application/pdf": return "pdf"
+        default: return nil
+        }
     }
 }

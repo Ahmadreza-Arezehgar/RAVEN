@@ -643,6 +643,12 @@ struct SecureMeshEnvelope: Codable {
     // this blob to restore them.
     var mediaSealed: String? = nil
 
+    // Serverless media: AES-GCM ciphertext of the actual media bytes (base64),
+    // encrypted under a random content key that rides E2E-sealed in mediaSealed.
+    // NOT bound into signingData (its own AEAD tag protects integrity, and it's
+    // multi-MB — signing it would bloat every verify). nil for URL-only media.
+    var mediaCipher: String? = nil
+
     // Reply context
     var replyToMessageId: String?
     var replyToTextPreview: String?
@@ -708,6 +714,7 @@ struct SecureMeshEnvelope: Codable {
         case fileSize = "fs"
         case audioDuration = "ad"
         case mediaSealed = "msl"  // round 26 — sealed media metadata
+        case mediaCipher = "mc"   // serverless inline media ciphertext
         case replyToMessageId = "rtid"
         case replyToTextPreview = "rttp"
         case replyToSenderName = "rtsn"
@@ -952,6 +959,7 @@ extension MeshEnvelope {
             fileSize: fileSize,
             audioDuration: audioDuration,
             mediaSealed: mediaSealed,  // round 26 — propagate sealed media blob
+            mediaCipher: mediaCipher,  // serverless inline media ciphertext
             replyToMessageId: replyToMessageId,
             replyToTextPreview: replyToTextPreview,
             replyToSenderName: replyToSenderName,
@@ -1003,6 +1011,7 @@ extension SecureMeshEnvelope {
         // SecureEnvelope → MeshEnvelope hop so the receive-side
         // `MeshMediaSealer.unseal` can restore the legacy fields.
         env.mediaSealed = mediaSealed
+        env.mediaCipher = mediaCipher   // serverless inline media ciphertext
         // round 46 — carry the per-group AES-GCM version + the
         // payload-kind discriminator back through so the receive-side
         // can decrypt group ciphertexts (gkv) and route lifecycle
