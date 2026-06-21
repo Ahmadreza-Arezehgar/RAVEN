@@ -75,6 +75,7 @@
 		2B56FA70801C706DB6C28A3B /* MessagePreviewFormatter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 857C1A2C97E06268310A15B3 /* MessagePreviewFormatter.swift */; };
 		2BF099A244E37CFC2C8F6DED /* WebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3CF015AC0D4E6CA2CB6904E /* WebView.swift */; };
 		2CC9695B64EF76DE8FA773D4 /* GHErrors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 073F40F4584ADA7F26B70600 /* GHErrors.swift */; };
+		2D0FDBC5FCF107C176E53E7D /* DemoSeeder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 045B65F91BDE2E6AF058B0DB /* DemoSeeder.swift */; };
 		2DBB350BBB23E1B7B15AADE8 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEF3BEA38B036BF656B4E77C /* ChatView.swift */; };
 		2E788F98C1121CBCC671BDB8 /* InboxView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1457CBC83D6BDD5AA559E7FD /* InboxView.swift */; };
 		31B24F9DB9DACAD77D9C8611 /* NotificationsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CEBA05F120AC2F3F6E41CA34 /* NotificationsView.swift */; };
@@ -492,6 +493,7 @@
 		00FD6671D9FB5386C8E727D0 /* ATSAMTranscript.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMTranscript.swift; sourceTree = "<group>"; };
 		01597C194B704D9DACFDD069 /* MeshBridgeReceiver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MeshBridgeReceiver.swift; path = RAVEN/Core/Mesh/MeshBridgeReceiver.swift; sourceTree = "<group>"; };
 		044948033590CEB4F8159DC6 /* MeshGhostRouteAdapter.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MeshGhostRouteAdapter.swift; sourceTree = "<group>"; };
+		045B65F91BDE2E6AF058B0DB /* DemoSeeder.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DemoSeeder.swift; sourceTree = "<group>"; };
 		048FC01795342E1FADE259AC /* VaultModeSettingsView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VaultModeSettingsView.swift; sourceTree = "<group>"; };
 		05AA2DFF9F02958C23571862 /* RAVENTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = RAVENTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		0697AB0E928E98C717D04918 /* RootView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
@@ -2196,6 +2198,7 @@
 				ACS_FILEREF_001 /* AvatarCacheService.swift */,
 				OCA_FILEREF_001 /* OfflineCachedAvatar.swift */,
 				FB937E50493A2586BD6EBF23 /* PendingGroupMessageRepository.swift */,
+				045B65F91BDE2E6AF058B0DB /* DemoSeeder.swift */,
 			);
 			path = Storage;
 			sourceTree = "<group>";
@@ -2894,6 +2897,7 @@
 				0CBDA6B91A295A9B05212C24 /* RavenLogoView.swift in Sources */,
 				D46B10F721437A5B5F7EBCFD /* SocialRecoveryVSS.swift in Sources */,
 				29D072F3E235127B2384D9CB /* AppAttestService.swift in Sources */,
+				2D0FDBC5FCF107C176E53E7D /* DemoSeeder.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

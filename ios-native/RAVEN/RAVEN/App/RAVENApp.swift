@@ -157,6 +157,12 @@ struct RAVENApp: App {
                         )
                     }
 
+                    // DEBUG demo data for App Store screenshots — launch with
+                    // `-raven.demoSeed YES`. No-op in release and without the flag.
+                    #if DEBUG
+                    Task { await DemoSeeder.seedIfRequested() }
+                    #endif
+
                     // Round 24 — drain any QR friend-requests the
                     // user queued while offline. Hooks
                     // .networkStatusChanged so the actor's flush()
