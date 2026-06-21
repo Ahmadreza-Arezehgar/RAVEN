@@ -35,6 +35,13 @@ enum DemoSeeder {
     struct Peer { let id: String; let name: String }
 
     static func seed() async {
+        // Skip onboarding so screenshots land straight on the populated shell.
+        await MainActor.run { UserDefaults.standard.set(true, forKey: "hasSeenOnboarding") }
+        let hasName = await AuthService.shared.hasChosenLocalDisplayName
+        if !hasName {
+            _ = await AuthService.shared.registerLocalIdentity(displayName: "Alex Rivera")
+        }
+
         let me = (await KeychainService.shared.getUserId()) ?? DeviceIdentityService.shared.fingerprint ?? "me"
         let myName = "You"
 
