@@ -274,7 +274,7 @@ enum Bech32m {
 
 // MARK: - Data helpers
 
-private extension Data {
+extension Data {
     mutating func appendUInt16BE(_ v: UInt16) {
         append(UInt8((v >> 8) & 0xff))
         append(UInt8(v & 0xff))

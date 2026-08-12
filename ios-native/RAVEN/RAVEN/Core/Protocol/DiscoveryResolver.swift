@@ -95,10 +95,43 @@ struct SignedAliasClaim: Equatable {
     var ed25519PubHex: String
 }
 
+/// After mutual nearby confirm — bind ephemeral session → Raven ID locally (not in adv).
+struct NearbyConfirmBinding: Equatable {
+    var ephemeralTokenHex: String
+    var peerRavenId: String
+    var peerPubHex: String
+    var confirmedAtMs: UInt64
+}
+
+extension DiscoveryResult {
+    /// Petname-first primary label (Tag V1 Layer C → B → A).
+    var primaryLabel: String {
+        RavenTagDisplay.primaryLabel(
+            petname: displayName.isEmpty ? nil : displayName,
+            publicTag: aliases.first,
+            addressOrFallback: ravenId
+        )
+    }
+
+    var aliasSubtitle: String? {
+        RavenTagDisplay.publicTagSubtitle(publicTag: aliases.first, primary: primaryLabel)
+    }
+
+    var provenanceLabel: String {
+        let sources = sourceSet.map(\.rawValue).joined(separator: " · ")
+        let verify = verificationState.rawValue
+        if conflictCount > 1 {
+            return "\(verify) · conflict \(conflictCount) · \(sources)"
+        }
+        return "\(verify) · \(sources)"
+    }
+}
+
 /// Thin DiscoveryResolver-equivalent for iOS (same result model as ash / raven-core).
 final class DiscoveryResolver {
     var contacts: [LocalDiscoveryContact] = []
     var aliasClaims: [SignedAliasClaim] = []
+    var nearbyConfirmed: [NearbyConfirmBinding] = []
     var blockedPubHex: Set<String> = []
     /// When true (serverless), LegacyServer lane is never consulted.
     var serverless: Bool = true
@@ -137,11 +170,34 @@ final class DiscoveryResolver {
             out.append(contentsOf: searchExactAlias(q))
         }
         if runNearby {
-            // Nearby results are injected by BLE confirm path; empty by default.
+            out.append(contentsOf: searchNearby(q))
         }
-        // PublicProfileIndex OFF in V1.
+        // PublicProfileIndex OFF in V1 — never fuzzy public.
         _ = publicProfileIndexEnabled
         return merge(out)
+    }
+
+    private func searchNearby(_ query: String) -> [DiscoveryResult] {
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return nearbyConfirmed.compactMap { b in
+            if !q.isEmpty {
+                let match = b.peerRavenId.lowercased().contains(q)
+                    || b.ephemeralTokenHex.lowercased().hasPrefix(q)
+                guard match else { return nil }
+            }
+            return DiscoveryResult(
+                ravenId: b.peerRavenId,
+                displayName: "",
+                aliases: [],
+                profileDigest: "",
+                sourceSet: [.nearbyBle],
+                verificationState: .nearbyVerified,
+                introductions: [],
+                conflictCount: 0,
+                sequence: 0,
+                expiresAt: UInt64.max
+            )
+        }
     }
 
     private func searchLocal(_ query: String) -> [DiscoveryResult] {

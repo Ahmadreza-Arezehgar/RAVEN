@@ -4,7 +4,8 @@
 **Baseline start commit:** `18fa01e2a32ef014387ae2857ca272f34555cddd`  
 **Primary land commit:** `ce328dd` (local only — not pushed)  
 **Prior lands:** `11e59ee` / `3ccc258` / `679e5e8` / `cd0b13e` / `0bd0b68` / `eea1029` / `7acbef7` (local only — not pushed)  
-**This session:** `8b89f36` Discovery V1 (local only — not pushed)  
+**This session:** iOS Discovery search UI (local only — not pushed)  
+**Prior lands:** `8b89f36` Discovery V1 / `7290487` docs (local only — not pushed)  
 **Prior lands:** `215ba30` / `7acbef7` / `eea1029` / `0bd0b68` / `cd0b13e` (local only — not pushed)  
 **Checklist source:** `docs/MASTER_ENGINEERING_CHECKLIST.md` (also mirrored under `node/`)  
 **Updated:** 2026-08-12  
@@ -31,7 +32,7 @@ Reviewer for all IMPLEMENTED rows: **pending human** unless noted.
 | 8 | Phase A Protocol Freeze | IMPLEMENTED | Specs + `docs/PROTOCOL_FREEZE_HASHES_V1.md`; independent freeze review **BLOCKED_HUMAN** |
 | 9 | Raven Identity | IMPLEMENTED | protocol + raven-core + iOS fingerprint binding |
 | 10 | Raven Address | FROZEN | `RAVEN_ADDRESS_V1` + vectors; `from_display` fixed |
-| 11 | Aliases and Contacts | IMPLEMENTED | Soft Unique Tags; ash `contact *` / `find` / `nearby` / `alias publish`; Discovery V1 |
+| 11 | Aliases and Contacts | IMPLEMENTED | Soft Unique Tags; ash `contact *` / `find` / `nearby` / `alias publish`; Discovery V1; iOS FindContacts UI behind flag |
 | 12 | Asynchronous First Contact | IMPLEMENTED | Real hybrid prekey publish; `contact add --prekey-file`; `contact request` E2EE; no FastAPI |
 | 13 | Cryptographic Requirements | IN_PROGRESS | Envelope + ATSAM KATs + ML-KEM shared CT KATs; CryptoKit CT interop open |
 | 14 | Key Storage | IN_PROGRESS | identity.seed 0600; Keychain on iOS; prekey_hybrid.secret 0600 |
@@ -53,7 +54,7 @@ Reviewer for all IMPLEMENTED rows: **pending human** unless noted.
 | 34 | Transport Adapter Architecture | IMPLEMENTED | mock_ble framing + LAN + Internet + store + swarm |
 | 35 | Routing Policy | IMPLEMENTED | Spray-and-Wait bounds |
 | 36–37 | Bluetooth Transport / Forwarding | IN_PROGRESS | framing + `ble-status`; `--features corebluetooth` compile seam; headless GATT **BLOCKED_HARDWARE**; iOS carrier |
-| 38 | Mobile Compatibility | IMPLEMENTED | RavenEnvelope* + inbox petname + exclusive serverless send path |
+| 38 | Mobile Compatibility | IMPLEMENTED | RavenEnvelope* + inbox petname + exclusive serverless send path; iOS discovery search UI |
 | 39 | Multi-Device User Support | IMPLEMENTED | DeviceCert + petname SyncContact + `ash device sync-*` / revoke |
 | 40 | Dedup and Replay | IMPLEMENTED | bridge_v1 + §59 harness step 10 |
 | 41 | Out-of-Order | IN_PROGRESS | ATSAM skipped-key on iOS; Rust AEAD |

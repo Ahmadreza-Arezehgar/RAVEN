@@ -72,4 +72,34 @@ final class DiscoveryResolverTests: XCTestCase {
         let hits = r.search(query: "x", scope: .local)
         XCTAssertTrue(hits.contains { $0.verificationState == .blocked })
     }
+
+    func testNearbyConfirmedBinding() {
+        let r = DiscoveryResolver()
+        r.serverless = true
+        r.nearbyConfirmed = [
+            NearbyConfirmBinding(
+                ephemeralTokenHex: "aabb",
+                peerRavenId: "rvn1near",
+                peerPubHex: "cc",
+                confirmedAtMs: 1
+            ),
+        ]
+        let hits = r.search(query: "", scope: .nearby)
+        XCTAssertEqual(hits.count, 1)
+        XCTAssertEqual(hits[0].verificationState, .nearbyVerified)
+        XCTAssertEqual(hits[0].sourceSet, [.nearbyBle])
+    }
+
+    func testPetnameFirstLabel() {
+        var hit = DiscoveryResult(
+            ravenId: "rvn1z", displayName: "Zed", aliases: ["zed"],
+            profileDigest: "", sourceSet: [.localContacts],
+            verificationState: .trustedContact, introductions: [],
+            conflictCount: 0, sequence: 0, expiresAt: 0
+        )
+        XCTAssertEqual(hit.primaryLabel, "Zed")
+        XCTAssertEqual(hit.aliasSubtitle, "@zed")
+        hit.displayName = ""
+        XCTAssertEqual(hit.primaryLabel, "@zed")
+    }
 }

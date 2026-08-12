@@ -27,14 +27,17 @@ struct AccountSettingsContent: View {
                     EditProfileView()
                 }
                 
+                // Discovery V1 search UI behind ravenEnvelopeV1 (QR path remains).
                 GlassDivider()
-                
+
                 NavigationLink {
                     FindContactsView()
                 } label: {
                     GlassSettingsRow(
-                        title: "find_friends".localized,
-                        icon: "person.crop.circle.badge.checkmark",
+                        title: FeatureFlag.isRavenEnvelopeV1Enabled ? "Discover" : "Add via QR",
+                        icon: FeatureFlag.isRavenEnvelopeV1Enabled
+                            ? "magnifyingglass.circle.fill"
+                            : "qrcode.viewfinder",
                         iconColor: DS.accentBlue,
                         showChevron: true
                     )

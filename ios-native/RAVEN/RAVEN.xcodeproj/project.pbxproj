@@ -368,7 +368,11 @@
 		E7A1B2C3D4E5F60718293A22 /* RavenTagDisplay.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293A21 /* RavenTagDisplay.swift */; };
 		E7A1B2C3D4E5F60718293B02 /* DiscoveryResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293B01 /* DiscoveryResolver.swift */; };
 		E7A1B2C3D4E5F60718293B04 /* DiscoveryResolverTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293B03 /* DiscoveryResolverTests.swift */; };
-		E7A1B2C3D4E5F60718293A22 /* RavenEnvelopeSenderResolverTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293A21 /* RavenEnvelopeSenderResolverTests.swift */; };
+		E7A1B2C3D4E5F60718293B12 /* RavenContactRequestV1.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293B11 /* RavenContactRequestV1.swift */; };
+		E7A1B2C3D4E5F60718293B14 /* DiscoverySearchViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293B13 /* DiscoverySearchViewModel.swift */; };
+		E7A1B2C3D4E5F60718293B16 /* DiscoverySearchViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293B15 /* DiscoverySearchViewModelTests.swift */; };
+		E7A1B2C3D4E5F60718293B18 /* RavenContactRequestV1Tests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293B17 /* RavenContactRequestV1Tests.swift */; };
+		E7A1B2C3D4E5F60718293C02 /* RavenEnvelopeSenderResolverTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293C01 /* RavenEnvelopeSenderResolverTests.swift */; };
 		D4E2F1AB3B0CBB45A5E1A004 /* ATSAMChainRatchetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4E2F1AB3B0CBB45A5E1A003 /* ATSAMChainRatchetTests.swift */; };
 		B7A1C0DE1F0CBB45A5E17182 /* ATSAMPairingRootAgreementTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7A1C0DE1F0CBB45A5E17181 /* ATSAMPairingRootAgreementTests.swift */; };
 		EDBF4EC6E4871DC1C55318C0 /* RelayReceipt.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3397C365AA11ECF59A599C8 /* RelayReceipt.swift */; };
@@ -558,7 +562,11 @@
 		E7A1B2C3D4E5F60718293A21 /* RavenTagDisplay.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RavenTagDisplay.swift; path = RAVEN/Core/Protocol/RavenTagDisplay.swift; sourceTree = "<group>"; };
 		E7A1B2C3D4E5F60718293B01 /* DiscoveryResolver.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DiscoveryResolver.swift; path = RAVEN/Core/Protocol/DiscoveryResolver.swift; sourceTree = "<group>"; };
 		E7A1B2C3D4E5F60718293B03 /* DiscoveryResolverTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DiscoveryResolverTests.swift; sourceTree = "<group>"; };
-		E7A1B2C3D4E5F60718293A21 /* RavenEnvelopeSenderResolverTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RavenEnvelopeSenderResolverTests.swift; sourceTree = "<group>"; };
+		E7A1B2C3D4E5F60718293B11 /* RavenContactRequestV1.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RavenContactRequestV1.swift; path = RAVEN/Core/Protocol/RavenContactRequestV1.swift; sourceTree = "<group>"; };
+		E7A1B2C3D4E5F60718293B13 /* DiscoverySearchViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DiscoverySearchViewModel.swift; sourceTree = "<group>"; };
+		E7A1B2C3D4E5F60718293B15 /* DiscoverySearchViewModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DiscoverySearchViewModelTests.swift; sourceTree = "<group>"; };
+		E7A1B2C3D4E5F60718293B17 /* RavenContactRequestV1Tests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RavenContactRequestV1Tests.swift; sourceTree = "<group>"; };
+		E7A1B2C3D4E5F60718293C01 /* RavenEnvelopeSenderResolverTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RavenEnvelopeSenderResolverTests.swift; sourceTree = "<group>"; };
 		D4E2F1AB3B0CBB45A5E1A001 /* ATSAMChainRatchet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMChainRatchet.swift; sourceTree = "<group>"; };
 		12FD2A1C31D0CBB45A5E1464 /* KeyBackupServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KeyBackupServiceTests.swift; sourceTree = "<group>"; };
 		F6A4B3CD5D0CBB45A5E1C001 /* MeshImpersonationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MeshImpersonationTests.swift; sourceTree = "<group>"; };
@@ -1712,13 +1720,15 @@
 				F6A4B3CD5D0CBB45A5E1C001 /* MeshImpersonationTests.swift */,
 				E7A1B2C3D4E5F60718293A03 /* RavenEnvelopeV1VectorsTests.swift */,
 				E7A1B2C3D4E5F60718293B03 /* DiscoveryResolverTests.swift */,
+				E7A1B2C3D4E5F60718293B15 /* DiscoverySearchViewModelTests.swift */,
+				E7A1B2C3D4E5F60718293B17 /* RavenContactRequestV1Tests.swift */,
 				E7A1B2C3D4E5F60718293A09 /* RavenServerlessLanPathTests.swift */,
 				E7A1B2C3D4E5F60718293A0D /* RavenServerlessLanSettingsTests.swift */,
 				E7A1B2C3D4E5F60718293A11 /* RavenBleRvn1CarrierTests.swift */,
 				E7A1B2C3D4E5F60718293A15 /* RavenEnvelopeBridgeServiceTests.swift */,
 				E7A1B2C3D4E5F60718293A19 /* RavenEnvelopeEndpointIngestTests.swift */,
 				E7A1B2C3D4E5F60718293A1D /* RavenEnvelopeChatWireTests.swift */,
-				E7A1B2C3D4E5F60718293A21 /* RavenEnvelopeSenderResolverTests.swift */,
+				E7A1B2C3D4E5F60718293C01 /* RavenEnvelopeSenderResolverTests.swift */,
 				15B36E34E30E171DA9D47854 /* MeshInteropVectorsTests.swift */,
 			);
 			name = RAVENTests;
@@ -2183,6 +2193,7 @@
 				E7A1B2C3D4E5F60718293A1F /* RavenEnvelopeSenderResolver.swift */,
 				E7A1B2C3D4E5F60718293A21 /* RavenTagDisplay.swift */,
 				E7A1B2C3D4E5F60718293B01 /* DiscoveryResolver.swift */,
+				E7A1B2C3D4E5F60718293B11 /* RavenContactRequestV1.swift */,
 				01597C194B704D9DACFDD069 /* MeshBridgeReceiver.swift */,
 				FC7E3F7E3B80DD73A6C65081 /* MeshCryptoService.swift */,
 				VLT_FILEREF_001 /* VaultCrypto.swift */,
@@ -2291,6 +2302,7 @@
 			isa = PBXGroup;
 			children = (
 				FCV_FILEREF_001 /* FindContactsView.swift */,
+				E7A1B2C3D4E5F60718293B13 /* DiscoverySearchViewModel.swift */,
 			);
 			path = Contacts;
 			sourceTree = "<group>";
@@ -2796,6 +2808,8 @@
 				E7A1B2C3D4E5F60718293A20 /* RavenEnvelopeSenderResolver.swift in Sources */,
 				E7A1B2C3D4E5F60718293A22 /* RavenTagDisplay.swift in Sources */,
 				E7A1B2C3D4E5F60718293B02 /* DiscoveryResolver.swift in Sources */,
+				E7A1B2C3D4E5F60718293B12 /* RavenContactRequestV1.swift in Sources */,
+				E7A1B2C3D4E5F60718293B14 /* DiscoverySearchViewModel.swift in Sources */,
 				7AAC8AAC20584241B41428D9 /* MeshBridgeReceiver.swift in Sources */,
 				849F913859E4F75643818245 /* MeshCryptoService.swift in Sources */,
 				13C86EF7DBEB25CB11A3B504 /* EditProfileView.swift in Sources */,
@@ -3005,13 +3019,15 @@
 				F6A4B3CD5D0CBB45A5E1C002 /* MeshImpersonationTests.swift in Sources */,
 				E7A1B2C3D4E5F60718293A04 /* RavenEnvelopeV1VectorsTests.swift in Sources */,
 				E7A1B2C3D4E5F60718293B04 /* DiscoveryResolverTests.swift in Sources */,
+				E7A1B2C3D4E5F60718293B16 /* DiscoverySearchViewModelTests.swift in Sources */,
+				E7A1B2C3D4E5F60718293B18 /* RavenContactRequestV1Tests.swift in Sources */,
 				E7A1B2C3D4E5F60718293A0A /* RavenServerlessLanPathTests.swift in Sources */,
 				E7A1B2C3D4E5F60718293A0E /* RavenServerlessLanSettingsTests.swift in Sources */,
 				E7A1B2C3D4E5F60718293A12 /* RavenBleRvn1CarrierTests.swift in Sources */,
 				E7A1B2C3D4E5F60718293A16 /* RavenEnvelopeBridgeServiceTests.swift in Sources */,
 				E7A1B2C3D4E5F60718293A1A /* RavenEnvelopeEndpointIngestTests.swift in Sources */,
 				E7A1B2C3D4E5F60718293A1E /* RavenEnvelopeChatWireTests.swift in Sources */,
-				E7A1B2C3D4E5F60718293A22 /* RavenEnvelopeSenderResolverTests.swift in Sources */,
+				E7A1B2C3D4E5F60718293C02 /* RavenEnvelopeSenderResolverTests.swift in Sources */,
 				67A59FEE502B09BDD8872314 /* MeshInteropVectorsTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

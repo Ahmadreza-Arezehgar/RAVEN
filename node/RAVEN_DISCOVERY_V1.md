@@ -90,7 +90,9 @@ Interactive picker on alias conflicts (same resolver as future mobile).
 
 ## iOS
 
-`DiscoveryResolver`-equivalent types + tests under serverless flag; discovery path must not call FastAPI when RavenEnvelopeV1 / serverless is ON. Search UI may stay thin in V1.
+`DiscoveryResolver`-equivalent types + tests under serverless flag; discovery path must not call FastAPI when RavenEnvelopeV1 / serverless is ON.
+
+**Search UI (V1):** `FindContactsView` + `DiscoverySearchViewModel` behind `FeatureFlag.ravenEnvelopeV1` — scopes **All / My Network / Public (exact alias|id) / Nearby**, petname-first rows, provenance + alias-conflict picker (never silent pick), `RavenContactRequestV1` seal + LAN/BLE delivery. QR add path remains. MeshEnvelope default when flag OFF (QR-only sheet; no contacts FastAPI sync).
 
 ## V1 MUST NOT include
 
