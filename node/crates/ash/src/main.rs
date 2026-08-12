@@ -439,44 +439,13 @@ fn save_contacts(data_dir: &Path, contacts: &[Contact]) -> Result<(), String> {
 }
 
 fn ensure_identity(data_dir: &Path) -> Identity {
-    std::fs::create_dir_all(data_dir).ok();
-    let path = data_dir.join("identity.seed");
-    if path.exists() {
-        let bytes = std::fs::read(&path).expect("read identity");
-        let mut seed = [0u8; 32];
-        seed.copy_from_slice(&bytes[..32]);
-        return Identity::from_seed(&seed);
-    }
-    let id = Identity::generate();
-    let seed = id.seed_bytes();
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&path)
-            .expect("write seed");
-        f.write_all(&seed).unwrap();
-    }
-    #[cfg(not(unix))]
-    {
-        std::fs::write(&path, seed).unwrap();
-    }
-    id
+    raven_core::load_or_create_identity(data_dir)
+        .map(|(id, _)| id)
+        .expect("secure identity store")
 }
 
 fn try_load_identity(data_dir: &Path) -> Option<Identity> {
-    let path = data_dir.join("identity.seed");
-    let bytes = std::fs::read(&path).ok()?;
-    if bytes.len() < 32 {
-        return None;
-    }
-    let mut seed = [0u8; 32];
-    seed.copy_from_slice(&bytes[..32]);
-    Some(Identity::from_seed(&seed))
+    raven_core::load_identity(data_dir).ok().flatten()
 }
 
 fn print_public_identity(id: &Identity) {
@@ -2172,6 +2141,22 @@ fn cmd_doctor(data_dir: &Path) {
         println!("  daemon_state: no socket (start raven-node ipc)");
     }
 
+    // Identity store (backend label only — never seed bytes).
+    let ks = raven_core::store_status(data_dir);
+    let backend = ks
+        .backend
+        .map(|b| b.as_str())
+        .unwrap_or("none");
+    println!(
+        "  secure_keystore: backend={backend} identity={}",
+        if ks.has_identity { "present" } else { "absent" }
+    );
+    if ks.legacy_plaintext_present {
+        println!(
+            "  {C_PURPLE}secure_keystore{C_RESET}: legacy plaintext seed file still present — reopen once to migrate"
+        );
+    }
+
     // Database / queue files (existence only — no secret contents).
     for name in [
         "queue.sqlite",
@@ -2181,12 +2166,9 @@ fn cmd_doctor(data_dir: &Path) {
         "device_registry.json",
         "node_policy.json",
         "bootstrap.json",
-        "identity.seed",
     ] {
         let p = data_dir.join(name);
-        let label = if name == "identity.seed" {
-            "secure_keystore"
-        } else if name.contains("queue") {
+        let label = if name.contains("queue") {
             "database"
         } else {
             "local_file"

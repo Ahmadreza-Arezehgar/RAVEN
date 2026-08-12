@@ -28,3 +28,4 @@ Verify `SHA256SUMS.txt`. Signing/packages (deb/rpm) are operator-owned — not p
 
 - Prefer `raven` argv0 if distribution `ash` conflicts with BusyBox `/bin/ash`.
 - No central message server is configured; see `SERVERLESS_MODEL.md`.
+- Identity seed storage: Secret Service when available, else mode `0600` locked file — see [`IDENTITY_SEED_STORAGE.md`](IDENTITY_SEED_STORAGE.md).

@@ -3,7 +3,7 @@
 Product CLI binary is named **`ash`** (`ash.exe` on Windows). Daemon/node binary is **`raven-node`** (`raven-node.exe`).  
 This is **not** the WinUI `RAVEN-Windows` app; that mesh client lives under `RAVEN-Windows/` and has its own workflow.
 
-**Safety:** demos use ephemeral `--data-dir` only. Never commit `identity.seed`, queue DBs, or paste private keys into logs.
+**Safety:** demos use ephemeral `--data-dir` only. Never commit `identity.seed`, queue DBs, or paste private keys into logs. On Windows the seed file is DPAPI-wrapped (`RVNDPAPI` magic); see [`IDENTITY_SEED_STORAGE.md`](IDENTITY_SEED_STORAGE.md).
 
 ## Native Windows (recommended)
 

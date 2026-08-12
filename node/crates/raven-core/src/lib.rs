@@ -29,6 +29,7 @@ pub mod profile_record;
 pub mod fingerprint;
 pub mod forward_queue;
 pub mod identity;
+pub mod identity_store;
 pub mod internet;
 pub mod ipc;
 pub mod message_router;
@@ -103,6 +104,11 @@ pub use forward_queue::{
     MAX_PER_PEER_ENQUEUES_PER_WINDOW, MAX_PER_PEER_PENDING,
 };
 pub use identity::Identity;
+pub use identity_store::{
+    load_identity, load_identity_required, load_or_create_identity, store_status,
+    IdentityStoreBackend, IdentityStoreError, IdentityStoreStatus, BACKEND_MARKER_NAME,
+    SEED_FILE_NAME,
+};
 pub use message_router::{InboundEnvelope, MessageRouter, RouterOutcome};
 pub use node_policy::{
     load_policy, policy_path, save_policy, BridgeStatusSnapshot, NodePolicy,

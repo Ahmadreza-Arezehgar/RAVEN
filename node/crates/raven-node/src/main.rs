@@ -29,7 +29,6 @@ use raven_core::seal::{
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
-use zeroize::Zeroize;
 
 #[derive(Parser, Debug)]
 #[command(name = "raven-node", about = "RAVEN serverless local node")]
@@ -162,54 +161,18 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
-fn identity_path(data_dir: &Path) -> PathBuf {
-    data_dir.join("identity.seed")
-}
-
 fn queue_path(data_dir: &Path) -> PathBuf {
     data_dir.join("queue.sqlite")
 }
 
 fn load_or_err(data_dir: &Path) -> Result<Identity, String> {
-    let path = identity_path(data_dir);
-    let bytes = std::fs::read(&path).map_err(|e| format!("read identity: {e}"))?;
-    if bytes.len() != 32 {
-        return Err("corrupt identity seed length".into());
-    }
-    let mut seed = [0u8; 32];
-    seed.copy_from_slice(&bytes);
-    let id = Identity::from_seed(&seed);
-    seed.zeroize();
-    Ok(id)
+    raven_core::load_identity_required(data_dir).map_err(|e| e.to_string())
 }
 
 fn init_identity(data_dir: &Path) -> Result<Identity, String> {
-    std::fs::create_dir_all(data_dir).map_err(|e| e.to_string())?;
-    let path = identity_path(data_dir);
-    if path.exists() {
-        return load_or_err(data_dir);
-    }
-    let id = Identity::generate();
-    let seed = id.seed_bytes();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&path)
-            .map_err(|e| e.to_string())?;
-        use std::io::Write;
-        f.write_all(&seed).map_err(|e| e.to_string())?;
-    }
-    #[cfg(not(unix))]
-    {
-        std::fs::write(&path, &seed).map_err(|e| e.to_string())?;
-    }
-    let mut s = seed;
-    s.zeroize();
-    Ok(id)
+    raven_core::load_or_create_identity(data_dir)
+        .map(|(id, _)| id)
+        .map_err(|e| e.to_string())
 }
 
 async fn write_frame(stream: &mut TcpStream, bytes: &[u8]) -> Result<(), String> {

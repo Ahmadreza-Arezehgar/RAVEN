@@ -23,5 +23,4 @@ base64 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 rand = { workspace = true }
-zeroize = { workspace = true }
 libc = "0.2"

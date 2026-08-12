@@ -45,3 +45,7 @@ Unsigned binaries will be quarantined if downloaded from the Internet. Either:
 ```bash
 bash scripts/final_serverless_proof.sh
 ```
+
+## Identity seed
+
+macOS stores the node seed in the **login Keychain** (service `app.raven.node.identity`). Legacy plaintext `identity.seed` files are migrated and removed on first load. See [`IDENTITY_SEED_STORAGE.md`](IDENTITY_SEED_STORAGE.md).

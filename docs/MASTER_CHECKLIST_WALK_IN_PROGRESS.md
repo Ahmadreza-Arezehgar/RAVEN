@@ -28,6 +28,7 @@
 | Linux container runtime | **BLOCKED** | Same Docker daemon gap — no in-container smoke this session |
 | iOS XCTest (prior) | PASS | Discovery*, RavenEnvelope*, ContactRequest*, RavenServerlessLan*, Mesh*, RavenBleRvn1* |
 | iOS PeerKeyDirectory Keychain | PASS | `RAVENTests/PeerKeyDirectoryKeychainTests` **4/4** on `RAVEN-iPhone-15` OS 26.5 — **TEST SUCCEEDED** |
+| Desktop identity_store | PASS | `cargo test -p raven-core identity_store` (Keychain round-trip + plaintext migrate on macOS); Windows DPAPI + Linux SS/0600 in `identity_store.rs` + `IDENTITY_SEED_STORAGE.md` |
 | MeshEnvelope default | PASS (safe OFF) | `FeatureFlags.swift` `.ravenEnvelopeV1` default `false` |
 | `--send` argv refuse | PASS | `raven-node run --send …` exits 2 with `REFUSE:` |
 | UDS peer UID | PASS | `ipc_server.rs` `getpeereid` / `SO_PEERCRED` |
@@ -52,7 +53,7 @@
 | 11 | Aliases and Contacts | PASS | Soft Unique Tags; ash `contact`/`find`; iOS FindContacts behind flag; alias conflict never silent |
 | 12 | Asynchronous First Contact | PASS | Contact request E2EE + accept inbox; anti-spam caps (`113bf33`) |
 | 13 | Cryptographic Requirements | IN_PROGRESS | Envelope + ATSAM KATs present; full CryptoKit CT / ML-KEM interop KATs still open |
-| 14 | Key Storage | PASS | Unix `identity.seed` 0600; iOS device identity Keychain; **PeerKeyDirectory now Keychain** (`app.raven.ios.peerKey`, AfterFirstUnlockThisDeviceOnly, non-sync) + UD→KC migration + logout `purgeAllPins`; tests `PeerKeyDirectoryKeychainTests`. Residual: Windows DPAPI / Linux Secret Service for desktop node seed (file+0600 only) — noted, not UserDefaults-class debt |
+| 14 | Key Storage | PASS | Desktop `identity_store`: macOS Keychain, Windows DPAPI (`RVNDPAPI`), Linux Secret Service (gnu) / locked-file `0600` + `IDENTITY_SEED_STORAGE.md`; plaintext migrate; raven-core `identity_store::tests`. iOS device identity Keychain; **PeerKeyDirectory Keychain** (`77708ce`) + UD→KC + logout purge |
 | 15 | Canonical Raven Envelope | PASS / FROZEN | Shared vectors rust/swift |
 | 16 | Delivery States and ACK | PASS | Harness step `08_ack_delivered_status` |
 | 17 | Raven Node Core | PASS | raven-node daemon + service |
@@ -119,6 +120,7 @@
 
 1. iOS `PeerKeyDirectory` UserDefaults → Keychain (+ one-shot migration, peer index, tests)  
 2. `AuthService.logout` → `PeerKeyDirectory.purgeAllPins()` (cross-account pin wipe)  
-3. `ATSAMRootStorage` Keychain queries set `kSecAttrSynchronizable = false`
+3. `ATSAMRootStorage` Keychain queries set `kSecAttrSynchronizable = false`  
+4. Desktop `raven_core::identity_store` — macOS Keychain / Windows DPAPI / Linux Secret Service + locked-file `0600`; plaintext `identity.seed` migrate; ash/raven-node/raven-swarm wired
 
 Prior wave (`113bf33`): OAuth state/PKCE, SessionStore clear, raven-node `--send` refuse, UDS peer-UID, anti-spam.

@@ -99,35 +99,8 @@ fn now_ms() -> u64 {
 }
 
 fn load_or_create_identity(data_dir: &std::path::Path) -> Result<Identity, Box<dyn Error>> {
-    std::fs::create_dir_all(data_dir)?;
-    let path = data_dir.join("identity.seed");
-    if path.exists() {
-        let bytes = std::fs::read(&path)?;
-        if bytes.len() != 32 {
-            return Err("corrupt identity".into());
-        }
-        let mut seed = [0u8; 32];
-        seed.copy_from_slice(&bytes);
-        return Ok(Identity::from_seed(&seed));
-    }
-    let id = Identity::generate();
-    let seed = id.seed_bytes();
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&path)?;
-        f.write_all(&seed)?;
-    }
-    #[cfg(not(unix))]
-    {
-        std::fs::write(&path, &seed)?;
-    }
-    Ok(id)
+    Ok(raven_core::load_or_create_identity(data_dir)
+        .map(|(id, _)| id)?)
 }
 
 fn libp2p_keypair_from_raven(id: &Identity) -> Keypair {

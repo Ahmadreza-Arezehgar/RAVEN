@@ -22,6 +22,24 @@ rusqlite = { workspace = true }
 base64 = { workspace = true }
 ml-kem = { workspace = true }
 rand_core = { workspace = true }
+zeroize = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security_Cryptography",
+] }
+
+# Secret Service needs libdbus — glibc desktop only (not musl static releases).
+[target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
+secret-service = "2.0"
 
 [dev-dependencies]
 tempfile = { workspace = true }
+
+[features]
+default = []
+test-helpers = []
