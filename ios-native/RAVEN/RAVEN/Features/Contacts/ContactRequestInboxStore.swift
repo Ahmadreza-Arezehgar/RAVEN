@@ -105,6 +105,15 @@ enum ContactRequestInboxStore {
             all.removeAll {
                 (try? RavenContactRequestV1.decodeWire($0))?.requestId == outer.requestId
             }
+            let fromSender = all.filter {
+                (try? RavenContactRequestV1.decodeWire($0))?.senderPub == outer.senderPub
+            }
+            if fromSender.count >= ContactRequestInbox.maxPerSender {
+                return // anti-spam: drop new wire when per-sender cap hit
+            }
+        }
+        if all.count >= ContactRequestInbox.maxPending {
+            return // anti-spam: inbox full
         }
         all.append(wire)
         saveWires(all)

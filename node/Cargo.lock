@@ -2645,6 +2645,7 @@ dependencies = [
  "base64",
  "clap",
  "hex",
+ "libc",
  "rand 0.8.7",
  "raven-core",
  "serde",

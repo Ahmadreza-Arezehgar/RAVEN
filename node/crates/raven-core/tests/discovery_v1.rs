@@ -5,7 +5,10 @@
 use raven_core::alias_record::{AliasClaimStore, AliasPublishQuota, AliasRecord};
 use raven_core::bootstrap::BootstrapConfig;
 use raven_core::chat_history::BlockList;
-use raven_core::contact_request::{ContactAcceptV1, ContactRequestInner, RavenContactRequestV1};
+use raven_core::contact_request::{
+    ContactAcceptV1, ContactRequestInbox, ContactRequestInner, RavenContactRequestV1,
+    CONTACT_REQ_MAX_PER_SENDER,
+};
 use raven_core::discovery_resolver::{
     result_model_schema_keys, DiscoveryContext, DiscoveryResolver, DiscoveryScope,
     DiscoverySource, LocalContactRow, VerificationState,
@@ -772,6 +775,60 @@ fn contact_inbox_block() {
     inbox.block(&[0xBBu8; 16], &mut blocks).unwrap();
     assert!(inbox.pending().is_empty());
     assert!(blocks.is_blocked(&hex::encode(requester.public_key_bytes())));
+}
+
+/// Contact-request anti-spam: per-sender pending cap.
+#[test]
+fn contact_inbox_sender_cap_antispam() {
+    let requester = Identity::generate();
+    let accepter = Identity::generate();
+    let mut inbox = ContactRequestInbox::default();
+    let t0 = now();
+    for i in 0..CONTACT_REQ_MAX_PER_SENDER {
+        let mut rid = [0u8; 16];
+        rid[0] = 0xA0 + i as u8;
+        let req = RavenContactRequestV1::create(
+            &requester,
+            &accepter.public_key_bytes(),
+            &accepter.address(),
+            ContactRequestInner {
+                request_id: rid,
+                sender_raven_id: requester.address(),
+                sender_display_name: "Spam".into(),
+                sender_aliases: vec![],
+                sender_profile_digest: [0u8; 32],
+                optional_message: String::new(),
+                created_at: t0,
+                expires_at: t0 + 60_000,
+            },
+        )
+        .unwrap();
+        inbox.ingest(req, &accepter, t0).unwrap();
+    }
+    assert_eq!(inbox.pending().len(), CONTACT_REQ_MAX_PER_SENDER);
+    let mut rid = [0u8; 16];
+    rid[0] = 0xFF;
+    let extra = RavenContactRequestV1::create(
+        &requester,
+        &accepter.public_key_bytes(),
+        &accepter.address(),
+        ContactRequestInner {
+            request_id: rid,
+            sender_raven_id: requester.address(),
+            sender_display_name: "Spam".into(),
+            sender_aliases: vec![],
+            sender_profile_digest: [0u8; 32],
+            optional_message: String::new(),
+            created_at: t0,
+            expires_at: t0 + 60_000,
+        },
+    )
+    .unwrap();
+    let err = inbox.ingest(extra, &accepter, t0).unwrap_err();
+    assert!(
+        err.contains("CONTACT_REQ_SENDER_CAP"),
+        "got {err}"
+    );
 }
 
 /// Nearby safety phrase required before confirm-to-bind

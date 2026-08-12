@@ -9,6 +9,7 @@ import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
+import dagger.multibindings.Multibinds
 import retrofit2.Retrofit
 import retrofit2.create
 import javax.inject.Singleton
@@ -47,4 +48,9 @@ abstract class SecurityBindsModule {
     @Binds
     @Singleton
     abstract fun bindTokenProvider(impl: TokenStore): TokenProvider
+
+    /** Empty multibinding so TokenStore can inject Set<SignOutHooks> even
+     *  when no feature module contributes hooks (tests / slim graphs). */
+    @Multibinds
+    abstract fun signOutHooks(): Set<SignOutHooks>
 }

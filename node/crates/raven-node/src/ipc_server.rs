@@ -1,8 +1,10 @@
 //! Unix domain socket IPC server (macOS/Linux).
 //!
 //! Auth model (V1): socket path under the caller's data dir, mode `0600`,
-//! removed/rebound on start. Same-UID filesystem permissions are the gate;
-//! requests still refuse secret field names (`raven_core::ipc`).
+//! removed/rebound on start, plus peer-credential UID check (must match
+//! the raven-node process euid). Same-UID filesystem permissions + SO_PEERCRED
+//! / getpeereid are the gate; requests still refuse secret field names
+//! (`raven_core::ipc`).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -21,6 +23,60 @@ use tokio::sync::Mutex;
 
 pub fn socket_path(data_dir: &Path) -> PathBuf {
     default_socket_path(data_dir)
+}
+
+/// Return true iff the connected peer's effective UID matches ours.
+/// Denies cross-user local clients even if they somehow open the socket.
+#[cfg(unix)]
+fn peer_uid_matches_self(stream: &UnixStream) -> bool {
+    use std::os::fd::AsRawFd;
+    let fd = stream.as_raw_fd();
+    let self_uid = unsafe { libc::geteuid() };
+
+    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "dragonfly"))]
+    {
+        let mut euid: libc::uid_t = 0;
+        let mut egid: libc::gid_t = 0;
+        let rc = unsafe { libc::getpeereid(fd, &mut euid, &mut egid) };
+        if rc != 0 {
+            return false;
+        }
+        euid == self_uid
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
+        let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+        let rc = unsafe {
+            libc::getsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_PEERCRED,
+                &mut cred as *mut _ as *mut libc::c_void,
+                &mut len,
+            )
+        };
+        if rc != 0 {
+            return false;
+        }
+        cred.uid == self_uid
+    }
+
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    )))]
+    {
+        let _ = (fd, self_uid);
+        // Unknown Unix: fall back to socket mode 0600 only.
+        true
+    }
 }
 
 async fn read_frame(stream: &mut UnixStream) -> Result<Vec<u8>, String> {
@@ -204,6 +260,11 @@ fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
 }
 
 async fn serve_one(mut stream: UnixStream, data_dir: Arc<PathBuf>, forward: Arc<Mutex<Option<ForwardQueue>>>) {
+    #[cfg(unix)]
+    if !peer_uid_matches_self(&stream) {
+        eprintln!("raven-node ipc: reject peer (uid mismatch)");
+        return;
+    }
     let frame = match read_frame(&mut stream).await {
         Ok(f) => f,
         Err(_) => return,

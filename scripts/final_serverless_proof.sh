@@ -189,14 +189,14 @@ step_begin "06_offline_recipient_queue_store_forward"
   B_BLE=$(cat "$WORKDIR/b.ble")
 
   # A sends while C offline — expect queue / eventual ACK after C joins
-  "$NODE" run \
+  printf '%s\n' "s59-offline-store-forward" | "$NODE" run \
     --data-dir "$WORKDIR/terminal" \
     --listen "127.0.0.1:0" \
     --peer "$B_LAN" \
     --peer-pub-hex "$BR_PUB" \
     --seal-to-pub-hex "$MOB_PUB" \
     --ack-pub-hex "$MOB_PUB" \
-    --send "s59-offline-store-forward" \
+    --send-stdin \
     --exit-after-ack \
     --timeout-secs 45 \
     >"$ART/logs/terminal_scf.log" 2>&1 &
@@ -280,12 +280,12 @@ step_begin "08_ack_delivered_status"
     sleep 0.05
   done
   MOB_LISTEN=$(cat "$WORKDIR/mob.listen")
-  "$NODE" run \
+  printf '%s\n' "s59-ack-delivered" | "$NODE" run \
     --data-dir "$WORKDIR/terminal" \
     --listen "127.0.0.1:0" \
     --peer "$MOB_LISTEN" \
     --peer-pub-hex "$MOB_PUB" \
-    --send "s59-ack-delivered" \
+    --send-stdin \
     --exit-after-ack \
     --timeout-secs 25 \
     >"$ART/logs/ack_send.log" 2>&1

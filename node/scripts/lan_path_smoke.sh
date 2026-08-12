@@ -43,12 +43,12 @@ run_mode() {
   done
   local B_LISTEN
   B_LISTEN=$(cat "$WORKDIR/b.listen")
-  "$NODE" run \
+  printf '%s\n' "lan-smoke-$mode" | "$NODE" run \
     --data-dir "$WORKDIR/a" \
     --listen "127.0.0.1:0" \
     --peer "$B_LISTEN" \
     --peer-pub-hex "$B_PUB" \
-    --send "lan-smoke-$mode" \
+    --send-stdin \
     --body-mode "$mode" \
     --exit-after-ack \
     --timeout-secs 15 \

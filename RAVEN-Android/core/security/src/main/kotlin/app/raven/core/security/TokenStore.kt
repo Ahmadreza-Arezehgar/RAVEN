@@ -40,6 +40,8 @@ class TokenStore @Inject constructor(
      * inside [bootstrap], which runs after construction.
      */
     private val meApi: Lazy<MeApi>,
+    private val identityKeyService: IdentityKeyService,
+    private val signOutHooks: Set<@JvmSuppressWildcards SignOutHooks>,
 ) : TokenProvider {
 
     private val mutex = Mutex()
@@ -161,6 +163,28 @@ class TokenStore @Inject constructor(
         secureStore.remove(SecureStore.KEY_ACCESS_TOKEN)
         secureStore.remove(SecureStore.KEY_REFRESH_TOKEN)
         secureStore.remove(SecureStore.KEY_USER_ID)
+        // 🔒 SECURITY (audit H3 — cross-account key/session reuse):
+        // purge ALL E2EE identity + session material on sign-out.
+        // Previously only the three token keys were cleared, so a
+        // different account signing in on the same device inherited
+        // the previous user's Ed25519/X25519 identity keypair, signed
+        // prekey, and every live per-peer session — able to read and
+        // continue the prior user's conversations under their identity.
+        // Wiping identity.* forces fresh keys on next sign-in;
+        // removeByPrefix("e2ee.") clears cached sessions
+        // (e2ee.session.*), the signed prekey (e2ee.spk.*), the
+        // published-bundle flag, and the device id.
+        // Also: IdentityKeyService.reset() + SignOutHooks (SessionStore
+        // in-process cache) so sign-out→sign-in without process restart
+        // cannot reuse prior crypto state. DB cipher key preserved
+        // (message-cache wipe tracked separately).
+        secureStore.remove(SecureStore.KEY_IDENTITY_ED25519_PRIV)
+        secureStore.remove(SecureStore.KEY_IDENTITY_X25519_PRIV)
+        secureStore.removeByPrefix("e2ee.")
+        identityKeyService.reset()
+        for (hook in signOutHooks) {
+            runCatching { hook.onLocalSignOut() }
+        }
         _authState.value = AuthState.SIGNED_OUT
     }
 

@@ -2,6 +2,7 @@ package app.raven.feature.auth.oauth
 
 import android.annotation.SuppressLint
 import android.net.Uri
+import android.util.Base64
 import android.webkit.CookieManager
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
@@ -27,6 +28,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import app.raven.core.design.Spacing
+import java.security.MessageDigest
+import java.security.SecureRandom
 
 /**
  * Apple's identity provider has no native Android SDK, so we run
@@ -34,21 +37,12 @@ import app.raven.core.design.Spacing
  *
  * Flow:
  *   1. Load `https://appleid.apple.com/auth/authorize?...` with
- *      our Services ID + redirect URI.
- *   2. Apple authenticates the user, then redirects to
- *      `redirect_uri` with `code` + `id_token`.
- *   3. The server callback at
- *      `/api/auth/oauth/apple/callback` accepts that POST and
- *      bounces back to a deep link
- *      `raven://oauth/apple/done#id_token=...&code=...`.
- *   4. This WebView intercepts the deep link, extracts the
- *      identity token, and hands it to [onIdentityToken].
- *
- * Phase 1b will replace this with the more polished
- * AuthorizationManagedActivityResult once we drop minSdk to 21+
- * and have the server callback wired. For now this is the same
- * pattern the iOS `AppleSignInCoordinator` follows when the
- * Apple Authentication Services SDK isn't available.
+ *      our Services ID + redirect URI + CSRF `state` + PKCE S256.
+ *   2. Apple authenticates the user, then form_posts to the server
+ *      callback which bounces `raven://oauth/apple/done#...` including
+ *      the echoed `state`.
+ *   3. This WebView intercepts the deep link, **rejects state mismatch**,
+ *      extracts the identity token, and hands it to [onIdentityToken].
  */
 @SuppressLint("SetJavaScriptEnabled")  // Apple's auth UI is JS-heavy.
 @Composable
@@ -58,16 +52,20 @@ fun AppleSignInScreen(
     onCancel: () -> Unit,
     onFailure: (String) -> Unit,
 ) {
-    val authorizeUrl = remember(config) {
+    // Persist expected CSRF state + PKCE verifier for this compose
+    // session. Apple echoes `state` via the server deep-link bounce;
+    // mismatch → abort (CSRF).
+    val oauthSession = remember(config) { AppleOAuthSession.mint() }
+    val authorizeUrl = remember(config, oauthSession) {
         Uri.parse("https://appleid.apple.com/auth/authorize").buildUpon()
             .appendQueryParameter("client_id", config.appleServicesId)
             .appendQueryParameter("redirect_uri", config.appleRedirectUri)
             .appendQueryParameter("response_type", "code id_token")
             .appendQueryParameter("response_mode", "form_post")
             .appendQueryParameter("scope", "name email")
-            // CSRF state — Phase 1b will move this to a real
-            // server-issued nonce verified on the callback side.
-            .appendQueryParameter("state", java.util.UUID.randomUUID().toString())
+            .appendQueryParameter("state", oauthSession.state)
+            .appendQueryParameter("code_challenge", oauthSession.codeChallenge)
+            .appendQueryParameter("code_challenge_method", "S256")
             .build()
             .toString()
     }
@@ -104,7 +102,7 @@ fun AppleSignInScreen(
                 )
             }
 
-            Spacer(Modifier.height(Spacing.xs))
+            Spacer(modifier = Modifier.height(Spacing.xs))
 
             // ── WebView host ──
             AndroidView(
@@ -124,6 +122,7 @@ fun AppleSignInScreen(
                                 request: WebResourceRequest,
                             ): Boolean = handleRedirect(
                                 url = request.url.toString(),
+                                expectedState = oauthSession.state,
                                 onIdentityToken = onIdentityToken,
                                 onFailure = onFailure,
                             )
@@ -136,13 +135,43 @@ fun AppleSignInScreen(
     }
 }
 
+/** Client-minted CSRF state + PKCE S256 pair for one authorize attempt. */
+internal data class AppleOAuthSession(
+    val state: String,
+    val codeVerifier: String,
+    val codeChallenge: String,
+) {
+    companion object {
+        fun mint(): AppleOAuthSession {
+            val rng = SecureRandom()
+            val stateBytes = ByteArray(32)
+            rng.nextBytes(stateBytes)
+            val state = Base64.encodeToString(stateBytes, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+
+            val verifierBytes = ByteArray(32)
+            rng.nextBytes(verifierBytes)
+            val codeVerifier = Base64.encodeToString(
+                verifierBytes,
+                Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING,
+            )
+            val digest = MessageDigest.getInstance("SHA-256").digest(codeVerifier.toByteArray(Charsets.US_ASCII))
+            val codeChallenge = Base64.encodeToString(
+                digest,
+                Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING,
+            )
+            return AppleOAuthSession(state, codeVerifier, codeChallenge)
+        }
+    }
+}
+
 /**
  * Returns true (claim the URL) if `url` is our redirect deep link
- * `raven://oauth/apple/done#...`. Parses the fragment params and
- * dispatches success / failure.
+ * `raven://oauth/apple/done#...`. Parses the fragment params,
+ * rejects CSRF state mismatch, then dispatches success / failure.
  */
-private fun handleRedirect(
+internal fun handleRedirect(
     url: String,
+    expectedState: String,
     onIdentityToken: (idToken: String, code: String?) -> Unit,
     onFailure: (String) -> Unit,
 ): Boolean {
@@ -155,6 +184,11 @@ private fun handleRedirect(
     val err = params["error"]
     if (err != null) {
         onFailure("Apple error: $err")
+        return true
+    }
+    val returnedState = params["state"]
+    if (returnedState.isNullOrBlank() || returnedState != expectedState) {
+        onFailure("Apple sign-in rejected: OAuth state mismatch (possible CSRF).")
         return true
     }
     val idToken = params["id_token"]

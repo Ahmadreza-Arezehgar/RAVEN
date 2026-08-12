@@ -62,10 +62,10 @@ enum Commands {
         /// Peer Ed25519 public key hex (32 bytes) for seal + verify.
         #[arg(long)]
         peer_pub_hex: Option<String>,
-        /// Text to send (encrypted). Prefer `--send-stdin` so plaintext never appears in argv/`ps`.
-        #[arg(long)]
+        /// REMOVED for security: plaintext on argv is refused. Use `--send-stdin`.
+        #[arg(long, hide = true)]
         send: Option<String>,
-        /// Read one plaintext line from stdin (secure). Mutually preferred over `--send`.
+        /// Read one plaintext line from stdin (secure). Never puts body on argv/`ps`.
         #[arg(long, default_value_t = false)]
         send_stdin: bool,
         /// Body mode for --send: `interim` (default, decryptable stub) or
@@ -634,11 +634,11 @@ async fn main() {
                     std::process::exit(1);
                 }
                 Some(t)
-            } else if let Some(t) = send {
+            } else if send.is_some() {
                 eprintln!(
-                    "warning: --send puts plaintext on argv (visible via ps); prefer --send-stdin"
+                    "REFUSE: --send puts plaintext on argv (visible via ps). Use --send-stdin."
                 );
-                Some(t)
+                std::process::exit(2);
             } else {
                 None
             };

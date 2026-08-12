@@ -26,6 +26,9 @@ enum RavenContactRequestError: Error, Equatable {
     case idMismatch
     case notFound
     case petnameRequired
+    case inboxFull
+    case senderCap
+    case rateLimited
 }
 
 struct ContactRequestInner: Equatable {
@@ -360,6 +363,12 @@ struct ContactAcceptOutcome: Equatable {
 struct ContactRequestInbox: Equatable {
     var pending: [PendingContactRequest] = []
 
+    /// Anti-spam caps (mirror raven_core::contact_request).
+    static let maxPending = 64
+    static let maxPerSender = 3
+    static let senderWindowMs: UInt64 = 3_600_000
+    static let maxPerSenderWindow = 5
+
     mutating func ingest(
         outer: RavenContactRequestV1,
         recipientSigningKey: Curve25519.Signing.PrivateKey,
@@ -376,6 +385,19 @@ struct ContactRequestInbox: Equatable {
         }
         if pending.contains(where: { $0.outer.requestId == outer.requestId }) {
             return inner
+        }
+        if pending.count >= Self.maxPending {
+            throw RavenContactRequestError.inboxFull
+        }
+        let fromSender = pending.filter { $0.outer.senderPub == outer.senderPub }
+        if fromSender.count >= Self.maxPerSender {
+            throw RavenContactRequestError.senderCap
+        }
+        let inWindow = fromSender.filter {
+            nowMs &- $0.receivedAt <= Self.senderWindowMs
+        }.count
+        if inWindow >= Self.maxPerSenderWindow {
+            throw RavenContactRequestError.rateLimited
         }
         pending.append(PendingContactRequest(outer: outer, inner: inner, receivedAt: nowMs))
         return inner

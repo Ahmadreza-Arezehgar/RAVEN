@@ -54,12 +54,12 @@ B_ADDR=$(cat "$WORKDIR/b.addr")
   --no-raven-defaults
 "$SWARM" bootstrap-show --data-dir "$WORKDIR/a" | grep -q "peer=$B_ADDR"
 
-"$NODE" run \
+printf '%s\n' "manual-bootstrap-only" | "$NODE" run \
   --data-dir "$WORKDIR/a" \
   --listen "127.0.0.1:0" \
   --peer "$B_ADDR" \
   --peer-pub-hex "$B_PUB" \
-  --send "manual-bootstrap-only" \
+  --send-stdin \
   --exit-after-ack \
   --timeout-secs 25 \
   >"$WORKDIR/a.log" 2>&1

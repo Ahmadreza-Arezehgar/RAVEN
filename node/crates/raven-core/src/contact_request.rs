@@ -376,12 +376,20 @@ pub struct ContactRequestInbox {
     pub pending: Vec<PendingContactRequest>,
 }
 
+/// Anti-spam caps for inbound contact requests (local only — no central moderation).
+pub const CONTACT_REQ_MAX_PENDING: usize = 64;
+pub const CONTACT_REQ_MAX_PER_SENDER: usize = 3;
+/// Rolling window for per-sender ingest rate (ms).
+pub const CONTACT_REQ_SENDER_WINDOW_MS: u64 = 3_600_000; // 1h
+pub const CONTACT_REQ_MAX_PER_SENDER_WINDOW: usize = 5;
+
 impl ContactRequestInbox {
     pub fn pending(&self) -> &[PendingContactRequest] {
         &self.pending
     }
 
     /// Verify outer + open with recipient key; dedup on request_id.
+    /// Rejects when inbox / per-sender caps are exceeded (anti-spam).
     pub fn ingest(
         &mut self,
         outer: RavenContactRequestV1,
@@ -398,6 +406,25 @@ impl ContactRequestInbox {
         }
         if self.pending.iter().any(|p| p.outer.request_id == outer.request_id) {
             return Ok(inner);
+        }
+        if self.pending.len() >= CONTACT_REQ_MAX_PENDING {
+            return Err("CONTACT_REQ_INBOX_FULL".into());
+        }
+        let sender = outer.sender_pub;
+        let from_sender: Vec<_> = self
+            .pending
+            .iter()
+            .filter(|p| p.outer.sender_pub == sender)
+            .collect();
+        if from_sender.len() >= CONTACT_REQ_MAX_PER_SENDER {
+            return Err("CONTACT_REQ_SENDER_CAP".into());
+        }
+        let in_window = from_sender
+            .iter()
+            .filter(|p| now_ms.saturating_sub(p.received_at) <= CONTACT_REQ_SENDER_WINDOW_MS)
+            .count();
+        if in_window >= CONTACT_REQ_MAX_PER_SENDER_WINDOW {
+            return Err("CONTACT_REQ_RATE_LIMIT".into());
         }
         self.pending.push(PendingContactRequest {
             outer,

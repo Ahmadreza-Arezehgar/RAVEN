@@ -175,6 +175,68 @@ final class ContactRequestInboxTests: XCTestCase {
         XCTAssertTrue(DiscoveryBlockStore.load().contains(pubHex.lowercased()))
     }
 
+    func testSenderCapAntiSpam() throws {
+        let requester = Curve25519.Signing.PrivateKey()
+        let accepter = Curve25519.Signing.PrivateKey()
+        let requesterAddr = RavenAddressV1.encode(ed25519PublicKey: requester.publicKey.rawRepresentation)!
+        let accepterAddr = RavenAddressV1.encode(ed25519PublicKey: accepter.publicKey.rawRepresentation)!
+        let now: UInt64 = 1_700_000_000_000
+        var inbox = ContactRequestInbox()
+        for i in 0..<ContactRequestInbox.maxPerSender {
+            var requestId = Data(count: 16)
+            requestId[0] = UInt8(0xA0 + i)
+            let req = try RavenContactRequestV1.create(
+                senderSigningKey: requester,
+                recipientPub: accepter.publicKey.rawRepresentation,
+                recipientAddr: accepterAddr,
+                inner: ContactRequestInner(
+                    requestId: requestId,
+                    senderRavenId: requesterAddr,
+                    senderDisplayName: "Spam",
+                    senderAliases: [],
+                    senderProfileDigest: Data(count: 32),
+                    optionalMessage: "",
+                    createdAt: now,
+                    expiresAt: now &+ 60_000
+                )
+            )
+            _ = try inbox.ingest(
+                outer: req,
+                recipientSigningKey: accepter,
+                recipientAddr: accepterAddr,
+                nowMs: now
+            )
+        }
+        XCTAssertEqual(inbox.pending.count, ContactRequestInbox.maxPerSender)
+        var requestId = Data(count: 16)
+        requestId[0] = 0xFF
+        let extra = try RavenContactRequestV1.create(
+            senderSigningKey: requester,
+            recipientPub: accepter.publicKey.rawRepresentation,
+            recipientAddr: accepterAddr,
+            inner: ContactRequestInner(
+                requestId: requestId,
+                senderRavenId: requesterAddr,
+                senderDisplayName: "Spam",
+                senderAliases: [],
+                senderProfileDigest: Data(count: 32),
+                optionalMessage: "",
+                createdAt: now,
+                expiresAt: now &+ 60_000
+            )
+        )
+        XCTAssertThrowsError(
+            try inbox.ingest(
+                outer: extra,
+                recipientSigningKey: accepter,
+                recipientAddr: accepterAddr,
+                nowMs: now
+            )
+        ) { err in
+            XCTAssertEqual(err as? RavenContactRequestError, .senderCap)
+        }
+    }
+
     func testNearbySafetyPhraseConfirm() {
         let token = Data(repeating: 1, count: 16)
         let commitment = Data(repeating: 2, count: 32)

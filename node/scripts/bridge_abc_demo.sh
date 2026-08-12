@@ -74,14 +74,14 @@ run_happy() {
   sleep 0.3
 
   # A: Internet/LAN only — seal to C, dial B lan, wait for C's ACK via B
-  "$NODE" run \
+  printf '%s\n' "bridge-abc-round-$round" | "$NODE" run \
     --data-dir "$WORKDIR/a" \
     --listen "127.0.0.1:0" \
     --peer "$B_LAN" \
     --peer-pub-hex "$B_PUB" \
     --seal-to-pub-hex "$C_PUB" \
     --ack-pub-hex "$C_PUB" \
-    --send "bridge-abc-round-$round" \
+    --send-stdin \
     --exit-after-ack \
     --timeout-secs 35 \
     >"$WORKDIR/a.log" 2>&1
@@ -127,14 +127,14 @@ B_LAN=$(cat "$WORKDIR/b.lan")
 B_BLE=$(cat "$WORKDIR/b.ble")
 
 # A sends while C offline — B should queue (no ble peer yet)
-"$NODE" run \
+printf '%s\n' "store-carry-msg" | "$NODE" run \
   --data-dir "$WORKDIR/a" \
   --listen "127.0.0.1:0" \
   --peer "$B_LAN" \
   --peer-pub-hex "$B_PUB" \
   --seal-to-pub-hex "$C_PUB" \
   --ack-pub-hex "$C_PUB" \
-  --send "store-carry-msg" \
+  --send-stdin \
   --exit-after-ack \
   --timeout-secs 40 \
   >"$WORKDIR/a_scf.log" 2>&1 &
@@ -191,14 +191,14 @@ B_BLE=$(cat "$WORKDIR/b.ble")
   >"$WORKDIR/a_rev.log" 2>&1 &
 APID=$!
 sleep 0.4
-"$NODE" run \
+printf '%s\n' "reverse-c-to-a" | "$NODE" run \
   --data-dir "$WORKDIR/c" \
   --listen "127.0.0.1:0" \
   --peer "$B_BLE" \
   --peer-pub-hex "$B_PUB" \
   --seal-to-pub-hex "$A_PUB" \
   --ack-pub-hex "$A_PUB" \
-  --send "reverse-c-to-a" \
+  --send-stdin \
   --exit-after-ack \
   --timeout-secs 35 \
   >"$WORKDIR/c_rev.log" 2>&1

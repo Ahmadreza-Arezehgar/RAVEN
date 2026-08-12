@@ -2,6 +2,7 @@ package app.raven.feature.e2ee
 
 import android.util.Base64
 import app.raven.core.security.SecureStore
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
@@ -63,6 +64,19 @@ class SessionStore @Inject constructor(
         val k = key(peerUserId, peerDeviceId)
         cache.remove(k)
         secureStore.remove(k)
+    }
+
+    /**
+     * Wipe in-process session cache + every persisted `e2ee.session.*`
+     * entry. Called from [app.raven.core.security.TokenStore.signOutLocally]
+     * via [app.raven.core.security.SignOutHooks] so a sign-out → sign-in
+     * without process restart cannot reuse prior peer sessions.
+     */
+    fun clearAll() = runBlocking {
+        mutex.withLock {
+            cache.clear()
+            secureStore.removeByPrefix("e2ee.session.")
+        }
     }
 
     private fun key(peerUserId: String, peerDeviceId: String) =

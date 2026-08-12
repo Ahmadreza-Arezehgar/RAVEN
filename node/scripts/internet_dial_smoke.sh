@@ -36,12 +36,12 @@ for _ in $(seq 1 80); do
 done
 B_ADDR=$(cat "$WORKDIR/b.addr")
 
-"$NODE" run \
+printf '%s\n' "inet-transport-proof" | "$NODE" run \
   --data-dir "$WORKDIR/a" \
   --listen "127.0.0.1:0" \
   --peer "$B_ADDR" \
   --peer-pub-hex "$B_PUB" \
-  --send "inet-transport-proof" \
+  --send-stdin \
   --exit-after-ack \
   --timeout-secs 25 \
   >"$WORKDIR/a.log" 2>&1
