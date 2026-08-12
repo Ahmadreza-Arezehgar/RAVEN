@@ -54,6 +54,11 @@ type Delegate interface {
 	OnEnvelope(envelopeB64 string, idempotencyKey string)
 	// OnStatus reports connectivity changes (host started/stopped, our PeerID).
 	OnStatus(connected bool, peerID string)
+	// OnInviteRedeemed fires on the INVITER when someone completes a rendezvous
+	// against one of their live invites (see rendezvous.go). `peerCardJSON` is
+	// the redeemer's contact card — opaque here; Swift MUST verify its Ed25519
+	// signature before trusting any identity or key it claims.
+	OnInviteRedeemed(token string, peerCardJSON string)
 }
 
 // Node wraps a libp2p host. Exposed to Swift as a class by gomobile.
@@ -72,6 +77,12 @@ type Node struct {
 	// Send() therefore also constructs /<relay>/p2p-circuit addresses for the
 	// target from this list when the DHT can't supply a direct address.
 	relays []peer.AddrInfo
+
+	// Live contact-add rendezvous invites, keyed by token (see rendezvous.go).
+	// Guarded by its own mutex: an invite's ephemeral host runs independently of
+	// the main host, and CreateInvite/CancelInvite must not contend with Send().
+	inviteMu sync.Mutex
+	invites  map[string]*invite
 }
 
 // NewNode builds (but does not start) a node from RAVEN's Ed25519 private key.
@@ -355,6 +366,11 @@ func (n *Node) PeerID() string {
 
 // Stop shuts the host down.
 func (n *Node) Stop() error {
+	// Tear down rendezvous invites first, outside n.mu: each owns an ephemeral
+	// host and a relay reservation that must be released, and CancelAllInvites
+	// takes its own lock.
+	n.CancelAllInvites()
+
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if !n.started {
