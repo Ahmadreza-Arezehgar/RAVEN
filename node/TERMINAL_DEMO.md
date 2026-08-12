@@ -8,10 +8,59 @@ tokens, APNs/JWT material, or recovery secrets into this file or shell history d
 `https://raven-messager.com/raven_logo.png` (also `/raven_logo_64.png`, `/raven_logo_192.png`)  
 Terminal welcome uses **black & white** (monochrome bold/dim ANSI — or plain text with `NO_COLOR=1` / `TERM=dumb`). Site CSS palette is separate from the CLI.
 
+## Persian quick start / شروع سریع (FA + EN)
+
+| Step | EN | FA |
+|---|---|---|
+| 1 | Clone/copy the **whole** repo on **this** Mac (your home path) | کل ریپو را روی **همین** مک کپی/کلون کنید (مسیر خانهٔ خودتان) |
+| 2 | `bash scripts/ash_first_run.sh` | اسکریپت پرتابل — مسیر `/Users/ahmd` لازم نیست |
+| 3 | Menu **4 Status** → creates identity | منوی **۴** هویت می‌سازد |
+| 4 | Share `ash whoami` (address + pub_hex only) | فقط address و pub_hex را بفرستید — **هرگز seed** |
+| 5 | Menu **3** add contact → Menu **2** send | مخاطب → ارسال (شماره مخاطب، نه host:port) |
+
+```bash
+# From repo root — works on any Mac username:
+bash scripts/ash_first_run.sh
+# build only:
+bash scripts/ash_first_run.sh --no-run
+# init + print whoami then exit:
+bash scripts/ash_first_run.sh --init-only
+```
+
+اگر `rustc`/`cargo` نباشد، اسکریپت پیام دو زبانه می‌دهد → [rustup.rs](https://rustup.rs).
+
+## Two Macs on the same LAN
+
+**Why Mac2 often fails:** docs/commands with `/Users/ahmd/...` are **someone else’s home**. On Mac2 use *their* clone path (or the portable script above).
+
+```bash
+# Mac2 — after copying/cloning the repo to YOUR home:
+cd ~/hybrid_messenger          # or wherever YOU put it
+export PATH="$HOME/.cargo/bin:$PATH"
+bash scripts/ash_first_run.sh --init-only
+# copy address + fingerprint + pub_hex to Mac1 (Messages / AirDrop / …)
+
+# Mac1 — add Mac2 as contact (menu 3), then:
+# Mac2 starts a listener, e.g.:
+DATA=$(mktemp -d)
+./node/target/debug/raven-node run --data-dir "$DATA" --listen 0.0.0.0:7420 \
+  --peer-pub-hex <MAC1_PUB_HEX> --timeout-secs 300
+# Mac1: menu 2 → pick contact # → enter Mac2_LAN_IP:7420 once (saved on contact)
+```
+
+Automated loopback proof (same machine):
+
+```bash
+cd node
+./scripts/ash_contacts_lan_demo.sh
+./scripts/ash_menu_smoke.sh
+```
+
 ## Prerequisites
 
 ```bash
-cd /path/to/hybrid_messenger/node
+# Prefer portable script, or:
+cd /path/to/hybrid_messenger/node   # ← your path, not /Users/ahmd
 cargo build -p raven-core -p raven-node -p ash
 cargo test -p raven-core -p ash
 cargo test -p raven-core --test reliability
@@ -31,15 +80,15 @@ cd /path/to/hybrid_messenger/protocol/reference
 ```bash
 cd /path/to/hybrid_messenger/node
 DATA=$(mktemp -d)
-./target/debug/ash --data-dir "$DATA"          # interactive — teaches if no identity
+./target/debug/ash --data-dir "$DATA"          # interactive — menu 4 creates identity
 ./target/debug/ash --data-dir "$DATA" init     # or create identity up front (public bits only)
 ./target/debug/ash --data-dir "$DATA" banner   # welcome only
 ```
 
 1. Run `ash` with a fresh `--data-dir` — the banner explains first-run steps.
-2. Create identity via menu **4 Status** or `ash init` (prints address / fingerprint / pub_hex only).
-3. **Add a contact** (menu **3**) before Send / Chat — empty contacts no longer dump you at bare `peer host:port:`.
-4. Then menu **2** → pick contact # or `@tag`.
+2. Create identity via menu **4 Status** (auto-creates if missing) or `ash init`.
+3. **Add a contact** (menu **3**) before Send / Chat — paste their `ash whoami` or rvn1… + pub_hex.
+4. Then menu **2** → pick contact **#** or `@tag`. Enter LAN `host:port` **once**; it is saved on the contact (`lan_dial`). Beginners should not re-type host:port every send.
 
 ## Add a contact
 
@@ -50,11 +99,9 @@ raven> 3
 Contacts menu
   a  Add contact
 contacts> a
-Enter Raven address (rvn1…) or @alias: rvn1q…
-pub_hex (64 chars from their `ash whoami` — public only): <64 hex>
-optional public @tag (Soft Unique, e.g. poline): poline
-Optional petname (e.g. "Poline" — local label): Poline
-Fingerprint  XXXX-XXXX-XXXX
+Enter Raven address (rvn1…) / @alias / paste whoami:   # paste full whoami OK
+…
+Optional LAN dial host:port (Enter to skip — set later on Send): 192.168.1.20:7420
 [V]erify & pin  /  [C]ontinue unpinned  /  [A]bort: V
 ```
 
@@ -66,6 +113,7 @@ Soft Unique Tags (brief):
 | B | `@alias` / public tag | Soft Unique — conflicts show a picker |
 | C | petname (e.g. Poline) | Local-only primary label |
 | — | fingerprint verify | Pins Tag+key locally (`V` or `--verify-fp`) |
+| — | `lan_dial` | Optional saved `host:port` for Send |
 
 ### CLI
 
@@ -76,6 +124,7 @@ Soft Unique Tags (brief):
   --pub-hex <64 hex> \
   --petname "Poline" \
   --tag poline \
+  --lan-dial 192.168.1.20:7420 \
   --verify-fp XXXX-XXXX-XXXX
 
 ./target/debug/ash contact add --help   # Soft Unique Tag examples
@@ -145,11 +194,14 @@ cd /path/to/hybrid_messenger/node
 ./scripts/two_node_demo.sh
 ./scripts/lan_path_smoke.sh
 ./scripts/bridge_abc_demo.sh
+./scripts/ash_menu_smoke.sh
+./scripts/ash_contacts_lan_demo.sh
 cargo test -p raven-core --test bridge_v1
 ```
 
 **Expected:** four `round N OK` + `ALL DEMO CHECKS PASSED`; `mode=interim OK`, `mode=opaque-atsam OK`;  
-`bridge_abc_demo` → three A–B–C rounds + store-carry + `ALL BRIDGE A-B-C CHECKS PASSED`.
+`bridge_abc_demo` → three A–B–C rounds + store-carry + `ALL BRIDGE A-B-C CHECKS PASSED`;  
+`ash_menu_smoke` / `ash_contacts_lan_demo` → menu + contact LAN deliver green.
 
 ## Bridge A–B–C (local, mock BLE)
 
@@ -252,13 +304,20 @@ DATA=$(mktemp -d)
 
 ### B. Phone — Account → Serverless LAN
 
-1. Enable **RavenEnvelopeV1 (serverless)**
+1. Enable **RavenEnvelopeV1 (serverless)** (Account → **Serverless LAN**)
 2. Copy device **pub hex** into Mac `--peer-pub-hex`
 3. Host = Mac LAN IP (or `127.0.0.1` for Simulator + loopback listen)
 4. Port `7420`; Peer pub = node `pub_hex`
 5. Save — UI shows fingerprint only (no seeds)
 
-### C. Send a chat message
+### C. Add Mac from iPhone (Discover)
+
+1. Flag **ON** (same Serverless LAN screen)
+2. Account → **Discover** → **Paste ash whoami** (or toolbar menu)
+3. Paste `rvn1…` + `pub_hex` from Mac `ash whoami` (+ optional petname)
+4. Save — local contact only (public bits)
+
+### D. Send a chat message
 
 Mac: `DELIVERED opaque_atsam …` or `DELIVERED bytes=N`. Never screenshot seeds/plaintext.
 
@@ -289,6 +348,8 @@ cargo test -p raven-core --test bridge_v1
 ./scripts/bridge_abc_demo.sh
 ./scripts/two_node_demo.sh
 ./scripts/lan_path_smoke.sh
+./scripts/ash_menu_smoke.sh
+./scripts/ash_contacts_lan_demo.sh
 # repeat:
 cargo test -p raven-core --test bridge_v1 && ./scripts/bridge_abc_demo.sh
 ```

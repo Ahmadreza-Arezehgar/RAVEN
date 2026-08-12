@@ -20,6 +20,8 @@ struct TabPager<ChatsContent: View, SettingsContent: View>: View {
     let chatsView: ChatsContent
     let settingsView: SettingsContent
 
+    @Environment(\.layoutDirection) private var layoutDirection
+
     @GestureState private var dragOffset: CGFloat = 0
 
     init(
@@ -35,6 +37,12 @@ struct TabPager<ChatsContent: View, SettingsContent: View>: View {
     var body: some View {
         GeometryReader { geo in
             let screenWidth = geo.size.width
+            // RTL: SwiftUI mirrors the HStack's visual order, so the page-offset
+            // must move the opposite physical direction. dirSign mirrors the
+            // page offset (-1 under RTL) while the live dragOffset stays physical
+            // so the content keeps tracking the finger.
+            let isRTL = layoutDirection == .rightToLeft
+            let dirSign: CGFloat = isRTL ? -1 : 1
 
             HStack(spacing: 0) {
                 chatsView
@@ -45,8 +53,8 @@ struct TabPager<ChatsContent: View, SettingsContent: View>: View {
                     .frame(width: screenWidth, height: geo.size.height)
                     .tag(AppTab.account)
             }
-            .offset(x: -CGFloat(tab.rawValue) * screenWidth + dragOffset)
-            .animation(.interpolatingSpring(stiffness: 320, damping: 32), value: tab)
+            .offset(x: dirSign * (-CGFloat(tab.rawValue) * screenWidth) + dragOffset)
+            .animation(DS.tabSpring, value: tab)
             // Edge-anchored, deliberate-only tab swipe (see history). Bails in
             // chat / detail contexts so back-swipe & swipe-to-reply win.
             .simultaneousGesture(
@@ -60,8 +68,11 @@ struct TabPager<ChatsContent: View, SettingsContent: View>: View {
                         let isRightEdge = value.startLocation.x > screenWidth - 60
                         guard isLeftEdge || isRightEdge else { return }
                         let tabIndex = CGFloat(tab.rawValue)
-                        if (tabIndex == 0 && value.translation.width > 0) ||
-                           (tabIndex == CGFloat(AppTab.allCases.count - 1) && value.translation.width < 0) {
+                        // Physical drag that runs past an end: in LTR that's a
+                        // right-drag at tab 0 / left-drag at the last tab; under
+                        // RTL the offending direction is mirrored (dirSign).
+                        if (tabIndex == 0 && value.translation.width * dirSign > 0) ||
+                           (tabIndex == CGFloat(AppTab.allCases.count - 1) && value.translation.width * dirSign < 0) {
                             state = value.translation.width * 0.3 // rubber-band at the ends
                         } else {
                             state = value.translation.width
@@ -78,13 +89,19 @@ struct TabPager<ChatsContent: View, SettingsContent: View>: View {
 
                         let threshold = screenWidth * 0.30
                         let velocity = value.predictedEndTranslation.width - value.translation.width
+                        // Map physical drag to tab steps. In LTR a left-drag
+                        // (negative) advances to the next tab; under RTL the
+                        // next tab lives the other way, so mirror translation +
+                        // velocity by dirSign before the +1/-1 decision.
+                        let dirTranslation = value.translation.width * dirSign
+                        let dirVelocity = velocity * dirSign
 
-                        if value.translation.width < -threshold || velocity < -400 {
+                        if dirTranslation < -threshold || dirVelocity < -400 {
                             if let next = AppTab(rawValue: tab.rawValue + 1) {
                                 Haptics.light()
                                 tab = next
                             }
-                        } else if value.translation.width > threshold || velocity > 400 {
+                        } else if dirTranslation > threshold || dirVelocity > 400 {
                             if let prev = AppTab(rawValue: tab.rawValue - 1) {
                                 Haptics.light()
                                 tab = prev

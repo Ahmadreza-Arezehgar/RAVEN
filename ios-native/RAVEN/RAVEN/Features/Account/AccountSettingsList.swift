@@ -162,6 +162,22 @@ struct AccountSettingsContent: View {
                     )
                 }
                 .buttonStyle(.plain)
+
+                GlassDivider()
+
+                NavigationLink {
+                    RavenServerlessLanSettingsView()
+                } label: {
+                    GlassSettingsRow(
+                        title: FeatureFlag.isRavenEnvelopeV1Enabled
+                            ? "Serverless LAN · ON"
+                            : "Serverless LAN · enable flag",
+                        icon: "network",
+                        iconColor: DS.cyan,
+                        showChevron: true
+                    )
+                }
+                .buttonStyle(.plain)
                 
                 GlassDivider()
                 
@@ -341,16 +357,20 @@ struct GlassSettingsCard<Content: View>: View {
         .clipShape(RoundedRectangle(cornerRadius: DS.radiusCard, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: DS.radiusCard, style: .continuous)
-                .stroke(
+                .strokeBorder(
                     LinearGradient(
-                        colors: [Color.primary.opacity(0.2), Color.primary.opacity(0.05)],
+                        colors: [
+                            DS.cyan.opacity(0.28),
+                            Color.primary.opacity(0.06),
+                            DS.teal.opacity(0.12),
+                        ],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     ),
-                    lineWidth: 0.5
+                    lineWidth: 0.8
                 )
         )
-        .shadow(color: DS.shadowColor, radius: DS.shadowRadius, y: DS.shadowY)
+        .shadow(color: DS.cyan.opacity(0.06), radius: DS.shadowRadius, y: DS.shadowY)
     }
 }
 

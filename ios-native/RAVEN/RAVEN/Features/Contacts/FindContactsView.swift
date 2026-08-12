@@ -8,11 +8,19 @@ struct FindContactsView: View {
     @State private var model = DiscoverySearchViewModel()
     @State private var showScanner = false
     @State private var showMyQR = false
+    @State private var showPasteWhoami = false
     @State private var isSending = false
     @State private var sendError: String?
     @State private var nearbyConfirmPeer: (deviceId: String, displayName: String, userId: String?)?
     @State private var nearbyPhraseInput = ""
     @State private var nearbyConfirmError: String?
+
+    // Paste-from-terminal sheet fields
+    @State private var pasteAddress = ""
+    @State private var pastePubHex = ""
+    @State private var pastePetname = ""
+    @State private var pasteError: String?
+    @State private var pasteOK: String?
 
     private var serverless: Bool { FeatureFlag.isRavenEnvelopeV1Enabled }
 
@@ -33,6 +41,15 @@ struct FindContactsView: View {
                 }
                 ToolbarItem(placement: .primaryAction) {
                     Menu {
+                        if serverless {
+                            Button {
+                                pasteError = nil
+                                pasteOK = nil
+                                showPasteWhoami = true
+                            } label: {
+                                Label("Paste ash whoami", systemImage: "doc.on.clipboard")
+                            }
+                        }
                         Button {
                             showScanner = true
                         } label: {
@@ -53,6 +70,9 @@ struct FindContactsView: View {
             }
             .sheet(isPresented: $showMyQR) {
                 MyQRCodeView()
+            }
+            .sheet(isPresented: $showPasteWhoami) {
+                pasteWhoamiSheet
             }
             .alert(
                 "Confirm nearby",
@@ -90,6 +110,78 @@ struct FindContactsView: View {
         .task {
             if serverless {
                 await model.refreshAndSearch()
+            }
+        }
+    }
+
+    // MARK: - Paste ash whoami
+
+    private var pasteWhoamiSheet: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Text("From Mac Terminal run `ash whoami` (or `ash init`). Paste address + pub_hex below — never a seed.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Text("از ترمینال مک: ash whoami — فقط address و pub_hex را بچسبانید، هرگز seed را نه.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                Section("Raven address (rvn1…)") {
+                    TextField("rvn1… or whole whoami block", text: $pasteAddress, axis: .vertical)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .font(.system(.body, design: .monospaced))
+                        .lineLimit(3...8)
+                }
+                Section("pub_hex (64 chars)") {
+                    TextField("64 hex from whoami", text: $pastePubHex, axis: .vertical)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .font(.system(.body, design: .monospaced))
+                        .lineLimit(2...6)
+                }
+                Section("Local petname") {
+                    TextField("e.g. Ahmad Mac", text: $pastePetname)
+                }
+                if let pasteError {
+                    Section {
+                        Text(pasteError).foregroundStyle(.red).font(.footnote)
+                    }
+                }
+                if let pasteOK {
+                    Section {
+                        Text(pasteOK).foregroundStyle(.green).font(.footnote)
+                    }
+                }
+                Section {
+                    Button("Save contact") {
+                        do {
+                            let c = try model.addContactFromWhoami(
+                                addressOrBlob: pasteAddress,
+                                pubHexOrBlob: pastePubHex,
+                                petname: pastePetname
+                            )
+                            pasteError = nil
+                            pasteOK = "Saved \(c.petname). You can message them after LAN/QR pairing."
+                            pasteAddress = ""
+                            pastePubHex = ""
+                            pastePetname = ""
+                        } catch {
+                            pasteOK = nil
+                            pasteError = error.localizedDescription
+                        }
+                    }
+                    .disabled(pasteAddress.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                              && pastePubHex.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .navigationTitle("Paste whoami")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close") { showPasteWhoami = false }
+                }
             }
         }
     }
@@ -155,6 +247,19 @@ struct FindContactsView: View {
 
     private var resultsList: some View {
         List {
+            Section {
+                Button {
+                    pasteError = nil
+                    pasteOK = nil
+                    showPasteWhoami = true
+                } label: {
+                    Label("Paste from ash whoami / QR fields", systemImage: "doc.on.clipboard")
+                }
+                Text("Tip: Account → Serverless LAN to keep RavenEnvelopeV1 ON for Discover + LAN.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+
             if model.requiresExplicitPick {
                 Section {
                     Text("Multiple @alias claims — pick explicitly. Finding a name ≠ verifying a person.")
@@ -319,20 +424,20 @@ struct FindContactsView: View {
         .background(.bar)
     }
 
-    // MARK: - Flag OFF: MeshEnvelope default — QR only, no FastAPI contacts sync
+    // MARK: - Flag OFF: MeshEnvelope default — QR only + tip to enable flag
 
     private var meshEnvelopeFallback: some View {
         ContentUnavailableView {
             Label("Add via QR", systemImage: "qrcode.viewfinder")
         } description: {
-            Text("Serverless discovery requires RavenEnvelopeV1. Until then, add contacts by scanning a QR code — MeshEnvelope stays the default path.")
+            Text("Turn on RavenEnvelopeV1 for Discover + paste ash whoami.\n\nAccount → Serverless LAN · enable flag.\n\nبرای Discover فلگ RavenEnvelopeV1 را در Serverless LAN روشن کنید.")
         } actions: {
             Button {
                 showScanner = true
             } label: {
                 Label("Scan QR Code", systemImage: "qrcode.viewfinder")
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.ravenPrimary)
             Button {
                 showMyQR = true
             } label: {

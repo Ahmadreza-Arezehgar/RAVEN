@@ -120,6 +120,14 @@ fn is_legacy_plaintext(bytes: &[u8]) -> bool {
     bytes.len() == 32 && !bytes.starts_with(DPAPI_MAGIC)
 }
 
+/// When `RAVEN_IDENTITY_BACKEND=locked-file`, demos/CI use a 0600 seed file
+/// shared by ash and raven-node (avoids macOS Keychain ACL hangs across binaries).
+fn force_locked_file_backend() -> bool {
+    std::env::var_os("RAVEN_IDENTITY_BACKEND")
+        .map(|v| v == "locked-file")
+        .unwrap_or(false)
+}
+
 #[cfg_attr(
     not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))),
     allow(dead_code)
@@ -408,6 +416,15 @@ fn store_seed(data_dir: &Path, seed: &[u8; 32]) -> Result<IdentityStoreBackend, 
     let path = seed_path(data_dir);
     let account = account_for_data_dir(data_dir);
 
+    // Demo/CI override: keep seed in mode-0600 file so ash ↔ raven-node share
+    // the same data_dir without macOS Keychain per-binary ACL prompts.
+    // Set RAVEN_IDENTITY_BACKEND=locked-file (ephemeral mktemp dirs only).
+    if force_locked_file_backend() {
+        write_locked_seed_file(&path, seed)?;
+        write_marker(data_dir, IdentityStoreBackend::LockedFile)?;
+        return Ok(IdentityStoreBackend::LockedFile);
+    }
+
     #[cfg(target_os = "macos")]
     {
         keychain_set(&account, seed)?;
@@ -465,12 +482,29 @@ fn load_seed_with_migrate(
     let path = seed_path(data_dir);
     let account = account_for_data_dir(data_dir);
 
+    // Prefer explicit locked-file marker / demo override before platform stores.
+    if force_locked_file_backend()
+        || matches!(read_marker(data_dir), Some(IdentityStoreBackend::LockedFile))
+    {
+        if let Some(bytes) = read_raw_seed_file(&path)? {
+            if is_legacy_plaintext(&bytes) {
+                let seed = bytes_to_seed(&bytes)?;
+                return Ok(Some((seed, IdentityStoreBackend::LockedFile)));
+            }
+            return Err(IdentityStoreError::Corrupt);
+        }
+        if force_locked_file_backend() {
+            return Ok(None);
+        }
+        // Marker said locked-file but file missing — fall through to platform.
+    }
+
     #[cfg(target_os = "macos")]
     {
         if let Some(seed) = keychain_get(&account)? {
             return Ok(Some((seed, IdentityStoreBackend::MacosKeychain)));
         }
-        // Legacy plaintext file → Keychain.
+        // Legacy plaintext file → Keychain (unless demo override already handled).
         if let Some(bytes) = read_raw_seed_file(&path)? {
             if is_legacy_plaintext(&bytes) {
                 let seed = bytes_to_seed(&bytes)?;

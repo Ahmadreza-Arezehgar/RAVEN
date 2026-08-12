@@ -159,6 +159,8 @@ struct LocalContactRow {
     pub_hex: String,
     #[serde(default)]
     pinned: bool,
+    #[serde(default)]
+    lan_dial: String,
 }
 
 fn load_local_contacts(data_dir: &Path) -> Vec<LocalContactRow> {
@@ -296,6 +298,7 @@ pub fn cmd_device_sync_import(data_dir: &Path, id: &Identity, file: &Path) {
             address: sc.address,
             pub_hex: sc.pub_hex,
             pinned: sc.pinned,
+            lan_dial: String::new(),
         });
         added += 1;
     }

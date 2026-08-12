@@ -16,19 +16,16 @@ public enum RavenBleRvn1Carrier {
 
     public static let magic = RavenEnvelopeV1.magic // RVN1
 
-    /// True when flag is on AND situational preference is BLE mesh.
+    /// True when flag is on AND BLE peers are nearby. Parallel with LAN — not exclusive.
     public static func shouldAttemptBle(
         wifiUp: Bool,
         peerOnLan: Bool,
         blePeersNearby: Bool
     ) -> Bool {
         guard FeatureFlag.isRavenEnvelopeV1Enabled else { return false }
-        guard blePeersNearby else { return false }
-        return RavenHybridTransport.prefer(
-            wifiUp: wifiUp,
-            peerOnLan: peerOnLan,
-            blePeersNearby: blePeersNearby
-        ) == .bleMesh
+        _ = wifiUp
+        _ = peerOnLan
+        return blePeersNearby
     }
 
     /// O(1) magic peek — safe before JSON decode.

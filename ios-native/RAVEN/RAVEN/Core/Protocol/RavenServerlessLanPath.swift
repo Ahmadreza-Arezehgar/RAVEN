@@ -92,18 +92,15 @@ public enum RavenServerlessLanPath {
         FeatureFlag.isRavenEnvelopeV1Enabled
     }
 
-    /// Whether to attempt LAN for this send. Never replaces MeshEnvelope when false.
+    /// Whether to attempt LAN for this send. Parallel with BLE — not exclusive.
     public static func shouldAttemptLan(
         wifiUp: Bool,
         peerOnLan: Bool,
         blePeersNearby: Bool
     ) -> Bool {
         guard isActive else { return false }
-        return RavenHybridTransport.prefer(
-            wifiUp: wifiUp,
-            peerOnLan: peerOnLan,
-            blePeersNearby: blePeersNearby
-        ) == .directLan && peerOnLan
+        _ = blePeersNearby // situational preference no longer blocks parallel LAN
+        return wifiUp && peerOnLan
     }
 
     /// Pack already-sealed content (ATSAM RVNA1, Noise RVNS1, or interim 0x7F) into RavenEnvelopeV1.

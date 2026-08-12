@@ -227,6 +227,9 @@ Interactive (recommended for first-timers):
         /// Optional OOB prekey JSON for first-message hybrid initiate.
         #[arg(long)]
         prekey_file: Option<PathBuf>,
+        /// Optional LAN listen host:port (saved for Send / Chat — beginners pick #, not dial).
+        #[arg(long, default_value = "", help = "Peer LAN listen host:port, e.g. 192.168.1.20:7420")]
+        lan_dial: String,
     },
     /// List contacts: petname first, @tag subtitle (never address-primary).
     List,
@@ -419,6 +422,10 @@ struct Contact {
     /// Soft-unique pin: first-meet / QR verify locked Tag+key locally.
     #[serde(default)]
     pinned: bool,
+    /// Optional LAN listen `host:port` for this peer (saved after first send).
+    /// Beginners pick a contact # — they should not re-type host:port every time.
+    #[serde(default)]
+    lan_dial: String,
 }
 
 impl Contact {
@@ -599,6 +606,34 @@ fn read_line() -> String {
     s.trim().to_string()
 }
 
+/// Read one field, or drain a pasted multi-line `ash whoami` block from stdin.
+fn read_paste_blob() -> String {
+    let first = read_line();
+    if first.is_empty() {
+        return first;
+    }
+    let lower = first.to_ascii_lowercase();
+    let looks_like_whoami_header = lower.trim_start().starts_with("address")
+        || lower.trim_start().starts_with("pub_hex")
+        || lower.trim_start().starts_with("fingerprint");
+    if !looks_like_whoami_header {
+        return first;
+    }
+    let mut lines = vec![first];
+    for _ in 0..8 {
+        let joined = lines.join("\n");
+        if extract_address_field(&joined).is_some() && extract_pub_hex_field(&joined).is_some() {
+            break;
+        }
+        let next = read_line();
+        if next.is_empty() {
+            break;
+        }
+        lines.push(next);
+    }
+    lines.join("\n")
+}
+
 fn cmd_messages(data_dir: &Path) {
     let qpath = data_dir.join("queue.db");
     let qpath2 = data_dir.join("queue.sqlite");
@@ -700,7 +735,7 @@ fn parse_pub_hex(s: &str) -> Result<[u8; 32], String> {
     if looks_like_shell_input(s) {
         return Err(shell_paste_rejection().into());
     }
-    let h = s.trim().to_lowercase();
+    let h = extract_pub_hex_field(s).unwrap_or_else(|| s.trim().to_lowercase());
     if h.len() != 64 {
         return Err("pub_hex must be 64 hex chars (32 bytes)".into());
     }
@@ -711,6 +746,104 @@ fn parse_pub_hex(s: &str) -> Result<[u8; 32], String> {
     let mut a = [0u8; 32];
     a.copy_from_slice(&v);
     Ok(a)
+}
+
+/// Pull `pub_hex` / `address` from a pasted `ash whoami` block (or bare values).
+fn extract_pub_hex_field(blob: &str) -> Option<String> {
+    for line in blob.lines() {
+        let t = line.trim();
+        let lower = t.to_ascii_lowercase();
+        if let Some(rest) = lower
+            .strip_prefix("pub_hex")
+            .or_else(|| lower.strip_prefix("pubhex"))
+        {
+            let rest = rest.trim_start_matches(['=', ':', ' ', '\t']);
+            let hex: String = rest
+                .chars()
+                .filter(|c| c.is_ascii_hexdigit())
+                .collect::<String>()
+                .to_lowercase();
+            if hex.len() == 64 {
+                return Some(hex);
+            }
+        }
+        // Bare 64-hex line inside a multi-line paste.
+        let only_hex: String = t
+            .chars()
+            .filter(|c| c.is_ascii_hexdigit())
+            .collect::<String>()
+            .to_lowercase();
+        if only_hex.len() == 64 && t.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Some(only_hex);
+        }
+    }
+    let t = blob.trim();
+    if t.len() == 64 && t.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Some(t.to_lowercase());
+    }
+    None
+}
+
+fn extract_address_field(blob: &str) -> Option<String> {
+    for line in blob.lines() {
+        let t = line.trim();
+        let lower = t.to_ascii_lowercase();
+        if let Some(rest) = lower.strip_prefix("address") {
+            let rest = rest.trim_start_matches(['=', ':', ' ', '\t']);
+            // Recover original casing from the line after the key.
+            if let Some(idx) = t.to_ascii_lowercase().find("address") {
+                let after = t[idx + "address".len()..]
+                    .trim_start_matches(['=', ':', ' ', '\t']);
+                if after.starts_with("rvn1") {
+                    return Some(after.split_whitespace().next()?.to_string());
+                }
+            }
+            let _ = rest;
+        }
+        if t.starts_with("rvn1") {
+            return Some(t.split_whitespace().next()?.to_string());
+        }
+    }
+    None
+}
+
+fn looks_like_lan_dial(s: &str) -> bool {
+    let t = s.trim();
+    if t.is_empty() || t.contains(' ') {
+        return false;
+    }
+    // host:port — avoid treating rvn1… as dial
+    if t.starts_with("rvn1") {
+        return false;
+    }
+    if let Some((host, port)) = t.rsplit_once(':') {
+        if host.is_empty() {
+            return false;
+        }
+        return port.parse::<u16>().is_ok();
+    }
+    false
+}
+
+fn update_contact_lan_dial(data_dir: &Path, pub_hex: &str, dial: &str) -> Result<(), String> {
+    let dial = dial.trim();
+    if !looks_like_lan_dial(dial) {
+        return Err("lan_dial must look like host:port (e.g. 192.168.1.20:7420)".into());
+    }
+    let want = pub_hex.trim().to_lowercase();
+    let mut contacts = load_contacts(data_dir);
+    let mut found = false;
+    for c in contacts.iter_mut() {
+        if c.pub_hex.eq_ignore_ascii_case(&want) {
+            c.lan_dial = dial.to_string();
+            found = true;
+            break;
+        }
+    }
+    if !found {
+        return Err("contact not found for lan_dial update".into());
+    }
+    save_contacts(data_dir, &contacts)
 }
 
 fn contact_fingerprint(c: &Contact) -> String {
@@ -1216,6 +1349,7 @@ fn cmd_contact_accept(data_dir: &Path, request_id_hex: &str, petname: &str) {
         &outcome.binding.petname,
         "",
         None,
+        "",
     ) {
         eprintln!("bind note: {e}");
     }
@@ -1279,13 +1413,14 @@ fn add_contact(
     petname: &str,
     public_tag: &str,
     verify_fp: Option<&str>,
+    lan_dial: &str,
 ) -> Result<(), String> {
     let ed = parse_pub_hex(pub_hex)?;
-    let address = address.trim();
-    if address.is_empty() {
+    let address_raw = extract_address_field(address).unwrap_or_else(|| address.trim().to_string());
+    if address_raw.is_empty() {
         return Err("address required".into());
     }
-    let address = raven_core::address::from_display(address);
+    let address = raven_core::address::from_display(&address_raw);
     if decode_address(&address).is_none() {
         return Err("address must be valid rvn1 bech32m".into());
     }
@@ -1373,12 +1508,25 @@ fn add_contact(
         }
     }
 
-    // Replace same pub_hex if present (preserve pin if already pinned and same key).
-    let prior_pinned = contacts
+    // Replace same pub_hex if present (preserve pin / dial if already set).
+    let prior = contacts
         .iter()
         .find(|c| c.pub_hex == hex::encode(ed))
-        .map(|c| c.pinned)
-        .unwrap_or(false);
+        .cloned();
+    let prior_pinned = prior.as_ref().map(|c| c.pinned).unwrap_or(false);
+    let prior_dial = prior
+        .as_ref()
+        .map(|c| c.lan_dial.clone())
+        .unwrap_or_default();
+    let dial = if !lan_dial.trim().is_empty() {
+        let d = lan_dial.trim();
+        if !looks_like_lan_dial(d) {
+            return Err("lan_dial must look like host:port (e.g. 192.168.1.20:7420)".into());
+        }
+        d.to_string()
+    } else {
+        prior_dial
+    };
     contacts.retain(|c| c.pub_hex != hex::encode(ed));
     contacts.push(Contact {
         petname: pet,
@@ -1387,12 +1535,19 @@ fn add_contact(
         address,
         pub_hex: hex::encode(ed),
         pinned: pin || prior_pinned,
+        lan_dial: dial,
     });
     save_contacts(data_dir, &contacts)?;
     println!("{C_GREEN}contact saved{C_RESET} (local only — no FastAPI / no registrar)");
     println!("{C_DIM}petname{C_RESET}     {}", contacts.last().unwrap().primary_label());
     if let Some(t) = contacts.last().unwrap().tag_subtitle() {
         println!("{C_DIM}public_tag{C_RESET}  {t}");
+    }
+    if !contacts.last().unwrap().lan_dial.is_empty() {
+        println!(
+            "{C_DIM}lan_dial{C_RESET}    {}",
+            sanitize_terminal_text(&contacts.last().unwrap().lan_dial)
+        );
     }
     println!("{C_DIM}fingerprint{C_RESET} {fp}");
     println!(
@@ -1444,6 +1599,12 @@ fn cmd_contact_list(data_dir: &Path) {
             c.primary_label(),
             sub
         );
+        if !c.lan_dial.is_empty() {
+            println!(
+                "      {dim}lan={}{reset}",
+                sanitize_terminal_text(&c.lan_dial)
+            );
+        }
         println!(
             "      {dim}fp={}{reset}",
             contact_fingerprint(c)
@@ -1490,10 +1651,13 @@ fn cmd_contact_add_interactive(data_dir: &Path) {
     println!();
     println!("{bold}Add contact{reset} {dim}(public bits only — never paste a seed){reset}");
     println!("{dim}Soft Unique Tags: @alias is NOT globally unique. Always check fingerprint.{reset}");
+    println!(
+        "{dim}Tip: paste their whole `ash whoami` block, or just the rvn1… line + pub_hex.{reset}"
+    );
     println!();
-    print!("Enter Raven address (rvn1…) or @alias: ");
+    print!("Enter Raven address (rvn1…) / @alias / paste whoami: ");
     let _ = io::stdout().flush();
-    let who = read_line();
+    let who = read_paste_blob();
     if who.trim().is_empty() {
         println!("{dim}cancelled.{reset}");
         return;
@@ -1508,7 +1672,19 @@ fn cmd_contact_add_interactive(data_dir: &Path) {
     let tag;
 
     let trimmed = who.trim();
-    if trimmed.starts_with('@') || (!trimmed.starts_with("rvn1") && !trimmed.contains(':')) {
+    // Full whoami paste: has both address + pub_hex lines.
+    if let (Some(addr), Some(ph)) = (extract_address_field(trimmed), extract_pub_hex_field(trimmed))
+    {
+        address = addr;
+        pub_hex = ph;
+        println!(
+            "{dim}Parsed whoami → {}{reset}",
+            sanitize_terminal_text(&address)
+        );
+        print!("optional public @tag (Soft Unique, e.g. poline): ");
+        let _ = io::stdout().flush();
+        tag = read_line();
+    } else if trimmed.starts_with('@') || (!trimmed.starts_with("rvn1") && !trimmed.contains(':')) {
         // Treat as @alias (Soft Unique) — look up local alias claims.
         let alias = trimmed.trim_start_matches('@');
         tag = normalize_tag(alias);
@@ -1524,19 +1700,24 @@ fn cmd_contact_add_interactive(data_dir: &Path) {
             println!(
                 "{dim}ash find @{tag} only helps when a claim is already available — it does not work as offline lookup.{reset}"
             );
-            print!("Paste rvn1… address instead (or Enter to cancel): ");
+            print!("Paste rvn1… / whoami instead (or Enter to cancel): ");
             let _ = io::stdout().flush();
-            address = read_line();
-            if address.trim().is_empty() {
+            let pasted = read_paste_blob();
+            if pasted.trim().is_empty() {
                 return;
             }
-            if looks_like_shell_input(&address) {
+            if looks_like_shell_input(&pasted) {
                 eprintln!("{}", shell_paste_rejection());
                 return;
             }
-            print!("pub_hex (64 chars, public only): ");
-            let _ = io::stdout().flush();
-            pub_hex = read_line();
+            address = extract_address_field(&pasted).unwrap_or_else(|| pasted.trim().to_string());
+            if let Some(ph) = extract_pub_hex_field(&pasted) {
+                pub_hex = ph;
+            } else {
+                print!("pub_hex (64 chars, public only): ");
+                let _ = io::stdout().flush();
+                pub_hex = read_line();
+            }
         } else if claims.len() == 1 {
             let c = &claims[0];
             address = c.identity_address.clone();
@@ -1572,10 +1753,15 @@ fn cmd_contact_add_interactive(data_dir: &Path) {
             pub_hex = hex::encode(c.ed25519_pub);
         }
     } else {
-        address = trimmed.to_string();
-        print!("pub_hex (64 chars from their `ash whoami` — public only): ");
-        let _ = io::stdout().flush();
-        pub_hex = read_line();
+        address = extract_address_field(trimmed).unwrap_or_else(|| trimmed.to_string());
+        if let Some(ph) = extract_pub_hex_field(trimmed) {
+            pub_hex = ph;
+            println!("{dim}Parsed pub_hex from paste.{reset}");
+        } else {
+            print!("pub_hex (64 chars from their `ash whoami` — public only): ");
+            let _ = io::stdout().flush();
+            pub_hex = read_line();
+        }
         print!("optional public @tag (Soft Unique, e.g. poline): ");
         let _ = io::stdout().flush();
         tag = read_line();
@@ -1589,6 +1775,10 @@ fn cmd_contact_add_interactive(data_dir: &Path) {
     print!("Optional petname (e.g. \"Poline\" — local label): ");
     let _ = io::stdout().flush();
     let petname = read_line();
+
+    print!("Optional LAN dial host:port (Enter to skip — set later on Send): ");
+    let _ = io::stdout().flush();
+    let lan_dial = read_line();
 
     let ed = match parse_pub_hex(&pub_hex) {
         Ok(a) => a,
@@ -1625,10 +1815,11 @@ fn cmd_contact_add_interactive(data_dir: &Path) {
         &petname,
         &tag,
         verify.as_deref(),
+        &lan_dial,
     ) {
         eprintln!("rejected: {e}");
     } else {
-        println!("{dim}Tip: menu 2 Send / Chat → pick this contact by # or @tag.{reset}");
+        println!("{dim}Tip: menu 2 Send / Chat → pick this contact by # or @tag (not host:port).{reset}");
     }
 }
 
@@ -1810,7 +2001,13 @@ fn cmd_status(data_dir: &Path) {
             println!("{C_GREEN}●{C_RESET} identity");
             print_public_identity(&id);
         }
-        None => println!("{C_DIM}○{C_RESET} identity missing"),
+        None => {
+            println!("{C_DIM}○{C_RESET} identity missing — creating local identity…");
+            let id = ensure_identity(data_dir);
+            println!("{C_GREEN}●{C_RESET} identity created {C_DIM}(public bits only — never a seed){C_RESET}");
+            print_public_identity(&id);
+            println!("{C_DIM}Share address + pub_hex via `ash whoami` — never share a seed.{C_RESET}");
+        }
     }
     let contacts = load_contacts(data_dir);
     println!("{C_DIM}contacts{C_RESET} {}", contacts.len());
@@ -1935,7 +2132,17 @@ fn cmd_send_interactive(data_dir: &Path) {
     if try_load_identity(data_dir).is_none() {
         println!("{bold}No identity yet.{reset}");
         println!("{dim}Create one first: menu 4 Status, or `ash init` (public bits only).{reset}");
-        return;
+        print!("Create identity now? [Y/n]: ");
+        let _ = io::stdout().flush();
+        let ans = read_line();
+        let a = ans.trim().to_ascii_lowercase();
+        if a.is_empty() || a == "y" || a == "yes" {
+            let id = ensure_identity(data_dir);
+            println!("{bold}●{reset} identity ready");
+            print_public_identity(&id);
+        } else {
+            return;
+        }
     }
     let id = ensure_identity(data_dir);
     let contacts = load_contacts(data_dir);
@@ -1993,11 +2200,17 @@ fn cmd_send_interactive(data_dir: &Path) {
             .tag_subtitle()
             .map(|t| format!("  {dim}{t}{reset}"))
             .unwrap_or_default();
+        let dial = if c.lan_dial.is_empty() {
+            format!("  {dim}(no LAN dial yet){reset}")
+        } else {
+            format!("  {dim}→ {}{reset}", sanitize_terminal_text(&c.lan_dial))
+        };
         println!(
-            "  {bold}{}{reset}  {}{}{}",
+            "  {bold}{}{reset}  {}{}{}{}",
             i + 1,
             c.primary_label(),
             sub,
+            dial,
             if c.pinned { " [pinned]" } else { "" }
         );
     }
@@ -2006,7 +2219,9 @@ fn cmd_send_interactive(data_dir: &Path) {
     let choice = read_line();
 
     let (peer, peer_pub_hex, petname, tag, open_chat) = if choice.trim().eq_ignore_ascii_case("advanced")
-        || choice.trim().contains(':') && choice.parse::<usize>().is_err() && !choice.trim().starts_with('@')
+        || (looks_like_lan_dial(choice.trim())
+            && choice.parse::<usize>().is_err()
+            && !choice.trim().starts_with('@'))
     {
         if choice.trim().eq_ignore_ascii_case("advanced") {
             println!("{dim}Direct peer — enter LAN listen host:port and their public key.{reset}");
@@ -2026,9 +2241,10 @@ fn cmd_send_interactive(data_dir: &Path) {
     } else if let Ok(n) = choice.parse::<usize>() {
         if n >= 1 && n <= contacts.len() {
             let c = &contacts[n - 1];
-            print!("peer listen host:port (where they are listening): ");
-            let _ = io::stdout().flush();
-            let peer = read_line();
+            let peer = prompt_or_reuse_lan_dial(data_dir, c);
+            if peer.is_empty() {
+                return;
+            }
             print!("open chat session? [Y/n]: ");
             let _ = io::stdout().flush();
             let yn = read_line();
@@ -2070,9 +2286,10 @@ fn cmd_send_interactive(data_dir: &Path) {
             }
             return;
         }
-        print!("peer listen host:port (where they are listening): ");
-        let _ = io::stdout().flush();
-        let peer = read_line();
+        let peer = prompt_or_reuse_lan_dial(data_dir, hits[0]);
+        if peer.is_empty() {
+            return;
+        }
         (
             peer,
             hits[0].pub_hex.clone(),
@@ -2106,6 +2323,49 @@ fn cmd_send_interactive(data_dir: &Path) {
         &petname,
         &tag,
     );
+}
+
+/// Reuse saved contact LAN dial, or ask once and persist (beginners never re-type host:port).
+fn prompt_or_reuse_lan_dial(data_dir: &Path, c: &Contact) -> String {
+    let s = style();
+    let bold = s.bold;
+    let dim = s.dim;
+    let reset = s.reset;
+    if !c.lan_dial.is_empty() {
+        println!(
+            "{dim}Using saved LAN dial{reset} {bold}{}{reset} {dim}(contact {}){reset}",
+            sanitize_terminal_text(&c.lan_dial),
+            c.primary_label()
+        );
+        print!("Press Enter to keep, or type a new host:port: ");
+        let _ = io::stdout().flush();
+        let line = read_line();
+        if line.trim().is_empty() {
+            return c.lan_dial.clone();
+        }
+        if !looks_like_lan_dial(line.trim()) {
+            eprintln!("{dim}invalid host:port — cancelled.{reset}");
+            return String::new();
+        }
+        let _ = update_contact_lan_dial(data_dir, &c.pub_hex, line.trim());
+        return line.trim().to_string();
+    }
+    println!("{bold}First send to {}{reset}", c.primary_label());
+    println!("{dim}They must be listening (raven-node / ash) on the same LAN.{reset}");
+    println!("{dim}Ask them for host:port (e.g. 192.168.1.20:7420). You only enter this once — we save it on the contact.{reset}");
+    print!("peer listen host:port: ");
+    let _ = io::stdout().flush();
+    let peer = read_line();
+    if !looks_like_lan_dial(peer.trim()) {
+        eprintln!("{dim}need host:port (not rvn1…). cancelled.{reset}");
+        return String::new();
+    }
+    if let Err(e) = update_contact_lan_dial(data_dir, &c.pub_hex, peer.trim()) {
+        eprintln!("{dim}could not save dial: {e}{reset}");
+    } else {
+        println!("{dim}Saved LAN dial on contact — next Send uses # only.{reset}");
+    }
+    peer.trim().to_string()
 }
 
 fn run_send(data_dir: &Path, peer: &str, peer_pub_hex: &str, listen: &str, text: &str) {
@@ -2226,6 +2486,7 @@ pub fn run() {
                 alias,
                 verify_fp,
                 prekey_file,
+                lan_dial,
             } => {
                 let tag = if !tag.is_empty() { tag } else { alias };
                 if let Err(e) = add_contact(
@@ -2235,6 +2496,7 @@ pub fn run() {
                     &petname,
                     &tag,
                     verify_fp.as_deref(),
+                    &lan_dial,
                 ) {
                     eprintln!("rejected: {e}");
                     std::process::exit(1);
@@ -2601,5 +2863,35 @@ mod tests {
         assert!(err.contains("Terminal shell command"));
         assert!(err.contains("ash whoami"));
         assert!(!err.contains("64 hex"));
+    }
+
+    #[test]
+    fn whoami_blob_extracts_address_and_pub_hex() {
+        let blob = "\
+address     rvn1qexampleaddressonlyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+fingerprint ABCD-EFGH-IJKL
+pub_hex     d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a
+";
+        // address may fail bech32 decode later — extractor still finds the token
+        assert!(extract_address_field(blob)
+            .unwrap()
+            .starts_with("rvn1"));
+        assert_eq!(
+            extract_pub_hex_field(blob).unwrap(),
+            "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+        );
+        let eq_blob = "address=rvn1qabc\npub_hex=d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a\n";
+        assert_eq!(extract_address_field(eq_blob).unwrap(), "rvn1qabc");
+        assert!(looks_like_lan_dial("127.0.0.1:7420"));
+        assert!(looks_like_lan_dial("192.168.1.20:9000"));
+        assert!(!looks_like_lan_dial("rvn1qabc"));
+        assert!(!looks_like_lan_dial("not-a-dial"));
+    }
+
+    #[test]
+    fn parse_pub_hex_accepts_whoami_line() {
+        let line = "pub_hex     d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
+        let got = parse_pub_hex(line).unwrap();
+        assert_eq!(hex::encode(got), "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a");
     }
 }

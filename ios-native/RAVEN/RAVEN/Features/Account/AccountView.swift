@@ -192,172 +192,6 @@ struct AccountView: View {
 }
 
 
-// MARK: - Pinned Header (Liquid Glass + Proper Collapse)
-private struct ProfileHeaderPinned: View {
-
-    let user: User?
-    let safeTop: CGFloat
-    let expandedHeight: CGFloat
-    let collapsedHeight: CGFloat
-    let progress: CGFloat
-    var onCameraTap: (() -> Void)? = nil
-    var onEditTap: (() -> Void)? = nil
-    var onSettingsTap: (() -> Void)? = nil
-
-    // Sizes
-    private let expandedAvatar: CGFloat = 110
-    private let collapsedAvatar: CGFloat = 44
-
-    private func lerp(_ a: CGFloat, _ b: CGFloat) -> CGFloat {
-        a + (b - a) * progress
-    }
-
-    var body: some View {
-        GeometryReader { geo in
-            let w = geo.size.width
-            let cardW = w - 32
-
-            let headerH = lerp(expandedHeight, collapsedHeight)
-
-            // Avatar positions
-            let avatarSize = lerp(expandedAvatar, collapsedAvatar)
-
-            // Expanded: center
-            let avatarXExpanded = cardW / 2
-            let avatarYExpanded = 38 + expandedAvatar / 2
-
-            // Collapsed: top-left inside card
-            let avatarXCollapsed: CGFloat = 22 + collapsedAvatar / 2
-            let avatarYCollapsed: CGFloat = collapsedHeight / 2
-
-            let avatarX = lerp(avatarXExpanded, avatarXCollapsed)
-            let avatarY = lerp(avatarYExpanded, avatarYCollapsed)
-
-            // Text position: Y moves up, but X stays CENTER always
-            let textYExpanded = 38 + expandedAvatar + 18 + 26
-            let textYCollapsed = collapsedHeight / 2
-            let textY = lerp(textYExpanded, textYCollapsed)
-            
-            // Text X: ALWAYS centered (no horizontal movement)
-            let textX = cardW / 2
-
-            // Glass card - positioned at top, sized exactly to header
-            LiquidGlassCard(cornerRadius: 34) {
-                ZStack {
-                    // Avatar - moves to top-left on collapse
-                    GlassAvatar(
-                        name: user?.displayName ?? "?",
-                        path: user?.avatarPath,
-                        size: avatarSize,
-                        showGlow: false
-                    )
-                    .position(x: avatarX, y: avatarY)
-
-                    // Camera button with tap
-                    CameraBadge()
-                        .opacity(Double(1 - progress * 1.5))
-                        .position(
-                            x: avatarX + avatarSize * 0.32,
-                            y: avatarY + avatarSize * 0.32
-                        )
-                        .onTapGesture {
-                            if progress < 0.5 {
-                                onCameraTap?()
-                            }
-                        }
-
-                    // Name - stays CENTERED horizontally
-                    VStack(spacing: 6) {
-                        HStack(spacing: 4) {
-                            Text(user?.displayName ?? "User")
-                                .font(.system(size: lerp(22, 17), weight: .semibold))
-                                .foregroundStyle(.primary)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.75)
-                            
-                            if user?.isVerified == true {
-                                Image(systemName: "checkmark.seal.fill")
-                                    .font(.system(size: lerp(16, 12)))
-                                    .foregroundStyle(.blue)
-                            }
-                            
-                            // Checking local SubscriptionService directly for the account tab
-                            if user?.isPremium == true || SubscriptionService.shared.isPremium {
-                                Image(systemName: "crown.fill")
-                                    .font(.system(size: lerp(14, 10)))
-                                    .foregroundStyle(Color(red: 0.85, green: 0.70, blue: 0.35))
-                            }
-                        }
-
-                        Text("@\(user?.username ?? "username")")
-                            .font(.system(size: 15))
-                            .foregroundStyle(.secondary)
-                            .opacity(Double(1 - progress))
-
-                        if let createdAt = user?.createdAt {
-                            Text("Joined \(formatJoinedDate(createdAt))")
-                                .font(.system(size: 13))
-                                .foregroundStyle(.secondary.opacity(0.65))
-                                .opacity(Double(1 - progress))
-                        }
-                    }
-                    .frame(width: cardW - 80)
-                    .multilineTextAlignment(.center)
-                    .position(x: textX, y: textY)
-                    
-                    Button {
-                        onEditTap?()
-                    } label: {
-                        Image(systemName: "pencil")
-                            .font(.system(size: 16, weight: .medium))
-                            .foregroundStyle(.primary.opacity(0.9))
-                            .frame(width: 36, height: 36)
-                            .background(.primary.opacity(0.15))
-                            .clipShape(Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .opacity(Double(progress))
-                    .position(x: cardW - 30, y: collapsedHeight / 2)
-                    .allowsHitTesting(progress > 0.5)
-
-                    // Settings gear — visible when expanded AND when collapsed
-                    // (sticky access while scrolling). In expanded state it sits
-                    // top-right of the card; in collapsed state, just left of the edit button.
-                    Button {
-                        onSettingsTap?()
-                    } label: {
-                        Image(systemName: "gearshape.fill")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(.primary.opacity(0.85))
-                            .frame(width: 36, height: 36)
-                            .glassSurface(in: Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .position(
-                        x: progress > 0.5 ? cardW - 76 : cardW - 30,
-                        y: progress > 0.5 ? collapsedHeight / 2 : 26
-                    )
-                    .allowsHitTesting(true)
-                }
-            }
-            .frame(width: cardW, height: headerH)
-            .padding(.horizontal, 16)
-            .padding(.top, safeTop + 10)
-        }
-        // ✅ Key fix: frame to actual header height so it doesn't cover content
-        .frame(height: expandedHeight + safeTop + 30)
-        .ignoresSafeArea(edges: .top)
-        .animation(.interactiveSpring(response: 0.35, dampingFraction: 0.88), value: progress)
-    }
-
-    private func formatJoinedDate(_ date: Date) -> String {
-        let f = DateFormatter()
-        f.dateFormat = "MMM yyyy"
-        return f.string(from: date)
-    }
-}
-
-
 // MARK: - Avatar Preview Sheet
 private struct AvatarPreviewSheet: View {
     let image: UIImage?
@@ -502,59 +336,6 @@ private struct AvatarPreviewSheet: View {
 }
 
 
-// MARK: - Liquid Glass Card (local version for header)
-private struct LiquidGlassCard<Content: View>: View {
-    var cornerRadius: CGFloat = 28
-    @ViewBuilder var content: Content
-
-    var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(.ultraThinMaterial)
-                .overlay(
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .stroke(Color.primary.opacity(0.10), lineWidth: 0.6)
-                )
-                .shadow(color: .primary.opacity(0.12), radius: 22, x: 0, y: 12)
-
-            // subtle sheen
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            Color.primary.opacity(0.06),
-                            Color.clear,
-                            Color.primary.opacity(0.08)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-                .blendMode(.overlay)
-                .opacity(0.9)
-
-            content
-        }
-    }
-}
-
-
-// MARK: - Camera badge
-private struct CameraBadge: View {
-    var body: some View {
-        ZStack {
-            Circle()
-                .fill(.ultraThinMaterial)
-                .overlay(Circle().stroke(.primary.opacity(0.18), lineWidth: 0.6))
-            Image(systemName: "camera.fill")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.primary.opacity(0.85))
-        }
-        .frame(width: 30, height: 30)
-        .shadow(color: .primary.opacity(0.15), radius: 10, x: 0, y: 6)
-    }
-}
-
 // MARK: - Public Avatar for reuse in other views
 struct ProfileAvatarView: View {
     let avatarPath: String?
@@ -566,17 +347,15 @@ struct ProfileAvatarView: View {
     }
 }
 
-// MARK: - Settings Redesign — adaptive backdrop with a faint violet aura
+// MARK: - Settings Redesign — ink + cyan aura (brand, not purple glow)
 private struct SettingsBackdrop: View {
     var body: some View {
-        Color(.systemGroupedBackground)
-            .overlay(alignment: .top) {
-                RadialGradient(
-                    colors: [DS.accentPurple.opacity(0.16), .clear],
-                    center: .top, startRadius: 0, endRadius: 440
-                )
-            }
-            .ignoresSafeArea()
+        ZStack {
+            Color(.systemGroupedBackground)
+            DS.inkAura
+                .opacity(0.9)
+        }
+        .ignoresSafeArea()
     }
 }
 
@@ -590,46 +369,50 @@ private struct RavenIdentityHero: View {
     private var fingerprint: String { DeviceIdentityService.shared.fingerprint ?? "—" }
 
     var body: some View {
-        VStack(spacing: 13) {
-            // Avatar — violet glow ring + camera badge
+        VStack(spacing: 14) {
             ZStack(alignment: .bottomTrailing) {
                 ZStack {
                     Circle()
-                        .fill(DS.accentPurple.opacity(0.35))
-                        .frame(width: 106, height: 106)
-                        .blur(radius: 20)
+                        .fill(DS.cyan.opacity(0.28))
+                        .frame(width: 108, height: 108)
+                        .blur(radius: 22)
                     GlassAvatar(name: user?.displayName ?? "?", path: user?.avatarPath, size: 92, showGlow: false)
                         .overlay(
-                            Circle().stroke(
-                                LinearGradient(colors: [DS.accentPurple, DS.accentBlue],
-                                               startPoint: .topLeading, endPoint: .bottomTrailing),
-                                lineWidth: 2.5)
+                            Circle().stroke(DS.signalGradient, lineWidth: 2.5)
                         )
                 }
                 Button(action: onCameraTap) {
                     Image(systemName: "camera.fill")
                         .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(DS.ink)
                         .frame(width: 30, height: 30)
-                        .background(Circle().fill(DS.accentPurple))
+                        .background(Circle().fill(DS.signalGradient))
                         .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 2.5))
                 }
                 .buttonStyle(.plain)
             }
             .padding(.top, 4)
 
-            // Name (+ verified)
-            HStack(spacing: 6) {
-                Text(user?.displayName ?? "You")
-                    .font(.system(size: 22, weight: .bold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                if user?.isVerified == true {
-                    Image(systemName: "checkmark.seal.fill")
-                        .font(.system(size: 16))
-                        .foregroundStyle(DS.accentBlue)
+            VStack(spacing: 4) {
+                Text("RAVEN")
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .tracking(2.5)
+                    .foregroundStyle(DS.cyanDeep)
+                HStack(spacing: 6) {
+                    Text(user?.displayName ?? "You")
+                        .font(.system(size: 24, weight: .bold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                    if user?.isVerified == true {
+                        Image(systemName: "checkmark.seal.fill")
+                            .font(.system(size: 16))
+                            .foregroundStyle(DS.cyan)
+                    }
                 }
+                Text("Messaging Beyond Connectivity")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
             }
 
             if let uname = user?.username, !uname.isEmpty {
@@ -638,28 +421,25 @@ private struct RavenIdentityHero: View {
                     .foregroundStyle(.secondary)
             }
 
-            // Fingerprint / safety-number chip → tap for QR
             Button(action: onQRTap) {
                 HStack(spacing: 8) {
                     Image(systemName: "qrcode").font(.system(size: 13, weight: .semibold))
-                    Text(fingerprint).font(.system(size: 14, weight: .semibold, design: .monospaced))
+                    Text(fingerprint).font(DS.mono(.subheadline))
                     Image(systemName: "chevron.right").font(.system(size: 10, weight: .bold)).opacity(0.5)
                 }
-                .foregroundStyle(DS.accentPurple)
-                .padding(.horizontal, 14).padding(.vertical, 8)
-                .background(Capsule().fill(DS.accentPurple.opacity(0.12)))
-                .overlay(Capsule().stroke(DS.accentPurple.opacity(0.25), lineWidth: 1))
+                .foregroundStyle(DS.cyanDeep)
+                .padding(.horizontal, 14).padding(.vertical, 9)
+                .background(Capsule().fill(DS.cyan.opacity(0.12)))
+                .overlay(Capsule().stroke(DS.cyan.opacity(0.28), lineWidth: 1))
             }
             .buttonStyle(.plain)
 
-            // Security posture
             HStack(spacing: 8) {
-                SecurityPill(icon: "lock.shield.fill", text: "End-to-end encrypted", tint: .green)
-                SecurityPill(icon: "key.fill", text: "No account", tint: DS.accentBlue)
+                SecurityPill(icon: "lock.shield.fill", text: "End-to-end", tint: DS.accentSuccess)
+                SecurityPill(icon: "key.fill", text: "No account", tint: DS.cyanDeep)
             }
             .padding(.top, 2)
 
-            // Quick actions
             HStack(spacing: 10) {
                 HeroActionButton(title: "My QR Code", icon: "qrcode", action: onQRTap)
                 HeroActionButton(title: "Edit Profile", icon: "pencil", action: onEditTap)
@@ -669,15 +449,22 @@ private struct RavenIdentityHero: View {
         .frame(maxWidth: .infinity)
         .padding(.vertical, 22)
         .padding(.horizontal, 18)
-        .background(RoundedRectangle(cornerRadius: 26, style: .continuous).fill(.ultraThinMaterial))
-        .overlay(
-            RoundedRectangle(cornerRadius: 26, style: .continuous)
-                .stroke(
-                    LinearGradient(colors: [DS.accentPurple.opacity(0.55), DS.accentBlue.opacity(0.18)],
-                                   startPoint: .topLeading, endPoint: .bottomTrailing),
-                    lineWidth: 1)
+        .background(
+            RoundedRectangle(cornerRadius: DS.radiusHero, style: .continuous)
+                .fill(.ultraThinMaterial)
         )
-        .shadow(color: DS.accentPurple.opacity(0.18), radius: 22, x: 0, y: 8)
+        .overlay(
+            RoundedRectangle(cornerRadius: DS.radiusHero, style: .continuous)
+                .stroke(
+                    LinearGradient(
+                        colors: [DS.cyan.opacity(0.55), DS.teal.opacity(0.15), Color.white.opacity(0.06)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1
+                )
+        )
+        .shadow(color: DS.cyan.opacity(0.14), radius: 24, x: 0, y: 10)
     }
 }
 

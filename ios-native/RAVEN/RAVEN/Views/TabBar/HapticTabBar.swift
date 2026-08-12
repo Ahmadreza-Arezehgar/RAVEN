@@ -77,7 +77,7 @@ struct HapticTabBar: View {
             // 0.15s delay matches the prior ContextMenuTabItem behaviour —
             // lets the keyboard finish dismissing before the tab actually flips.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                withAnimation(.interpolatingSpring(stiffness: 300, damping: 28)) {
+                withAnimation(DS.tabSpring) {
                     selected = tab
                 }
             }
@@ -103,9 +103,9 @@ struct HapticTabBar: View {
             VStack(spacing: 3) {
                 activeContent(for: tab)
                 Circle()
-                    .fill(Color.green)
+                    .fill(DS.cyan)
                     .frame(width: 5, height: 5)
-                    .shadow(color: .green.opacity(0.6), radius: 3)
+                    .shadow(color: DS.cyan.opacity(0.7), radius: 4)
             }
             .transition(.opacity.combined(with: .scale(scale: 0.9)))
         } else {

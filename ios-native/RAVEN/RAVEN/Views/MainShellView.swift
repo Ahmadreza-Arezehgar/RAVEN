@@ -15,7 +15,6 @@ struct MainShellView: View {
     @State private var selectedTab: AppTab = .messages
     @State private var showNewChat = false
     @State private var showNewGroup = false
-    @State private var showSettings = false
     @State private var showSignOutAlert = false
     @State private var showCloseAccountAlert = false
     @State private var showMyQR = false
@@ -30,8 +29,7 @@ struct MainShellView: View {
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            Color(.systemBackground)
-                .ignoresSafeArea()
+            RavenScreenBackground()
 
             // Two-tab pager: Chats (Inbox) + Settings (Account).
             TabPager(
@@ -57,11 +55,15 @@ struct MainShellView: View {
                     showSearchSheet = true
                 } label: {
                     Image(systemName: "magnifyingglass")
-                        .font(.system(size: 22, weight: .semibold))
-                        .foregroundStyle(.primary)
-                        .frame(width: 52, height: 52)
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundStyle(DS.ink)
+                        .frame(width: 54, height: 54)
                         .contentShape(Circle())
-                        .background(.ultraThinMaterial, in: Circle())
+                        .background {
+                            Circle()
+                                .fill(DS.signalGradient)
+                                .shadow(color: DS.cyan.opacity(0.35), radius: 12, y: 4)
+                        }
                 }
                 .buttonStyle(.plain)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
@@ -69,7 +71,7 @@ struct MainShellView: View {
                 .padding(.bottom, 100)
                 .offset(y: feedStateManager.isChromeHidden ? 120 : 0)
                 .opacity(feedStateManager.isChromeHidden ? 0 : 1)
-                .animation(.spring(response: 0.32, dampingFraction: 0.86), value: feedStateManager.isChromeHidden)
+                .animation(DS.openChatSpring, value: feedStateManager.isChromeHidden)
                 .transition(.scale(scale: 0.5, anchor: .bottomTrailing).combined(with: .opacity))
                 .zIndex(2)
             }
@@ -104,13 +106,11 @@ struct MainShellView: View {
                     PresenceService.shared.startHeartbeat()
                     DeliveryJobRunner.shared.start()
                 }
-                Task {
-                    try? await Task.sleep(nanoseconds: 2_000_000_000)
-                    _ = await ContactsService.shared.requestPermission()
-                    if ContactsService.shared.permissionStatus == .authorized {
-                        await ContactsService.shared.syncWithServer()
-                    }
-                }
+                // (removed: auto ContactsService.requestPermission()/syncWithServer() —
+                //  incompatible with the serverless, no-account, QR-only contact model.
+                //  Auto-prompting for system Contacts and POSTing hashed phone numbers
+                //  to a dead /api/contacts backend is dead code + an App Store review
+                //  red flag. Contacts discovery, if any, must be user-initiated.)
             }
 
             if let pending = DeepLinkRouter.shared.pendingDestination {
@@ -132,11 +132,6 @@ struct MainShellView: View {
         }
         .sheet(isPresented: $showNewGroup) {
             NewGroupView()
-        }
-        .sheet(isPresented: $showSettings) {
-            NavigationStack {
-                AccountSettingsList()
-            }
         }
         .sheet(isPresented: $showMyQR) {
             MyQRCodeView()
@@ -239,9 +234,6 @@ struct MainShellView: View {
             ]
         case .account:
             return [
-                TabAction(title: "settings".localized, systemImage: "gearshape.fill", tint: .gray) {
-                    showSettings = true
-                },
                 TabAction(title: "scan_qr_code".localized, systemImage: "qrcode.viewfinder", tint: .cyan) {
                     Haptics.selection()
                     showScanQR = true

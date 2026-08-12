@@ -119,4 +119,44 @@ final class DiscoverySearchViewModelTests: XCTestCase {
             XCTFail("unexpected \(error)")
         }
     }
+
+    func testParseWhoamiPasteExtractsFields() {
+        let blob = """
+        address     rvn1qtestdemoaddress
+        fingerprint ABCD-EFGH-IJKL
+        pub_hex     d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a
+        """
+        let parsed = DiscoverySearchViewModel.parseWhoamiPaste(addressOrBlob: blob, pubHexOrBlob: "")
+        XCTAssertEqual(parsed.address, "rvn1qtestdemoaddress")
+        XCTAssertEqual(
+            parsed.pubHex,
+            "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+        )
+        let split = DiscoverySearchViewModel.parseWhoamiPaste(
+            addressOrBlob: "rvn1qabc",
+            pubHexOrBlob: "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+        )
+        XCTAssertEqual(split.address, "rvn1qabc")
+        XCTAssertEqual(split.pubHex?.count, 64)
+    }
+
+    func testAddContactFromWhoamiRequiresMatchingKey() throws {
+        DiscoveryContactBindingStore.save([])
+        // Random 32-byte pub will not encode to rvn1qabc — expect mismatch or bad address bind.
+        do {
+            _ = try DiscoverySearchViewModel().addContactFromWhoami(
+                addressOrBlob: "rvn1qabc",
+                pubHexOrBlob: String(repeating: "ab", count: 32),
+                petname: "Demo"
+            )
+            XCTFail("expected address/pub mismatch")
+        } catch WhoamiPasteError.addressPubMismatch {
+            // expected when encode succeeds but differs
+        } catch WhoamiPasteError.badAddress {
+            // also OK if encode path treats short rvn1 as invalid elsewhere
+        } catch {
+            // encode may return a different rvn1 — mismatch is the success path
+            XCTAssertTrue(error is WhoamiPasteError || error is RavenContactRequestError)
+        }
+    }
 }

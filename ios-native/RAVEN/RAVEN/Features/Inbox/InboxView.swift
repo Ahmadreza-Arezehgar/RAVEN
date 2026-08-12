@@ -710,7 +710,7 @@ struct AvatarView: View {
         Circle()
             .fill(
                 LinearGradient(
-                    colors: [.blue.opacity(0.6), .purple.opacity(0.4)],
+                    colors: [DS.cyanDeep.opacity(0.85), DS.teal.opacity(0.55)],
                     startPoint: .topLeading,
                     endPoint: .bottomTrailing
                 )
@@ -734,14 +734,30 @@ struct EmptyInboxView: View {
     let onNewChat: () -> Void
 
     var body: some View {
-        ContentUnavailableView {
-            Label("No messages yet", systemImage: "bubble.left.and.bubble.right")
-        } description: {
-            Text("Start a chat or add a contact to begin.")
-        } actions: {
+        VStack(spacing: 28) {
+            ZStack {
+                Circle()
+                    .fill(DS.cyan.opacity(0.12))
+                    .frame(width: 120, height: 120)
+                    .blur(radius: 8)
+                Image(systemName: "bird.fill")
+                    .font(.system(size: 44, weight: .medium))
+                    .foregroundStyle(DS.signalGradient)
+                    .symbolRenderingMode(.hierarchical)
+            }
+            VStack(spacing: 8) {
+                Text("No messages yet")
+                    .font(.system(.title2, design: .default, weight: .bold))
+                Text("Messaging Beyond Connectivity — add a contact, then send over Wi‑Fi or Bluetooth.")
+                    .font(.system(.subheadline, design: .default, weight: .regular))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 28)
+            }
             Button("Start a chat", action: onNewChat)
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.ravenPrimary)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -778,12 +794,12 @@ struct InboxFilterPills: View {
                 } label: {
                     Text(filter.rawValue)
                         .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(selection == filter ? .white : .primary)
+                        .foregroundColor(selection == filter ? DS.ink : .primary)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 6)
                         .background(
                             Capsule(style: .continuous)
-                                .fill(selection == filter ? Color.accentColor : Color.primary.opacity(0.06))
+                                .fill(selection == filter ? AnyShapeStyle(DS.signalGradient) : AnyShapeStyle(Color.primary.opacity(0.06)))
                         )
                 }
                 .buttonStyle(.plain)

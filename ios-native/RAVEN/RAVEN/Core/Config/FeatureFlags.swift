@@ -36,7 +36,7 @@ enum FeatureFlag: String, CaseIterable {
         case .proximaVault:       return "PROXIMA-VAULT (OTP)"
         case .proximaVaultStealth: return "PV-Stealth (rotating tags)"
         case .atsam:              return "ATSAM hybrid pairing"
-        case .ravenEnvelopeV1:    return "RavenEnvelopeV1 (serverless)"
+        case .ravenEnvelopeV1:    return "Serverless · RavenEnvelopeV1"
         case .legacyPlaintextGroupKey: return "Legacy Plaintext Group Key"
         case .legacyPlaintextRender: return "Legacy Plaintext Render"
         }
@@ -78,12 +78,7 @@ enum FeatureFlag: String, CaseIterable {
             // pre-ATSAM Noise IK path.
             return "Post-quantum hybrid pairing root + HKDF key tree (Raven's production security protocol, on by default)"
         case .ravenEnvelopeV1:
-            // Parallel binary envelope for terminal-node / serverless
-            // interop. Default OFF — MeshEnvelope JSON remains the
-            // shipping BLE/chat path until Phase G/H cutover.
-            // messaging_path label: serverless_rvn1 when ON, legacy_mesh_envelope when OFF.
-            // Never silent FastAPI for friendship or 1:1 delivery. Petname-first tags: docs/RAVEN_TAG_V1.md.
-            return "Binary RavenEnvelopeV1 for serverless/terminal interop (MeshEnvelope default OFF; no FastAPI friendship)"
+            return "Enable Discover, paste ash whoami, Wi‑Fi LAN + Bluetooth RavenEnvelope. MeshEnvelope stays available when off."
         case .legacyPlaintextGroupKey:
             return "DANGER: broadcasts the group key in cleartext over BLE to members without a post-quantum pair. Off by default — the key is otherwise withheld until pairing."
         case .legacyPlaintextRender:

@@ -479,8 +479,131 @@ final class DiscoverySearchViewModel {
         UserDefaults.standard.set(wire, forKey: pendingKey)
     }
 
+    /// Add a local contact from terminal `ash whoami` fields (rvn1 + pub_hex).
+    /// Public bits only — never accepts seeds. Behind ravenEnvelopeV1.
+    @discardableResult
+    func addContactFromWhoami(
+        addressOrBlob: String,
+        pubHexOrBlob: String,
+        petname: String
+    ) throws -> LocalDiscoveryContact {
+        guard FeatureFlag.isRavenEnvelopeV1Enabled else {
+            throw RavenContactRequestError.missingKeys
+        }
+        let parsed = Self.parseWhoamiPaste(addressOrBlob: addressOrBlob, pubHexOrBlob: pubHexOrBlob)
+        guard let addr = parsed.address, addr.hasPrefix("rvn1") else {
+            throw WhoamiPasteError.badAddress
+        }
+        guard let pubHex = parsed.pubHex,
+              RavenServerlessLanSettingsView.isValidPubHex(pubHex),
+              let pub = Data(ravenHex: pubHex), pub.count == 32 else {
+            throw WhoamiPasteError.badPubHex
+        }
+        if let derived = RavenAddressV1.encode(ed25519PublicKey: pub), derived != addr {
+            throw WhoamiPasteError.addressPubMismatch
+        }
+        let pet = petname.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fingerprint = DeviceIdentityService.deriveFingerprint(from: pub)
+        // Serverless chat list keys peers by fingerprint (same as QR path).
+        let chatUserId = fingerprint
+        let contact = LocalDiscoveryContact(
+            ravenId: addr,
+            pubHex: pubHex.lowercased(),
+            petname: pet.isEmpty ? shortId(addr) : pet,
+            publicTag: "",
+            displayName: pet,
+            pinned: true,
+            directlyVerified: false
+        )
+        DiscoveryContactBindingStore.upsert(contact)
+        pubHexByRavenId[addr] = pubHex.lowercased()
+        pubHexByRavenId[chatUserId] = pubHex.lowercased()
+        contactsCache.removeAll { $0.ravenId == addr }
+        contactsCache.append(contact)
+
+        // Pin into FriendDevice + PeerKeyDirectory so New Chat / seal paths see them.
+        let device = FriendDevice(
+            friendUserId: chatUserId,
+            fingerprint: fingerprint,
+            publicKey: pub,
+            agreementPublicKey: nil,
+            trustState: .trusted,
+            verifiedAt: Date(),
+            deviceName: pet.isEmpty ? shortId(addr) : pet
+        )
+        Task {
+            try? await FriendDeviceRepository.shared.upsert(device)
+            await PeerKeyDirectory.shared.setVerifiedIdentity(
+                identityKey: pub,
+                agreementKey: nil,
+                for: chatUserId
+            )
+        }
+
+        statusMessage = "Saved \(contact.petname) — ready in New Chat"
+        runSearch()
+        return contact
+    }
+
+    /// Parse bare fields or a pasted `ash whoami` / `ash init` block.
+    static func parseWhoamiPaste(addressOrBlob: String, pubHexOrBlob: String) -> (address: String?, pubHex: String?) {
+        let blob = [addressOrBlob, pubHexOrBlob].joined(separator: "\n")
+        let address = extractWhoamiField(blob, keys: ["address"]) ?? {
+            let t = addressOrBlob.trimmingCharacters(in: .whitespacesAndNewlines)
+            return t.hasPrefix("rvn1") ? t.split(whereSeparator: \.isWhitespace).first.map(String.init) : nil
+        }()
+        let pubHex = extractWhoamiField(blob, keys: ["pub_hex", "pubhex"]) ?? {
+            let t = pubHexOrBlob.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let hex = t.filter(\.isHexDigit)
+            return hex.count == 64 ? hex : nil
+        }()
+        return (address, pubHex)
+    }
+
+    private static func extractWhoamiField(_ blob: String, keys: [String]) -> String? {
+        for line in blob.split(whereSeparator: \.isNewline) {
+            let raw = String(line).trimmingCharacters(in: .whitespacesAndNewlines)
+            let lower = raw.lowercased()
+            for key in keys {
+                guard lower.hasPrefix(key) else { continue }
+                var rest = String(raw.dropFirst(key.count))
+                while rest.first == "=" || rest.first == ":" || rest.first == " " || rest.first == "\t" {
+                    rest = String(rest.dropFirst())
+                }
+                let token = rest.split(whereSeparator: \.isWhitespace).first.map(String.init) ?? rest
+                if key.contains("pub") {
+                    let hex = token.lowercased().filter(\.isHexDigit)
+                    if hex.count == 64 { return hex }
+                } else if token.hasPrefix("rvn1") {
+                    return token
+                }
+            }
+            if raw.hasPrefix("rvn1"), keys.contains("address") {
+                return raw.split(whereSeparator: \.isWhitespace).first.map(String.init)
+            }
+        }
+        return nil
+    }
+
     private func shortId(_ id: String) -> String {
         if id.count <= 16 { return id }
         return String(id.prefix(10)) + "…" + String(id.suffix(4))
+    }
+}
+
+enum WhoamiPasteError: LocalizedError {
+    case badAddress
+    case badPubHex
+    case addressPubMismatch
+
+    var errorDescription: String? {
+        switch self {
+        case .badAddress:
+            return "Need a Raven address starting with rvn1… (from ash whoami)"
+        case .badPubHex:
+            return "Need 64-char pub_hex from ash whoami (public only — never a seed)"
+        case .addressPubMismatch:
+            return "address and pub_hex do not match — paste both from the same whoami"
+        }
     }
 }
