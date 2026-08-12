@@ -643,6 +643,11 @@ class AuthService {
         // swallow Keychain errors) so a failure doesn't block the
         // rest of cleanup.
         await ATSAMRootStorage.shared.purgeAll()
+        // PeerKeyDirectory uses service `app.raven.ios.peerKey` (not
+        // KeychainService's `app.raven.ios`), so deleteAll() never
+        // touches trust pins. Wipe them on logout to stop User B from
+        // inheriting User A's peer identity/agreement pins.
+        await PeerKeyDirectory.shared.purgeAllPins()
         await MainActor.run { GroupKeyService.shared.reset() }
         // SealedReplayWindow is a fileprivate actor inside
         // MessageContentSealer; expose a purge hook via the sealer.

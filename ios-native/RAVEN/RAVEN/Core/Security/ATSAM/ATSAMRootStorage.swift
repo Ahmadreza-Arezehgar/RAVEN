@@ -179,6 +179,7 @@ actor ATSAMRootStorage {
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+            kSecAttrSynchronizable as String: kCFBooleanFalse as Any,
             kSecValueData as String: data,
         ]
         let status = SecItemAdd(query as CFDictionary, nil)
@@ -194,6 +195,7 @@ actor ATSAMRootStorage {
             kSecAttrAccount as String: account,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecAttrSynchronizable as String: kCFBooleanFalse as Any,
         ]
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
@@ -206,6 +208,7 @@ actor ATSAMRootStorage {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
+            kSecAttrSynchronizable as String: kCFBooleanFalse as Any,
         ]
         SecItemDelete(query as CFDictionary)
     }
@@ -214,6 +217,7 @@ actor ATSAMRootStorage {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
+            kSecAttrSynchronizable as String: kCFBooleanFalse as Any,
         ]
         SecItemDelete(query as CFDictionary)
     }

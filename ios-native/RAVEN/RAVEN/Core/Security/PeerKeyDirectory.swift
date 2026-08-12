@@ -4,8 +4,13 @@
 //
 //  Local cache of peer X25519 agreement public keys keyed by userId.
 //  Used by `MessageContentSealer` to resolve the recipient's pubkey
-//  when sealing a DM. Backed by UserDefaults so the directory
-//  survives app restart.
+//  when sealing a DM.
+//
+//  Storage (2026-08-12 §14): Keychain (`AfterFirstUnlockThisDeviceOnly`,
+//  non-synchronizable). Peer public keys are not private secrets, but
+//  they *are* trust pins — a copied-database / backup attacker who can
+//  rewrite UserDefaults could swap pins and redirect ciphertext. One-shot
+//  migration copies legacy UserDefaults rows into Keychain then deletes them.
 //
 //  Round 13 (2026-05-16) — security hardening from the hacker audit:
 //
@@ -59,10 +64,11 @@
 //  Alice's signed bundle as Bob's. The Safety Number sheet is the
 //  user-facing check against this. Server-side signature must be
 //  upgraded to cover `userId || xPub || pqPub` to fully close the
-//  gap.
+//  gap. (Round 16+ strong format binds userId; see VerifyStrength.)
 
 import Foundation
 import CryptoKit
+import Security
 import os
 
 fileprivate let logger = Logger(subsystem: "app.raven.ios", category: "Security.PeerKeyDirectory")
@@ -70,12 +76,29 @@ fileprivate let logger = Logger(subsystem: "app.raven.ios", category: "Security.
 actor PeerKeyDirectory {
     static let shared = PeerKeyDirectory()
 
-    private let defaults = UserDefaults.standard
-    private let keyPrefix = "raven.peerKey.agreement.v1."
-    /// Persisted Ed25519 identity-key pin per peer. The pin is what
-    /// makes rotation-rejection possible: if the server tries to
-    /// substitute a new identity for a known peer, the pin trips.
-    private let identityPrefix = "raven.peerKey.identity.v1."
+    // MARK: - Legacy UserDefaults keys (migration only)
+
+    private let legacyDefaults = UserDefaults.standard
+    private let legacyKeyPrefix = "raven.peerKey.agreement.v1."
+    private let legacyIdentityPrefix = "raven.peerKey.identity.v1."
+    private let migrationFlagKey = "raven.peerKey.migratedToKeychain.v1"
+
+    // MARK: - Keychain layout
+
+    /// Distinct service from ATSAM roots / session tokens.
+    private static let kcService = "app.raven.ios.peerKey"
+    private static let indexAccount = "index.v1"
+
+    private static func agreementAccount(_ userId: String) -> String { "agreement|\(userId)" }
+    private static func identityAccount(_ userId: String) -> String { "identity|\(userId)" }
+
+    /// In-memory caches — Keychain remains canonical.
+    private var agreementCache: [String: Data] = [:]
+    private var identityCache: [String: Data] = [:]
+    /// Sorted unique peer ids that have either an agreement or identity pin.
+    private var peerIndex: Set<String> = []
+    private var didLoadIndex = false
+    private var didMigrate = false
 
     /// In-flight server fetches, keyed by userId. Lets multiple
     /// concurrent `ensureAgreementKey` calls share one network round-
@@ -104,12 +127,22 @@ actor PeerKeyDirectory {
     /// either go to `ensureAgreementKey` or fall back to RVNP1.
     func agreementKey(for userId: String) -> Data? {
         guard !userId.isEmpty else { return nil }
-        return defaults.data(forKey: keyPrefix + userId)
+        ensureMigratedAndIndexLoaded()
+        if let cached = agreementCache[userId] { return cached }
+        guard let data = Self.kcGetData(account: Self.agreementAccount(userId)),
+              data.count == 32 else { return nil }
+        agreementCache[userId] = data
+        return data
     }
 
     func identityKey(for userId: String) -> Data? {
         guard !userId.isEmpty else { return nil }
-        return defaults.data(forKey: identityPrefix + userId)
+        ensureMigratedAndIndexLoaded()
+        if let cached = identityCache[userId] { return cached }
+        guard let data = Self.kcGetData(account: Self.identityAccount(userId)),
+              data.count == 32 else { return nil }
+        identityCache[userId] = data
+        return data
     }
 
     /// True when the most recent server bundle for `userId` had an
@@ -163,7 +196,8 @@ actor PeerKeyDirectory {
     /// the user has explicitly accepted this key.
     func setAgreementKey(_ data: Data, for userId: String) {
         guard data.count == 32, !userId.isEmpty else { return }
-        defaults.set(data, forKey: keyPrefix + userId)
+        ensureMigratedAndIndexLoaded()
+        persistAgreement(data, for: userId)
         pendingIdentityChanges.remove(userId)
         negativeCache.removeValue(forKey: userId)
     }
@@ -178,9 +212,10 @@ actor PeerKeyDirectory {
     /// readers miss and fall through to the (turned-off) server fetch.
     func setVerifiedIdentity(identityKey: Data, agreementKey: Data?, for userId: String) {
         guard identityKey.count == 32, !userId.isEmpty else { return }
-        defaults.set(identityKey, forKey: identityPrefix + userId)
+        ensureMigratedAndIndexLoaded()
+        persistIdentity(identityKey, for: userId)
         if let agreementKey, agreementKey.count == 32 {
-            defaults.set(agreementKey, forKey: keyPrefix + userId)
+            persistAgreement(agreementKey, for: userId)
         }
         pendingIdentityChanges.remove(userId)
         negativeCache.removeValue(forKey: userId)
@@ -195,7 +230,7 @@ actor PeerKeyDirectory {
     @discardableResult
     func recordObservedKey(_ data: Data, for userId: String) -> Bool {
         guard data.count == 32, !userId.isEmpty else { return false }
-        guard let existing = defaults.data(forKey: keyPrefix + userId) else {
+        guard let existing = agreementKey(for: userId) else {
             // Audit C6: refuse to bootstrap first trust from the
             // mesh path. A peer could otherwise claim any unowned
             // userId once. Caller must instead go through
@@ -214,8 +249,15 @@ actor PeerKeyDirectory {
     /// re-trusting a peer from the Safety Number sheet. Wipes both
     /// the agreement key AND the pinned identity key.
     func clearAgreementKey(for userId: String) {
-        defaults.removeObject(forKey: keyPrefix + userId)
-        defaults.removeObject(forKey: identityPrefix + userId)
+        guard !userId.isEmpty else { return }
+        ensureMigratedAndIndexLoaded()
+        agreementCache.removeValue(forKey: userId)
+        identityCache.removeValue(forKey: userId)
+        Self.kcDelete(account: Self.agreementAccount(userId))
+        Self.kcDelete(account: Self.identityAccount(userId))
+        if peerIndex.remove(userId) != nil {
+            persistPeerIndex()
+        }
         pendingIdentityChanges.remove(userId)
         negativeCache.removeValue(forKey: userId)
     }
@@ -223,37 +265,52 @@ actor PeerKeyDirectory {
     /// Snapshot of every cached peer — useful for a future
     /// "Encryption" settings pane that lists who you have keys for.
     func allKnownPeers() -> [String] {
-        let prefix = keyPrefix
-        return defaults.dictionaryRepresentation()
-            .keys
-            .filter { $0.hasPrefix(prefix) }
-            .map { String($0.dropFirst(prefix.count)) }
+        ensureMigratedAndIndexLoaded()
+        return peerIndex.sorted()
     }
 
     /// Reverse lookup candidates: pinned identity pub → userId (envelope sender resolve).
     func identityCandidates() -> [(userId: String, pub: Data)] {
-        let prefix = identityPrefix
+        ensureMigratedAndIndexLoaded()
         var out: [(String, Data)] = []
-        for (key, value) in defaults.dictionaryRepresentation() {
-            guard key.hasPrefix(prefix), let pub = value as? Data, pub.count == 32 else {
-                continue
+        for userId in peerIndex {
+            if let pub = identityKey(for: userId) {
+                out.append((userId, pub))
             }
-            out.append((String(key.dropFirst(prefix.count)), pub))
         }
         return out
+    }
+
+    // MARK: - Test / sign-out helpers
+
+    /// Wipe every peer pin (Keychain + caches). Used by unit tests and
+    /// can be wired into sign-out if product policy requires it.
+    func purgeAllPins() {
+        ensureMigratedAndIndexLoaded()
+        for userId in peerIndex {
+            Self.kcDelete(account: Self.agreementAccount(userId))
+            Self.kcDelete(account: Self.identityAccount(userId))
+        }
+        peerIndex.removeAll()
+        persistPeerIndex()
+        agreementCache.removeAll()
+        identityCache.removeAll()
+        pendingIdentityChanges.removeAll()
+        negativeCache.removeAll()
     }
 
     // MARK: - Private helpers
 
     private func applyFetchedBundle(_ fetched: VerifiedBundle?, for userId: String) -> Data? {
         guard let fetched else { return nil }
+        ensureMigratedAndIndexLoaded()
 
         // TOFU on the identity key — see audit finding C5. If we
         // already have a pinned identity and it disagrees with the
         // bundle, REJECT the bundle. Don't overwrite either field.
         // The user must explicitly accept via the Safety Number sheet
         // (which calls `clearAgreementKey`).
-        if let pinned = defaults.data(forKey: identityPrefix + userId), pinned != fetched.signedBy {
+        if let pinned = identityKey(for: userId), pinned != fetched.signedBy {
             logger.debug("identity rotation REJECTED for \(userId, privacy: .private). Pinned identity differs from server bundle; user must re-verify Safety Number to accept.")
             pendingIdentityChanges.insert(userId)
             return nil
@@ -265,7 +322,7 @@ actor PeerKeyDirectory {
         // serve Alice's signed-but-userId-less bundle as Bob's on
         // first contact and we'd silently start encrypting to Alice.
         if fetched.strength == .weakLegacy {
-            let alreadyPinned = defaults.data(forKey: identityPrefix + userId) != nil
+            let alreadyPinned = identityKey(for: userId) != nil
             guard alreadyPinned else {
                 logger.notice("first-trust REFUSED for \(userId, privacy: .private): bundle verified with weak legacy format only; sender must upgrade to round-16+ for first-trust.")
                 return nil
@@ -275,8 +332,8 @@ actor PeerKeyDirectory {
             // above). Allow the refresh.
         }
 
-        defaults.set(fetched.xPub, forKey: keyPrefix + userId)
-        defaults.set(fetched.signedBy, forKey: identityPrefix + userId)
+        persistAgreement(fetched.xPub, for: userId)
+        persistIdentity(fetched.signedBy, for: userId)
         // Successful application clears any prior pending flag — the
         // identity is consistent with the pin now.
         pendingIdentityChanges.remove(userId)
@@ -289,6 +346,138 @@ actor PeerKeyDirectory {
 
     private func markNegative(userId: String) {
         negativeCache[userId] = Date()
+    }
+
+    private func persistAgreement(_ data: Data, for userId: String) {
+        agreementCache[userId] = data
+        try? Self.kcSetData(data, account: Self.agreementAccount(userId))
+        if peerIndex.insert(userId).inserted {
+            persistPeerIndex()
+        }
+    }
+
+    private func persistIdentity(_ data: Data, for userId: String) {
+        identityCache[userId] = data
+        try? Self.kcSetData(data, account: Self.identityAccount(userId))
+        if peerIndex.insert(userId).inserted {
+            persistPeerIndex()
+        }
+    }
+
+    private func ensureMigratedAndIndexLoaded() {
+        if !didMigrate {
+            migrateLegacyUserDefaultsIfNeeded()
+            didMigrate = true
+        }
+        if !didLoadIndex {
+            loadPeerIndex()
+            didLoadIndex = true
+        }
+    }
+
+    private func migrateLegacyUserDefaultsIfNeeded() {
+        if legacyDefaults.bool(forKey: migrationFlagKey) { return }
+
+        let all = legacyDefaults.dictionaryRepresentation()
+        var migrated = 0
+        for (key, value) in all {
+            guard let data = value as? Data, data.count == 32 else { continue }
+            if key.hasPrefix(legacyKeyPrefix) {
+                let userId = String(key.dropFirst(legacyKeyPrefix.count))
+                guard !userId.isEmpty else { continue }
+                do {
+                    try Self.kcSetData(data, account: Self.agreementAccount(userId))
+                    agreementCache[userId] = data
+                    peerIndex.insert(userId)
+                    legacyDefaults.removeObject(forKey: key)
+                    migrated += 1
+                } catch {
+                    logger.error("PeerKeyDirectory migration failed for agreement \(userId, privacy: .private); leaving UserDefaults row")
+                }
+            } else if key.hasPrefix(legacyIdentityPrefix) {
+                let userId = String(key.dropFirst(legacyIdentityPrefix.count))
+                guard !userId.isEmpty else { continue }
+                do {
+                    try Self.kcSetData(data, account: Self.identityAccount(userId))
+                    identityCache[userId] = data
+                    peerIndex.insert(userId)
+                    legacyDefaults.removeObject(forKey: key)
+                    migrated += 1
+                } catch {
+                    logger.error("PeerKeyDirectory migration failed for identity \(userId, privacy: .private); leaving UserDefaults row")
+                }
+            }
+        }
+        if !peerIndex.isEmpty {
+            persistPeerIndex()
+        }
+        // Only mark migrated when no legacy rows remain (failed Keychain
+        // writes leave rows so a later launch can retry).
+        let leftover = legacyDefaults.dictionaryRepresentation().keys.contains {
+            $0.hasPrefix(legacyKeyPrefix) || $0.hasPrefix(legacyIdentityPrefix)
+        }
+        if !leftover {
+            legacyDefaults.set(true, forKey: migrationFlagKey)
+        }
+        if migrated > 0 {
+            logger.notice("migrated \(migrated, privacy: .public) PeerKeyDirectory rows from UserDefaults → Keychain")
+        }
+    }
+
+    private func loadPeerIndex() {
+        if let raw = Self.kcGetData(account: Self.indexAccount),
+           let ids = try? JSONDecoder().decode([String].self, from: raw) {
+            peerIndex.formUnion(ids)
+        }
+    }
+
+    private func persistPeerIndex() {
+        let ids = peerIndex.sorted()
+        guard let raw = try? JSONEncoder().encode(ids) else { return }
+        try? Self.kcSetData(raw, account: Self.indexAccount)
+    }
+
+    // MARK: - Keychain helpers
+
+    private static func kcSetData(_ data: Data, account: String) throws {
+        kcDelete(account: account)
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: kcService,
+            kSecAttrAccount as String: account,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+            kSecAttrSynchronizable as String: kCFBooleanFalse as Any,
+            kSecValueData as String: data,
+        ]
+        let status = SecItemAdd(query as CFDictionary, nil)
+        guard status == errSecSuccess else {
+            throw PeerKeyDirectoryError.keychainWriteFailed(status: status)
+        }
+    }
+
+    private static func kcGetData(account: String) -> Data? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: kcService,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecAttrSynchronizable as String: kCFBooleanFalse as Any,
+        ]
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        guard status == errSecSuccess else { return nil }
+        return item as? Data
+    }
+
+    private static func kcDelete(account: String) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: kcService,
+            kSecAttrAccount as String: account,
+            kSecAttrSynchronizable as String: kCFBooleanFalse as Any,
+        ]
+        SecItemDelete(query as CFDictionary)
     }
 
     // MARK: - Server fetch + signature verify
@@ -445,4 +634,8 @@ actor PeerKeyDirectory {
             return nil
         }
     }
+}
+
+enum PeerKeyDirectoryError: Error {
+    case keychainWriteFailed(status: OSStatus)
 }

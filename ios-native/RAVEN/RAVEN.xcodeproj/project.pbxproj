@@ -356,6 +356,7 @@
 		E7A1B2C3D4E5F60718293A0A /* RavenServerlessLanPathTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293A09 /* RavenServerlessLanPathTests.swift */; };
 		E7A1B2C3D4E5F60718293A0C /* RavenServerlessLanSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293A0B /* RavenServerlessLanSettingsView.swift */; };
 		E7A1B2C3D4E5F60718293A0E /* RavenServerlessLanSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293A0D /* RavenServerlessLanSettingsTests.swift */; };
+		E7A1B2C3D4E5F60718293D01 /* PeerKeyDirectoryKeychainTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293D00 /* PeerKeyDirectoryKeychainTests.swift */; };
 		E7A1B2C3D4E5F60718293A10 /* RavenBleRvn1Carrier.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293A0F /* RavenBleRvn1Carrier.swift */; };
 		E7A1B2C3D4E5F60718293A12 /* RavenBleRvn1CarrierTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293A11 /* RavenBleRvn1CarrierTests.swift */; };
 		E7A1B2C3D4E5F60718293A16 /* RavenEnvelopeBridgeServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293A15 /* RavenEnvelopeBridgeServiceTests.swift */; };
@@ -554,6 +555,7 @@
 		E7A1B2C3D4E5F60718293A09 /* RavenServerlessLanPathTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RavenServerlessLanPathTests.swift; sourceTree = "<group>"; };
 		E7A1B2C3D4E5F60718293A0B /* RavenServerlessLanSettingsView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RavenServerlessLanSettingsView.swift; sourceTree = "<group>"; };
 		E7A1B2C3D4E5F60718293A0D /* RavenServerlessLanSettingsTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RavenServerlessLanSettingsTests.swift; sourceTree = "<group>"; };
+		E7A1B2C3D4E5F60718293D00 /* PeerKeyDirectoryKeychainTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PeerKeyDirectoryKeychainTests.swift; sourceTree = "<group>"; };
 		E7A1B2C3D4E5F60718293A0F /* RavenBleRvn1Carrier.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RavenBleRvn1Carrier.swift; path = RAVEN/Core/Protocol/RavenBleRvn1Carrier.swift; sourceTree = "<group>"; };
 		E7A1B2C3D4E5F60718293A11 /* RavenBleRvn1CarrierTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RavenBleRvn1CarrierTests.swift; sourceTree = "<group>"; };
 		E7A1B2C3D4E5F60718293A15 /* RavenEnvelopeBridgeServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RavenEnvelopeBridgeServiceTests.swift; sourceTree = "<group>"; };
@@ -1733,6 +1735,7 @@
 				E7A1B2C3D4E5F60718293B27 /* ContactRequestInboxTests.swift */,
 				E7A1B2C3D4E5F60718293A09 /* RavenServerlessLanPathTests.swift */,
 				E7A1B2C3D4E5F60718293A0D /* RavenServerlessLanSettingsTests.swift */,
+				E7A1B2C3D4E5F60718293D00 /* PeerKeyDirectoryKeychainTests.swift */,
 				E7A1B2C3D4E5F60718293A11 /* RavenBleRvn1CarrierTests.swift */,
 				E7A1B2C3D4E5F60718293A15 /* RavenEnvelopeBridgeServiceTests.swift */,
 				E7A1B2C3D4E5F60718293A19 /* RavenEnvelopeEndpointIngestTests.swift */,
@@ -3039,6 +3042,7 @@
 				E7A1B2C3D4E5F60718293B28 /* ContactRequestInboxTests.swift in Sources */,
 				E7A1B2C3D4E5F60718293A0A /* RavenServerlessLanPathTests.swift in Sources */,
 				E7A1B2C3D4E5F60718293A0E /* RavenServerlessLanSettingsTests.swift in Sources */,
+				E7A1B2C3D4E5F60718293D01 /* PeerKeyDirectoryKeychainTests.swift in Sources */,
 				E7A1B2C3D4E5F60718293A12 /* RavenBleRvn1CarrierTests.swift in Sources */,
 				E7A1B2C3D4E5F60718293A16 /* RavenEnvelopeBridgeServiceTests.swift in Sources */,
 				E7A1B2C3D4E5F60718293A1A /* RavenEnvelopeEndpointIngestTests.swift in Sources */,
