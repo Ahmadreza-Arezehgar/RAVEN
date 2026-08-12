@@ -117,8 +117,10 @@ impl ForwardQueue {
             std::fs::create_dir_all(parent).ok();
         }
         let conn = Connection::open(path)?;
+        conn.busy_timeout(std::time::Duration::from_secs(10))?;
         conn.execute_batch(
             "PRAGMA journal_mode=WAL;
+             PRAGMA busy_timeout=10000;
              CREATE TABLE IF NOT EXISTS forward_queue (
                message_id BLOB PRIMARY KEY NOT NULL,
                packed BLOB NOT NULL,

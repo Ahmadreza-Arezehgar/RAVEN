@@ -20,12 +20,23 @@ if ! command -v docker >/dev/null 2>&1; then
   } | tee "$ART_DIR/RESULT.txt"
   exit 0
 fi
+# Auto-wire Lima Docker socket when host dockerd is down (macOS).
+if ! docker info >/dev/null 2>&1; then
+  LIMA_SOCK="${HOME}/.lima/ash-amd64-preflight/sock/docker.sock"
+  if [[ -S "$LIMA_SOCK" ]]; then
+    export DOCKER_HOST="unix://$LIMA_SOCK"
+    echo "Using Lima Docker: DOCKER_HOST=$DOCKER_HOST"
+  elif docker context ls 2>/dev/null | grep -q 'lima-ash-amd64-preflight'; then
+    export DOCKER_CONTEXT=lima-ash-amd64-preflight
+    echo "Using Docker context: $DOCKER_CONTEXT"
+  fi
+fi
 if ! docker info >/dev/null 2>&1; then
   echo "SKIP: docker daemon not running"
   {
     echo "RESULT=SKIP"
     echo "reason=docker_daemon_down"
-    echo "claim=none — start Docker Desktop / dockerd, re-run scripts/nat_docker_sim.sh"
+    echo "claim=none — start Docker Desktop / dockerd / limactl start ash-amd64-preflight, re-run scripts/nat_docker_sim.sh"
   } | tee "$ART_DIR/RESULT.txt"
   # Also leave a pointer under proof_artifacts for §59 operators
   mkdir -p "$NODE_ROOT/proof_artifacts"

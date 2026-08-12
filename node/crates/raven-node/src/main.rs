@@ -819,16 +819,22 @@ async fn main() {
             ble_listen,
             timeout_secs,
         } => {
-            let fwd = {
-                let p = bridge_run::forward_queue_path(&data_dir);
-                Some(p)
-            };
+            // Pre-create WAL schema so IPC + bridge do not race on first open.
+            let fq = bridge_run::forward_queue_path(&data_dir);
+            let _warmup = ForwardQueue::open(&fq).map_err(|e| {
+                eprintln!("service queue warmup failed: {e}");
+                std::process::exit(1);
+            });
+            drop(_warmup);
+            let fwd = Some(fq);
             let data_ipc = data_dir.clone();
             let ipc_task = tokio::spawn(async move {
                 if let Err(e) = ipc_server::run_ipc_server(data_ipc, fwd).await {
                     eprintln!("ipc failed: {e}");
                 }
             });
+            // Brief yield so IPC bind wins before bridge opens the same DB.
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             let bridge_result = bridge_run::run_bridge_daemon(
                 data_dir,
                 lan_listen,
