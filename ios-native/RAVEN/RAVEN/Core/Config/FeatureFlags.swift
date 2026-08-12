@@ -193,9 +193,14 @@ enum FeatureFlag: String, CaseIterable {
     }
 
     /// Default OFF. When on, prefer packing/parsing RavenEnvelopeV1 on
-    /// bridge/LAN paths alongside MeshEnvelope (shipping BLE path unchanged).
+    /// bridge/LAN paths. When ON, 1:1 text must not silently use FastAPI.
     static var isRavenEnvelopeV1Enabled: Bool {
         FeatureFlag.ravenEnvelopeV1.isEnabled
+    }
+
+    /// Diagnostic label parity with ash `messaging_path` (§54).
+    static var messagingPathLabel: String {
+        isRavenEnvelopeV1Enabled ? "serverless_rvn1" : "legacy_mesh_envelope"
     }
 
     /// Default OFF. When off, the cleartext group-key broadcast fallback in

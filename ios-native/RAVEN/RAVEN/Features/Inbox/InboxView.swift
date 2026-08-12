@@ -72,9 +72,14 @@ struct InboxView: View {
                         }
                     )
                 }
-                // 3. Empty state (no conversations, loading complete)
+                // 3. Empty state (no conversations, loading complete).
+                // Use the local `EmptyInboxView`, which surfaces a visible
+                // CTA wired to the SAME New Chat flow the toolbar compose
+                // button uses (`showNewChat = true` → `NewChatView` sheet).
+                // A brand-new no-account user needs a way forward here, so
+                // we do NOT fall back to the CTA-less `EmptyMessagesStateView`.
                 else if conversationStore.conversations.isEmpty && !conversationStore.isLoading {
-                    EmptyMessagesStateView(onNewChat: { showNewChat = true })
+                    EmptyInboxView(onNewChat: { showNewChat = true })
                 }
                 // 4. Normal state (has conversations)
                 else {
@@ -538,8 +543,12 @@ struct ConversationRowView: View {
             // Content
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
-                    // Display name - group name for groups, peer name for 1:1
-                    Text(conversation.displayTitle)
+                    // Soft Unique Tags: petname-first when serverless flag ON.
+                    let tagTitle = RavenTagDisplay.inboxTitle(
+                        displayName: conversation.displayTitle,
+                        username: conversation.isGroup ? nil : conversation.peer.username
+                    )
+                    Text(tagTitle.title)
                         .font(.headline)
                         .fontWeight(conversation.unreadCount > 0 ? .bold : .semibold)
                         .lineLimit(1)
@@ -566,7 +575,16 @@ struct ConversationRowView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                
+
+                if let sub = RavenTagDisplay.inboxTitle(
+                    displayName: conversation.displayTitle,
+                    username: conversation.isGroup ? nil : conversation.peer.username
+                ).subtitle {
+                    Text(sub)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                } 
                 HStack {
                     // Preview with delivery indicator. If the user has an
                     // unsent draft for this conversation we surface it
@@ -707,16 +725,21 @@ struct AvatarView: View {
 }
 
 // MARK: - Empty Inbox View
+/// Empty state for a fresh inbox. Unlike the bare `EmptyMessagesStateView`,
+/// this gives a brand-new (no-account) user an explicit way forward: the
+/// CTA opens the New Chat composer — the same `NewChatView` sheet reached
+/// by the toolbar compose button — where they can start a chat or add a
+/// contact by QR.
 struct EmptyInboxView: View {
     let onNewChat: () -> Void
-    
+
     var body: some View {
         ContentUnavailableView {
-            Label("No Messages", systemImage: "bubble.left.and.bubble.right")
+            Label("No messages yet", systemImage: "bubble.left.and.bubble.right")
         } description: {
-            Text("Start a conversation to see it here")
+            Text("Start a chat or add a contact to begin.")
         } actions: {
-            Button("New Message", action: onNewChat)
+            Button("Start a chat", action: onNewChat)
                 .buttonStyle(.borderedProminent)
         }
     }

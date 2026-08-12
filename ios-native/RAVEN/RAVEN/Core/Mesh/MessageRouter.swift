@@ -8,6 +8,7 @@
 
 import Foundation
 import UIKit
+import CryptoKit
 
 // MARK: - Message Router
 
@@ -133,6 +134,22 @@ final class MessageRouter: ObservableObject {
                 messageId: mid,
                 channels: channels
             )
+
+            // Parallel serverless path (FeatureFlag.ravenEnvelopeV1, default OFF).
+            // Does NOT replace MeshEnvelope / .mesh jobs — only extra attempts:
+            //   • LAN/TCP when Settings → Serverless LAN is configured
+            //   • BLE raw RVN1 when preference is bleMesh (Phase G start)
+            if FeatureFlag.isRavenEnvelopeV1Enabled {
+                let sealedB64 = entry.payloadCiphertext
+                if let lan = RavenServerlessLanConfig.stored {
+                    Task {
+                        await Self.tryServerlessLanSend(mid: mid, sealedBase64: sealedB64, config: lan)
+                    }
+                }
+                Task {
+                    await Self.tryServerlessBleSend(mid: mid, sealedBase64: sealedB64)
+                }
+            }
         } catch {
             await MainActor.run { box.end() }
             throw error // Propagate to UI for error display
@@ -152,6 +169,17 @@ final class MessageRouter: ObservableObject {
             #if DEBUG
             print("🚀 [Router] Degraded → effectiveHopLimit: \(effectiveHopLimit)")
             #endif
+        }
+
+        // Serverless exclusive path: never silently use FastAPI or MeshEnvelope for 1:1 text.
+        if FeatureFlag.isRavenEnvelopeV1Enabled {
+            #if DEBUG
+            print("🚀 [MessageRouter] ➡️ DECISION: SERVERLESS RVN1 ONLY (no FastAPI / no MeshEnvelope)")
+            #endif
+            try? await outbox.updateServerState(clientMessageId: mid, state: .idle)
+            try? await outbox.updateMeshState(clientMessageId: mid, state: .idle)
+            await MainActor.run { box.end() }
+            return
         }
         
         if canReachServer {
@@ -221,6 +249,138 @@ final class MessageRouter: ObservableObject {
     }
     
     // MARK: - Server Send
+
+    /// Flagged parallel path: pack already-sealed RVNA1/RVNS1 bytes into
+    /// RavenEnvelopeV1 and TCP to a configured raven-node. MeshEnvelope path
+    /// is untouched. Best-effort — failures are logged only.
+    private static func tryServerlessLanSend(
+        mid: String,
+        sealedBase64: String,
+        config: RavenServerlessLanConfig
+    ) async {
+        guard FeatureFlag.isRavenEnvelopeV1Enabled else { return }
+        guard let sealed = Data(base64Encoded: sealedBase64), sealed.count >= 8 else {
+            #if DEBUG
+            print("🕊️ [LAN] skip — no sealed body for \(mid.prefix(8))")
+            #endif
+            return
+        }
+        let wifiUp: Bool = {
+            let mon = NetworkMonitor.shared
+            switch mon.connectionType {
+            case .wifi, .wiredEthernet, .loopback: return true
+            default: return mon.isOnline
+            }
+        }()
+        guard RavenServerlessLanPath.shouldAttemptLan(
+            wifiUp: wifiUp,
+            peerOnLan: true,
+            blePeersNearby: false
+        ) else { return }
+
+        guard let seed = DeviceIdentityService.shared.deviceSigningSeed,
+              let signingKey = try? Curve25519.Signing.PrivateKey(rawRepresentation: seed) else {
+            #if DEBUG
+            print("🕊️ [LAN] skip — no device signing key")
+            #endif
+            return
+        }
+
+        // message_id: UUID raw 16B when mid is UUID (destination can recover for sealer AAD)
+        let messageId = RavenEnvelopeMessageId.envelopeMessageId(fromClientMessageId: mid)
+        await MainActor.run {
+            RavenEnvelopeChatWire.shared.registerOutbound(
+                clientMessageId: mid,
+                envelopeMessageId: messageId
+            )
+        }
+        let routingTag = Data(SHA256.hash(data: sealed.prefix(64) + messageId)).prefix(16)
+        let hybrid = {
+            switch RavenInterimSeal.classify(sealed) {
+            case .opaqueAtsam: return true
+            default: return false
+            }
+        }()
+        let env = RavenServerlessLanPath.packSealedMessage(
+            sealedBody: sealed,
+            messageId: messageId,
+            routingTag: Data(routingTag),
+            signingKey: signingKey,
+            hybridPQHint: hybrid
+        )
+        do {
+            let ack = try await RavenServerlessLanPath.sendEnvelope(
+                env,
+                host: config.host,
+                port: config.port
+            )
+            // Real endpoint ACK (opaque) → UI Delivered ticks; no bridge keys.
+            if let acked = RavenEnvelopeEndpointIngest.opaqueAckedMessageId(from: ack) {
+                _ = await RavenEnvelopeChatWire.shared.applyDeliveredFromAck(
+                    ackedEnvelopeId: Data(acked)
+                )
+            } else {
+                await RavenEnvelopeChatWire.applyDelivered(clientMessageId: mid)
+            }
+            #if DEBUG
+            print("🕊️ [LAN] ACK → Delivered for \(mid.prefix(8))")
+            #endif
+        } catch {
+            #if DEBUG
+            print("🕊️ [LAN] send failed for \(mid.prefix(8)): \(error)")
+            #endif
+        }
+    }
+
+    /// Flagged parallel BLE path: pack sealed bytes into RavenEnvelopeV1 and
+    /// enqueue on BLEMeshEngine. MeshEnvelope spray jobs stay untouched.
+    private static func tryServerlessBleSend(mid: String, sealedBase64: String) async {
+        guard FeatureFlag.isRavenEnvelopeV1Enabled else { return }
+        let bleNearby = await MainActor.run { BLEMeshEngine.shared.hasActiveConnections }
+        let wifiUp: Bool = {
+            let mon = NetworkMonitor.shared
+            switch mon.connectionType {
+            case .wifi, .wiredEthernet, .loopback: return true
+            default: return mon.isOnline
+            }
+        }()
+        guard RavenBleRvn1Carrier.shouldAttemptBle(
+            wifiUp: wifiUp,
+            peerOnLan: false,
+            blePeersNearby: bleNearby
+        ) else { return }
+
+        guard let sealed = Data(base64Encoded: sealedBase64), sealed.count >= 8 else { return }
+        guard let seed = DeviceIdentityService.shared.deviceSigningSeed,
+              let signingKey = try? Curve25519.Signing.PrivateKey(rawRepresentation: seed) else {
+            return
+        }
+        let messageId = RavenEnvelopeMessageId.envelopeMessageId(fromClientMessageId: mid)
+        await MainActor.run {
+            RavenEnvelopeChatWire.shared.registerOutbound(
+                clientMessageId: mid,
+                envelopeMessageId: messageId
+            )
+        }
+        let routingTag = Data(SHA256.hash(data: sealed.prefix(64) + messageId)).prefix(16)
+        let hybrid = {
+            switch RavenInterimSeal.classify(sealed) {
+            case .opaqueAtsam: return true
+            default: return false
+            }
+        }()
+        let packed = RavenBleRvn1Carrier.packSealedForBle(
+            sealedBody: sealed,
+            messageId: messageId,
+            routingTag: Data(routingTag),
+            signingKey: signingKey,
+            hybridPQHint: hybrid
+        )
+        await BLEMeshEngine.shared.enqueueRawRavenEnvelopeV1(packed)
+        #if DEBUG
+        print("🕊️ [BLE-RVN1] enqueued packed envelope for \(mid.prefix(8)) (\(packed.count) B)")
+        #endif
+    }
     
     /// Attempt server delivery (idempotent via client_message_id)
     func tryServerSend(mid: String, roomId: String? = nil) async {

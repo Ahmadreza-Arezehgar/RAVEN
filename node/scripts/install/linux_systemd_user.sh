@@ -16,12 +16,12 @@ echo "user-local ash -> raven (system /bin/ash untouched)"
 
 cat >"$UNIT" <<EOF
 [Unit]
-Description=RAVEN raven-node (user)
+Description=RAVEN raven-node service (bridge + IPC)
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=${BIN_DIR}/raven-node bridge --data-dir ${DATA_DIR} --lan-listen 127.0.0.1:7420 --ble-listen 127.0.0.1:7421 --timeout-secs 0
+ExecStart=${BIN_DIR}/raven-node service --data-dir ${DATA_DIR} --lan-listen 127.0.0.1:7420 --ble-listen 127.0.0.1:7421 --timeout-secs 0
 Restart=on-failure
 RestartSec=3
 
@@ -32,4 +32,5 @@ EOF
 systemctl --user daemon-reload
 systemctl --user enable --now raven-node.service
 echo "enabled systemd --user raven-node.service"
+echo "IPC sock: ${DATA_DIR}/raven-node.sock"
 echo "export PATH=\"${BIN_DIR}:\$PATH\""

@@ -7,11 +7,14 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use raven_core::forward_queue::ForwardQueue;
+use raven_core::envelope::Envelope;
+use raven_core::forward_queue::{ForwardItem, ForwardQueue, ForwardState};
 use raven_core::ipc::{
     decode_request, default_socket_path, encode_response, IpcRequest, IpcResponse, IPC_VERSION,
 };
 use raven_core::node_policy::{load_policy, save_policy};
+use raven_core::queue::{DeliveryState, OutgoingQueue, QueueItem};
+use raven_core::transport::TransportKind;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Mutex;
@@ -100,7 +103,11 @@ fn handle_req(req: IpcRequest, data_dir: &Path, forward: &Option<ForwardQueue>) 
                 },
             }
         }
-        IpcRequest::EnqueueSealed { v, envelope_b64, .. } => {
+        IpcRequest::EnqueueSealed {
+            v,
+            envelope_b64,
+            peer_hint,
+        } => {
             if envelope_b64.len() > 512 * 1024 {
                 return IpcResponse::Error {
                     v,
@@ -108,10 +115,92 @@ fn handle_req(req: IpcRequest, data_dir: &Path, forward: &Option<ForwardQueue>) 
                     message: "envelope too large".into(),
                 };
             }
-            // Accept framing only — sealed bytes may be queued by future daemon paths.
+            let packed = match base64_decode(&envelope_b64) {
+                Ok(b) => b,
+                Err(e) => {
+                    return IpcResponse::Error {
+                        v,
+                        code: "IPC_BAD_B64".into(),
+                        message: e,
+                    };
+                }
+            };
+            if packed.len() > raven_core::forward_queue::MAX_ENVELOPE_BYTES {
+                return IpcResponse::Error {
+                    v,
+                    code: "IPC_FRAME".into(),
+                    message: "envelope too large".into(),
+                };
+            }
+            let Some(env) = Envelope::unpack(&packed) else {
+                return IpcResponse::Error {
+                    v,
+                    code: "IPC_BAD_ENVELOPE".into(),
+                    message: "not a RavenEnvelopeV1".into(),
+                };
+            };
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            let peer = peer_hint.unwrap_or_else(|| "ipc".into());
+            // Prefer forward queue when available (always-on bridge); also mirror outbox.
+            if let Some(q) = forward {
+                let item = ForwardItem {
+                    message_id: env.message_id,
+                    packed_envelope: packed.clone(),
+                    ingress: TransportKind::Internet,
+                    egress: TransportKind::Internet,
+                    state: ForwardState::Queued,
+                    created_at_ms: now,
+                    expires_at_ms: env.expires_at.max(now.saturating_add(60_000)),
+                    previous_hop: peer.clone(),
+                };
+                if let Err(e) = q.enqueue(&item) {
+                    return IpcResponse::Error {
+                        v,
+                        code: "QUEUE_FULL".into(),
+                        message: e.to_string(),
+                    };
+                }
+            }
+            let outbox_path = data_dir.join("queue.sqlite");
+            match OutgoingQueue::open(&outbox_path) {
+                Ok(oq) => {
+                    let item = QueueItem {
+                        message_id: env.message_id,
+                        packed_envelope: packed,
+                        peer_addr: peer,
+                        state: DeliveryState::Queued,
+                        created_at_ms: now,
+                    };
+                    if let Err(e) = oq.enqueue(&item) {
+                        return IpcResponse::Error {
+                            v,
+                            code: "OUTBOX".into(),
+                            message: e.to_string(),
+                        };
+                    }
+                }
+                Err(e) => {
+                    return IpcResponse::Error {
+                        v,
+                        code: "OUTBOX".into(),
+                        message: e.to_string(),
+                    };
+                }
+            }
             IpcResponse::Accepted { v }
         }
     }
+}
+
+fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD
+        .decode(s.trim())
+        .or_else(|_| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(s.trim()))
+        .map_err(|e| e.to_string())
 }
 
 async fn serve_one(mut stream: UnixStream, data_dir: Arc<PathBuf>, forward: Arc<Mutex<Option<ForwardQueue>>>) {

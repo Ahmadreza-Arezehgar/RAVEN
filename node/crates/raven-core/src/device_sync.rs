@@ -26,11 +26,40 @@ const SYNC_INFO: &[u8] = b"raven/rvn1/device-sync/contacts/v1";
 const REVOKE_DOMAIN: &[u8] = b"rvn1/devrevoke/v1";
 
 /// Public contact fields only — never private keys.
+/// Raven Tag V1: petname (Layer C) + public_tag (Layer B) + pin.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SyncContact {
+    /// Layer C — device-local petname (primary UI label).
+    #[serde(default)]
+    pub petname: String,
+    /// Layer B — public Raven Tag / Alias V1 (NOT globally unique).
+    #[serde(default)]
+    pub public_tag: String,
+    /// Legacy alias field (migrated into public_tag when empty).
+    #[serde(default)]
     pub alias: String,
     pub address: String,
     pub pub_hex: String,
+    /// Soft-unique pin: Tag+key locked after QR/verify.
+    #[serde(default)]
+    pub pinned: bool,
+}
+
+impl SyncContact {
+    /// Normalize legacy rows that only had `alias`.
+    pub fn migrate(mut self) -> Self {
+        if self.public_tag.is_empty() && !self.alias.is_empty() {
+            self.public_tag = self.alias.clone();
+        }
+        if self.petname.is_empty() {
+            if !self.public_tag.is_empty() {
+                self.petname = self.public_tag.clone();
+            } else if !self.alias.is_empty() {
+                self.petname = self.alias.clone();
+            }
+        }
+        self
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -215,7 +244,12 @@ pub fn import_contact_sync(
     if plain.schema != 1 {
         return Err("SYNC_SCHEMA".into());
     }
-    Ok(plain.contacts)
+    Ok(plain.contacts.into_iter().map(SyncContact::migrate).collect())
+}
+
+/// Persist revocation store as JSON under data dir (OOB exchangeable).
+pub fn revocation_store_path(data_dir: &std::path::Path) -> std::path::PathBuf {
+    data_dir.join("revocations.json")
 }
 
 /// Merge revocation records: sticky denylist; higher epoch wins per device_id.
@@ -226,6 +260,46 @@ pub struct RevocationStore {
 }
 
 impl RevocationStore {
+    pub fn load(data_dir: &std::path::Path) -> Self {
+        let path = revocation_store_path(data_dir);
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            return Self::default();
+        };
+        let Ok(recs): Result<Vec<RevocationRecord>, _> = serde_json::from_str(&raw) else {
+            return Self::default();
+        };
+        let mut store = Self::default();
+        for r in recs {
+            let _ = store.apply(r);
+        }
+        store
+    }
+
+    pub fn save(&self, data_dir: &std::path::Path) -> Result<(), String> {
+        std::fs::create_dir_all(data_dir).map_err(|e| e.to_string())?;
+        let path = revocation_store_path(data_dir);
+        let recs: Vec<&RevocationRecord> = self.records().collect();
+        let raw = serde_json::to_string_pretty(&recs).map_err(|e| e.to_string())?;
+        #[cfg(unix)]
+        {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&path)
+                .map_err(|e| e.to_string())?;
+            f.write_all(raw.as_bytes()).map_err(|e| e.to_string())?;
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::write(&path, raw).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
     pub fn apply(&mut self, rec: RevocationRecord) -> Result<bool, String> {
         rec.verify()?;
         match self.by_device.get(&rec.device_id) {
@@ -304,16 +378,21 @@ mod tests {
             schema: 1,
             from_device_id: "phone-a".into(),
             contacts: vec![SyncContact {
+                petname: "Bob Desk".into(),
+                public_tag: "bob".into(),
                 alias: "bob".into(),
                 address: "rvn1qqqq".into(),
                 pub_hex: "aa".into(),
+                pinned: true,
             }],
             issued_at_ms: 100,
         };
         let wire = seal_contact_sync(&user, &plain).unwrap();
         assert!(wire.starts_with(SYNC_MAGIC));
         let got = import_contact_sync(&user, &reg, &wire, 100).unwrap();
-        assert_eq!(got, plain.contacts);
+        assert_eq!(got[0].petname, "Bob Desk");
+        assert_eq!(got[0].public_tag, "bob");
+        assert!(got[0].pinned);
     }
 
     #[test]

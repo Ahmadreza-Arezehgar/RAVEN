@@ -153,6 +153,36 @@ impl PrekeyBundle {
             signature,
         })
     }
+
+    /// Build an unsigned bundle from real hybrid public material (X25519 + ML-KEM EK).
+    /// Caller must `.sign(identity)` before publish. Private seeds stay with the caller.
+    pub fn from_hybrid_public(
+        device_id: impl Into<String>,
+        x25519_pub: [u8; 32],
+        mlkem768_ek: Vec<u8>,
+        signed_prekey_id: u32,
+        created_at_ms: u64,
+        expires_at_ms: u64,
+    ) -> Result<Self, String> {
+        if mlkem768_ek.len() != MLKEM768_EK_LEN {
+            return Err("mlkem ek length".into());
+        }
+        if mlkem768_ek.iter().all(|&b| b == 0) {
+            return Err("PREKEY_DEGRADED_EK".into());
+        }
+        Ok(Self {
+            identity_ed25519_pub: [0u8; 32],
+            device_id: device_id.into(),
+            x25519_pub,
+            mlkem768_ek,
+            signed_prekey_id,
+            one_time_prekey_id: 0,
+            one_time_x25519_pub: None,
+            created_at_ms,
+            expires_at_ms,
+            signature: [0u8; 64],
+        })
+    }
 }
 
 fn decode_arr32(s: &str) -> Result<[u8; 32], String> {

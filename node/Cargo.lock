@@ -115,8 +115,10 @@ checksum = "76a2e8124351fda1ef8aaaa3bbd7ebbcb486bbcd4225aca0aa0d84bb2db8fecb"
 name = "ash"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "clap",
  "hex",
+ "rand 0.8.7",
  "raven-core",
  "serde",
  "serde_json",
@@ -2640,6 +2642,7 @@ dependencies = [
 name = "raven-node"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "clap",
  "hex",
  "rand 0.8.7",

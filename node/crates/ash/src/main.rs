@@ -3,6 +3,8 @@
 //! This is the **product** CLI in `node/` — not Cursor/ash-autonomous automation.
 //! Never prints private keys, seeds, session keys, recovery secrets, or plaintext.
 
+mod ext;
+
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -19,7 +21,7 @@ use raven_core::messaging_path::{
     assert_no_silent_fastapi, resolve_terminal_messaging_path, MessagingPath,
 };
 use raven_core::node_policy::{load_policy, save_policy, BridgeStatusSnapshot, NodePolicy};
-use raven_core::prekey_bundle::{PrekeyBundle, PrekeyBundleJson, PrekeyStore, MLKEM768_EK_LEN};
+use raven_core::prekey_bundle::{PrekeyBundle, PrekeyBundleJson, PrekeyStore};
 use raven_core::queue::{DeliveryState, OutgoingQueue};
 use raven_core::sanitize::sanitize_terminal_text;
 use serde::{Deserialize, Serialize};
@@ -59,7 +61,7 @@ enum Commands {
     Init,
     /// Show public identity bits for data dir.
     Whoami,
-    /// Forward send to raven-node. Prefer `--stdin-text` so plaintext is not in argv.
+    /// Forward send to raven-node. Plaintext ONLY via stdin (never argv).
     Send {
         #[arg(long)]
         peer: String,
@@ -67,11 +69,12 @@ enum Commands {
         peer_pub_hex: String,
         #[arg(long, default_value = "127.0.0.1:0")]
         listen: String,
-        /// Legacy: text on argv (discouraged — visible in `ps`). Prefer `--stdin-text`.
-        text: Option<String>,
-        /// Read message body from stdin (one line). Default when `text` omitted.
-        #[arg(long, default_value_t = false)]
+        /// Read message body from stdin (required — argv plaintext is refused).
+        #[arg(long, default_value_t = true)]
         stdin_text: bool,
+        /// Interactive chat session with /back /info /verify /block.
+        #[arg(long, default_value_t = false)]
+        chat: bool,
     },
     /// Print welcome banner only (safe — no secrets).
     Banner,
@@ -79,9 +82,9 @@ enum Commands {
     Status,
     /// Diagnose ash vs system ash conflict, paths, and node socket.
     Doctor,
-    /// Ping raven-node UDS IPC (must be running: `raven-node ipc`).
+    /// Ping raven-node UDS IPC (must be running: `raven-node ipc` / service).
     IpcPing,
-    /// Configure local raven-node policy (bridge/store/relay). Does not stop a running node.
+    /// Configure local raven-node policy / bootstrap (bridge/store/relay/peers).
     Node {
         #[command(subcommand)]
         cmd: NodeCommands,
@@ -95,6 +98,16 @@ enum Commands {
     Prekey {
         #[command(subcommand)]
         cmd: PrekeyCommands,
+    },
+    /// Multi-device encrypted contact sync + revocation (OOB sealed blobs).
+    Device {
+        #[command(subcommand)]
+        cmd: DeviceCommands,
+    },
+    /// Offline opaque mailbox put/get (store_tag only — no usernames).
+    Mailbox {
+        #[command(subcommand)]
+        cmd: MailboxCommands,
     },
 }
 
@@ -118,6 +131,9 @@ enum ContactCommands {
         /// Expected fingerprint. On match: pin Tag+key (DHT cannot overwrite).
         #[arg(long)]
         verify_fp: Option<String>,
+        /// Optional OOB prekey JSON for first-message hybrid initiate.
+        #[arg(long)]
+        prekey_file: Option<PathBuf>,
     },
     /// List contacts: petname first, @tag subtitle (never address-primary).
     List,
@@ -141,7 +157,7 @@ enum ContactCommands {
 
 #[derive(Subcommand, Debug)]
 enum PrekeyCommands {
-    /// Publish a demo/signed prekey bundle into local prekey_store.json (no FastAPI).
+    /// Publish a signed prekey bundle (real X25519 + ML-KEM) into local store.
     Publish {
         #[arg(long, default_value = "ash-device")]
         device_id: String,
@@ -174,6 +190,68 @@ enum NodeCommands {
     Relay {
         #[command(subcommand)]
         state: OnOff,
+    },
+    /// Add a custom bootstrap multiaddr (or --manual peer).
+    AddBootstrap {
+        multiaddr: String,
+        #[arg(long, default_value_t = false)]
+        manual: bool,
+    },
+    /// Disable and clear Raven-shipped bootstrap defaults.
+    DisableRavenDefaults,
+    /// Show effective bootstrap peers.
+    ShowBootstrap,
+    /// Write empty/default bootstrap.json (--no-raven-defaults clears Raven list).
+    InitBootstrap {
+        #[arg(long, default_value_t = false)]
+        no_raven_defaults: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum DeviceCommands {
+    /// Export sealed contact/petname sync blob (hex) for another authorized device.
+    SyncExport {
+        #[arg(long, default_value = "ash-device")]
+        device_id: String,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Import sealed sync blob; merges petname/tag/pin with key-change rules.
+    SyncImport {
+        #[arg(long)]
+        file: PathBuf,
+    },
+    /// Issue + persist a signed device revocation record.
+    Revoke {
+        #[arg(long)]
+        device_id: String,
+        #[arg(long, default_value_t = 1)]
+        epoch: u64,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum MailboxCommands {
+    /// Deposit opaque envelope under rotating mailbox → store_tag index.
+    Put {
+        #[arg(long)]
+        k_route_hex: String,
+        #[arg(long, default_value_t = 1)]
+        epoch: u64,
+        #[arg(long, default_value_t = 0)]
+        slot: u64,
+        #[arg(long)]
+        envelope_hex: String,
+    },
+    /// Retrieve by opaque rotating tags (current + previous epoch).
+    Get {
+        #[arg(long)]
+        k_route_hex: String,
+        #[arg(long, default_value_t = 1)]
+        epoch: u64,
+        #[arg(long, default_value_t = 0)]
+        slot: u64,
     },
 }
 
@@ -372,9 +450,9 @@ fn print_welcome(data_dir: &Path) {
 
 fn print_menu() {
     println!("{C_BOLD}{C_WHITE}  Menu{C_RESET}");
-    println!("  {C_CYAN}1{C_RESET}  Messages      {C_DIM}queue status (ids + delivery only){C_RESET}");
-    println!("  {C_CYAN}2{C_RESET}  Send New Message");
-    println!("  {C_CYAN}3{C_RESET}  Contacts");
+    println!("  {C_CYAN}1{C_RESET}  Messages      {C_DIM}queue + local chat history{C_RESET}");
+    println!("  {C_CYAN}2{C_RESET}  Send / Chat   {C_DIM}stdin only — /back /info /verify /block{C_RESET}");
+    println!("  {C_CYAN}3{C_RESET}  Contacts      {C_DIM}petname-first Soft Unique Tags{C_RESET}");
     println!("  {C_CYAN}4{C_RESET}  Status");
     println!("  {C_CYAN}q{C_RESET}  Quit");
     print!("\n{C_PURPLE}raven>{C_RESET} ");
@@ -391,41 +469,68 @@ fn read_line() -> String {
 
 fn cmd_messages(data_dir: &Path) {
     let qpath = data_dir.join("queue.db");
-    if !qpath.exists() {
+    let qpath2 = data_dir.join("queue.sqlite");
+    let path = if qpath.exists() {
+        qpath
+    } else {
+        qpath2
+    };
+    if path.exists() {
+        match OutgoingQueue::open(&path) {
+            Ok(q) => match q.list_all() {
+                Ok(items) => {
+                    if items.is_empty() {
+                        println!("{C_DIM}Queue empty.{C_RESET}");
+                    } else {
+                        println!(
+                            "{C_DIM}{:<12} {:<12} {}{C_RESET}",
+                            "msg_id", "state", "peer"
+                        );
+                        for it in items {
+                            let id = hex::encode(it.message_id);
+                            let st = match it.state {
+                                DeliveryState::Queued => "queued",
+                                DeliveryState::Sent => "sent",
+                                DeliveryState::Delivered => "delivered",
+                                DeliveryState::Failed => "failed",
+                            };
+                            println!(
+                                "{}… {:<12} {}",
+                                &id[..8.min(id.len())],
+                                st,
+                                it.peer_addr
+                            );
+                        }
+                    }
+                }
+                Err(e) => eprintln!("queue list error: {e}"),
+            },
+            Err(e) => eprintln!("queue open error: {e}"),
+        }
+    } else {
         println!("{C_DIM}No outgoing queue yet.{C_RESET}");
-        return;
     }
-    match OutgoingQueue::open(&qpath) {
-        Ok(q) => match q.list_all() {
-            Ok(items) => {
-                if items.is_empty() {
-                    println!("{C_DIM}Queue empty.{C_RESET}");
-                    return;
-                }
-                println!(
-                    "{C_DIM}{:<12} {:<12} {}{C_RESET}",
-                    "msg_id", "state", "peer"
-                );
-                for it in items {
-                    let id = hex::encode(it.message_id);
-                    let st = match it.state {
-                        DeliveryState::Queued => "queued",
-                        DeliveryState::Sent => "sent",
-                        DeliveryState::Delivered => "delivered",
-                        DeliveryState::Failed => "failed",
-                    };
-                    // Never print packed envelope / ciphertext bytes.
-                    println!(
-                        "{}… {:<12} {}",
-                        &id[..8.min(id.len())],
-                        st,
-                        it.peer_addr
-                    );
-                }
-            }
-            Err(e) => eprintln!("queue list error: {e}"),
-        },
-        Err(e) => eprintln!("queue open error: {e}"),
+    let hist = raven_core::ChatHistory::load(data_dir);
+    if hist.entries.is_empty() {
+        println!("{C_DIM}No local chat history.{C_RESET}");
+    } else {
+        println!("{C_BOLD}Recent history{C_RESET} (sanitized previews)");
+        for e in hist.entries.iter().rev().take(15).rev() {
+            let label = if !e.peer_petname.is_empty() {
+                sanitize_terminal_text(&e.peer_petname)
+            } else if !e.peer_tag.is_empty() {
+                format!("@{}", sanitize_terminal_text(&e.peer_tag))
+            } else {
+                e.peer_pub_hex.chars().take(12).collect()
+            };
+            println!(
+                "  {C_DIM}{}{C_RESET} {} → {}  {}",
+                &e.message_id_hex[..8.min(e.message_id_hex.len())],
+                e.direction,
+                label,
+                sanitize_terminal_text(&e.preview)
+            );
+        }
     }
 }
 
@@ -778,63 +883,7 @@ fn cmd_contacts(data_dir: &Path) {
 
 fn cmd_prekey_publish(data_dir: &Path, device_id: &str, out: Option<&Path>) {
     let id = ensure_identity(data_dir);
-    // Demo X25519 + deterministic non-zero ML-KEM EK placeholder for store path tests.
-    // Real ML-KEM EK comes from hybrid initiate; this publishes a signed bundle shape.
-    let mut ek = vec![0u8; MLKEM768_EK_LEN];
-    for (i, b) in ek.iter_mut().enumerate() {
-        *b = (i as u8).wrapping_mul(17).wrapping_add(3);
-    }
-    let now = now_ms();
-    let bundle = PrekeyBundle {
-        identity_ed25519_pub: id.public_key_bytes(),
-        device_id: sanitize_terminal_text(device_id),
-        x25519_pub: {
-            // Derive a stable demo X25519 pub marker from identity (not a real DH pub).
-            let mut x = [0u8; 32];
-            x.copy_from_slice(&id.public_key_bytes());
-            x[0] |= 0x08;
-            x
-        },
-        mlkem768_ek: ek,
-        signed_prekey_id: 1,
-        one_time_prekey_id: 0,
-        one_time_x25519_pub: None,
-        created_at_ms: now,
-        expires_at_ms: now.saturating_add(30 * 24 * 3600 * 1000),
-        signature: [0u8; 64],
-    };
-    let bundle = match bundle.sign(&id) {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("sign failed: {e}");
-            return;
-        }
-    };
-    let mut store = PrekeyStore::load(data_dir);
-    if let Err(e) = store.publish(&bundle, now) {
-        eprintln!("publish failed: {e}");
-        return;
-    }
-    if let Err(e) = store.save(data_dir) {
-        eprintln!("save store failed: {e}");
-        return;
-    }
-    println!("{C_GREEN}prekey published{C_RESET} → local prekey_store.json (untrusted store stand-in)");
-    println!("{C_DIM}store_key{C_RESET} {}", hex::encode(PrekeyBundle::store_key(&id.public_key_bytes())));
-    println!("{C_DIM}note{C_RESET}      never FastAPI — OOB/file/DHT only");
-    if let Some(path) = out {
-        let j = bundle.to_json();
-        match serde_json::to_string_pretty(&j) {
-            Ok(raw) => {
-                if let Err(e) = std::fs::write(path, raw) {
-                    eprintln!("write --out failed: {e}");
-                } else {
-                    println!("{C_DIM}oob_file{C_RESET} {}", path.display());
-                }
-            }
-            Err(e) => eprintln!("json: {e}"),
-        }
-    }
+    ext::cmd_prekey_publish_real(data_dir, &id, device_id, out);
 }
 
 fn cmd_prekey_fetch(data_dir: &Path, pub_hex: &str, file: Option<&Path>) {
@@ -1036,9 +1085,10 @@ fn set_node_flag(data_dir: &Path, which: &str, on: bool) {
 }
 
 fn cmd_send_interactive(data_dir: &Path) {
+    let id = ensure_identity(data_dir);
     let contacts = load_contacts(data_dir);
-    let (peer, peer_pub_hex) = if !contacts.is_empty() {
-        println!("Pick contact #, @alias, or paste peer host:port");
+    let (peer, peer_pub_hex, petname, tag, open_chat) = if !contacts.is_empty() {
+        println!("Pick contact #, @tag, or paste peer host:port");
         for (i, c) in contacts.iter().enumerate() {
             let sub = c
                 .tag_subtitle()
@@ -1052,21 +1102,32 @@ fn cmd_send_interactive(data_dir: &Path) {
                 if c.pinned { " [pinned]" } else { "" }
             );
         }
-        print!("peer host:port | contact # | @alias: ");
+        print!("peer host:port | contact # | @tag: ");
         let _ = io::stdout().flush();
         let choice = read_line();
         if let Ok(n) = choice.parse::<usize>() {
             if n >= 1 && n <= contacts.len() {
+                let c = &contacts[n - 1];
                 print!("peer listen host:port: ");
                 let _ = io::stdout().flush();
                 let peer = read_line();
-                (peer, contacts[n - 1].pub_hex.clone())
+                print!("open chat session? [Y/n]: ");
+                let _ = io::stdout().flush();
+                let yn = read_line();
+                let chat = yn.is_empty() || yn.eq_ignore_ascii_case("y") || yn.eq_ignore_ascii_case("yes");
+                (
+                    peer,
+                    c.pub_hex.clone(),
+                    c.primary_label(),
+                    normalize_tag(&c.public_tag),
+                    chat,
+                )
             } else {
                 eprintln!("invalid contact #");
                 return;
             }
-        } else if choice.trim().starts_with('@') || resolve_alias_contacts(&contacts, choice.trim()).len() == 1
-            && !choice.contains(':')
+        } else if choice.trim().starts_with('@')
+            || (resolve_alias_contacts(&contacts, choice.trim()).len() == 1 && !choice.contains(':'))
         {
             let alias = choice.trim().trim_start_matches('@');
             let hits = resolve_alias_contacts(&contacts, alias);
@@ -1083,7 +1144,7 @@ fn cmd_send_interactive(data_dir: &Path) {
                     eprintln!(
                         "  {}  {}  fp={}",
                         i + 1,
-                        sanitize_terminal_text(&c.address),
+                        c.primary_label(),
                         contact_fingerprint(c)
                     );
                 }
@@ -1092,12 +1153,18 @@ fn cmd_send_interactive(data_dir: &Path) {
             print!("peer listen host:port: ");
             let _ = io::stdout().flush();
             let peer = read_line();
-            (peer, hits[0].pub_hex.clone())
+            (
+                peer,
+                hits[0].pub_hex.clone(),
+                hits[0].primary_label(),
+                normalize_tag(&hits[0].public_tag),
+                true,
+            )
         } else {
             print!("peer pub_hex: ");
             let _ = io::stdout().flush();
             let pub_hex = read_line();
-            (choice, pub_hex)
+            (choice, pub_hex, String::new(), String::new(), false)
         }
     } else {
         print!("peer host:port: ");
@@ -1106,50 +1173,41 @@ fn cmd_send_interactive(data_dir: &Path) {
         print!("peer pub_hex: ");
         let _ = io::stdout().flush();
         let pub_hex = read_line();
-        (peer, pub_hex)
+        (peer, pub_hex, String::new(), String::new(), false)
     };
-    print!("message (stdin — not stored in shell history as argv): ");
+    if open_chat {
+        ext::cmd_chat_session(
+            data_dir,
+            &id,
+            &petname,
+            &tag,
+            &peer_pub_hex,
+            &peer,
+        );
+        return;
+    }
+    print!("message (stdin — never argv): ");
     let _ = io::stdout().flush();
     let text = read_line();
     if text.is_empty() {
         eprintln!("empty message");
         return;
     }
-    run_send(data_dir, &peer, &peer_pub_hex, "127.0.0.1:0", &text);
+    ext::run_send_secure(
+        data_dir,
+        &id,
+        &peer,
+        &peer_pub_hex,
+        "127.0.0.1:0",
+        &text,
+        &petname,
+        &tag,
+    );
 }
 
 fn run_send(data_dir: &Path, peer: &str, peer_pub_hex: &str, listen: &str, text: &str) {
-    let _ = ensure_identity(data_dir);
-    let exe = std::env::current_exe().ok();
-    let node = exe
-        .as_ref()
-        .and_then(|p| p.parent().map(|d| d.join("raven-node")))
-        .unwrap_or_else(|| PathBuf::from("raven-node"));
-    let status = Command::new(&node)
-        .args([
-            "run",
-            "--data-dir",
-            data_dir.to_str().unwrap_or("."),
-            "--listen",
-            listen,
-            "--peer",
-            peer,
-            "--peer-pub-hex",
-            peer_pub_hex,
-            "--send",
-            text,
-            "--exit-after-ack",
-            "--timeout-secs",
-            "20",
-        ])
-        .status()
-        .unwrap_or_else(|e| {
-            eprintln!("failed to spawn {}: {e}", node.display());
-            std::process::exit(1);
-        });
-    if !status.success() {
-        std::process::exit(status.code().unwrap_or(1));
-    }
+    let id = ensure_identity(data_dir);
+    ext::run_send_secure(data_dir, &id, peer, peer_pub_hex, listen, text, "", "");
 }
 
 fn interactive(data_dir: &Path) {
@@ -1174,6 +1232,11 @@ fn interactive(data_dir: &Path) {
 }
 
 fn main() {
+    let path = resolve_terminal_messaging_path();
+    if let Err(e) = assert_no_silent_fastapi(path) {
+        eprintln!("{e}");
+        std::process::exit(1);
+    }
     let cli = Cli::parse();
     let data_dir = cli.data_dir;
     match cli.cmd {
@@ -1189,6 +1252,14 @@ fn main() {
             }
             NodeCommands::Relay { state } => {
                 set_node_flag(&data_dir, "relay", matches!(state, OnOff::On))
+            }
+            NodeCommands::AddBootstrap { multiaddr, manual } => {
+                ext::cmd_bootstrap_add(&data_dir, &multiaddr, manual)
+            }
+            NodeCommands::DisableRavenDefaults => ext::cmd_bootstrap_disable_raven(&data_dir),
+            NodeCommands::ShowBootstrap => ext::cmd_bootstrap_show(&data_dir),
+            NodeCommands::InitBootstrap { no_raven_defaults } => {
+                ext::cmd_bootstrap_init(&data_dir, no_raven_defaults)
             }
         },
         Some(Commands::Init) => {
@@ -1211,31 +1282,35 @@ fn main() {
             peer,
             peer_pub_hex,
             listen,
-            text,
             stdin_text,
+            chat,
         }) => {
-            let body = if stdin_text || text.is_none() {
-                if let Some(t) = text {
-                    eprintln!(
-                        "{C_DIM}warning: plaintext on argv is visible via ps; prefer --stdin-text only{C_RESET}"
-                    );
-                    t
-                } else {
-                    print!("message (stdin, not echoed to argv): ");
-                    let _ = io::stdout().flush();
-                    read_line()
-                }
-            } else {
-                eprintln!(
-                    "{C_DIM}warning: plaintext on argv is visible via ps — use --stdin-text{C_RESET}"
-                );
-                text.unwrap_or_default()
-            };
-            if body.is_empty() {
-                eprintln!("empty message");
-                std::process::exit(1);
+            let _ = stdin_text;
+            // Refuse any leftover argv-style invocation that clap might have accepted historically.
+            if std::env::args().any(|a| a == "--text" || (!a.starts_with('-') && false)) {
+                ext::refuse_argv_plaintext();
             }
-            run_send(&data_dir, &peer, &peer_pub_hex, &listen, &body);
+            let id = ensure_identity(&data_dir);
+            if chat {
+                let contacts = load_contacts(&data_dir);
+                let c = contacts
+                    .iter()
+                    .find(|c| c.pub_hex.eq_ignore_ascii_case(&peer_pub_hex));
+                let pet = c.map(|c| c.primary_label()).unwrap_or_default();
+                let tag = c
+                    .map(|c| normalize_tag(&c.public_tag))
+                    .unwrap_or_default();
+                ext::cmd_chat_session(&data_dir, &id, &pet, &tag, &peer_pub_hex, &peer);
+            } else {
+                print!("message (stdin, never argv): ");
+                let _ = io::stdout().flush();
+                let body = read_line();
+                if body.is_empty() {
+                    eprintln!("empty message");
+                    std::process::exit(1);
+                }
+                run_send(&data_dir, &peer, &peer_pub_hex, &listen, &body);
+            }
         }
         Some(Commands::Doctor) => cmd_doctor(&data_dir),
         Some(Commands::IpcPing) => cmd_ipc_ping(&data_dir),
@@ -1247,6 +1322,7 @@ fn main() {
                 tag,
                 alias,
                 verify_fp,
+                prekey_file,
             } => {
                 let tag = if !tag.is_empty() { tag } else { alias };
                 if let Err(e) = add_contact(
@@ -1259,6 +1335,18 @@ fn main() {
                 ) {
                     eprintln!("rejected: {e}");
                     std::process::exit(1);
+                }
+                if prekey_file.is_some() || data_dir.join("prekey_store.json").exists() {
+                    match ext::contact_add_fetch_prekey(
+                        &data_dir,
+                        &pub_hex,
+                        prekey_file.as_deref(),
+                    ) {
+                        Ok(()) => {}
+                        Err(e) => {
+                            eprintln!("{C_DIM}prekey note:{C_RESET} {e}");
+                        }
+                    }
                 }
             }
             ContactCommands::List => cmd_contact_list(&data_dir),
@@ -1283,6 +1371,33 @@ fn main() {
             PrekeyCommands::Fetch { pub_hex, file } => {
                 cmd_prekey_fetch(&data_dir, &pub_hex, file.as_deref())
             }
+        },
+        Some(Commands::Device { cmd }) => {
+            let id = ensure_identity(&data_dir);
+            match cmd {
+                DeviceCommands::SyncExport { device_id, out } => {
+                    ext::cmd_device_sync_export(&data_dir, &id, &device_id, &out)
+                }
+                DeviceCommands::SyncImport { file } => {
+                    ext::cmd_device_sync_import(&data_dir, &id, &file)
+                }
+                DeviceCommands::Revoke { device_id, epoch } => {
+                    ext::cmd_device_revoke(&data_dir, &id, &device_id, epoch)
+                }
+            }
+        }
+        Some(Commands::Mailbox { cmd }) => match cmd {
+            MailboxCommands::Put {
+                k_route_hex,
+                epoch,
+                slot,
+                envelope_hex,
+            } => ext::cmd_mailbox_put(&data_dir, &k_route_hex, epoch, slot, &envelope_hex),
+            MailboxCommands::Get {
+                k_route_hex,
+                epoch,
+                slot,
+            } => ext::cmd_mailbox_get(&data_dir, &k_route_hex, epoch, slot),
         },
     }
 }
@@ -1350,6 +1465,15 @@ fn cmd_doctor(data_dir: &Path) {
         sanitize_terminal_text(&data_dir.display().to_string())
     );
     print_messaging_path_diag();
+    {
+        let cfg = raven_core::load_bootstrap(data_dir);
+        println!(
+            "  bootstrap: use_raven_defaults={} effective_peers={} manual_only_ok={}",
+            cfg.use_raven_defaults,
+            cfg.effective_peers().len(),
+            cfg.manual_peer_only_ok()
+        );
+    }
 
     let sock = default_socket_path(data_dir);
     println!(

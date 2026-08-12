@@ -2,13 +2,15 @@
 //!
 //! - **CI / raven-node:** `TransportKind::MockBle` — TCP length-prefix frames
 //!   carrying the same packed `RavenEnvelopeV1` (see `bridge_run`).
-//! - **iOS hardware:** `BLEMeshEngine` (+ `RavenBleRvn1Carrier`) writes raw
+//! - **macOS / iOS hardware:** platform GATT path selected when
+//!   `prefer_platform_gatt` is true. Headless CoreBluetooth radio remains
+//!   BLOCKED_HARDWARE; this module strengthens framing + validation so a
+//!   future GATT driver can drop in without changing envelope rules.
+//! - **iOS product:** `BLEMeshEngine` (+ `RavenBleRvn1Carrier`) writes raw
 //!   `RVN1` bytes over existing GATT message characteristics behind
-//!   `FeatureFlag.ravenEnvelopeV1`. MeshEnvelope JSON path stays default when
-//!   the flag is OFF.
+//!   `FeatureFlag.ravenEnvelopeV1`.
 //!
-//! This module does not open CoreBluetooth / BlueZ sockets. It validates
-//! opaque envelopes before a platform driver ships them on BLE.
+//! Mock TCP is the default for CI. Platform GATT never opens sockets here.
 
 use crate::envelope::Envelope;
 use crate::transport::TransportKind;
@@ -58,21 +60,55 @@ pub fn select_ble_adapter(prefer_platform_gatt: bool) -> BleAdapterKind {
     }
 }
 
+/// Length-prefix frame used by mock-BLE TCP and by GATT write chunking helpers.
+/// Format: `u32 BE length || payload` (same as internet/TCP peer framing).
+pub fn ble_frame_encode(payload: &[u8]) -> Result<Vec<u8>, String> {
+    if !validate_opaque_rvn1(payload) {
+        return Err("BLE_NOT_RVN1".into());
+    }
+    if payload.len() > 512 * 1024 {
+        return Err("BLE_FRAME_TOO_LARGE".into());
+    }
+    let mut out = Vec::with_capacity(4 + payload.len());
+    out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+    out.extend_from_slice(payload);
+    Ok(out)
+}
+
+/// Decode one length-prefixed BLE/mock frame. Returns (payload, bytes_consumed).
+pub fn ble_frame_decode(buf: &[u8]) -> Result<Option<(Vec<u8>, usize)>, String> {
+    if buf.len() < 4 {
+        return Ok(None);
+    }
+    let n = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+    if n == 0 || n > 512 * 1024 {
+        return Err("BLE_BAD_LEN".into());
+    }
+    if buf.len() < 4 + n {
+        return Ok(None);
+    }
+    let payload = buf[4..4 + n].to_vec();
+    if !validate_opaque_rvn1(&payload) {
+        return Err("BLE_NOT_RVN1".into());
+    }
+    Ok(Some((payload, 4 + n)))
+}
+
+/// Env helper: `RAVEN_BLE_PLATFORM=1` selects PlatformGatt (software path flag).
+pub fn select_ble_adapter_from_env() -> BleAdapterKind {
+    let prefer = std::env::var("RAVEN_BLE_PLATFORM")
+        .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false);
+    select_ble_adapter(prefer)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::envelope::EnvType;
     use crate::identity::Identity;
 
-    #[test]
-    fn rejects_non_rvn1() {
-        assert!(!validate_opaque_rvn1(b"{json}"));
-        assert!(!validate_opaque_rvn1(b"RVN1"));
-        assert!(!validate_opaque_rvn1(b"RVN2\x01rest"));
-    }
-
-    #[test]
-    fn accepts_packed_envelope() {
+    fn sample_packed() -> Vec<u8> {
         let id = Identity::generate();
         let mut env = Envelope {
             env_type: EnvType::Message as u8,
@@ -90,12 +126,34 @@ mod tests {
             sender_authentication: vec![],
         };
         env.sign_with(&id);
-        let packed = env.pack();
+        env.pack()
+    }
+
+    #[test]
+    fn rejects_non_rvn1() {
+        assert!(!validate_opaque_rvn1(b"{json}"));
+        assert!(!validate_opaque_rvn1(b"RVN1"));
+        assert!(!validate_opaque_rvn1(b"RVN2\x01rest"));
+    }
+
+    #[test]
+    fn accepts_packed_envelope() {
+        let packed = sample_packed();
         assert!(validate_opaque_rvn1(&packed));
         assert_eq!(select_ble_adapter(false), BleAdapterKind::MockTcp);
         assert_eq!(
             select_ble_adapter(true).transport(),
             TransportKind::Ble
         );
+    }
+
+    #[test]
+    fn frame_roundtrip() {
+        let packed = sample_packed();
+        let framed = ble_frame_encode(&packed).unwrap();
+        let (got, n) = ble_frame_decode(&framed).unwrap().unwrap();
+        assert_eq!(n, framed.len());
+        assert_eq!(got, packed);
+        assert!(ble_frame_encode(b"nope").is_err());
     }
 }

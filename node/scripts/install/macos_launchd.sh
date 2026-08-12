@@ -28,7 +28,7 @@ cat >"$PLIST" <<EOF
   <key>ProgramArguments</key>
   <array>
     <string>${BIN_DIR}/raven-node</string>
-    <string>bridge</string>
+    <string>service</string>
     <string>--data-dir</string>
     <string>${DATA_DIR}</string>
     <string>--lan-listen</string>
@@ -49,5 +49,6 @@ EOF
 launchctl bootout "gui/$(id -u)/${LABEL}" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
 echo "installed launchd agent ${LABEL}"
-echo "data-dir=${DATA_DIR} (IPC sock: ${DATA_DIR}/raven-node.sock when enabled)"
+echo "data-dir=${DATA_DIR}"
+echo "IPC sock: ${DATA_DIR}/raven-node.sock (service = bridge + ipc)"
 echo "PATH tip: export PATH=\"${BIN_DIR}:\$PATH\""

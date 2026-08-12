@@ -11,6 +11,7 @@ pub mod atsam_kdf;
 pub mod atsam_mlkem;
 pub mod atsam_root;
 pub mod bech32m;
+pub mod chat_history;
 pub mod ble_adapter;
 pub mod bootstrap;
 pub mod bridge;
@@ -50,8 +51,8 @@ pub use device_cert::{
 };
 pub use device_sync::{
     derive_device_sync_key, import_contact_sync, partition_lag_allows_stale_auth,
-    seal_contact_sync, unseal_contact_sync, ContactSyncPlaintext, RevocationRecord,
-    RevocationStore, SyncContact,
+    revocation_store_path, seal_contact_sync, unseal_contact_sync, ContactSyncPlaintext,
+    RevocationRecord, RevocationStore, SyncContact,
 };
 pub use messaging_path::{
     assert_no_silent_fastapi, path_from_raven_envelope_flag, resolve_terminal_messaging_path,
@@ -67,7 +68,13 @@ pub use ipc::{
     decode_request, decode_response, default_socket_path, encode_request, encode_response,
     IpcRequest, IpcResponse, IPC_VERSION, MAX_IPC_FRAME,
 };
-pub use ble_adapter::{select_ble_adapter, validate_opaque_rvn1, BleAdapterKind};
+pub use ble_adapter::{
+    ble_frame_decode, ble_frame_encode, select_ble_adapter, select_ble_adapter_from_env,
+    validate_opaque_rvn1, BleAdapterKind,
+};
+pub use chat_history::{
+    blocked_path, history_path, BlockList, ChatHistory, ChatHistoryEntry,
+};
 pub use bridge::{
     classify_multi_role, decide as bridge_decide, opaque_acked_message_id, prepare_forward,
     split_replication, BridgeAction, BridgeRole, DropReason, EnvelopeIdentity, MultiRoleDisposition,

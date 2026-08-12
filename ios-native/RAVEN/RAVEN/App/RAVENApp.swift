@@ -1,6 +1,5 @@
 import SwiftUI
 import UserNotifications
-import GoogleSignIn
 import CryptoKit
 import os
 #if !targetEnvironment(macCatalyst)
@@ -90,10 +89,9 @@ struct RAVENApp: App {
                 .handleDeepLinks()
                 // 🍎 BUG FIX (2026-05-10): wire NSUserActivity handlers
                 // for the activity types declared in Info.plist
-                // (`INSendMessageIntent`, `INStartCallIntent`). Without
-                // these, Siri-suggested message intents and Handoff
-                // continuations are dropped and iOS 26 logs
-                // "no handler registered" on every launch.
+                // (`INSendMessageIntent`). Without this, Siri-suggested
+                // message intents and Handoff continuations are dropped
+                // and iOS 26 logs "no handler registered" on every launch.
                 .onContinueUserActivity("INSendMessageIntent") { activity in
                     // Forward to the router via the existing URL handler.
                     // Siri's INSendMessageIntent attaches the conversation
@@ -102,13 +100,6 @@ struct RAVENApp: App {
                        let url = URL(string: "raven://room/\(convo)") {
                         DeepLinkRouter.shared.handleURL(url)
                     }
-                }
-                .onContinueUserActivity("INStartCallIntent") { _ in
-                    // Calling is not implemented yet — log so we know
-                    // when the activity arrives, but don't crash.
-                    #if DEBUG
-                    print("📞 [App] INStartCallIntent received — call feature not yet implemented")
-                    #endif
                 }
                 // Universal links / Handoff fallback for unknown activity types
                 .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
@@ -144,6 +135,17 @@ struct RAVENApp: App {
                     // Settings; the bootstrap call only registers
                     // observers + starts the score-tick timer.
                     MeshGatewayService.shared.bootstrap()
+
+                    // Flagged RavenEnvelopeV1 bridge observer (BLE→LAN opaque).
+                    // ChatWire: endpoint ingest → sealer / Delivered ticks (key-free bridge).
+                    // No-op when FeatureFlag.ravenEnvelopeV1 is OFF.
+                    if FeatureFlag.isRavenEnvelopeV1Enabled {
+                        // Phone-as-destination for serverless DMs (bridge may still
+                        // forward when role says so). Tests may override.
+                        RavenEnvelopeBridgeService.shared.localIsDestination = true
+                        RavenEnvelopeBridgeService.shared.start()
+                        RavenEnvelopeChatWire.shared.start()
+                    }
 
                     // Boot the serverless internet-bridge transport (libp2p:
                     // DHT discovery + Circuit Relay v2). The host identity is
@@ -587,10 +589,9 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
                     await E2EEBootstrap.shared.runIfNeeded()
                 }
                 
-                #if !targetEnvironment(simulator)
-                await MeshPostSyncWorker.shared.startMonitoring()
-                #endif
-                
+                // (MeshPostSyncWorker removed in the social-excision pivot — it
+                //  synced the deleted posts feed. No serverless replacement needed.)
+
                 #if DEBUG
                 print("📡 [App] Database & mesh sync ready ✅")
                 #endif
@@ -678,21 +679,13 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         }
     }
 
-    // MARK: - URL Callback (Google Sign-In)
+    // MARK: - URL Callback
 
     func application(
         _ app: UIApplication,
         open url: URL,
         options: [UIApplication.OpenURLOptionsKey: Any] = [:]
     ) -> Bool {
-        // Handle Google Sign-In callback
-        if GIDSignIn.sharedInstance.handle(url) {
-            #if DEBUG
-            print("🔵 [App] Google Sign-In handled URL callback")
-            #endif
-            return true
-        }
-
         // (2026-05-15 — round 8) Share Extension hand-off. The
         // extension writes its manifest into the App Group container
         // and opens `raven://share/v1?source=extension` to wake the
@@ -931,27 +924,14 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
                 return
             }
             
-            // Determine destination: room_id for messages, post_id for comment replies
+            // Determine destination: room_id for messages
             let roomId = userInfo["room_id"] as? String ?? userInfo["chat_id"] as? String ?? userInfo["group_id"] as? String
             let senderId = userInfo["sender_id"] as? String
             let notifType = userInfo["type"] as? String
-            
+
             Task {
                 do {
-                    if notifType == "comment" || notifType == "post_comment" {
-                        // Comment reply — post a comment on the post
-                        if let postId = userInfo["post_id"] as? String {
-                            struct CommentBody: Encodable { let content: String }
-                            struct CommentResp: Decodable { let id: String }
-                            let _: CommentResp = try await NetworkService.shared.post(
-                                path: "/api/posts/\(postId)/comment",
-                                body: CommentBody(content: replyText)
-                            )
-                            #if DEBUG
-                            print("✅ [LockScreen] Comment reply sent to post \(postId.prefix(8))")
-                            #endif
-                        }
-                    } else if let roomId = roomId {
+                    if let roomId = roomId {
                         // Message reply — send via MessageService
                         // For groups, send to roomId (group ID); for 1:1, send to senderId
                         let isGroup = notifType == "group_message"
@@ -1051,26 +1031,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
                 completionHandler()
             }
             return
-            
-        // ── View Post / Join Audio Room ──
-        case "VIEW":
-            Task { @MainActor in
-                if let postId = userInfo["post_id"] as? String {
-                    DeepLinkRouter.shared.route(to: .post(postId: postId))
-                }
-                completionHandler()
-            }
-            return
 
-        case "JOIN":
-            Task { @MainActor in
-                if let roomId = userInfo["room_id"] as? String {
-                    DeepLinkRouter.shared.route(to: .audioRoom(slug: roomId))
-                }
-                completionHandler()
-            }
-            return
-            
         default:
             // Default tap (UNNotificationDefaultActionIdentifier) — navigate as before
             Task {
@@ -1206,7 +1167,20 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
                 .record(.legacyClient, for: envelope.senderId)
         }
         
-        guard envelope.recipientId == myId || isGroupMessage else {
+        // 🔴 ROUND 71 — strict-strip delivery fix. A round-70+ sender nulls
+        // recipientId and ships only recipientIdHash once it has us confirmed
+        // .modernATSAM (MessageRouter sets recipientIdHash = hash(receiverId)).
+        // The hash→id resolution lives ~150 lines below this gate, so without a
+        // hash-aware check here a sealed-sender / ATSAM 1:1 mesh message is
+        // bridged/relayed but NEVER delivered locally. Accept the envelope when
+        // its recipientIdHash matches OUR hash — only the true recipient's
+        // hash(myId) can match, so relays (which hash their own id) still skip it.
+        let recipientHashMatchesMe: Bool = {
+            guard envelope.recipientId.isEmpty,
+                  let rih = envelope.recipientIdHash, !rih.isEmpty else { return false }
+            return rih == MeshIdentityToken.hash(userId: myId)
+        }()
+        guard envelope.recipientId == myId || recipientHashMatchesMe || isGroupMessage else {
             logger.debug("Message not for us (recipient: \(envelope.recipientId, privacy: .private), me: \(myId, privacy: .private)) - forwarding...")
             
             // BRIDGE: If we're online, forward to SERVER for the recipient
@@ -1412,6 +1386,12 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         // - Group: roomId = group ID (= envelope.recipientId)
         // - 1:1: roomId = peer ID (= sender for receiver)
         var message = ChatMessage.fromMeshEnvelope(envelope, authority: .mesh)
+
+        // Does anything prove this message really came from the named sender?
+        // Starts as the signature-layer verdict; a render branch may upgrade it
+        // when the CONTENT itself authenticates (opened under a key only the
+        // real sender could have used). Anything left false is not attributable.
+        var attributionProven = envelope.senderAuthenticated
         if isGroupMessage {
             message.roomId = envelope.recipientId  // Group: roomId = group ID
         } else if message.roomId == myId {
@@ -1440,9 +1420,31 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
             )
             if let plaintext = plaintext {
                 message.text = plaintext
+                // Opened under the per-group key, which only real members hold.
+                attributionProven = true
             } else {
-                logger.debug("Could not decrypt group payload (\(envelope.recipientId, privacy: .private) v\(version, privacy: .public)) — leaving ciphertext")
+                // Never leave undecrypted bytes in the bubble — `message.text`
+                // was initialised from the raw envelope by `fromMeshEnvelope`.
+                logger.debug("Could not decrypt group payload (\(envelope.recipientId, privacy: .private) v\(version, privacy: .public))")
+                message.text = "🔒 Sealed group message — couldn't decrypt"
             }
+        } else if isGroupMessage {
+            // 🔴 2026-07-24 — GROUP IMPERSONATION GATE.
+            //
+            // The branch above only runs when `groupKeyVersion != nil`, and the
+            // 1:1 sealer branch below is guarded by `!isGroupMessage`. So a
+            // group envelope that simply OMITS `gkv` fell through both — and
+            // because `ChatMessage.fromMeshEnvelope` initialises `text` from the
+            // raw envelope, whatever the attacker wrote was persisted into a
+            // real group thread under a real member's name. Omitting one
+            // optional field was the whole exploit.
+            //
+            // Group bodies are always sealed under the per-group key. If we did
+            // not decrypt one, we must not show it.
+            logger.debug("Group message without a usable key version from \(envelope.senderId, privacy: .private) — refusing to render raw body.")
+            message.text = envelope.senderAuthenticated
+                ? "🔒 Sealed group message — couldn't decrypt"
+                : "⚠️ Unverified message — sender could not be authenticated"
         } else if !isGroupMessage, let wire = envelope.text, !wire.isEmpty {
             // 🔴 ROUND 19 — hacker-audit Mesh F2. The 1:1 mesh
             // path now runs through the sealer — both engaging the
@@ -1458,7 +1460,20 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
                 encoded: wire,
                 senderUserId: envelope.senderId,
                 recipientUserId: myId,
-                senderAgreementPubKey: nil,
+                // 🔴 2026-07-24 — MUST pass the pinned key.
+                //
+                // `unseal`'s RVNH1 branch only enforces sender binding when it
+                // is given the expected static key ("If the caller told us who
+                // the sender should be..."). Passing nil made that check dead
+                // code — and a stateless Noise IK message-1 can be built by
+                // ANYONE toward our public X25519 static, which we broadcast in
+                // cleartext on every encrypted mesh frame. So a stranger could
+                // craft an RVNH1 frame carrying arbitrary text, have it open as
+                // `.noiseTransport`, and render it under a verified contact's
+                // name complete with an "encrypted" lock badge — walking
+                // straight past the impersonation gate below, which only
+                // inspects self-declared-plaintext reasons.
+                senderAgreementPubKey: await PeerKeyDirectory.shared.agreementKey(for: envelope.senderId),
                 msgId: envelope.clientMessageId
             )
             #if DEBUG
@@ -1469,7 +1484,60 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
                 print("🔍 [Mesh.unseal] mid=\(envelope.clientMessageId.prefix(8)) sender=\(envelope.senderId.prefix(8)) wirePrefix='\(wirePrefix20)' wireLen=\(wire.count) → nil (unknown magic / bad b64)")
             }
             #endif
-            if let unsealed = unsealed {
+            // 🔴 2026-07-24 — IMPERSONATION GATE.
+            //
+            // The bridge exceptions in `MeshCryptoService.authenticate` return
+            // `.relayAttested`: an authenticated relay vouches for this frame,
+            // but the NAMED SENDER is unproven. That is fine for sealed content
+            // — a ciphertext that opens under our pairwise key could only have
+            // been produced by the real sender, so the content authenticates
+            // itself. It is NOT fine for unsealed content: a stranger in BLE
+            // range could set `isBridged`, address an envelope to us, and have
+            // arbitrary text render under a verified contact's name. That was
+            // the mesh impersonation cluster.
+            //
+            // Rule: unproven author + self-admittedly-unencrypted body ⇒ refuse
+            // to attribute. Show the user that something arrived and could not
+            // be trusted, rather than a convincing forgery.
+            // ALLOWLIST, not blocklist. Only these reasons prove the content
+            // was produced by someone holding a key bound to the claimed
+            // sender: an established Noise session, or an ATSAM pairing root.
+            // Everything else — self-declared plaintext, legacy, decrypt
+            // failures, and any reason added in future — is treated as
+            // unproven. A blocklist here was already bypassed once (RVNH1
+            // reports `.noiseTransport`), so the default must be "refuse".
+            let contentProvesSender: Bool = {
+                guard let u = unsealed else { return false }
+                switch u.reason {
+                case .noiseTransport, .atsamHybrid: return true
+                default: return false
+                }
+            }()
+
+            if let u = unsealed,
+               !envelope.senderAuthenticated,
+               !contentProvesSender {
+                // 🔴 MARK, DO NOT DESTROY.
+                //
+                // An earlier version replaced the body outright. That was wrong:
+                // a legitimately bridged message is NOT always sealed —
+                // RAVEN-Android falls back to RVNP1 whenever it has no Noise
+                // session, and the bridge relays the sender's bytes verbatim.
+                // So the mainline "offline recipient reached via an online
+                // bridge" case produced `.relayAttested` + `.explicitPlaintext`,
+                // and destroying the text lost real messages permanently — the
+                // row is persisted and deduped, so it never re-renders.
+                //
+                // Prefixing preserves delivery while still refusing to present
+                // the content as verified. The user sees the message AND that
+                // we could not prove who sent it.
+                logger.debug("UNVERIFIED sender \(envelope.senderId, privacy: .private) — marking body, reason=\(String(describing: u.reason), privacy: .public).")
+                let body = u.plaintext.isEmpty ? (envelope.text ?? "") : u.plaintext
+                message.text = body.isEmpty
+                    ? "⚠️ Unverified message — sender could not be authenticated"
+                    : "⚠️ Unverified sender — \(body)"
+            } else if let unsealed = unsealed {
+                if contentProvesSender { attributionProven = true }
                 // 🔴 ROUND 71 phase 3 follow-up (2026-05-24) —
                 //   placeholder when decrypt failed/no sender key.
                 //   Same fix as MessageStore.swift — for
@@ -1731,6 +1799,33 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
             await MeshACKHandler.shared.markAsSeen(message.id)
             await MeshACKHandler.shared.sendDeliveryACK(for: message.id, toSenderId: message.senderId)
             return
+        }
+
+        // 🔴 2026-07-24 — UNIFIED ATTRIBUTION GATE, at the single persist point.
+        //
+        // The per-branch gates only rewrite `message.text`. Two holes remained:
+        // media fields are copied straight off the wire by `fromMeshEnvelope`
+        // and were never checked (a stranger could render an image or file
+        // under a verified contact's name, and fetching it leaks the victim's
+        // IP to a server the attacker chose); and an envelope with NO text
+        // skipped the render branches entirely, so no gate ran at all.
+        //
+        // One check here closes both, and any render path added later inherits
+        // it instead of having to remember.
+        if !attributionProven {
+            if message.attachmentUrl != nil || message.thumbnailUrl != nil {
+                // Clearing the URLs is what matters: with no URL nothing is
+                // fetched, so there is no attacker-chosen content in the bubble
+                // and no IP leak to a host they picked. The descriptive fields
+                // (fileName/mimeType/fileSize) are `let` on ChatMessage and stay,
+                // but are inert without a URL.
+                logger.debug("[MESH] stripping attacker-supplied attachment from unauthenticated sender \(envelope.senderId, privacy: .private)")
+                message.attachmentUrl = nil
+                message.thumbnailUrl = nil
+            }
+            if (message.text ?? "").isEmpty {
+                message.text = "⚠️ Unverified message — sender could not be authenticated"
+            }
         }
 
         // Insert message. If the insert FAILS we must NOT mark the ID as seen
@@ -2125,6 +2220,44 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
             }
         }
 
+        // 🔴 2026-07-24 — the gate below is SELF-REFERENTIAL on its own.
+        //
+        // Both disjuncts are satisfied entirely by fields inside the attacker's
+        // payload: they set `createdBy` to themselves, or list themselves in
+        // `members`. `GroupSyncPayload` carries no signature. So any stranger in
+        // BLE range could write an arbitrary group into the victim's database.
+        //
+        // The severe case is an UPDATE, not a create: harvest a real group id
+        // (it rides in cleartext as `recipientId`), re-send it with a forged
+        // roster, and `groupRepo.upsert` rewrites `members_json`. That forged
+        // roster is the ONLY membership evidence `handleGroupKeyMeshMessage`
+        // consults — so the attacker then ships a `group_key` at version+1 and
+        // becomes the key the victim encrypts all outbound group traffic under.
+        //
+        // Two additions close it:
+        //  1. Authorship must be PROVEN (not merely relay-attested) before any
+        //     group state is written.
+        //  2. For a group we ALREADY have, the relayer must be a member of the
+        //     STORED roster — never the payload's — and the stored roster is
+        //     not replaced from a mesh payload (see the upsert below).
+        guard envelope.senderAuthenticated else {
+            #if DEBUG
+            print("🟦 [GroupSync] DROP — sender is relay-attested only; refusing to write group state on unproven authorship.")
+            #endif
+            return
+        }
+
+        let storedGroupForGate = (try? await GroupRepository().get(groupId: payload.groupId))
+        if let stored = storedGroupForGate {
+            let relayerInStoredRoster = (stored.members ?? []).contains { $0.userId == resolvedSenderId }
+            guard relayerInStoredRoster || resolvedSenderId == stored.createdBy else {
+                #if DEBUG
+                print("🟦 [GroupSync] DROP — \(resolvedSenderId.prefix(8)) is not in the STORED roster for existing group \(payload.groupId.prefix(8)); refusing payload-asserted membership.")
+                #endif
+                return
+            }
+        }
+
         let relayerIsMember = payload.members.contains { $0.userId == resolvedSenderId }
         guard resolvedSenderId == payload.createdBy || relayerIsMember else {
             #if DEBUG
@@ -2181,8 +2314,18 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
 
         // Persist locally + create conversation row so the group
         // appears in the inbox.
-        try? await groupRepo.upsert(group)
-        try? await ConversationRepository.shared.createGroupConversation(group: group)
+        // NOTE on rosters: an earlier version preserved the stored roster and
+        // ignored the payload's. That froze membership permanently — a
+        // `group_create` re-broadcast is the ONLY mesh transport for a member
+        // ADD, so a BLE-only device never saw new members, and then refused
+        // their `group_key` broadcasts because they were absent from its local
+        // roster. The gate above is the real defence: for an existing group the
+        // relayer must already be in the STORED roster (or be its creator), so
+        // a stranger cannot reach this point at all. A payload that gets here
+        // came from a legitimate member, and its roster is applied.
+        let groupToPersist = group
+        try? await groupRepo.upsert(groupToPersist)
+        try? await ConversationRepository.shared.createGroupConversation(group: groupToPersist)
 
         let createdGroupFromPayload = !knownGroupBeforeReceive
 
@@ -2242,6 +2385,48 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         guard let payload = FriendRequestMeshPayload.decode(from: envelope.text) else {
             #if DEBUG
             print("🟦 [FriendReqMesh] DROP — could not decode FriendRequestMeshPayload from envelope mid=\(envelope.clientMessageId.prefix(8))")
+            #endif
+            return
+        }
+
+        // 🔴 2026-07-24 — BIND THE PAYLOAD TO THE AUTHENTICATED SENDER.
+        //
+        // Everything below keyed off `payload.senderUserId`, which is
+        // attacker-chosen text inside the body, while `envelope.senderId` is the
+        // identity the signature layer actually authenticated. Nothing compared
+        // them. So a peer signing under its own key could name an EXISTING
+        // contact as the requester and get its key pinned for that contact —
+        // durable impersonation of someone the victim really talks to.
+        //
+        // The sibling group_key handler already does exactly this check; this
+        // one was simply missing it.
+        //
+        // NOTE: round-70 strict-strip sets `envelope.senderId = ""` on the wire
+        // and ships only `senderIdHash`. This handler is dispatched BEFORE the
+        // generic resolution further down `handleMeshMessage`, so we must
+        // resolve here or the guard would reject every modern friend request —
+        // exactly the way `handleGroupSyncMeshMessage` resolves for itself.
+        var resolvedSenderId = envelope.senderId
+        if resolvedSenderId.isEmpty, let hash = envelope.senderIdHash, !hash.isEmpty {
+            if let real = await MeshIdentityResolver.shared.resolve(hash: hash) {
+                resolvedSenderId = real
+            }
+        }
+
+        guard !resolvedSenderId.isEmpty,
+              resolvedSenderId == payload.senderUserId else {
+            #if DEBUG
+            print("🟦 [FriendReqMesh] DROP — payload sender \(payload.senderUserId.prefix(8)) does not match authenticated envelope sender \(resolvedSenderId.prefix(8)).")
+            #endif
+            return
+        }
+
+        // The signature layer must have PROVEN authorship, not merely had a
+        // relay vouch for the frame. A trust-store write is exactly the kind of
+        // state change `.relayAttested` must never be enough for.
+        guard envelope.senderAuthenticated else {
+            #if DEBUG
+            print("🟦 [FriendReqMesh] DROP — sender \(envelope.senderId.prefix(8)) is relay-attested only; refusing to act on a friend request whose author is unproven.")
             #endif
             return
         }

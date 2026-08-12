@@ -1093,18 +1093,28 @@ class MessageStore {
         
         // 1. Create persistent delivery jobs (server + mesh for TEXT only)
         let allowMesh = (message.type == .text || message.type == .location)  // Text + Location (~100 bytes) go via Mesh
-        // Serverless internet path: add a .bridge job (libp2p) for 1:1 text/location
-        // ONLY when a relay/bootstrap node is configured — otherwise the libp2p
-        // transport can't discover the peer and the job would retry forever
-        // (battery). Groups go over mesh; the bridge processor fail-closes on
-        // missing keys. Mirrors MessageRouter.send.
-        var jobChannels: [JobChannel] = allowMesh ? [.server, .mesh] : [.server]
-        if allowMesh && !isGroup && !recipientId.isEmpty && !AppConfig.libp2pBootstrapCSV.isEmpty {
-            jobChannels.append(.bridge)
+        // Serverless exclusive: never enqueue FastAPI `.server` for 1:1 text when RVN1 flag ON.
+        let serverlessExclusive = FeatureFlag.isRavenEnvelopeV1Enabled && !isGroup && message.type == .text
+        var jobChannels: [JobChannel] = []
+        if serverlessExclusive {
+            // Prefer bridge when bootstrap exists; otherwise mesh-carrier only (no silent FastAPI).
+            if !AppConfig.libp2pBootstrapCSV.isEmpty {
+                jobChannels = [.bridge]
+            } else {
+                jobChannels = [.mesh]
+            }
+            #if DEBUG
+            print("🌉 [Send] serverless exclusive mid=\(clientId.prefix(8)) channels=\(jobChannels.map { $0.rawValue }) — no FastAPI")
+            #endif
+        } else {
+            jobChannels = allowMesh ? [.server, .mesh] : [.server]
+            if allowMesh && !isGroup && !recipientId.isEmpty && !AppConfig.libp2pBootstrapCSV.isEmpty {
+                jobChannels.append(.bridge)
+            }
+            #if DEBUG
+            print("🌉 [Send] mid=\(clientId.prefix(8)) channels=\(jobChannels.map { $0.rawValue }) isGroup=\(isGroup) bootstrap=\(AppConfig.libp2pBootstrapCSV.isEmpty ? "EMPTY" : "set")")
+            #endif
         }
-        #if DEBUG
-        print("🌉 [Send] mid=\(clientId.prefix(8)) channels=\(jobChannels.map { $0.rawValue }) isGroup=\(isGroup) bootstrap=\(AppConfig.libp2pBootstrapCSV.isEmpty ? "EMPTY" : "set")")
-        #endif
         try? await DeliveryJobRepository.shared.createJobs(
             messageId: clientId,
             channels: jobChannels
@@ -1127,9 +1137,11 @@ class MessageStore {
         // server task so mesh fires immediately as the primary path,
         // and `.online` keeps the server-first behaviour.
         let _r76NetState = NetworkMonitor.shared.netState
-        let shouldStartServerTask = (_r76NetState == .online || _r76NetState == .degraded)
+        let shouldStartServerTask = !serverlessExclusive
+            && (_r76NetState == .online || _r76NetState == .degraded)
         // Start server path immediately so race is truly parallel with mesh enqueue.
         // We still await it later to keep existing status/update semantics.
+        // Serverless exclusive: never call FastAPI for 1:1 text.
         let serverTask: Task<Void, Never>? = shouldStartServerTask ? Task { [self] in
             let serverTimeout: TimeInterval = 3.0
 

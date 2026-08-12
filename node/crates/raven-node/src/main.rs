@@ -60,9 +60,12 @@ enum Commands {
         /// Peer Ed25519 public key hex (32 bytes) for seal + verify.
         #[arg(long)]
         peer_pub_hex: Option<String>,
-        /// Text to send (encrypted). Omit to listen-only.
+        /// Text to send (encrypted). Prefer `--send-stdin` so plaintext never appears in argv/`ps`.
         #[arg(long)]
         send: Option<String>,
+        /// Read one plaintext line from stdin (secure). Mutually preferred over `--send`.
+        #[arg(long, default_value_t = false)]
+        send_stdin: bool,
         /// Body mode for --send: `interim` (default, decryptable stub) or
         /// `opaque-atsam` (RVNA1 proto=0x02 placeholder — node ACKs without decrypt).
         #[arg(long, default_value = "interim")]
@@ -133,6 +136,18 @@ enum Commands {
         /// Optional forward queue path for status.pending.
         #[arg(long)]
         forward_db: Option<PathBuf>,
+    },
+    /// Always-on daemon: bridge + IPC together (launchd/systemd target).
+    #[cfg(unix)]
+    Service {
+        #[arg(long, default_value = "./raven-data")]
+        data_dir: PathBuf,
+        #[arg(long, default_value = "127.0.0.1:7420")]
+        lan_listen: String,
+        #[arg(long, default_value = "127.0.0.1:7421")]
+        ble_listen: String,
+        #[arg(long, default_value_t = 0)]
+        timeout_secs: u64,
     },
 }
 
@@ -534,6 +549,7 @@ async fn main() {
             peer,
             peer_pub_hex,
             send,
+            send_stdin,
             body_mode,
             write_addr,
             write_pub,
@@ -601,7 +617,29 @@ async fn main() {
                 }
             });
 
-            if let (Some(peer_s), Some(text), Some(pp)) = (peer.as_ref(), send.as_ref(), seal_to)
+            let send_body: Option<String> = if send_stdin {
+                use std::io::{self, BufRead};
+                let mut line = String::new();
+                if io::stdin().lock().read_line(&mut line).is_err() {
+                    eprintln!("failed to read --send-stdin");
+                    std::process::exit(1);
+                }
+                let t = line.trim_end_matches(['\r', '\n']).to_string();
+                if t.is_empty() {
+                    eprintln!("empty --send-stdin body");
+                    std::process::exit(1);
+                }
+                Some(t)
+            } else if let Some(t) = send {
+                eprintln!(
+                    "warning: --send puts plaintext on argv (visible via ps); prefer --send-stdin"
+                );
+                Some(t)
+            } else {
+                None
+            };
+
+            if let (Some(peer_s), Some(text), Some(pp)) = (peer.as_ref(), send_body.as_ref(), seal_to)
             {
                 let mut mid = [0u8; 16];
                 rand::thread_rng().fill_bytes(&mut mid);
@@ -804,6 +842,39 @@ async fn main() {
             });
             if let Err(e) = ipc_server::run_ipc_server(data_dir, fwd).await {
                 eprintln!("ipc failed: {e}");
+                std::process::exit(1);
+            }
+        }
+        #[cfg(unix)]
+        Commands::Service {
+            data_dir,
+            lan_listen,
+            ble_listen,
+            timeout_secs,
+        } => {
+            let fwd = {
+                let p = bridge_run::forward_queue_path(&data_dir);
+                Some(p)
+            };
+            let data_ipc = data_dir.clone();
+            let ipc_task = tokio::spawn(async move {
+                if let Err(e) = ipc_server::run_ipc_server(data_ipc, fwd).await {
+                    eprintln!("ipc failed: {e}");
+                }
+            });
+            let bridge_result = bridge_run::run_bridge_daemon(
+                data_dir,
+                lan_listen,
+                ble_listen,
+                None,
+                None,
+                None,
+                timeout_secs,
+            )
+            .await;
+            ipc_task.abort();
+            if let Err(e) = bridge_result {
+                eprintln!("service bridge failed: {e}");
                 std::process::exit(1);
             }
         }

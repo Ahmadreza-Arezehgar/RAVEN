@@ -4,6 +4,7 @@
 
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
+use serde::{Deserialize, Serialize};
 
 use crate::internet::opaque_store_tag;
 use crate::identity::Identity;
@@ -222,6 +223,93 @@ impl StoreMailbox {
         let before = self.items.len();
         self.items.retain(|i| i.message_id != *message_id);
         before != self.items.len()
+    }
+
+    /// Persist mailbox as opaque JSON (store_tag hex → objects). Never indexes usernames.
+    pub fn save_disk(&self, path: &std::path::Path) -> Result<(), String> {
+        #[derive(Serialize)]
+        struct Row {
+            store_tag_hex: String,
+            message_id_hex: String,
+            created_at_ms: u64,
+            expires_at_ms: u64,
+            flags: u16,
+            packed_envelope_hex: String,
+            custody_sig_hex: Option<String>,
+        }
+        let rows: Vec<Row> = self
+            .items
+            .iter()
+            .map(|o| Row {
+                store_tag_hex: hex::encode(o.store_tag),
+                message_id_hex: hex::encode(o.message_id),
+                created_at_ms: o.created_at_ms,
+                expires_at_ms: o.expires_at_ms,
+                flags: o.flags,
+                packed_envelope_hex: hex::encode(&o.packed_envelope),
+                custody_sig_hex: o.custody_sig.map(hex::encode),
+            })
+            .collect();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        let raw = serde_json::to_string_pretty(&rows).map_err(|e| e.to_string())?;
+        std::fs::write(path, raw).map_err(|e| e.to_string())
+    }
+
+    pub fn load_disk(path: &std::path::Path, max_per_tag: usize) -> Result<Self, String> {
+        #[derive(Deserialize)]
+        struct Row {
+            store_tag_hex: String,
+            message_id_hex: String,
+            created_at_ms: u64,
+            expires_at_ms: u64,
+            flags: u16,
+            packed_envelope_hex: String,
+            custody_sig_hex: Option<String>,
+        }
+        let mut mb = Self::new(max_per_tag);
+        let Ok(raw) = std::fs::read_to_string(path) else {
+            return Ok(mb);
+        };
+        let rows: Vec<Row> = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+        for r in rows {
+            let st = hex::decode(&r.store_tag_hex).map_err(|e| e.to_string())?;
+            let mid = hex::decode(&r.message_id_hex).map_err(|e| e.to_string())?;
+            if st.len() != 16 || mid.len() != 16 {
+                continue;
+            }
+            let mut store_tag = [0u8; 16];
+            store_tag.copy_from_slice(&st);
+            let mut message_id = [0u8; 16];
+            message_id.copy_from_slice(&mid);
+            let packed_envelope = hex::decode(&r.packed_envelope_hex).map_err(|e| e.to_string())?;
+            let custody_sig = match r.custody_sig_hex {
+                Some(h) => {
+                    let v = hex::decode(h).map_err(|e| e.to_string())?;
+                    if v.len() != 64 {
+                        None
+                    } else {
+                        let mut s = [0u8; 64];
+                        s.copy_from_slice(&v);
+                        Some(s)
+                    }
+                }
+                None => None,
+            };
+            let obj = StoreObject {
+                store_tag,
+                message_id,
+                created_at_ms: r.created_at_ms,
+                expires_at_ms: r.expires_at_ms,
+                flags: r.flags,
+                packed_envelope,
+                custody_sig,
+            };
+            // Bypass wall-clock put filter for reload.
+            mb.items.push(obj);
+        }
+        Ok(mb)
     }
 }
 

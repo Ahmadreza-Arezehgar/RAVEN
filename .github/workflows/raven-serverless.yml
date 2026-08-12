@@ -64,6 +64,8 @@ jobs:
         run: ./scripts/libp2p_swarm_smoke.sh
       - name: bootstrap manual-peer smoke
         run: ./scripts/bootstrap_manual_peer_smoke.sh
+      - name: mailbox opaque put/get smoke
+        run: ./scripts/mailbox_opaque_smoke.sh
       - name: internet dial smoke
         run: ./scripts/internet_dial_smoke.sh
       - name: protocol vectors (python)
@@ -84,13 +86,14 @@ jobs:
             cargo cyclonedx -p raven-core --format json --output-cdx target/sbom/raven-core.cdx.json \
               || echo "cyclonedx optional — cargo-tree SBOM retained"
           fi
+          test -s target/sbom/raven-cargo-tree.txt
           ls -la target/sbom/
       - name: Upload SBOM artifacts
         uses: actions/upload-artifact@v4
         with:
           name: raven-sbom-linux
           path: node/target/sbom/
-          if-no-files-found: warn
+          if-no-files-found: error
 
   rust-macos:
     name: Rust (macOS)
@@ -129,6 +132,17 @@ jobs:
         run: |
           cargo test -p raven-core -p ash
           cargo build -p raven-node
+      - name: PowerShell install script syntax check
+        shell: pwsh
+        run: |
+          Get-Command Get-Content | Out-Null
+          $p = "scripts/install/windows_service.ps1"
+          if (-not (Test-Path $p)) { throw "missing $p" }
+          # Parse-only: ensure script is well-formed PowerShell
+          $null = [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path $p), [ref]$null, [ref]$errs)
+          if ($errs) { $errs | ForEach-Object { $_ }; throw "parse errors" }
+          Write-Host "windows_service.ps1 OK"
       # bash libp2p/bootstrap smokes are Linux/macOS-only on this workflow.
 
   # iOS RavenEnvelope* XCTest: optional / manual — requires macOS + Xcode +
