@@ -304,6 +304,7 @@
 		C8A374E52ADE479AC077389B /* RatchetState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A019E68C57D89DCB1C42C8F /* RatchetState.swift */; };
 		C930D3BD4DFD2B98A279EEFA /* GroupSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DBB92F2D220F7FE6DB28B81 /* GroupSettingsView.swift */; };
 		C9C3D0C17B4AC8FB5AF68195 /* ArchivedConversationsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1F20574C011004900373610 /* ArchivedConversationsView.swift */; };
+		A24CDBB83F3A57B9A6FB5795 /* NetworkHubView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D5C25D40AC88840C0E154F8 /* NetworkHubView.swift */; };
 		CACS_BUILD_001 /* CloseAccountConfirmSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = CACS_FILEREF_001 /* CloseAccountConfirmSheet.swift */; };
 		CADB33BC6700DC77F5B3AF8C /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 4F37906B770052239F99E0A0 /* PrivacyInfo.xcprivacy */; };
 		CAI_BUILD_001 /* CachedAsyncImage.swift in Sources */ = {isa = PBXBuildFile; fileRef = CAI_FILEREF_001 /* CachedAsyncImage.swift */; };
@@ -834,6 +835,7 @@
 		C0E5F7DAFC9D08E508183C11 /* FiltersToolView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FiltersToolView.swift; sourceTree = "<group>"; };
 		C1448A9CBB4AA06129A1656A /* ATSAMConstants.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMConstants.swift; sourceTree = "<group>"; };
 		C1F20574C011004900373610 /* ArchivedConversationsView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ArchivedConversationsView.swift; sourceTree = "<group>"; };
+		3D5C25D40AC88840C0E154F8 /* NetworkHubView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NetworkHubView.swift; sourceTree = "<group>"; };
 		C1F3C7251AD59AD803910A19 /* SecuritySettingsView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SecuritySettingsView.swift; sourceTree = "<group>"; };
 		C383A9DBA4B1E209921AB26D /* ATSAMOnlinePairView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMOnlinePairView.swift; sourceTree = "<group>"; };
 		C3DBF8183AE81344C4714CBC /* TranscriptionService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = TranscriptionService.swift; path = Services/TranscriptionService.swift; sourceTree = "<group>"; };
@@ -1612,6 +1614,14 @@
 			path = Inbox;
 			sourceTree = "<group>";
 		};
+		A05CC631C3C598A8FAB11858 /* Network */ = {
+			isa = PBXGroup;
+			children = (
+				3D5C25D40AC88840C0E154F8 /* NetworkHubView.swift */,
+			);
+			path = Network;
+			sourceTree = "<group>";
+		};
 		55ED267EBD9B5BCBE2599ECB /* Inbox */ = {
 			isa = PBXGroup;
 			children = (
@@ -1848,6 +1858,7 @@
 				DDA52010169B3823CB4080EE /* Auth */,
 				A53EB757A244732FF4A1849D /* Chat */,
 				54233CA66594FF88EAA5C033 /* Inbox */,
+				A05CC631C3C598A8FAB11858 /* Network */,
 				FCV_GROUP_001 /* Contacts */,
 				8766918CE756B8D09F7B5129 /* Feed */,
 				BDBD923663E201C6EA46D6E2 /* Account */,
@@ -2927,6 +2938,7 @@
 				2B56FA70801C706DB6C28A3B /* MessagePreviewFormatter.swift in Sources */,
 				E282A1AC35D6AA63851BEF46 /* ArchivedFolderRow.swift in Sources */,
 				C9C3D0C17B4AC8FB5AF68195 /* ArchivedConversationsView.swift in Sources */,
+				A24CDBB83F3A57B9A6FB5795 /* NetworkHubView.swift in Sources */,
 				877D4761F7D51DD2A9216713 /* NotificationDedupCache.swift in Sources */,
 				AB7A8A6BC3ED96090E6AC295 /* UserIdMatching.swift in Sources */,
 				E3B6E53194F8A86D8BDA870B /* PVConstants.swift in Sources */,

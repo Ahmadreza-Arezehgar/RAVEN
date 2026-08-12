@@ -159,10 +159,16 @@ struct InboxView: View {
                     }
                 }
             }
-            .navigationTitle("Messages")
+            // Obsidian redesign (2026-08): the "Chats" large title + search
+            // bar now live inline in the scrollable list content (see
+            // `ConversationListView`'s title/search header below) —
+            // WhatsApp style, scrolls away with the rows instead of
+            // pinning to the nav bar. Keep the nav bar title empty so
+            // SwiftUI doesn't render a duplicate one; toolbar buttons
+            // (new group / new chat) stay put.
+            .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             // Note: .searchable removed to avoid duplicate search behind bottom bar
-            // Search is handled via SearchPill in MainShellView
             .toolbar {
                 // Left: New Group button
                 ToolbarItem(placement: .topBarLeading) {
@@ -329,9 +335,21 @@ struct ConversationListView: View {
     /// Live count of archived chats — drives the folder pill at the
     /// top of the inbox. Recomputed on every list change.
     @State private var archivedCount: Int = 0
-    
+
+    /// WhatsApp-style search entry point. The floating search FAB was
+    /// removed from `MainShellView` in the Obsidian redesign, so the
+    /// inbox now owns its own search affordance — a glass field under
+    /// the big "Chats" title that opens the same `ConversationSearchSheet`
+    /// the old FAB used.
+    @State private var showSearchSheet = false
+
     var body: some View {
         List {
+            // "Chats" large title + glass search bar — first content in
+            // the list so both scroll away with the rows (WhatsApp-style),
+            // rather than living in the nav bar.
+            titleSearchHeader
+
             // 📥 Archived folder pill — Telegram-style entry point
             // for the archive bucket. Auto-hidden when empty so it
             // doesn't clutter inboxes that never archive anything.
@@ -471,7 +489,10 @@ struct ConversationListView: View {
                         .tint(.purple)
                     }
                     .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
+                    // Obsidian discipline: flat black rows, hairline
+                    // separators instead of the old per-row glass card.
+                    .listRowSeparator(.visible)
+                    .listRowSeparatorTint(Color.white.opacity(0.08))
                     .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
                 }
             }
@@ -495,6 +516,45 @@ struct ConversationListView: View {
                     .id(roomId)
             }
         }
+        .sheet(isPresented: $showSearchSheet) {
+            ConversationSearchSheet()
+        }
+    }
+
+    /// WhatsApp-style header: leading-aligned "Chats" large title with a
+    /// glass search field beneath it. Both are plain list rows so they
+    /// scroll away with the conversations instead of pinning to the nav
+    /// bar (the nav bar title is emptied out in `InboxView`).
+    private var titleSearchHeader: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Chats")
+                .font(.system(size: 34, weight: .bold))
+                .foregroundStyle(.white)
+
+            Button {
+                showSearchSheet = true
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    Text("Search")
+                        .font(.system(size: 15))
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .frame(maxWidth: .infinity)
+                .glassSurface(in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.top, 4)
+        .padding(.bottom, 8)
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+        .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
     }
 
     private func refreshArchivedCount() async {
@@ -523,6 +583,15 @@ struct ConversationRowView: View {
                 showGlow: false,
                 showOnlineIndicator: !conversation.isGroup && !conversation.isChannel && peerIsOnline
             )
+            // Aurora signature: mesh-ring avatar. The ring color reports
+            // how the last message actually got here — violet for a
+            // direct mesh hop, path-blue for the internet/server path.
+            // No known authority yet (or none) → no ring, avoid noise.
+            .overlay {
+                if let ringColor = deliveryRingColor {
+                    Circle().stroke(ringColor, lineWidth: 2)
+                }
+            }
             .overlay(alignment: .topTrailing) {
                 if conversation.isPinned {
                     Image(systemName: "pin.fill")
@@ -601,13 +670,20 @@ struct ConversationRowView: View {
                                 .foregroundStyle(.primary)
                                 .lineLimit(1)
                         } else if let lastMessage = conversation.lastMessage {
-                            // Delivery indicator (subtle)
-                            Circle()
-                                .fill(lastMessage.deliveryAuthority == .mesh ? Color.purple.opacity(0.7) : Color.blue.opacity(0.7))
-                                .frame(width: 5, height: 5)
+                            // Delivery-path prefix: only the mesh hop gets
+                            // called out explicitly (the avatar ring already
+                            // carries the server/mesh signal at a glance).
+                            if lastMessage.deliveryAuthority == .mesh {
+                                Image(systemName: "antenna.radiowaves.left.and.right")
+                                    .font(.caption2)
+                                    .foregroundStyle(DS.violetSoft)
+                                Text("via mesh · ")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                            }
 
                             Text(previewText)
-                                .font(.subheadline)
+                                .font(previewText.hasPrefix("rvn1") ? .system(.subheadline, design: .monospaced) : .subheadline)
                                 .foregroundStyle(conversation.unreadCount > 0 ? .primary : .secondary)
                                 .lineLimit(1)
                         }
@@ -615,19 +691,31 @@ struct ConversationRowView: View {
 
                     Spacer()
 
-                    // Unread badge
-                    UnreadBadge(count: conversation.unreadCount, isMuted: conversation.isMuted)
+                    // Unread badge — Obsidian: violet capsule, white text.
+                    InboxUnreadBadge(count: conversation.unreadCount, isMuted: conversation.isMuted)
                 }
             }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
-        // Liquid Glass material effect (iOS 15+)
-        // ✅ Perf fix: Solid background instead of .regularMaterial — avoids GPU blur recalc on every scroll frame
-        .background(Color(.secondarySystemGroupedBackground).opacity(0.85), in: RoundedRectangle(cornerRadius: DS.radiusCard))
+        // Obsidian discipline: flat black row, no per-row glass card — the
+        // hairline separator (set on the List row in ConversationListView)
+        // carries the visual rhythm instead.
+        .background(Color.clear)
         .opacity(conversation.unreadCount > 0 ? 1.0 : 0.85)
         .scaleEffect(isPressed ? 0.98 : 1.0)
         .animation(.spring(response: 0.25, dampingFraction: 0.7), value: isPressed)
+    }
+
+    /// Mesh-ring avatar color, driven by how the last message actually
+    /// got here. `nil` means "don't draw a ring" (no last message yet, or
+    /// authority not yet resolved).
+    private var deliveryRingColor: Color? {
+        switch conversation.lastMessage?.deliveryAuthority {
+        case .mesh: return DS.violet
+        case .server: return DS.pathBlue
+        case .unknown, .none: return nil
+        }
     }
 
     /// Returns a non-empty draft string for this conversation, if the user
@@ -680,6 +768,29 @@ struct ConversationRowView: View {
             return "📊 Poll"
         case .system:
             return "📢 Notification"
+        }
+    }
+}
+
+// MARK: - Inbox Unread Badge (Obsidian)
+/// Inbox-local unread badge. The shared `UnreadBadge` in
+/// `Views/Components/LiquidGlassComponents.swift` still serves other
+/// screens with its legacy gold/gray styling — this one is scoped to
+/// the Chats list restyle so it never had to touch that shared file:
+/// violet capsule fill, always-white text, no red/green.
+struct InboxUnreadBadge: View {
+    let count: Int
+    var isMuted: Bool = false
+
+    var body: some View {
+        if count > 0 {
+            Text(count > 99 ? "99+" : "\(count)")
+                .font(.caption2)
+                .fontWeight(.semibold)
+                .foregroundStyle(.white)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(isMuted ? DS.violet.opacity(0.45) : DS.violet, in: Capsule())
         }
     }
 }

@@ -1,9 +1,11 @@
 import SwiftUI
 
-// MARK: - Raven Design System Tokens (2026 chic redesign)
+// MARK: - Raven Design System Tokens (2026-08 Obsidian/Aurora redesign)
 /// Single source of truth for Raven iOS visuals.
-/// Brand: raven-messager.com — cyan signal `#40F2FF` on deep ink charcoal.
-/// Usage: `DS.cyan`, `DS.ink`, `DS.titleFont`, `.ravenScreen()`
+/// Brand: pure black + dark violet `#7C3AED` (Obsidian base, Aurora accents).
+/// `cyan`/`cyanDeep` are legacy names now aliased onto the violet family so
+/// every existing consumer re-skins at once; a mechanical rename is deferred.
+/// Usage: `DS.violet`, `DS.ink`, `DS.titleFont`, `.ravenScreen()`
 enum DS {
 
     // MARK: Corner Radii
@@ -25,22 +27,30 @@ enum DS {
     static let shadowRadius: CGFloat = 16
     static let shadowY: CGFloat = 6
 
-    // MARK: Brand palette — ONE cohesive system (cyan signal + ink)
-    /// Signature Raven cyan (site `#40F2FF`).
-    static let cyan = Color(red: 0.251, green: 0.949, blue: 1.0) // #40F2FF
-    static let cyanDeep = Color(red: 0.05, green: 0.72, blue: 0.82)
+    // MARK: Brand palette — Obsidian black + Aurora violet
+    /// Primary accent — dark violet.
+    static let violet = Color(red: 0.486, green: 0.227, blue: 0.929)      // #7C3AED
+    static let violetDeep = Color(red: 0.357, green: 0.129, blue: 0.714)  // #5B21B6
+    static let violetSoft = Color(red: 0.655, green: 0.545, blue: 0.980)  // #A78BFA
+    /// Internet/p2p path indicator (mesh is violet, internet is blue).
+    static let pathBlue = Color(red: 0.161, green: 0.553, blue: 1.0)      // #298DFF
+
+    /// LEGACY ALIASES — old names repointed onto the violet family so every
+    /// existing `DS.cyan` consumer flips with the redesign. Do not use in new
+    /// code; use `violet`/`violetDeep`/`violetSoft`.
+    static let cyan = violet
+    static let cyanDeep = violetDeep
     static let teal = Color(red: 0.15, green: 0.78, blue: 0.72)
 
-    /// Deep ink / charcoal for dark surfaces and text hierarchy.
-    static let ink = Color(red: 0.04, green: 0.05, blue: 0.07) // near-black
-    static let inkElevated = Color(red: 0.09, green: 0.10, blue: 0.13)
-    static let charcoal = Color(red: 0.14, green: 0.15, blue: 0.18)
-    static let mist = Color(red: 0.92, green: 0.94, blue: 0.96)
+    /// Obsidian surfaces: pure black base, violet-tinted elevation.
+    static let ink = Color.black                                          // #000000
+    static let inkElevated = Color(red: 0.051, green: 0.027, blue: 0.086) // #0D0716
+    static let charcoal = Color(red: 0.090, green: 0.063, blue: 0.133)    // #171022
+    static let mist = Color(red: 0.93, green: 0.92, blue: 0.97)
 
     // Primary / secondary accents used across the app (map old names → brand).
-    static let accentBlue = cyan
-    /// Soft lilac reserved for rare secondary chips — NOT a purple glow theme.
-    static let accentPurple = Color(red: 0.45, green: 0.55, blue: 0.62) // cool slate, not violet
+    static let accentBlue = pathBlue
+    static let accentPurple = violetSoft
     static let accentGray = Color.secondary
     static let accentDanger = Color(red: 1.0, green: 0.32, blue: 0.36)
     static let accentSuccess = Color(red: 0.25, green: 0.85, blue: 0.55)
@@ -48,7 +58,7 @@ enum DS {
     // MARK: Gradients
     static var signalGradient: LinearGradient {
         LinearGradient(
-            colors: [cyan, cyanDeep, teal],
+            colors: [violet, violetDeep],
             startPoint: .topLeading,
             endPoint: .bottomTrailing
         )
@@ -56,7 +66,7 @@ enum DS {
 
     static var inkAura: RadialGradient {
         RadialGradient(
-            colors: [cyan.opacity(0.22), cyan.opacity(0.06), .clear],
+            colors: [violet.opacity(0.20), violet.opacity(0.05), .clear],
             center: .topTrailing,
             startRadius: 20,
             endRadius: 420
@@ -65,7 +75,7 @@ enum DS {
 
     static var bubbleOutgoing: LinearGradient {
         LinearGradient(
-            colors: [cyanDeep.opacity(0.95), cyan.opacity(0.85)],
+            colors: [violetDeep.opacity(0.95), violet.opacity(0.85)],
             startPoint: .topLeading,
             endPoint: .bottomTrailing
         )

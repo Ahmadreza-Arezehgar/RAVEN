@@ -31,12 +31,25 @@ struct MainShellView: View {
         ZStack(alignment: .bottom) {
             RavenScreenBackground()
 
-            // Two-tab pager: Chats (Inbox) + Settings (Account).
+            // Four-tab pager: Contacts · Chats · Network · Settings.
+            // (Obsidian redesign 2026-08. The floating search FAB was removed:
+            //  InboxView now carries a WhatsApp-style search bar under its
+            //  large title, presenting the same ConversationSearchSheet.)
             TabPager(
                 tab: $selectedTab,
+                contacts: {
+                    NavigationStack {
+                        FindContactsView()
+                    }
+                },
                 chats: {
                     NavigationStack {
                         InboxView()
+                    }
+                },
+                network: {
+                    NavigationStack {
+                        NetworkHubView()
                     }
                 },
                 settings: {
@@ -47,34 +60,6 @@ struct MainShellView: View {
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .ignoresSafeArea(.container, edges: [.top, .bottom])
-
-            // Floating Search FAB — only on Chats, and not while in a chat.
-            if selectedTab == .messages && deepLinkRouter.currentChatRoomId == nil && !feedStateManager.isDetailViewActive {
-                Button {
-                    Haptics.light()
-                    showSearchSheet = true
-                } label: {
-                    Image(systemName: "magnifyingglass")
-                        .font(.system(size: 20, weight: .semibold))
-                        .foregroundStyle(DS.ink)
-                        .frame(width: 54, height: 54)
-                        .contentShape(Circle())
-                        .background {
-                            Circle()
-                                .fill(DS.signalGradient)
-                                .shadow(color: DS.cyan.opacity(0.35), radius: 12, y: 4)
-                        }
-                }
-                .buttonStyle(.plain)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-                .padding(.trailing, 20)
-                .padding(.bottom, 100)
-                .offset(y: feedStateManager.isChromeHidden ? 120 : 0)
-                .opacity(feedStateManager.isChromeHidden ? 0 : 1)
-                .animation(DS.openChatSpring, value: feedStateManager.isChromeHidden)
-                .transition(.scale(scale: 0.5, anchor: .bottomTrailing).combined(with: .opacity))
-                .zIndex(2)
-            }
 
             // Haptic Tab Bar — hidden while in a chat / detail view.
             if deepLinkRouter.currentChatRoomId == nil && !feedStateManager.isDetailViewActive {
@@ -219,6 +204,19 @@ struct MainShellView: View {
     // MARK: - Quick Actions Provider (per-tab long-press menu)
     private func makeQuickActions(for tab: AppTab) -> [TabAction] {
         switch tab {
+        case .contacts:
+            return [
+                TabAction(title: "scan_qr_code".localized, systemImage: "qrcode.viewfinder", tint: DS.violet) {
+                    Haptics.selection()
+                    showScanQR = true
+                },
+                TabAction(title: "my_qr_code".localized, systemImage: "qrcode", tint: DS.violetSoft) {
+                    Haptics.selection()
+                    showMyQR = true
+                }
+            ]
+        case .network:
+            return []
         case .messages:
             return [
                 TabAction(title: "mark_all_read".localized, systemImage: "envelope.open", tint: .gray) {

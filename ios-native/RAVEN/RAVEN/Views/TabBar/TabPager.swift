@@ -13,11 +13,14 @@ final class NestedSwipeCoordinator {
 
 // MARK: - Tab Pager (Horizontal Swipe Between Tabs)
 //
-// MESSENGER PIVOT (2026-06): two tabs — Chats + Settings.
-struct TabPager<ChatsContent: View, SettingsContent: View>: View {
+// OBSIDIAN REDESIGN (2026-08): four pages in AppTab.rawValue order —
+// Contacts · Chats · Network · Settings.
+struct TabPager<ContactsContent: View, ChatsContent: View, NetworkContent: View, SettingsContent: View>: View {
     @Binding var tab: AppTab
 
+    let contactsView: ContactsContent
     let chatsView: ChatsContent
+    let networkView: NetworkContent
     let settingsView: SettingsContent
 
     @Environment(\.layoutDirection) private var layoutDirection
@@ -26,11 +29,15 @@ struct TabPager<ChatsContent: View, SettingsContent: View>: View {
 
     init(
         tab: Binding<AppTab>,
+        @ViewBuilder contacts: () -> ContactsContent,
         @ViewBuilder chats: () -> ChatsContent,
+        @ViewBuilder network: () -> NetworkContent,
         @ViewBuilder settings: () -> SettingsContent
     ) {
         _tab = tab
+        self.contactsView = contacts()
         self.chatsView = chats()
+        self.networkView = network()
         self.settingsView = settings()
     }
 
@@ -45,9 +52,17 @@ struct TabPager<ChatsContent: View, SettingsContent: View>: View {
             let dirSign: CGFloat = isRTL ? -1 : 1
 
             HStack(spacing: 0) {
+                contactsView
+                    .frame(width: screenWidth, height: geo.size.height)
+                    .tag(AppTab.contacts)
+
                 chatsView
                     .frame(width: screenWidth, height: geo.size.height)
                     .tag(AppTab.messages)
+
+                networkView
+                    .frame(width: screenWidth, height: geo.size.height)
+                    .tag(AppTab.network)
 
                 settingsView
                     .frame(width: screenWidth, height: geo.size.height)
