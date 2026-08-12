@@ -8,16 +8,22 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use clap::{Parser, Subcommand};
+use raven_core::address::{decode_address, encode_address};
 use raven_core::fingerprint::device_fingerprint_v1;
 use raven_core::forward_queue::ForwardQueue;
 use raven_core::identity::Identity;
 use raven_core::ipc::{
     decode_response, default_socket_path, encode_request, IpcRequest, IpcResponse, IPC_VERSION,
 };
+use raven_core::messaging_path::{
+    assert_no_silent_fastapi, resolve_terminal_messaging_path, MessagingPath,
+};
 use raven_core::node_policy::{load_policy, save_policy, BridgeStatusSnapshot, NodePolicy};
+use raven_core::prekey_bundle::{PrekeyBundle, PrekeyBundleJson, PrekeyStore, MLKEM768_EK_LEN};
 use raven_core::queue::{DeliveryState, OutgoingQueue};
 use raven_core::sanitize::sanitize_terminal_text;
 use serde::{Deserialize, Serialize};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 // Brand palette from https://raven-messager.com/ (public CSS vars).
 const C_CYAN: &str = "\x1b[38;2;64;242;255m";
@@ -80,6 +86,76 @@ enum Commands {
         #[command(subcommand)]
         cmd: NodeCommands,
     },
+    /// Local friendship plane — contacts + fingerprint verify (never FastAPI).
+    Contact {
+        #[command(subcommand)]
+        cmd: ContactCommands,
+    },
+    /// Signed prekey publish/fetch via local untrusted store (OOB/DHT stand-in).
+    Prekey {
+        #[command(subcommand)]
+        cmd: PrekeyCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum ContactCommands {
+    /// Add contact (QR/OOB). Petname-first; --verify-fp pins Tag+key locally.
+    Add {
+        #[arg(long)]
+        address: String,
+        #[arg(long)]
+        pub_hex: String,
+        /// Layer C — unique on this device only (primary label).
+        #[arg(long, default_value = "")]
+        petname: String,
+        /// Layer B — public Alias V1 tag (NOT globally unique), e.g. ahmad.
+        #[arg(long, default_value = "")]
+        tag: String,
+        /// Legacy alias of --tag (deprecated).
+        #[arg(long, default_value = "")]
+        alias: String,
+        /// Expected fingerprint. On match: pin Tag+key (DHT cannot overwrite).
+        #[arg(long)]
+        verify_fp: Option<String>,
+    },
+    /// List contacts: petname first, @tag subtitle (never address-primary).
+    List,
+    /// Fingerprint / pin check by --tag, --petname, or --address.
+    Verify {
+        #[arg(long)]
+        tag: Option<String>,
+        #[arg(long)]
+        alias: Option<String>,
+        #[arg(long)]
+        petname: Option<String>,
+        #[arg(long)]
+        address: Option<String>,
+    },
+    /// Resolve @tag with ambiguity picker (never silent winner).
+    Resolve {
+        #[arg(long)]
+        tag: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum PrekeyCommands {
+    /// Publish a demo/signed prekey bundle into local prekey_store.json (no FastAPI).
+    Publish {
+        #[arg(long, default_value = "ash-device")]
+        device_id: String,
+        /// Optional path to write OOB JSON export (public fields only).
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Fetch+verify a bundle for a contact pub hex from local store or --file.
+    Fetch {
+        #[arg(long)]
+        pub_hex: String,
+        #[arg(long)]
+        file: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -109,12 +185,60 @@ enum OnOff {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Contact {
-    /// Optional human label (not a secret).
+    /// Layer C — device-local petname (primary UI label). Unique on MY device.
+    #[serde(default)]
+    petname: String,
+    /// Layer B — public Raven Tag / Alias V1 self-claim (NOT globally unique).
+    #[serde(default)]
+    public_tag: String,
+    /// Legacy field — migrated into public_tag on load when public_tag empty.
+    #[serde(default)]
     alias: String,
-    /// Raven address (rvn1…).
+    /// Layer A — Raven address (rvn1…).
     address: String,
     /// Ed25519 public key hex only.
     pub_hex: String,
+    /// Soft-unique pin: first-meet / QR verify locked Tag+key locally.
+    #[serde(default)]
+    pinned: bool,
+}
+
+impl Contact {
+    fn migrate(mut self) -> Self {
+        if self.public_tag.is_empty() && !self.alias.is_empty() {
+            self.public_tag = self.alias.clone();
+        }
+        if self.petname.is_empty() {
+            if !self.public_tag.is_empty() {
+                self.petname = self.public_tag.clone();
+            } else if !self.alias.is_empty() {
+                self.petname = self.alias.clone();
+            }
+        }
+        self
+    }
+
+    fn primary_label(&self) -> String {
+        let p = sanitize_terminal_text(&self.petname);
+        if !p.is_empty() {
+            return p;
+        }
+        let t = normalize_tag(&self.public_tag);
+        if !t.is_empty() {
+            return format!("@{t}");
+        }
+        // Address only as last resort — never preferred.
+        sanitize_terminal_text(&self.address)
+    }
+
+    fn tag_subtitle(&self) -> Option<String> {
+        let t = normalize_tag(&self.public_tag);
+        if t.is_empty() {
+            None
+        } else {
+            Some(format!("@{t}"))
+        }
+    }
 }
 
 fn contacts_path(data_dir: &Path) -> PathBuf {
@@ -126,7 +250,8 @@ fn load_contacts(data_dir: &Path) -> Vec<Contact> {
     let Ok(raw) = std::fs::read_to_string(&path) else {
         return Vec::new();
     };
-    serde_json::from_str(&raw).unwrap_or_default()
+    let list: Vec<Contact> = serde_json::from_str(&raw).unwrap_or_default();
+    list.into_iter().map(Contact::migrate).collect()
 }
 
 fn save_contacts(data_dir: &Path, contacts: &[Contact]) -> Result<(), String> {
@@ -304,73 +429,492 @@ fn cmd_messages(data_dir: &Path) {
     }
 }
 
-fn cmd_contacts(data_dir: &Path) {
-    let mut contacts = load_contacts(data_dir);
-    println!("{C_BOLD}Contacts{C_RESET} ({})", contacts.len());
-    if contacts.is_empty() {
-        println!("{C_DIM}None yet. Add a peer pub (public hex only).{C_RESET}");
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn parse_pub_hex(s: &str) -> Result<[u8; 32], String> {
+    let h = s.trim().to_lowercase();
+    if h.len() != 64 {
+        return Err("pub_hex must be 64 hex chars (32 bytes)".into());
+    }
+    let v = hex::decode(&h).map_err(|_| "pub_hex invalid hex".to_string())?;
+    if v.len() != 32 {
+        return Err("pub_hex must decode to 32 bytes".into());
+    }
+    let mut a = [0u8; 32];
+    a.copy_from_slice(&v);
+    Ok(a)
+}
+
+fn contact_fingerprint(c: &Contact) -> String {
+    match parse_pub_hex(&c.pub_hex) {
+        Ok(a) => device_fingerprint_v1(&a),
+        Err(_) => "—".into(),
+    }
+}
+
+fn normalize_tag(tag: &str) -> String {
+    sanitize_terminal_text(tag.trim().trim_start_matches('@')).to_lowercase()
+}
+
+/// Resolve @public_tag — never silent pick when multiple match.
+fn resolve_tag_contacts<'a>(contacts: &'a [Contact], tag: &str) -> Vec<&'a Contact> {
+    let want = normalize_tag(tag);
+    contacts
+        .iter()
+        .filter(|c| normalize_tag(&c.public_tag) == want || normalize_tag(&c.alias) == want)
+        .collect()
+}
+
+/// Back-compat alias used by interactive send.
+fn resolve_alias_contacts<'a>(contacts: &'a [Contact], alias: &str) -> Vec<&'a Contact> {
+    resolve_tag_contacts(contacts, alias)
+}
+
+fn add_contact(
+    data_dir: &Path,
+    address: &str,
+    pub_hex: &str,
+    petname: &str,
+    public_tag: &str,
+    verify_fp: Option<&str>,
+) -> Result<(), String> {
+    let ed = parse_pub_hex(pub_hex)?;
+    let address = address.trim();
+    if address.is_empty() {
+        return Err("address required".into());
+    }
+    let address = raven_core::address::from_display(address);
+    if decode_address(&address).is_none() {
+        return Err("address must be valid rvn1 bech32m".into());
+    }
+    let derived = encode_address(&ed);
+    if derived != address {
+        return Err(format!(
+            "address/pub mismatch: pub encodes to {derived}, got {address}"
+        ));
+    }
+    let fp = device_fingerprint_v1(&ed);
+    let pin = if let Some(expected) = verify_fp {
+        let exp = expected.trim();
+        if !exp.eq_ignore_ascii_case(&fp) {
+            return Err(format!(
+                "fingerprint mismatch: got {fp}, expected {}",
+                sanitize_terminal_text(exp)
+            ));
+        }
+        true
     } else {
-        for (i, c) in contacts.iter().enumerate() {
-            let fp = if let Ok(bytes) = hex::decode(&c.pub_hex) {
-                if bytes.len() == 32 {
-                    let mut a = [0u8; 32];
-                    a.copy_from_slice(&bytes);
-                    device_fingerprint_v1(&a)
-                } else {
-                    "—".into()
+        false
+    };
+
+    let tag_clean = normalize_tag(public_tag);
+    let mut pet = sanitize_terminal_text(petname.trim());
+    if pet.is_empty() && !tag_clean.is_empty() {
+        pet = tag_clean.clone();
+    }
+
+    let mut contacts = load_contacts(data_dir);
+
+    // Key-change warning: pinned row with same public_tag but different pub/address.
+    if !tag_clean.is_empty() {
+        for c in contacts.iter() {
+            if normalize_tag(&c.public_tag) == tag_clean && c.pinned {
+                if c.pub_hex != hex::encode(ed) || c.address != address {
+                    eprintln!(
+                        "{C_PURPLE}KEY-CHANGE WARNING{C_RESET}: pinned @{tag_clean} was"
+                    );
+                    eprintln!(
+                        "  old fp={}  {}",
+                        contact_fingerprint(c),
+                        sanitize_terminal_text(&c.address)
+                    );
+                    eprintln!("  new fp={fp}  {}", sanitize_terminal_text(&address));
+                    eprintln!(
+                        "{C_DIM}DHT/gossip cannot overwrite pin. Refuse unless you intend to re-pin after verify.{C_RESET}"
+                    );
+                    return Err("KEY_CHANGE_REFUSED_WITHOUT_REPIN".into());
                 }
-            } else {
-                "—".into()
-            };
-            let label = if c.alias.is_empty() {
-                sanitize_terminal_text(&c.address)
-            } else {
-                sanitize_terminal_text(&c.alias)
-            };
-            println!(
-                "  {C_CYAN}{}{C_RESET}  {}  {C_DIM}fp={fp}{C_RESET}",
-                i + 1,
-                label
-            );
-            println!("      {C_DIM}{}{C_RESET}", c.address);
+            }
         }
     }
+
+    // Soft-unique: competing same @tag → ambiguity notice; require distinct petnames.
+    if !tag_clean.is_empty() {
+        let clashes: Vec<&Contact> = contacts
+            .iter()
+            .filter(|c| {
+                normalize_tag(&c.public_tag) == tag_clean && c.pub_hex != hex::encode(ed)
+            })
+            .collect();
+        if !clashes.is_empty() {
+            eprintln!(
+                "{C_PURPLE}tag ambiguity{C_RESET}: {} other contact(s) claim '@{tag_clean}'",
+                clashes.len()
+            );
+            for (i, c) in clashes.iter().enumerate() {
+                eprintln!(
+                    "  {}  {}  @{}  fp={}{}",
+                    i + 1,
+                    c.primary_label(),
+                    normalize_tag(&c.public_tag),
+                    contact_fingerprint(c),
+                    if c.pinned { " [pinned]" } else { "" }
+                );
+            }
+            if pet.is_empty() || clashes.iter().any(|c| c.petname == pet) {
+                return Err(
+                    "choose a distinct --petname (e.g. \"Ahmad (Berlin)\") — never silent pick"
+                        .into(),
+                );
+            }
+            eprintln!("{C_DIM}saving with distinct petname — pinned rows stay authoritative{C_RESET}");
+        }
+    }
+
+    // Replace same pub_hex if present (preserve pin if already pinned and same key).
+    let prior_pinned = contacts
+        .iter()
+        .find(|c| c.pub_hex == hex::encode(ed))
+        .map(|c| c.pinned)
+        .unwrap_or(false);
+    contacts.retain(|c| c.pub_hex != hex::encode(ed));
+    contacts.push(Contact {
+        petname: pet,
+        public_tag: tag_clean.clone(),
+        alias: tag_clean,
+        address,
+        pub_hex: hex::encode(ed),
+        pinned: pin || prior_pinned,
+    });
+    save_contacts(data_dir, &contacts)?;
+    println!("{C_GREEN}contact saved{C_RESET} (local only — no FastAPI / no registrar)");
+    println!("{C_DIM}petname{C_RESET}     {}", contacts.last().unwrap().primary_label());
+    if let Some(t) = contacts.last().unwrap().tag_subtitle() {
+        println!("{C_DIM}public_tag{C_RESET}  {t}");
+    }
+    println!("{C_DIM}fingerprint{C_RESET} {fp}");
+    println!(
+        "{C_DIM}pinned{C_RESET}      {}",
+        if pin || prior_pinned {
+            "yes (Tag+key locked locally)"
+        } else {
+            "no (pass --verify-fp to pin)"
+        }
+    );
+    Ok(())
+}
+
+fn cmd_contact_list(data_dir: &Path) {
+    let contacts = load_contacts(data_dir);
+    println!(
+        "{C_BOLD}Contacts{C_RESET} ({}) — petname first (Raven Tag V1)",
+        contacts.len()
+    );
+    if contacts.is_empty() {
+        println!(
+            "{C_DIM}None. ash contact add --address … --pub-hex … --petname \"…\" --tag ahmad --verify-fp …{C_RESET}"
+        );
+        return;
+    }
+    for (i, c) in contacts.iter().enumerate() {
+        let sub = c
+            .tag_subtitle()
+            .map(|t| format!("  {C_DIM}{t}{C_RESET}"))
+            .unwrap_or_default();
+        let pin = if c.pinned { " [pinned]" } else { "" };
+        println!(
+            "  {C_CYAN}{}{C_RESET}  {}{}{pin}",
+            i + 1,
+            c.primary_label(),
+            sub
+        );
+        println!(
+            "      {C_DIM}fp={}{C_RESET}",
+            contact_fingerprint(c)
+        );
+    }
+}
+
+fn cmd_contact_resolve(data_dir: &Path, tag: &str) {
+    let contacts = load_contacts(data_dir);
+    let hits = resolve_tag_contacts(&contacts, tag);
+    if hits.is_empty() {
+        eprintln!("no local contacts for @{}", normalize_tag(tag));
+        eprintln!("{C_DIM}no \"is tag taken?\" API — add via QR/OOB only{C_RESET}");
+        return;
+    }
+    if hits.len() == 1 {
+        let c = hits[0];
+        println!("{C_GREEN}resolved{C_RESET} {}", c.primary_label());
+        if let Some(t) = c.tag_subtitle() {
+            println!("{C_DIM}public_tag{C_RESET}  {t}");
+        }
+        println!("{C_DIM}fingerprint{C_RESET} {}", contact_fingerprint(c));
+        println!(
+            "{C_DIM}pinned{C_RESET}      {}",
+            if c.pinned { "yes" } else { "no" }
+        );
+        return;
+    }
+    println!(
+        "{C_PURPLE}ambiguity picker{C_RESET}: {} claims for @{} — never silent pick",
+        hits.len(),
+        normalize_tag(tag)
+    );
+    for (i, c) in hits.iter().enumerate() {
+        println!(
+            "  {C_CYAN}{}{C_RESET}  {}  {}  fp={}{}",
+            i + 1,
+            c.primary_label(),
+            c.tag_subtitle().unwrap_or_default(),
+            contact_fingerprint(c),
+            if c.pinned { " [pinned]" } else { "" }
+        );
+    }
+    println!("{C_DIM}Pick a # and use that petname in send — or re-add with a distinct petname.{C_RESET}");
+}
+
+fn cmd_contact_verify(
+    data_dir: &Path,
+    tag: Option<&str>,
+    alias: Option<&str>,
+    petname: Option<&str>,
+    address: Option<&str>,
+) {
+    let contacts = load_contacts(data_dir);
+    let tag = tag.or(alias);
+    let matches: Vec<&Contact> = if let Some(t) = tag {
+        resolve_tag_contacts(&contacts, t)
+    } else if let Some(p) = petname {
+        let want = sanitize_terminal_text(p.trim());
+        contacts
+            .iter()
+            .filter(|c| c.petname.eq_ignore_ascii_case(&want))
+            .collect()
+    } else if let Some(addr) = address {
+        let addr = raven_core::address::from_display(addr.trim());
+        contacts.iter().filter(|c| c.address == addr).collect()
+    } else {
+        eprintln!("need --tag, --petname, or --address");
+        return;
+    };
+    if matches.is_empty() {
+        eprintln!("no contact matched");
+        return;
+    }
+    if matches.len() > 1 {
+        println!(
+            "{C_PURPLE}ambiguity{C_RESET}: {} matches — compare fingerprints",
+            matches.len()
+        );
+    }
+    for c in matches {
+        println!("{C_DIM}petname{C_RESET}     {}", c.primary_label());
+        if let Some(t) = c.tag_subtitle() {
+            println!("{C_DIM}public_tag{C_RESET}  {t}");
+        }
+        println!(
+            "{C_DIM}address{C_RESET}     {}",
+            sanitize_terminal_text(&c.address)
+        );
+        println!("{C_DIM}fingerprint{C_RESET} {}", contact_fingerprint(c));
+        println!(
+            "{C_DIM}pinned{C_RESET}      {}",
+            if c.pinned { "yes" } else { "no" }
+        );
+    }
+}
+
+fn cmd_contacts(data_dir: &Path) {
+    cmd_contact_list(data_dir);
     print!("Add contact? [y/N] ");
     let _ = io::stdout().flush();
-    if read_line().eq_ignore_ascii_case("y") {
-        print!("alias (optional): ");
-        let _ = io::stdout().flush();
-        let alias = read_line();
-        print!("address (rvn1…): ");
-        let _ = io::stdout().flush();
-        let address = read_line();
-        print!("pub_hex (64 chars, public only): ");
-        let _ = io::stdout().flush();
-        let pub_hex = read_line().to_lowercase();
-        if pub_hex.len() != 64 || hex::decode(&pub_hex).map(|v| v.len()) != Ok(32) {
-            eprintln!("rejected: pub_hex must be 32-byte hex (never paste seeds)");
+    if !read_line().eq_ignore_ascii_case("y") {
+        return;
+    }
+    print!("petname (primary, e.g. Ahmad — work): ");
+    let _ = io::stdout().flush();
+    let petname = read_line();
+    print!("public tag (optional @ahmad — NOT unique): ");
+    let _ = io::stdout().flush();
+    let tag = read_line();
+    print!("address (rvn1… from QR/OOB): ");
+    let _ = io::stdout().flush();
+    let address = read_line();
+    print!("pub_hex (64 chars, public only — never seed): ");
+    let _ = io::stdout().flush();
+    let pub_hex = read_line();
+    match parse_pub_hex(&pub_hex) {
+        Ok(ed) => {
+            let fp = device_fingerprint_v1(&ed);
+            println!("{C_BOLD}Verify fingerprint with peer:{C_RESET} {fp}");
+            print!("Type fingerprint to PIN Tag+key (recommended), or Enter to save unpinned: ");
+            let _ = io::stdout().flush();
+            let typed = read_line();
+            let verify = if typed.trim().is_empty() {
+                None
+            } else {
+                Some(typed)
+            };
+            if let Err(e) = add_contact(
+                data_dir,
+                &address,
+                &pub_hex,
+                &petname,
+                &tag,
+                verify.as_deref(),
+            ) {
+                eprintln!("rejected: {e}");
+            }
+        }
+        Err(e) => eprintln!("rejected: {e}"),
+    }
+}
+
+fn cmd_prekey_publish(data_dir: &Path, device_id: &str, out: Option<&Path>) {
+    let id = ensure_identity(data_dir);
+    // Demo X25519 + deterministic non-zero ML-KEM EK placeholder for store path tests.
+    // Real ML-KEM EK comes from hybrid initiate; this publishes a signed bundle shape.
+    let mut ek = vec![0u8; MLKEM768_EK_LEN];
+    for (i, b) in ek.iter_mut().enumerate() {
+        *b = (i as u8).wrapping_mul(17).wrapping_add(3);
+    }
+    let now = now_ms();
+    let bundle = PrekeyBundle {
+        identity_ed25519_pub: id.public_key_bytes(),
+        device_id: sanitize_terminal_text(device_id),
+        x25519_pub: {
+            // Derive a stable demo X25519 pub marker from identity (not a real DH pub).
+            let mut x = [0u8; 32];
+            x.copy_from_slice(&id.public_key_bytes());
+            x[0] |= 0x08;
+            x
+        },
+        mlkem768_ek: ek,
+        signed_prekey_id: 1,
+        one_time_prekey_id: 0,
+        one_time_x25519_pub: None,
+        created_at_ms: now,
+        expires_at_ms: now.saturating_add(30 * 24 * 3600 * 1000),
+        signature: [0u8; 64],
+    };
+    let bundle = match bundle.sign(&id) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("sign failed: {e}");
             return;
         }
-        if address.is_empty() {
-            eprintln!("rejected: address required");
-            return;
-        }
-        contacts.push(Contact {
-            alias,
-            address,
-            pub_hex,
-        });
-        if let Err(e) = save_contacts(data_dir, &contacts) {
-            eprintln!("save failed: {e}");
-        } else {
-            println!("{C_GREEN}saved{C_RESET} (public fields only)");
+    };
+    let mut store = PrekeyStore::load(data_dir);
+    if let Err(e) = store.publish(&bundle, now) {
+        eprintln!("publish failed: {e}");
+        return;
+    }
+    if let Err(e) = store.save(data_dir) {
+        eprintln!("save store failed: {e}");
+        return;
+    }
+    println!("{C_GREEN}prekey published{C_RESET} → local prekey_store.json (untrusted store stand-in)");
+    println!("{C_DIM}store_key{C_RESET} {}", hex::encode(PrekeyBundle::store_key(&id.public_key_bytes())));
+    println!("{C_DIM}note{C_RESET}      never FastAPI — OOB/file/DHT only");
+    if let Some(path) = out {
+        let j = bundle.to_json();
+        match serde_json::to_string_pretty(&j) {
+            Ok(raw) => {
+                if let Err(e) = std::fs::write(path, raw) {
+                    eprintln!("write --out failed: {e}");
+                } else {
+                    println!("{C_DIM}oob_file{C_RESET} {}", path.display());
+                }
+            }
+            Err(e) => eprintln!("json: {e}"),
         }
     }
+}
+
+fn cmd_prekey_fetch(data_dir: &Path, pub_hex: &str, file: Option<&Path>) {
+    let ed = match parse_pub_hex(pub_hex) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("{e}");
+            return;
+        }
+    };
+    let now = now_ms();
+    let bundle = if let Some(path) = file {
+        match std::fs::read_to_string(path) {
+            Ok(raw) => match serde_json::from_str::<PrekeyBundleJson>(&raw) {
+                Ok(j) => match PrekeyBundle::from_json(&j) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        eprintln!("bundle parse: {e}");
+                        return;
+                    }
+                },
+                Err(e) => {
+                    eprintln!("json: {e}");
+                    return;
+                }
+            },
+            Err(e) => {
+                eprintln!("read: {e}");
+                return;
+            }
+        }
+    } else {
+        match PrekeyStore::load(data_dir).fetch(&ed, now) {
+            Ok(Some(b)) => b,
+            Ok(None) => {
+                eprintln!("no bundle in local store for that pub (try --file OOB json)");
+                return;
+            }
+            Err(e) => {
+                eprintln!("fetch/verify failed: {e}");
+                return;
+            }
+        }
+    };
+    if let Err(e) = bundle.verify(now) {
+        eprintln!("verify failed: {e}");
+        return;
+    }
+    if bundle.identity_ed25519_pub != ed {
+        eprintln!("PREKEY_IDENTITY_MISMATCH");
+        return;
+    }
+    println!("{C_GREEN}prekey ok{C_RESET}");
+    println!(
+        "{C_DIM}fingerprint{C_RESET} {}",
+        device_fingerprint_v1(&bundle.identity_ed25519_pub)
+    );
+    println!("{C_DIM}device_id{C_RESET}   {}", sanitize_terminal_text(&bundle.device_id));
+    println!("{C_DIM}prekey_id{C_RESET}   {}", bundle.signed_prekey_id);
+    println!("{C_DIM}expires_ms{C_RESET}  {}", bundle.expires_at_ms);
+}
+
+fn print_messaging_path_diag() {
+    let path = resolve_terminal_messaging_path();
+    let _ = assert_no_silent_fastapi(path);
+    println!(
+        "{C_DIM}messaging_path{C_RESET} {} ({})",
+        path.as_diag_label(),
+        path.human()
+    );
+    println!(
+        "{C_DIM}path_rule{C_RESET}     serverless never silently uses FastAPI ({})",
+        MessagingPath::LegacyFastApi.as_diag_label()
+    );
 }
 
 fn cmd_status(data_dir: &Path) {
     println!("{C_BOLD}Status{C_RESET}");
     println!("{C_DIM}data_dir{C_RESET} {}", data_dir.display());
+    print_messaging_path_diag();
     match try_load_identity(data_dir) {
         Some(id) => {
             println!("{C_GREEN}●{C_RESET} identity");
@@ -494,19 +1038,21 @@ fn set_node_flag(data_dir: &Path, which: &str, on: bool) {
 fn cmd_send_interactive(data_dir: &Path) {
     let contacts = load_contacts(data_dir);
     let (peer, peer_pub_hex) = if !contacts.is_empty() {
-        println!("Pick contact # or paste peer host:port");
+        println!("Pick contact #, @alias, or paste peer host:port");
         for (i, c) in contacts.iter().enumerate() {
+            let sub = c
+                .tag_subtitle()
+                .map(|t| format!("  {C_DIM}{t}{C_RESET}"))
+                .unwrap_or_default();
             println!(
-                "  {C_CYAN}{}{C_RESET}  {}",
+                "  {C_CYAN}{}{C_RESET}  {}{}{}",
                 i + 1,
-                if c.alias.is_empty() {
-                    &c.address
-                } else {
-                    &c.alias
-                }
+                c.primary_label(),
+                sub,
+                if c.pinned { " [pinned]" } else { "" }
             );
         }
-        print!("peer host:port (or contact #): ");
+        print!("peer host:port | contact # | @alias: ");
         let _ = io::stdout().flush();
         let choice = read_line();
         if let Ok(n) = choice.parse::<usize>() {
@@ -519,6 +1065,34 @@ fn cmd_send_interactive(data_dir: &Path) {
                 eprintln!("invalid contact #");
                 return;
             }
+        } else if choice.trim().starts_with('@') || resolve_alias_contacts(&contacts, choice.trim()).len() == 1
+            && !choice.contains(':')
+        {
+            let alias = choice.trim().trim_start_matches('@');
+            let hits = resolve_alias_contacts(&contacts, alias);
+            if hits.is_empty() {
+                eprintln!("no contact for @{alias}");
+                return;
+            }
+            if hits.len() > 1 {
+                eprintln!(
+                    "{C_PURPLE}alias ambiguity{C_RESET}: {} matches — pick # or verify fingerprints",
+                    hits.len()
+                );
+                for (i, c) in hits.iter().enumerate() {
+                    eprintln!(
+                        "  {}  {}  fp={}",
+                        i + 1,
+                        sanitize_terminal_text(&c.address),
+                        contact_fingerprint(c)
+                    );
+                }
+                return;
+            }
+            print!("peer listen host:port: ");
+            let _ = io::stdout().flush();
+            let peer = read_line();
+            (peer, hits[0].pub_hex.clone())
         } else {
             print!("peer pub_hex: ");
             let _ = io::stdout().flush();
@@ -534,15 +1108,13 @@ fn cmd_send_interactive(data_dir: &Path) {
         let pub_hex = read_line();
         (peer, pub_hex)
     };
-    print!("message text: ");
+    print!("message (stdin — not stored in shell history as argv): ");
     let _ = io::stdout().flush();
     let text = read_line();
-    if peer.is_empty() || peer_pub_hex.len() != 64 || text.is_empty() {
-        eprintln!("need peer, 64-char pub_hex, and non-empty text");
+    if text.is_empty() {
+        eprintln!("empty message");
         return;
     }
-    // Do not echo plaintext back; spawn raven-node which logs lengths only.
-    println!("{C_DIM}sending… (plaintext not logged by ash){C_RESET}");
     run_send(data_dir, &peer, &peer_pub_hex, "127.0.0.1:0", &text);
 }
 
@@ -667,6 +1239,51 @@ fn main() {
         }
         Some(Commands::Doctor) => cmd_doctor(&data_dir),
         Some(Commands::IpcPing) => cmd_ipc_ping(&data_dir),
+        Some(Commands::Contact { cmd }) => match cmd {
+            ContactCommands::Add {
+                address,
+                pub_hex,
+                petname,
+                tag,
+                alias,
+                verify_fp,
+            } => {
+                let tag = if !tag.is_empty() { tag } else { alias };
+                if let Err(e) = add_contact(
+                    &data_dir,
+                    &address,
+                    &pub_hex,
+                    &petname,
+                    &tag,
+                    verify_fp.as_deref(),
+                ) {
+                    eprintln!("rejected: {e}");
+                    std::process::exit(1);
+                }
+            }
+            ContactCommands::List => cmd_contact_list(&data_dir),
+            ContactCommands::Verify {
+                tag,
+                alias,
+                petname,
+                address,
+            } => cmd_contact_verify(
+                &data_dir,
+                tag.as_deref(),
+                alias.as_deref(),
+                petname.as_deref(),
+                address.as_deref(),
+            ),
+            ContactCommands::Resolve { tag } => cmd_contact_resolve(&data_dir, &tag),
+        },
+        Some(Commands::Prekey { cmd }) => match cmd {
+            PrekeyCommands::Publish { device_id, out } => {
+                cmd_prekey_publish(&data_dir, &device_id, out.as_deref())
+            }
+            PrekeyCommands::Fetch { pub_hex, file } => {
+                cmd_prekey_fetch(&data_dir, &pub_hex, file.as_deref())
+            }
+        },
     }
 }
 
@@ -725,22 +1342,66 @@ fn cmd_doctor(data_dir: &Path) {
     let exe = std::env::current_exe()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| "?".into());
-    println!("  this_binary={exe}");
+    let exe_clean = sanitize_terminal_text(&exe);
+    println!("  this_binary={exe_clean}");
     println!("  argv0_hint: prefer `raven` as primary command; `ash` is product alias");
-    println!("  data_dir={}", data_dir.display());
+    println!(
+        "  data_dir={}",
+        sanitize_terminal_text(&data_dir.display().to_string())
+    );
+    print_messaging_path_diag();
+
     let sock = default_socket_path(data_dir);
-    println!("  ipc_sock={} exists={}", sock.display(), sock.exists());
+    println!(
+        "  ipc_sock={} exists={}",
+        sanitize_terminal_text(&sock.display().to_string()),
+        sock.exists()
+    );
     if sock.exists() {
         match ipc_ping_blocking(&sock) {
             Ok(IpcResponse::Pong { v }) => {
-                println!("  ipc_ping: {C_GREEN}ok{C_RESET} v={v}");
+                println!("  daemon_state: {C_GREEN}up{C_RESET} (ipc_ping ok v={v})");
             }
-            Ok(_) => println!("  ipc_ping: unexpected response"),
-            Err(e) => println!("  ipc_ping: {C_DIM}fail ({e}){C_RESET}"),
+            Ok(_) => println!("  daemon_state: unexpected ipc response"),
+            Err(e) => {
+                let clean = sanitize_terminal_text(&e);
+                println!("  daemon_state: {C_DIM}down/fail ({clean}){C_RESET}");
+            }
         }
     } else {
-        println!("  ipc_ping: skipped (start raven-node ipc)");
+        println!("  daemon_state: no socket (start raven-node ipc)");
     }
+
+    // Database / queue files (existence only — no secret contents).
+    for name in [
+        "queue.sqlite",
+        "queue.db",
+        "forward_queue.sqlite",
+        "contacts.json",
+        "device_registry.json",
+        "node_policy.json",
+        "bootstrap.json",
+        "identity.seed",
+    ] {
+        let p = data_dir.join(name);
+        let label = if name == "identity.seed" {
+            "secure_keystore"
+        } else if name.contains("queue") {
+            "database"
+        } else {
+            "local_file"
+        };
+        println!(
+            "  {label}: {} {}",
+            name,
+            if p.exists() { "present" } else { "absent" }
+        );
+    }
+
+    println!("  bluetooth: not probed in headless ash (see mock_ble / iOS CoreBluetooth)");
+    println!("  nat_class: software unknown here — see node/NAT_TRAVERSAL.md (BLOCKED_HARDWARE for live CGNAT)");
+    println!("  relay_hint: policy.relay + bootstrap peers (no Raven-mandatory relay)");
+
     #[cfg(unix)]
     {
         let bin_ash = Path::new("/bin/ash");
@@ -749,7 +1410,6 @@ fn cmd_doctor(data_dir: &Path) {
                 "  {C_GREEN}note{C_RESET}: /bin/ash exists — Raven must NOT overwrite it"
             );
             println!("  conflict_detection: system ash present; use `raven` or ~/.local/bin/ash → raven");
-            // Compare inode/path of current exe vs /bin/ash when possible.
             if let (Ok(cur), Ok(sys)) = (
                 std::fs::canonicalize(&exe),
                 std::fs::canonicalize(bin_ash),
@@ -763,8 +1423,9 @@ fn cmd_doctor(data_dir: &Path) {
         } else {
             println!("  /bin/ash: absent on this host");
         }
-        // PATH shadowing check
-        if let Ok(out) = Command::new("sh").args(["-c", "command -v ash; command -v raven"]).output()
+        if let Ok(out) = Command::new("sh")
+            .args(["-c", "command -v ash; command -v raven"])
+            .output()
         {
             let s = String::from_utf8_lossy(&out.stdout);
             for line in s.lines() {
@@ -786,6 +1447,7 @@ fn cmd_doctor(data_dir: &Path) {
         pol.bridge, pol.store, pol.relay
     );
     println!("{C_DIM}Closing this CLI does not stop raven-node if installed as a service.{C_RESET}");
+    println!("{C_DIM}Diagnostics never print private keys, seeds, or plaintext bodies.{C_RESET}");
 }
 
 #[cfg(test)]

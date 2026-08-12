@@ -365,6 +365,7 @@
 		E7A1B2C3D4E5F60718293A1C /* RavenEnvelopeChatWire.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293A1B /* RavenEnvelopeChatWire.swift */; };
 		E7A1B2C3D4E5F60718293A1E /* RavenEnvelopeChatWireTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293A1D /* RavenEnvelopeChatWireTests.swift */; };
 		E7A1B2C3D4E5F60718293A20 /* RavenEnvelopeSenderResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293A1F /* RavenEnvelopeSenderResolver.swift */; };
+		E7A1B2C3D4E5F60718293A22 /* RavenTagDisplay.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293A21 /* RavenTagDisplay.swift */; };
 		E7A1B2C3D4E5F60718293A22 /* RavenEnvelopeSenderResolverTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293A21 /* RavenEnvelopeSenderResolverTests.swift */; };
 		D4E2F1AB3B0CBB45A5E1A004 /* ATSAMChainRatchetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4E2F1AB3B0CBB45A5E1A003 /* ATSAMChainRatchetTests.swift */; };
 		B7A1C0DE1F0CBB45A5E17182 /* ATSAMPairingRootAgreementTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7A1C0DE1F0CBB45A5E17181 /* ATSAMPairingRootAgreementTests.swift */; };
@@ -552,6 +553,7 @@
 		E7A1B2C3D4E5F60718293A1B /* RavenEnvelopeChatWire.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RavenEnvelopeChatWire.swift; path = RAVEN/Core/Protocol/RavenEnvelopeChatWire.swift; sourceTree = "<group>"; };
 		E7A1B2C3D4E5F60718293A1D /* RavenEnvelopeChatWireTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RavenEnvelopeChatWireTests.swift; sourceTree = "<group>"; };
 		E7A1B2C3D4E5F60718293A1F /* RavenEnvelopeSenderResolver.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RavenEnvelopeSenderResolver.swift; path = RAVEN/Core/Protocol/RavenEnvelopeSenderResolver.swift; sourceTree = "<group>"; };
+		E7A1B2C3D4E5F60718293A21 /* RavenTagDisplay.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RavenTagDisplay.swift; path = RAVEN/Core/Protocol/RavenTagDisplay.swift; sourceTree = "<group>"; };
 		E7A1B2C3D4E5F60718293A21 /* RavenEnvelopeSenderResolverTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RavenEnvelopeSenderResolverTests.swift; sourceTree = "<group>"; };
 		D4E2F1AB3B0CBB45A5E1A001 /* ATSAMChainRatchet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMChainRatchet.swift; sourceTree = "<group>"; };
 		12FD2A1C31D0CBB45A5E1464 /* KeyBackupServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KeyBackupServiceTests.swift; sourceTree = "<group>"; };
@@ -2174,6 +2176,7 @@
 				E7A1B2C3D4E5F60718293A17 /* RavenEnvelopeEndpointIngest.swift */,
 				E7A1B2C3D4E5F60718293A1B /* RavenEnvelopeChatWire.swift */,
 				E7A1B2C3D4E5F60718293A1F /* RavenEnvelopeSenderResolver.swift */,
+				E7A1B2C3D4E5F60718293A21 /* RavenTagDisplay.swift */,
 				01597C194B704D9DACFDD069 /* MeshBridgeReceiver.swift */,
 				FC7E3F7E3B80DD73A6C65081 /* MeshCryptoService.swift */,
 				VLT_FILEREF_001 /* VaultCrypto.swift */,
@@ -2785,6 +2788,7 @@
 				E7A1B2C3D4E5F60718293A18 /* RavenEnvelopeEndpointIngest.swift in Sources */,
 				E7A1B2C3D4E5F60718293A1C /* RavenEnvelopeChatWire.swift in Sources */,
 				E7A1B2C3D4E5F60718293A20 /* RavenEnvelopeSenderResolver.swift in Sources */,
+				E7A1B2C3D4E5F60718293A22 /* RavenTagDisplay.swift in Sources */,
 				7AAC8AAC20584241B41428D9 /* MeshBridgeReceiver.swift in Sources */,
 				849F913859E4F75643818245 /* MeshCryptoService.swift in Sources */,
 				13C86EF7DBEB25CB11A3B504 /* EditProfileView.swift in Sources */,

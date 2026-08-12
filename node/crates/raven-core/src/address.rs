@@ -36,13 +36,13 @@ pub fn to_display(addr: &str) -> String {
 }
 
 pub fn from_display(disp: &str) -> String {
-    let body = disp
-        .trim()
-        .strip_prefix("rvn1:")
-        .unwrap_or(disp)
-        .replace('-', "")
-        .to_lowercase();
-    format!("rvn1{body}")
+    let t = disp.trim();
+    if let Some(rest) = t.strip_prefix("rvn1:") {
+        let body = rest.replace('-', "").to_lowercase();
+        return format!("rvn1{body}");
+    }
+    // Already canonical bech32 (`rvn` + `1` + data) — do not re-prefix.
+    t.replace('-', "").to_lowercase()
 }
 
 #[cfg(test)]

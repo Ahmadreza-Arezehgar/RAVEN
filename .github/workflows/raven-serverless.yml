@@ -8,12 +8,16 @@ on:
       - "node/**"
       - "protocol/**"
       - "shared-vectors/**"
+      - "scripts/secret_history_scan.sh"
+      - "docs/MIGRATION_SERVERLESS_V1.md"
       - ".github/workflows/raven-serverless.yml"
   pull_request:
     paths:
       - "node/**"
       - "protocol/**"
       - "shared-vectors/**"
+      - "scripts/secret_history_scan.sh"
+      - "docs/MIGRATION_SERVERLESS_V1.md"
       - ".github/workflows/raven-serverless.yml"
   workflow_dispatch:
 
@@ -22,6 +26,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  secret-scan:
+    name: Secret pattern scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run secret history scan (CI mode)
+        run: bash scripts/secret_history_scan.sh --ci
+
   rust-linux:
     name: Rust + vectors (Linux)
     runs-on: ubuntu-latest
@@ -57,6 +71,26 @@ jobs:
         run: |
           python3 -m pip install -q pytest
           python3 -m pytest -q
+      - name: SBOM (cargo tree + cyclonedx if available)
+        run: |
+          set -euo pipefail
+          mkdir -p target/sbom
+          cargo tree -p raven-core -p ash -p raven-node -p raven-swarm --prefix depth \
+            > target/sbom/raven-cargo-tree.txt
+          if cargo install --list 2>/dev/null | grep -q '^cargo-cyclonedx '; then
+            cargo cyclonedx -p raven-core --format json --output-cdx target/sbom/raven-core.cdx.json || true
+          else
+            cargo install cargo-cyclonedx --locked --version 0.5.7 || true
+            cargo cyclonedx -p raven-core --format json --output-cdx target/sbom/raven-core.cdx.json \
+              || echo "cyclonedx optional — cargo-tree SBOM retained"
+          fi
+          ls -la target/sbom/
+      - name: Upload SBOM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: raven-sbom-linux
+          path: node/target/sbom/
+          if-no-files-found: warn
 
   rust-macos:
     name: Rust (macOS)
@@ -78,3 +112,35 @@ jobs:
         run: ./scripts/libp2p_swarm_smoke.sh
       - name: bootstrap manual-peer smoke
         run: ./scripts/bootstrap_manual_peer_smoke.sh
+
+  rust-windows:
+    name: Rust (Windows)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: node
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: node
+      - name: test raven-core + ash (no bash smoke scripts)
+        run: |
+          cargo test -p raven-core -p ash
+          cargo build -p raven-node
+      # bash libp2p/bootstrap smokes are Linux/macOS-only on this workflow.
+
+  # iOS RavenEnvelope* XCTest: optional / manual — requires macOS + Xcode +
+  # ios-native/RAVEN scheme. Not run on free GHA by default (long + signing).
+  # Local: open ios-native/RAVEN and run RavenEnvelope* tests, or:
+  #   xcodebuild test -scheme RAVEN -destination 'platform=iOS Simulator,name=iPhone 16' \
+  #     -only-testing:RAVENTests/RavenEnvelopeBridgeServiceTests
+  ios-xctest-note:
+    name: iOS XCTest (manual note)
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "iOS RavenEnvelope* XCTest is OPTIONAL/MANUAL for serverless CI."
+          echo "Run locally under ios-native/RAVEN when hardware/simulator available."
+          echo "Not failing the workflow — software gate lives in rust-* jobs."

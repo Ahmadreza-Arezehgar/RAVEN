@@ -16,12 +16,11 @@ enum FeatureFlag: String, CaseIterable {
     case geoFenced         = "geo_fenced_v1"
     case internetBridge    = "internet_bridge_v1"
     case dataMules         = "data_mules_v1"
-    case clubMode          = "club_mode_v1"
-    case echo              = "echo_v1"
     case vault             = "vault_v1"
     case proximaVault      = "proxima_vault_v3_1_2"
     case proximaVaultStealth = "proxima_vault_stealth_v3_2"
     case atsam             = "atsam_v1_stage1"
+    case ravenEnvelopeV1   = "raven_envelope_v1"
     case legacyPlaintextGroupKey = "legacy_plaintext_group_key_v1"
     case legacyPlaintextRender = "legacy_plaintext_render_v1"
 
@@ -33,12 +32,11 @@ enum FeatureFlag: String, CaseIterable {
         case .geoFenced:          return "Geo-fenced Messages"
         case .internetBridge:     return "Internet Bridge Gateway"
         case .dataMules:          return "Intent-based Data Mules"
-        case .clubMode:           return "Club Mode"
-        case .echo:               return "Echo Broadcast"
         case .vault:              return "Proximity Vault"
         case .proximaVault:       return "PROXIMA-VAULT (OTP)"
         case .proximaVaultStealth: return "PV-Stealth (rotating tags)"
         case .atsam:              return "ATSAM hybrid pairing"
+        case .ravenEnvelopeV1:    return "RavenEnvelopeV1 (serverless)"
         case .legacyPlaintextGroupKey: return "Legacy Plaintext Group Key"
         case .legacyPlaintextRender: return "Legacy Plaintext Render"
         }
@@ -57,10 +55,6 @@ enum FeatureFlag: String, CaseIterable {
             return "Allow online devices to bridge messages for offline peers"
         case .dataMules:
             return "Announce travel to carry messages between regions"
-        case .clubMode:
-            return "Group movement tracking with drop alerts via mesh"
-        case .echo:
-            return "Anonymous broadcast questions with emoji responses"
         case .vault:
             return "Location-encrypted content that unlocks by proximity"
         case .proximaVault:
@@ -83,6 +77,13 @@ enum FeatureFlag: String, CaseIterable {
             // sessions keep working but new pairs fall back to the
             // pre-ATSAM Noise IK path.
             return "Post-quantum hybrid pairing root + HKDF key tree (Raven's production security protocol, on by default)"
+        case .ravenEnvelopeV1:
+            // Parallel binary envelope for terminal-node / serverless
+            // interop. Default OFF — MeshEnvelope JSON remains the
+            // shipping BLE/chat path until Phase G/H cutover.
+            // messaging_path label: serverless_rvn1 when ON, legacy_mesh_envelope when OFF.
+            // Never silent FastAPI for friendship or 1:1 delivery. Petname-first tags: docs/RAVEN_TAG_V1.md.
+            return "Binary RavenEnvelopeV1 for serverless/terminal interop (MeshEnvelope default OFF; no FastAPI friendship)"
         case .legacyPlaintextGroupKey:
             return "DANGER: broadcasts the group key in cleartext over BLE to members without a post-quantum pair. Off by default — the key is otherwise withheld until pairing."
         case .legacyPlaintextRender:
@@ -98,12 +99,11 @@ enum FeatureFlag: String, CaseIterable {
         case .geoFenced:          return "location.fill"
         case .internetBridge:     return "wifi.circle.fill"
         case .dataMules:          return "airplane"
-        case .clubMode:           return "person.3.fill"
-        case .echo:               return "megaphone.fill"
         case .vault:              return "lock.shield.fill"
         case .proximaVault:       return "key.viewfinder"
         case .proximaVaultStealth: return "eye.slash.fill"
         case .atsam:              return "atom"
+        case .ravenEnvelopeV1:    return "envelope"
         case .legacyPlaintextGroupKey: return "exclamationmark.lock"
         case .legacyPlaintextRender: return "eye.trianglebadge.exclamationmark"
         }
@@ -130,7 +130,8 @@ enum FeatureFlag: String, CaseIterable {
     /// per-conversation opt-in and are still field-testing.
     private var defaultEnabledValue: Bool {
         switch self {
-        case .echo, .clubMode, .vault, .atsam: return true
+        case .vault, .atsam: return true
+        case .ravenEnvelopeV1: return false
         default: return false
         }
     }
@@ -175,14 +176,6 @@ enum FeatureFlag: String, CaseIterable {
         FeatureFlag.dataMules.isEnabled
     }
     
-    static var isClubModeEnabled: Bool {
-        FeatureFlag.clubMode.isEnabled
-    }
-    
-    static var isEchoEnabled: Bool {
-        FeatureFlag.echo.isEnabled
-    }
-    
     static var isVaultEnabled: Bool {
         FeatureFlag.vault.isEnabled
     }
@@ -197,6 +190,12 @@ enum FeatureFlag: String, CaseIterable {
 
     static var isATSAMEnabled: Bool {
         FeatureFlag.atsam.isEnabled
+    }
+
+    /// Default OFF. When on, prefer packing/parsing RavenEnvelopeV1 on
+    /// bridge/LAN paths alongside MeshEnvelope (shipping BLE path unchanged).
+    static var isRavenEnvelopeV1Enabled: Bool {
+        FeatureFlag.ravenEnvelopeV1.isEnabled
     }
 
     /// Default OFF. When off, the cleartext group-key broadcast fallback in

@@ -77,6 +77,12 @@ same "did the key change?" posture described for fingerprints in
 address is exactly as significant, from a trust standpoint, as a contact's
 fingerprint changing.
 
+## Soft Unique Raven Tags
+
+See [`docs/RAVEN_TAG_V1.md`](../docs/RAVEN_TAG_V1.md): Layer A address/fingerprint, Layer B public `@tag` (Alias V1, non-unique), Layer C device-local **petname** (inbox primary). Pin-on-verify; ambiguity picker; no registrar.
+
+---
+
 ## 4. DHT publication constraints
 
 A `RavenAliasRecordV1` published to (or served from) a DHT or any other

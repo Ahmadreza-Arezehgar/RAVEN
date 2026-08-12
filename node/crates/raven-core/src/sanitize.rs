@@ -92,7 +92,21 @@ pub fn strip_bidi(input: &str) -> String {
 
 /// Sanitize for terminal display (aliases, previews, doctor output).
 pub fn sanitize_terminal_text(input: &str) -> String {
-    strip_bidi(&strip_ansi(input))
+    let stripped = strip_bidi(&strip_ansi(input));
+    stripped
+        .chars()
+        .filter(|c| {
+            // Drop C0 controls except TAB/LF/CR; drop DEL and C1.
+            let u = *c as u32;
+            if u == 0x09 || u == 0x0a || u == 0x0d {
+                return true;
+            }
+            if u < 0x20 || u == 0x7f || (0x80..=0x9f).contains(&u) {
+                return false;
+            }
+            true
+        })
+        .collect()
 }
 
 /// True if input contained dangerous controls before sanitization.
@@ -125,5 +139,12 @@ mod tests {
     fn clean_passthrough() {
         assert_eq!(sanitize_terminal_text("hello bob"), "hello bob");
         assert!(!had_dangerous_controls("hello bob"));
+    }
+
+    #[test]
+    fn strips_nul_and_c0() {
+        let s = "ok\u{0000}bad\u{0007}x";
+        assert_eq!(sanitize_terminal_text(s), "okbadx");
+        assert!(had_dangerous_controls(s));
     }
 }

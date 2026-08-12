@@ -8,6 +8,16 @@
 
 Raven **does not require** a Raven-operated central message server (FastAPI inbox, WebSocket fan-out, or cloud message DB) for 1:1 text delivery on the V1 envelope path.
 
+### Three planes (do not collapse)
+
+| Plane | Meaning |
+|-------|---------|
+| **Trust / friendship** | QR/OOB + fingerprint + signed prekey + local contacts. **Never** a central people directory. |
+| **Delivery** | Store-carry-forward of opaque ciphertext (mesh / relay / Internet dial). |
+| **Interop (Bridge)** | Untrusted cross-transport forward of the **same** `RavenEnvelopeV1` (DTN gateway sense — Fall), not a social introducer. |
+
+See `docs/SERVERLESS_FRIEND_MESH_BRIDGE_DESIGN.md`. V1 mesh claim: **Spray-and-Wait bounds** (`replication_budget` / hop / TTL) — not BUBBLE/SimBet.
+
 Allowed (non-trusted) helpers:
 
 - User-run or community **relay / store / bridge / bootstrap** nodes that forward **opaque** `RavenEnvelopeV1` bytes only

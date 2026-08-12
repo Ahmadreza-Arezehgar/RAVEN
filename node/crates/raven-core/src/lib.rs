@@ -16,6 +16,7 @@ pub mod bootstrap;
 pub mod bridge;
 pub mod canon;
 pub mod device_cert;
+pub mod device_sync;
 pub mod discovery;
 pub mod envelope;
 pub mod fingerprint;
@@ -24,6 +25,7 @@ pub mod identity;
 pub mod internet;
 pub mod ipc;
 pub mod message_router;
+pub mod messaging_path;
 pub mod node_policy;
 pub mod prekey_bundle;
 pub mod queue;
@@ -45,6 +47,15 @@ pub use bootstrap::{
 pub use device_cert::{
     device_registry_path, load_device_registry, save_device_registry, DeviceCertificate,
     DeviceRegistry,
+};
+pub use device_sync::{
+    derive_device_sync_key, import_contact_sync, partition_lag_allows_stale_auth,
+    seal_contact_sync, unseal_contact_sync, ContactSyncPlaintext, RevocationRecord,
+    RevocationStore, SyncContact,
+};
+pub use messaging_path::{
+    assert_no_silent_fastapi, path_from_raven_envelope_flag, resolve_terminal_messaging_path,
+    MessagingPath, ENV_FORCE_LEGACY_LABEL, ENV_SERVERLESS_RVN1,
 };
 pub use discovery::{alias_hint_key, DiscoveryStore, PeerRecord, NAT_STATUS};
 pub use internet::{
@@ -71,7 +82,7 @@ pub use message_router::{InboundEnvelope, MessageRouter, RouterOutcome};
 pub use node_policy::{
     load_policy, policy_path, save_policy, BridgeStatusSnapshot, NodePolicy,
 };
-pub use prekey_bundle::{PrekeyBundle, MLKEM768_EK_LEN};
+pub use prekey_bundle::{PrekeyBundle, PrekeyBundleJson, PrekeyStore, MLKEM768_EK_LEN};
 pub use queue::{DeliveryState, OutgoingQueue, QueueItem};
 pub use sanitize::{had_dangerous_controls, sanitize_terminal_text, strip_ansi, strip_bidi};
 pub use seal::{
