@@ -38,18 +38,54 @@ use raven_core::chat_history::BlockList;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-// Brand palette from https://raven-messager.com/ (public CSS vars).
-const C_CYAN: &str = "\x1b[38;2;64;242;255m";
-const C_PURPLE: &str = "\x1b[38;2;191;115;255m";
-const C_BLUE: &str = "\x1b[38;2;41;141;255m";
-const C_DIM: &str = "\x1b[38;2;160;160;170m";
-const C_WHITE: &str = "\x1b[38;2;255;255;255m";
-const C_GREEN: &str = "\x1b[38;2;34;197;94m";
-const C_RESET: &str = "\x1b[0m";
+use std::sync::OnceLock;
+
+/// Monochrome terminal style (bold / dim only — no cyan/purple/green).
+/// Empty strings when NO_COLOR is set or TERM=dumb.
+#[derive(Clone, Copy)]
+struct Style {
+    bold: &'static str,
+    dim: &'static str,
+    reset: &'static str,
+}
+
+fn color_enabled() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var_os("NO_COLOR").is_none()
+            && !std::env::var_os("TERM").is_some_and(|t| t == "dumb")
+    })
+}
+
+fn style() -> Style {
+    if color_enabled() {
+        Style {
+            bold: "\x1b[1m",
+            dim: "\x1b[2m",
+            reset: "\x1b[0m",
+        }
+    } else {
+        Style {
+            bold: "",
+            dim: "",
+            reset: "",
+        }
+    }
+}
+
+// Monochrome palette (bold/dim). Former cyan/purple/green brand colors removed.
+// When NO_COLOR/TERM=dumb, prefer `style()` in new UX paths; these consts stay
+// bold/dim-only (still B&W) for legacy call sites.
 const C_BOLD: &str = "\x1b[1m";
+const C_DIM: &str = "\x1b[2m";
+const C_RESET: &str = "\x1b[0m";
+const C_CYAN: &str = "\x1b[1m";
+const C_PURPLE: &str = "\x1b[1m";
+const C_GREEN: &str = "\x1b[1m";
 
 /// Public logo assets (no secrets) — credit raven-messager.com.
 pub const LOGO_URL: &str = "https://raven-messager.com/raven_logo.png";
+#[allow(dead_code)]
 pub const LOGO_64_URL: &str = "https://raven-messager.com/raven_logo_64.png";
 
 #[derive(Parser, Debug)]
@@ -148,23 +184,45 @@ enum Commands {
 
 #[derive(Subcommand, Debug)]
 enum ContactCommands {
-    /// Add contact (QR/OOB). Petname-first; --verify-fp pins Tag+key locally.
+    /// Add a contact from QR/OOB public bits (never a private key).
+    ///
+    /// Soft Unique Tags: `@alias` is public and NOT globally unique — always
+    /// confirm fingerprint. Petname is your private label on this device.
+    ///
+    /// Examples:
+    ///
+    ///   ash contact add --address rvn1q… --pub-hex <64 hex> --petname "Poline"
+    ///
+    ///   ash contact add --address rvn1q… --pub-hex <64 hex> --petname "Poline" --tag poline --verify-fp XXXX-XXXX-XXXX
+    ///
+    ///   ash contact add --address rvn1q… --pub-hex <64 hex> --petname "Ahmad (Berlin)" --tag ahmad
+    #[command(after_help = "\
+Soft Unique Tags (Raven Tag V1):
+  • Layer A — Raven address (rvn1…) is the durable identity
+  • Layer B — @alias / public tag is Soft Unique (conflicts show a picker)
+  • Layer C — petname is local-only (e.g. \"Poline\") and primary in the UI
+  • --verify-fp pins Tag+key locally after you confirm fingerprint OOB
+  Never pass seeds or private keys. Public hex + address only.
+
+Interactive (recommended for first-timers):
+  ash                  # menu → 3 Contacts → guided add
+")]
     Add {
-        #[arg(long)]
+        #[arg(long, help = "Raven address (rvn1… bech32m) from QR/OOB")]
         address: String,
-        #[arg(long)]
+        #[arg(long, help = "Ed25519 public key hex (64 chars) — never a seed")]
         pub_hex: String,
         /// Layer C — unique on this device only (primary label).
-        #[arg(long, default_value = "")]
+        #[arg(long, default_value = "", help = "Local petname, e.g. Poline")]
         petname: String,
         /// Layer B — public Alias V1 tag (NOT globally unique), e.g. ahmad.
-        #[arg(long, default_value = "")]
+        #[arg(long, default_value = "", help = "Optional public @tag (Soft Unique)")]
         tag: String,
         /// Legacy alias of --tag (deprecated).
         #[arg(long, default_value = "")]
         alias: String,
         /// Expected fingerprint. On match: pin Tag+key (DHT cannot overwrite).
-        #[arg(long)]
+        #[arg(long, help = "Confirm fingerprint to pin Tag+key locally")]
         verify_fp: Option<String>,
         /// Optional OOB prekey JSON for first-message hybrid initiate.
         #[arg(long)]
@@ -449,64 +507,87 @@ fn try_load_identity(data_dir: &Path) -> Option<Identity> {
 }
 
 fn print_public_identity(id: &Identity) {
+    let s = style();
+    let dim = s.dim;
+    let reset = s.reset;
     let pubk = id.public_key_bytes();
-    println!("{C_DIM}address{C_RESET}     {}", id.address());
-    println!("{C_DIM}fingerprint{C_RESET} {}", device_fingerprint_v1(&pubk));
-    println!("{C_DIM}pub_hex{C_RESET}     {}", hex::encode(pubk));
+    println!("{dim}address{reset}     {}", id.address());
+    println!("{dim}fingerprint{reset} {}", device_fingerprint_v1(&pubk));
+    println!("{dim}pub_hex{reset}     {}", hex::encode(pubk));
 }
 
-/// Unique Raven Node welcome — ANSI bird motif; logo image cannot render in TTY.
-/// Colors from raven-messager.com. Never includes private material.
+/// Unique Raven Node welcome — monochrome ASCII raven/node motif.
+/// Never includes private material. Honors NO_COLOR / TERM=dumb.
 fn print_welcome(data_dir: &Path) {
-    // Raven-in-flight silhouette (node = eye/node hub). Professional, on-brand.
+    let s = style();
+    let bold = s.bold;
+    let dim = s.dim;
+    let reset = s.reset;
+
     println!();
+    println!("{dim}      ┌──────────────────────────────────────────────────┐{reset}");
+    println!("{dim}      │{reset}                                                  {dim}│{reset}");
     println!(
-        "{C_CYAN}        .--.     {C_PURPLE}╭──────────────────────────────╮{C_RESET}"
+        "{dim}      │{reset}  {bold}    .--.     ≺═══◈═══≻{reset}                         {dim}│{reset}"
     );
     println!(
-        "{C_CYAN}       /  {C_WHITE}◉{C_CYAN}\\    {C_PURPLE}│{C_RESET}  {C_BOLD}{C_WHITE}Welcome to Raven Node{C_RESET}  {C_PURPLE}│{C_RESET}"
+        "{dim}      │{reset}  {bold}   /  {reset}◉{bold}\\      NODE{reset}                            {dim}│{reset}"
     );
     println!(
-        "{C_CYAN}      /  /\\ \\   {C_PURPLE}│{C_RESET}  {C_BLUE}Messaging Beyond{C_RESET}         {C_PURPLE}│{C_RESET}"
+        "{dim}      │{reset}  {bold}  /  /\\ \\{reset}                                       {dim}│{reset}"
     );
     println!(
-        "{C_CYAN}     /__/  \\_\\  {C_PURPLE}│{C_RESET}  {C_BLUE}Connectivity{C_RESET}             {C_PURPLE}│{C_RESET}"
+        "{dim}      │{reset}  {bold} /__/  \\_\\{reset}   {bold}Welcome to Raven Node{reset}            {dim}│{reset}"
     );
     println!(
-        "{C_PURPLE}    ≺{C_CYAN}═══{C_PURPLE}◈{C_CYAN}═══{C_PURPLE}≻   ╰──────────────────────────────╯{C_RESET}"
+        "{dim}      │{reset}              {dim}Messaging Beyond Connectivity{reset}     {dim}│{reset}"
     );
+    println!("{dim}      │{reset}                                                  {dim}│{reset}");
     println!(
-        "{C_DIM}         serverless · ATSAM · peer-to-peer{C_RESET}"
+        "{dim}      │{reset}  {dim}serverless · ATSAM · peer-to-peer{reset}               {dim}│{reset}"
     );
+    println!("{dim}      └──────────────────────────────────────────────────┘{reset}");
     println!();
-    println!(
-        "{C_DIM}Brand logo (PNG):{C_RESET} {C_CYAN}{LOGO_URL}{C_RESET}"
-    );
-    println!("{C_DIM}Site:{C_RESET}             https://raven-messager.com/");
+    println!("{dim}Brand logo (PNG):{reset} {LOGO_URL}");
+    println!("{dim}Site:{reset}             https://raven-messager.com/");
     println!();
 
     match try_load_identity(data_dir) {
         Some(id) => {
-            println!("{C_GREEN}●{C_RESET} identity ready (public bits only)");
+            println!("{bold}●{reset} identity ready {dim}(public bits only — never a seed){reset}");
             print_public_identity(&id);
         }
         None => {
-            println!(
-                "{C_DIM}○{C_RESET} no identity yet — choose Status or run `{C_CYAN}ash init{C_RESET}`"
-            );
+            println!("{bold}○ First run — no local identity yet{reset}");
+            println!("{dim}  Create one (public address + fingerprint only; private key stays on disk):{reset}");
+            println!("  {bold}1.{reset} Choose menu {bold}4 Status{reset}  — creates identity if missing");
+            println!("  {bold}2.{reset} Or run:  {bold}ash --data-dir <dir> init{reset}");
+            println!("{dim}  Then add contacts (menu 3) before Send / Chat.{reset}");
         }
     }
     println!();
 }
 
 fn print_menu() {
-    println!("{C_BOLD}{C_WHITE}  Menu{C_RESET}");
-    println!("  {C_CYAN}1{C_RESET}  Messages      {C_DIM}queue + local chat history{C_RESET}");
-    println!("  {C_CYAN}2{C_RESET}  Send / Chat   {C_DIM}stdin only — /back /info /verify /block{C_RESET}");
-    println!("  {C_CYAN}3{C_RESET}  Contacts      {C_DIM}petname-first Soft Unique Tags{C_RESET}");
-    println!("  {C_CYAN}4{C_RESET}  Status");
-    println!("  {C_CYAN}q{C_RESET}  Quit");
-    print!("\n{C_PURPLE}raven>{C_RESET} ");
+    let s = style();
+    let bold = s.bold;
+    let dim = s.dim;
+    let reset = s.reset;
+    println!("{bold}  Menu{reset}");
+    println!(
+        "  {bold}1{reset}  Messages      {dim}outgoing queue + local chat history (ids only){reset}"
+    );
+    println!(
+        "  {bold}2{reset}  Send / Chat   {dim}message a contact — add contacts first if empty{reset}"
+    );
+    println!(
+        "  {bold}3{reset}  Contacts      {dim}add by rvn1… / @alias / petname + fingerprint{reset}"
+    );
+    println!(
+        "  {bold}4{reset}  Status        {dim}identity, bridge, transports (public fields){reset}"
+    );
+    println!("  {bold}q{reset}  Quit");
+    print!("\n{bold}raven>{reset} ");
     let _ = io::stdout().flush();
 }
 
@@ -1300,33 +1381,208 @@ fn add_contact(
 }
 
 fn cmd_contact_list(data_dir: &Path) {
+    let s = style();
+    let bold = s.bold;
+    let dim = s.dim;
+    let reset = s.reset;
     let contacts = load_contacts(data_dir);
     println!(
-        "{C_BOLD}Contacts{C_RESET} ({}) — petname first (Raven Tag V1)",
+        "{bold}Contacts{reset} ({}) — petname first (Raven Tag V1)",
         contacts.len()
     );
     if contacts.is_empty() {
+        println!("{dim}No contacts yet. Soft Unique Tags in brief:{reset}");
+        println!("  {dim}• rvn1… address = durable identity (from QR / whoami){reset}");
+        println!("  {dim}• @alias = public Soft Unique tag (conflicts → picker){reset}");
+        println!("  {dim}• petname = your private label (e.g. \"Poline\"){reset}");
+        println!("  {dim}• verify fingerprint OOB before pinning{reset}");
+        println!();
+        println!("{dim}Add interactively below, or:{reset}");
         println!(
-            "{C_DIM}None. ash contact add --address … --pub-hex … --petname \"…\" --tag ahmad --verify-fp …{C_RESET}"
+            "  {bold}ash contact add --address rvn1… --pub-hex <64 hex> --petname \"Poline\"{reset}"
+        );
+        println!(
+            "  {dim}ash contact add --help{reset}  for Soft Unique Tag examples"
         );
         return;
     }
     for (i, c) in contacts.iter().enumerate() {
         let sub = c
             .tag_subtitle()
-            .map(|t| format!("  {C_DIM}{t}{C_RESET}"))
+            .map(|t| format!("  {dim}{t}{reset}"))
             .unwrap_or_default();
         let pin = if c.pinned { " [pinned]" } else { "" };
         println!(
-            "  {C_CYAN}{}{C_RESET}  {}{}{pin}",
+            "  {bold}{}{reset}  {}{}{pin}",
             i + 1,
             c.primary_label(),
             sub
         );
         println!(
-            "      {C_DIM}fp={}{C_RESET}",
+            "      {dim}fp={}{reset}",
             contact_fingerprint(c)
         );
+    }
+}
+
+fn resolve_alias_claims_for_add(data_dir: &Path, alias: &str) -> Vec<AliasRecord> {
+    let now = now_ms();
+    let store = load_alias_store(data_dir, now);
+    store.lookup_exact(alias, now).unwrap_or_default()
+}
+
+/// Interactive contact add — teaches Soft Unique Tags; never prints private keys.
+fn cmd_contacts(data_dir: &Path) {
+    let s = style();
+    let bold = s.bold;
+    let dim = s.dim;
+    let reset = s.reset;
+
+    cmd_contact_list(data_dir);
+    println!();
+    println!("{bold}Contacts menu{reset}");
+    println!("  {bold}a{reset}  Add contact     {dim}rvn1… or @alias + petname + fingerprint{reset}");
+    println!("  {bold}l{reset}  List again");
+    println!("  {bold}Enter{reset}  Back to main menu");
+    print!("\n{bold}contacts>{reset} ");
+    let _ = io::stdout().flush();
+    let choice = read_line();
+    match choice.to_ascii_lowercase().as_str() {
+        "a" | "add" | "y" | "yes" => cmd_contact_add_interactive(data_dir),
+        "l" | "list" => cmd_contact_list(data_dir),
+        "" => {}
+        other => println!("{dim}unknown:{reset} {other} — try a / l / Enter"),
+    }
+}
+
+fn cmd_contact_add_interactive(data_dir: &Path) {
+    let s = style();
+    let bold = s.bold;
+    let dim = s.dim;
+    let reset = s.reset;
+
+    println!();
+    println!("{bold}Add contact{reset} {dim}(public bits only — never paste a seed){reset}");
+    println!("{dim}Soft Unique Tags: @alias is NOT globally unique. Always check fingerprint.{reset}");
+    println!();
+    print!("Enter Raven address (rvn1…) or @alias: ");
+    let _ = io::stdout().flush();
+    let who = read_line();
+    if who.trim().is_empty() {
+        println!("{dim}cancelled.{reset}");
+        return;
+    }
+
+    let address;
+    let pub_hex;
+    let tag;
+
+    let trimmed = who.trim();
+    if trimmed.starts_with('@') || (!trimmed.starts_with("rvn1") && !trimmed.contains(':')) {
+        // Treat as @alias (Soft Unique) — look up local alias claims.
+        let alias = trimmed.trim_start_matches('@');
+        tag = normalize_tag(alias);
+        let claims = resolve_alias_claims_for_add(data_dir, &tag);
+        if claims.is_empty() {
+            println!("{dim}No local alias claim for @{tag}.{reset}");
+            println!("{dim}Ask them for their rvn1… address + pub_hex (ash whoami), or:{reset}");
+            println!("  {bold}ash find @{tag}{reset}");
+            print!("Paste rvn1… address instead (or Enter to cancel): ");
+            let _ = io::stdout().flush();
+            address = read_line();
+            if address.trim().is_empty() {
+                return;
+            }
+            print!("pub_hex (64 chars, public only): ");
+            let _ = io::stdout().flush();
+            pub_hex = read_line();
+        } else if claims.len() == 1 {
+            let c = &claims[0];
+            address = c.identity_address.clone();
+            pub_hex = hex::encode(c.ed25519_pub);
+            println!("{dim}Resolved @{tag} → {}{reset}", sanitize_terminal_text(&address));
+        } else {
+            println!(
+                "{bold}alias conflict{reset}: {} candidates — pick one (never silent)",
+                claims.len()
+            );
+            for (i, c) in claims.iter().enumerate() {
+                let fp = device_fingerprint_v1(&c.ed25519_pub);
+                println!(
+                    "  {bold}{}{reset}  {}  fp={}",
+                    i + 1,
+                    sanitize_terminal_text(&c.identity_address),
+                    fp
+                );
+            }
+            print!("pick [1-{}]: ", claims.len());
+            let _ = io::stdout().flush();
+            let line = read_line();
+            let Ok(n) = line.trim().parse::<usize>() else {
+                println!("{dim}cancelled.{reset}");
+                return;
+            };
+            if n < 1 || n > claims.len() {
+                println!("{dim}invalid pick.{reset}");
+                return;
+            }
+            let c = &claims[n - 1];
+            address = c.identity_address.clone();
+            pub_hex = hex::encode(c.ed25519_pub);
+        }
+    } else {
+        address = trimmed.to_string();
+        print!("pub_hex (64 chars from their `ash whoami` — public only): ");
+        let _ = io::stdout().flush();
+        pub_hex = read_line();
+        print!("optional public @tag (Soft Unique, e.g. poline): ");
+        let _ = io::stdout().flush();
+        tag = read_line();
+    }
+
+    print!("Optional petname (e.g. \"Poline\" — local label): ");
+    let _ = io::stdout().flush();
+    let petname = read_line();
+
+    let ed = match parse_pub_hex(&pub_hex) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("rejected: {e}");
+            return;
+        }
+    };
+    let fp = device_fingerprint_v1(&ed);
+    println!();
+    println!("{bold}Fingerprint{reset}  {fp}");
+    println!("{dim}Compare this with your peer out-of-band (Signal call, in person, etc.).{reset}");
+    print!("[V]erify & pin  /  [C]ontinue unpinned  /  [A]bort: ");
+    let _ = io::stdout().flush();
+    let choice = read_line();
+    let verify = match choice.trim().to_ascii_lowercase().as_str() {
+        "v" | "verify" | "pin" => Some(fp.clone()),
+        "c" | "continue" | "" => None,
+        "a" | "abort" | "q" => {
+            println!("{dim}cancelled.{reset}");
+            return;
+        }
+        other if other.eq_ignore_ascii_case(&fp) => Some(fp.clone()),
+        _ => {
+            println!("{dim}cancelled (expected V, C, or A).{reset}");
+            return;
+        }
+    };
+
+    if let Err(e) = add_contact(
+        data_dir,
+        &address,
+        &pub_hex,
+        &petname,
+        &tag,
+        verify.as_deref(),
+    ) {
+        eprintln!("rejected: {e}");
+    } else {
+        println!("{dim}Tip: menu 2 Send / Chat → pick this contact by # or @tag.{reset}");
     }
 }
 
@@ -1417,52 +1673,6 @@ fn cmd_contact_verify(
             "{C_DIM}pinned{C_RESET}      {}",
             if c.pinned { "yes" } else { "no" }
         );
-    }
-}
-
-fn cmd_contacts(data_dir: &Path) {
-    cmd_contact_list(data_dir);
-    print!("Add contact? [y/N] ");
-    let _ = io::stdout().flush();
-    if !read_line().eq_ignore_ascii_case("y") {
-        return;
-    }
-    print!("petname (primary, e.g. Ahmad — work): ");
-    let _ = io::stdout().flush();
-    let petname = read_line();
-    print!("public tag (optional @ahmad — NOT unique): ");
-    let _ = io::stdout().flush();
-    let tag = read_line();
-    print!("address (rvn1… from QR/OOB): ");
-    let _ = io::stdout().flush();
-    let address = read_line();
-    print!("pub_hex (64 chars, public only — never seed): ");
-    let _ = io::stdout().flush();
-    let pub_hex = read_line();
-    match parse_pub_hex(&pub_hex) {
-        Ok(ed) => {
-            let fp = device_fingerprint_v1(&ed);
-            println!("{C_BOLD}Verify fingerprint with peer:{C_RESET} {fp}");
-            print!("Type fingerprint to PIN Tag+key (recommended), or Enter to save unpinned: ");
-            let _ = io::stdout().flush();
-            let typed = read_line();
-            let verify = if typed.trim().is_empty() {
-                None
-            } else {
-                Some(typed)
-            };
-            if let Err(e) = add_contact(
-                data_dir,
-                &address,
-                &pub_hex,
-                &petname,
-                &tag,
-                verify.as_deref(),
-            ) {
-                eprintln!("rejected: {e}");
-            }
-        }
-        Err(e) => eprintln!("rejected: {e}"),
     }
 }
 
@@ -1670,105 +1880,167 @@ fn set_node_flag(data_dir: &Path, which: &str, on: bool) {
 }
 
 fn cmd_send_interactive(data_dir: &Path) {
+    let s = style();
+    let bold = s.bold;
+    let dim = s.dim;
+    let reset = s.reset;
+
+    // Ensure identity exists, but teach if this is effectively first-run.
+    if try_load_identity(data_dir).is_none() {
+        println!("{bold}No identity yet.{reset}");
+        println!("{dim}Create one first: menu 4 Status, or `ash init` (public bits only).{reset}");
+        return;
+    }
     let id = ensure_identity(data_dir);
     let contacts = load_contacts(data_dir);
-    let (peer, peer_pub_hex, petname, tag, open_chat) = if !contacts.is_empty() {
-        println!("Pick contact #, @tag, or paste peer host:port");
-        for (i, c) in contacts.iter().enumerate() {
-            let sub = c
-                .tag_subtitle()
-                .map(|t| format!("  {C_DIM}{t}{C_RESET}"))
-                .unwrap_or_default();
-            println!(
-                "  {C_CYAN}{}{C_RESET}  {}{}{}",
-                i + 1,
-                c.primary_label(),
-                sub,
-                if c.pinned { " [pinned]" } else { "" }
-            );
-        }
-        print!("peer host:port | contact # | @tag: ");
+
+    if contacts.is_empty() {
+        println!("{bold}Send / Chat{reset}");
+        println!("{dim}You have no contacts yet — don't jump to host:port.{reset}");
+        println!();
+        println!("  {bold}1.{reset} Add someone first: menu {bold}3 Contacts{reset}");
+        println!("     (rvn1… address + pub_hex from their `ash whoami`, or @alias)");
+        println!("  {bold}2.{reset} Advanced: direct peer host:port (LAN demo / power users)");
+        println!();
+        print!("Add a contact now? [Y/n/advanced]: ");
         let _ = io::stdout().flush();
-        let choice = read_line();
-        if let Ok(n) = choice.parse::<usize>() {
-            if n >= 1 && n <= contacts.len() {
-                let c = &contacts[n - 1];
-                print!("peer listen host:port: ");
-                let _ = io::stdout().flush();
-                let peer = read_line();
-                print!("open chat session? [Y/n]: ");
-                let _ = io::stdout().flush();
-                let yn = read_line();
-                let chat = yn.is_empty() || yn.eq_ignore_ascii_case("y") || yn.eq_ignore_ascii_case("yes");
-                (
-                    peer,
-                    c.pub_hex.clone(),
-                    c.primary_label(),
-                    normalize_tag(&c.public_tag),
-                    chat,
-                )
-            } else {
-                eprintln!("invalid contact #");
-                return;
-            }
-        } else if choice.trim().starts_with('@')
-            || (resolve_alias_contacts(&contacts, choice.trim()).len() == 1 && !choice.contains(':'))
-        {
-            let alias = choice.trim().trim_start_matches('@');
-            let hits = resolve_alias_contacts(&contacts, alias);
-            if hits.is_empty() {
-                eprintln!("no contact for @{alias}");
-                return;
-            }
-            if hits.len() > 1 {
-                eprintln!(
-                    "{C_PURPLE}alias ambiguity{C_RESET}: {} matches — pick # or verify fingerprints",
-                    hits.len()
-                );
-                for (i, c) in hits.iter().enumerate() {
-                    eprintln!(
-                        "  {}  {}  fp={}",
-                        i + 1,
-                        c.primary_label(),
-                        contact_fingerprint(c)
-                    );
-                }
-                return;
-            }
-            print!("peer listen host:port: ");
+        let ans = read_line();
+        let a = ans.trim().to_ascii_lowercase();
+        if a.is_empty() || a == "y" || a == "yes" {
+            cmd_contact_add_interactive(data_dir);
+            return;
+        }
+        if a != "advanced" && a != "a" && a != "n" && a != "no" {
+            println!("{dim}cancelled — use menu 3 to add a contact.{reset}");
+            return;
+        }
+        if a == "n" || a == "no" {
+            println!("{dim}Add a contact first (menu 3), then try Send / Chat again.{reset}");
+            return;
+        }
+        // advanced direct peer
+        println!();
+        println!("{bold}Advanced — direct peer{reset}");
+        println!("{dim}Use when you already know the peer's LAN listen address + public key.{reset}");
+        println!("{dim}Prefer contacts for normal messaging (menu 3).{reset}");
+        print!("peer host:port: ");
+        let _ = io::stdout().flush();
+        let peer = read_line();
+        print!("peer pub_hex (64 chars, public only): ");
+        let _ = io::stdout().flush();
+        let pub_hex = read_line();
+        print!("message (stdin — never argv): ");
+        let _ = io::stdout().flush();
+        let text = read_line();
+        if text.is_empty() {
+            eprintln!("empty message");
+            return;
+        }
+        ext::run_send_secure(data_dir, &id, &peer, &pub_hex, "127.0.0.1:0", &text, "", "");
+        return;
+    }
+
+    println!("{bold}Send / Chat{reset}");
+    println!("{dim}Pick a contact by number or @tag. Direct host:port is advanced only.{reset}");
+    for (i, c) in contacts.iter().enumerate() {
+        let sub = c
+            .tag_subtitle()
+            .map(|t| format!("  {dim}{t}{reset}"))
+            .unwrap_or_default();
+        println!(
+            "  {bold}{}{reset}  {}{}{}",
+            i + 1,
+            c.primary_label(),
+            sub,
+            if c.pinned { " [pinned]" } else { "" }
+        );
+    }
+    print!("contact # | @tag | advanced: ");
+    let _ = io::stdout().flush();
+    let choice = read_line();
+
+    let (peer, peer_pub_hex, petname, tag, open_chat) = if choice.trim().eq_ignore_ascii_case("advanced")
+        || choice.trim().contains(':') && choice.parse::<usize>().is_err() && !choice.trim().starts_with('@')
+    {
+        if choice.trim().eq_ignore_ascii_case("advanced") {
+            println!("{dim}Direct peer — enter LAN listen host:port and their public key.{reset}");
+            print!("peer host:port: ");
             let _ = io::stdout().flush();
             let peer = read_line();
-            (
-                peer,
-                hits[0].pub_hex.clone(),
-                hits[0].primary_label(),
-                normalize_tag(&hits[0].public_tag),
-                true,
-            )
+            print!("peer pub_hex: ");
+            let _ = io::stdout().flush();
+            let pub_hex = read_line();
+            (peer, pub_hex, String::new(), String::new(), false)
         } else {
             print!("peer pub_hex: ");
             let _ = io::stdout().flush();
             let pub_hex = read_line();
             (choice, pub_hex, String::new(), String::new(), false)
         }
-    } else {
-        print!("peer host:port: ");
+    } else if let Ok(n) = choice.parse::<usize>() {
+        if n >= 1 && n <= contacts.len() {
+            let c = &contacts[n - 1];
+            print!("peer listen host:port (where they are listening): ");
+            let _ = io::stdout().flush();
+            let peer = read_line();
+            print!("open chat session? [Y/n]: ");
+            let _ = io::stdout().flush();
+            let yn = read_line();
+            let chat =
+                yn.is_empty() || yn.eq_ignore_ascii_case("y") || yn.eq_ignore_ascii_case("yes");
+            (
+                peer,
+                c.pub_hex.clone(),
+                c.primary_label(),
+                normalize_tag(&c.public_tag),
+                chat,
+            )
+        } else {
+            eprintln!("invalid contact #");
+            return;
+        }
+    } else if choice.trim().starts_with('@')
+        || (resolve_alias_contacts(&contacts, choice.trim()).len() == 1 && !choice.contains(':'))
+    {
+        let alias = choice.trim().trim_start_matches('@');
+        let hits = resolve_alias_contacts(&contacts, alias);
+        if hits.is_empty() {
+            eprintln!("no contact for @{alias}");
+            eprintln!("{dim}Add them via menu 3, or check `ash contact list`.{reset}");
+            return;
+        }
+        if hits.len() > 1 {
+            eprintln!(
+                "{bold}alias ambiguity{reset}: {} matches — pick # or verify fingerprints",
+                hits.len()
+            );
+            for (i, c) in hits.iter().enumerate() {
+                eprintln!(
+                    "  {}  {}  fp={}",
+                    i + 1,
+                    c.primary_label(),
+                    contact_fingerprint(c)
+                );
+            }
+            return;
+        }
+        print!("peer listen host:port (where they are listening): ");
         let _ = io::stdout().flush();
         let peer = read_line();
-        print!("peer pub_hex: ");
-        let _ = io::stdout().flush();
-        let pub_hex = read_line();
-        (peer, pub_hex, String::new(), String::new(), false)
+        (
+            peer,
+            hits[0].pub_hex.clone(),
+            hits[0].primary_label(),
+            normalize_tag(&hits[0].public_tag),
+            true,
+        )
+    } else {
+        eprintln!("{dim}Unknown choice. Pick a contact #, @tag, or type `advanced`.{reset}");
+        return;
     };
+
     if open_chat {
-        ext::cmd_chat_session(
-            data_dir,
-            &id,
-            &petname,
-            &tag,
-            &peer_pub_hex,
-            &peer,
-        );
+        ext::cmd_chat_session(data_dir, &id, &petname, &tag, &peer_pub_hex, &peer);
         return;
     }
     print!("message (stdin — never argv): ");
@@ -1816,7 +2088,7 @@ fn interactive(data_dir: &Path) {
     }
 }
 
-fn main() {
+pub fn run() {
     let path = resolve_terminal_messaging_path();
     if let Err(e) = assert_no_silent_fastapi(path) {
         eprintln!("{e}");
@@ -2246,10 +2518,21 @@ mod tests {
 
     #[test]
     fn welcome_art_has_branding_not_secrets() {
-        // Capture-style: ensure motif strings exist in source via constants usage.
-        let art = format!("{C_CYAN}Welcome to Raven Node{C_RESET}");
+        // Capture-style: ensure motif strings exist; monochrome only (no brand RGB).
+        let art = format!("{}Welcome to Raven Node{}", "\x1b[1m", "\x1b[0m");
         assert!(art.contains("Welcome to Raven Node"));
         assert!(!art.contains("identity.seed"));
         assert!(!art.contains("private"));
+        assert!(!art.contains("38;2;64;242;255")); // old cyan RGB gone
+        assert!(!art.contains("38;2;191;115;255")); // old purple RGB gone
+    }
+
+    #[test]
+    fn no_color_style_is_empty() {
+        // style() reads env once — verify monochrome consts have no brand RGB.
+        assert!(!C_CYAN.contains("38;2"));
+        assert!(!C_PURPLE.contains("38;2"));
+        assert!(!C_GREEN.contains("38;2"));
+        assert_eq!(C_CYAN, C_BOLD);
     }
 }

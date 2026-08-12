@@ -6,7 +6,7 @@ tokens, APNs/JWT material, or recovery secrets into this file or shell history d
 
 **Brand:** [raven-messager.com](https://raven-messager.com/) · public logo  
 `https://raven-messager.com/raven_logo.png` (also `/raven_logo_64.png`, `/raven_logo_192.png`)  
-Palette (site CSS): cyan `#40f2ff`, purple `#bf73ff`, blue `#298dff`, dark `#030305`.
+Terminal welcome uses **black & white** (monochrome bold/dim ANSI — or plain text with `NO_COLOR=1` / `TERM=dumb`). Site CSS palette is separate from the CLI.
 
 ## Prerequisites
 
@@ -26,6 +26,61 @@ cd /path/to/hybrid_messenger/protocol/reference
 
 **Windows:** see [`WINDOWS.md`](./WINDOWS.md) (native MSVC build → `ash.exe` / `raven-node.exe`, or cross-compile notes). No installer yet.
 
+## First time
+
+```bash
+cd /path/to/hybrid_messenger/node
+DATA=$(mktemp -d)
+./target/debug/ash --data-dir "$DATA"          # interactive — teaches if no identity
+./target/debug/ash --data-dir "$DATA" init     # or create identity up front (public bits only)
+./target/debug/ash --data-dir "$DATA" banner   # welcome only
+```
+
+1. Run `ash` with a fresh `--data-dir` — the banner explains first-run steps.
+2. Create identity via menu **4 Status** or `ash init` (prints address / fingerprint / pub_hex only).
+3. **Add a contact** (menu **3**) before Send / Chat — empty contacts no longer dump you at bare `peer host:port:`.
+4. Then menu **2** → pick contact # or `@tag`.
+
+## Add a contact
+
+### Interactive (recommended)
+
+```text
+raven> 3
+Contacts menu
+  a  Add contact
+contacts> a
+Enter Raven address (rvn1…) or @alias: rvn1q…
+pub_hex (64 chars from their `ash whoami` — public only): <64 hex>
+optional public @tag (Soft Unique, e.g. poline): poline
+Optional petname (e.g. "Poline" — local label): Poline
+Fingerprint  XXXX-XXXX-XXXX
+[V]erify & pin  /  [C]ontinue unpinned  /  [A]bort: V
+```
+
+Soft Unique Tags (brief):
+
+| Layer | What | Notes |
+|---|---|---|
+| A | `rvn1…` address | Durable identity |
+| B | `@alias` / public tag | Soft Unique — conflicts show a picker |
+| C | petname (e.g. Poline) | Local-only primary label |
+| — | fingerprint verify | Pins Tag+key locally (`V` or `--verify-fp`) |
+
+### CLI
+
+```bash
+# Peer runs: ash --data-dir "$PEER" whoami   → copy address + pub_hex (+ fingerprint)
+./target/debug/ash --data-dir "$DATA" contact add \
+  --address rvn1q… \
+  --pub-hex <64 hex> \
+  --petname "Poline" \
+  --tag poline \
+  --verify-fp XXXX-XXXX-XXXX
+
+./target/debug/ash contact add --help   # Soft Unique Tag examples
+```
+
 ## Primary entry: `ash` interactive welcome
 
 `ash` with **no subcommand** opens the Raven Node shell (not Cursor/ash-autonomous).
@@ -36,31 +91,36 @@ DATA=$(mktemp -d)
 ./target/debug/ash --data-dir "$DATA" init     # public bits only
 ./target/debug/ash --data-dir "$DATA" banner   # non-interactive welcome
 ./target/debug/ash --data-dir "$DATA"          # interactive menu
+NO_COLOR=1 ./target/debug/ash --data-dir "$DATA" banner   # plain text
 ```
 
-**Welcome (text stand-in; ANSI colors in a real TTY):**
+**Welcome (B&W stand-in; bold/dim ANSI in a real TTY):**
 
 ```
-        .--.     ╭──────────────────────────────╮
-       /  ◉\    │  Welcome to Raven Node        │
-      /  /\ \   │  Messaging Beyond             │
-     /__/  \_\  │  Connectivity                 │
-    ≺═══◈═══≻   ╰──────────────────────────────╯
-         serverless · ATSAM · peer-to-peer
+      ┌──────────────────────────────────────────────────┐
+      │                                                  │
+      │      .--.     ≺═══◈═══≻                         │
+      │     /  ◉\      NODE                            │
+      │    /  /\ \                                       │
+      │   /__/  \_\   Welcome to Raven Node            │
+      │              Messaging Beyond Connectivity     │
+      │                                                  │
+      │  serverless · ATSAM · peer-to-peer               │
+      └──────────────────────────────────────────────────┘
 
 Brand logo (PNG): https://raven-messager.com/raven_logo.png
 Site:             https://raven-messager.com/
 
-● identity ready (public bits only)
+● identity ready (public bits only — never a seed)
 address     rvn1q…          # placeholder — yours will differ
 fingerprint XXXX-XXXX-XXXX
 pub_hex     <64 hex chars>  # public Ed25519 only — never a seed
 
   Menu
-  1  Messages      queue status (ids + delivery only)
-  2  Send New Message
-  3  Contacts
-  4  Status
+  1  Messages      outgoing queue + local chat history (ids only)
+  2  Send / Chat   message a contact — add contacts first if empty
+  3  Contacts      add by rvn1… / @alias / petname + fingerprint
+  4  Status        identity, bridge, transports (public fields)
   q  Quit
 
 raven>

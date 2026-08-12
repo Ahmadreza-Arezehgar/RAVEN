@@ -7,11 +7,11 @@ description = "RAVEN terminal CLI (product name ash) — local node control"
 
 [[bin]]
 name = "ash"
-path = "src/main.rs"
+path = "src/bin/ash.rs"
 
 [[bin]]
 name = "raven"
-path = "src/main.rs"
+path = "src/bin/raven.rs"
 
 [dependencies]
 raven-core = { workspace = true }
