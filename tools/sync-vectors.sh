@@ -37,6 +37,15 @@ if [ -n "${RAVEN_ANDROID_PATH:-}" ]; then
   sync_to "$RAVEN_ANDROID_PATH/shared-vectors/v1"
 fi
 
+echo "Verifying rvn1 vectors regenerate byte-identically..."
+python3 "$ROOT/protocol/reference/generate_rvn1.py"
+if ! git -C "$ROOT" diff --quiet shared-vectors/rvn1/; then
+  echo "ERROR: rvn1 vectors drifted on regeneration" >&2
+  git -C "$ROOT" --no-pager diff --stat shared-vectors/rvn1/ >&2
+  exit 1
+fi
+echo "rvn1 vectors OK."
+
 echo
 echo "OK. Run consumers' tests:"
 echo "  swift test --package-path RAVEN-iOS/MeshV1"

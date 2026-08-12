@@ -4,9 +4,8 @@ This directory holds **deterministic, byte-exact test vectors** for every wire-p
 
 Consumers:
 
-- **iOS / Mac Catalyst** — `RAVEN-iOS/RAVEN/Tests/MeshInteropVectorsTests.swift`
+- **iOS / Mac Catalyst** — `RAVEN-iOS/MeshV1/Tests` (SPM test target: `SharedVectorsTests.swift`, `SharedVectorsSignatureTests.swift`)
 - **Android** — `RAVEN-Android/modules/mesh/src/test/kotlin/.../SharedVectorsTest.kt` (or via git submodule from `raven-android`)
-- **Windows** — `RAVEN-Windows/tests/SharedVectorsTests.cs`
 - **Watch (read-only)** — observation-only; vectors not consumed there.
 
 If you change a vector, **every consumer breaks**. That's the point — wire-protocol changes are coordinated across the fleet.
@@ -18,14 +17,21 @@ shared-vectors/
 ├── generate_v1.py            (regenerator — uses cryptography lib; deterministic)
 ├── README.md                 (this file)
 ├── VERSIONING.md             (rules for adding / changing vectors)
-└── v1/
-    ├── identities.json       (canonical Alice / Bob / Carol / Dave keys + fingerprints)
-    ├── crypto/               (Ed25519, X25519, HKDF, AES-GCM, fingerprint, key rotation)
-    ├── canonicalization/     (5 signing rules from §D)
-    ├── envelopes/            (SignedMeshPayload, EncryptedMeshPayload, ACK, Post, Frame, Stop)
-    ├── chunking/             (§B chunk + reassembly)
-    ├── routing/              (dedup keys, spray, forward decision, pairing code)
-    └── trust/                (TOFU friend-device states)
+├── v1/
+│   ├── identities.json       (canonical Alice / Bob / Carol / Dave keys + fingerprints)
+│   ├── crypto/               (Ed25519, X25519, HKDF, AES-GCM, fingerprint, key rotation)
+│   ├── canonicalization/     (5 signing rules from §D)
+│   ├── envelopes/            (SignedMeshPayload, EncryptedMeshPayload, ACK, Post, Frame, Stop)
+│   ├── chunking/             (§B chunk + reassembly)
+│   ├── routing/              (dedup keys, spray, forward decision, pairing code)
+│   └── trust/                (TOFU friend-device states)
+└── rvn1/                     (serverless V1 protocol contract — see `rvn1/` section below)
+    ├── identities.json
+    ├── address/, identities/ (RavenAddressV1, fingerprints)
+    ├── envelope/, ack/       (RavenEnvelopeV1, ACK)
+    ├── alias/, device_cert/  (alias records, device certs)
+    ├── capabilities/, routing/
+    └── negative/             (malformed-input / rejection cases)
 ```
 
 ## Determinism
@@ -55,3 +61,12 @@ If `git diff` shows changes after a regenerate, **one of these is true:**
 The Kotlin scaffold at `RAVEN-Android/modules/mesh/` is the reference port targeting **v1**. The iOS app's current `MeshService.swift` is **out of sync with v1** (uses a different service UUID and a much simpler envelope). Bringing iOS up to v1 is tracked under [A1](https://github.com/Raven-offline-messenger/raven-android/issues/1).
 
 Until iOS catches up, these vectors document what the wire **should** look like — not what it **does** look like on iOS today.
+
+## `rvn1/`
+
+`rvn1/` is the vector tree for the **serverless V1 protocol contract** — the wire format RAVEN moves to once it no longer depends on a central server (addresses, routing tags, envelopes, ACKs, aliases, device certs, capabilities). It is a distinct contract from `v1/` above (the original server-relayed / BLE-mesh protocol); the two are generated, versioned, and frozen independently.
+
+- **Generator**: `protocol/reference/generate_rvn1.py`. Source of truth is the `raven_protocol` reference package (`protocol/reference/raven_protocol/`) — the same Python implementation exercised by the 22 tests under `protocol/reference/tests/` (`cd protocol/reference && python3 -m pytest`).
+- **Consumers**: none yet in this repo. The Rust node (Phase B) is the first real consumer; the Swift, C#, and Kotlin ports vendor their own copies once each platform migrates off its legacy protocol onto `rvn1`.
+- **Freeze rules**: `rvn1/` is frozen under the exact same rules as `v1/` in `VERSIONING.md` — once a vector lands it never changes; new edge cases get a new `_NNN` file; breaking changes require a new tree (`rvn2/`), not an edit in place.
+- **Regeneration / drift check**: `tools/sync-vectors.sh` regenerates `rvn1/` from `generate_rvn1.py` on every run and fails (non-zero exit) if the regenerated tree differs from what's committed, so drift is caught automatically rather than relying on a manual `git diff`.
