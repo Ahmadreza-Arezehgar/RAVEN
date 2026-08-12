@@ -3,7 +3,7 @@
 **Branch:** `feature/raven-serverless-v1`  
 **Baseline start commit:** `18fa01e2a32ef014387ae2857ca272f34555cddd`  
 **Primary land commit:** `ce328dd` (local only — not pushed)  
-**This session land:** *(filled after commit)*  
+**This session land:** `11e59ee` (local only — not pushed)  
 **Checklist source:** `docs/MASTER_ENGINEERING_CHECKLIST.md` (also mirrored under `node/`)  
 **Updated:** 2026-08-12  
 
@@ -11,7 +11,7 @@ Status legend: `NOT_STARTED` | `IN_PROGRESS` | `IMPLEMENTED` | `REVIEWED` | `FRO
 
 Reviewer for all IMPLEMENTED rows: **pending human** unless noted.
 
-**Last green proofs (this machine):** `cargo test -p raven-core` (67 lib + bridge_v1 12 + fuzz_smoke 3 + reliability 4); `cargo test -p ash`; `raven-node ipc` ↔ `raven ipc-ping` UDS; prior: `two_node_demo`, `lan_path_smoke`, `internet_dial_smoke`, `bridge_abc_demo`; `python3 -m pytest` (25); iOS `RavenEnvelope*` XCTest (25).
+**Last green proofs (this machine):** `cargo test -p raven-core` (67 lib + bridge_v1 12 + fuzz_smoke 3 + reliability 4); `cargo test -p ash`; `raven-node ipc` ↔ `raven ipc-ping` UDS @ `11e59ee`; prior: `two_node_demo`, `lan_path_smoke`, `internet_dial_smoke`, `bridge_abc_demo`; `python3 -m pytest` (25); iOS `RavenEnvelope*` XCTest (25).
 
 | § | Section | Status | Evidence / notes |
 |---|---------|--------|------------------|
