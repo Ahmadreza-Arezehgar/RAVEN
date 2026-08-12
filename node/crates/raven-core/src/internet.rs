@@ -2,8 +2,12 @@
 //!
 //! Not a fake path selector: peers open real sockets, exchange a short
 //! Ed25519-authenticated hello + capability bits, then framed envelopes.
-//! Full rust-libp2p QUIC/DHT/DCUtR remains ADR-0002 target; this module
-//! proves serverless Internet delivery without FastAPI.
+//!
+//! ADR-0002 target: rust-libp2p QUIC/TCP + DHT. This module ships the V1
+//! serverless Internet proof path. Signed discovery records live in
+//! `crate::discovery` (DHT-ready values + in-process store). Live Kademlia /
+//! DCUtR / multi-NAT CGNAT: see `discovery::NAT_STATUS` (BLOCKED_HARDWARE;
+//! software substitutes: dial/LAN smokes + DiscoveryStore).
 
 use crate::identity::Identity;
 use crate::transport::NodeCapability;

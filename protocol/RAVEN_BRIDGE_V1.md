@@ -29,16 +29,21 @@ Multi-role devices: BridgeSubsystem and endpoint ingest MUST be separated (iOS: 
 
 ## Transports
 
-- LAN / Internet: `u32 BE || RavenEnvelopeV1`
+- LAN / Internet: `u32 BE || RavenEnvelopeV1` — see [`RAVEN_TRANSPORT_INTERFACE_V1.md`](RAVEN_TRANSPORT_INTERFACE_V1.md)
 - mock_ble (CI): same framing over TCP
-- BLE GATT (iOS): `RavenBleRvn1Carrier` behind `FeatureFlag.ravenEnvelopeV1`
+- BLE GATT (iOS): `RavenBleRvn1Carrier` behind `FeatureFlag.ravenEnvelopeV1` — see [`RAVEN_BLE_FRAMING_V1.md`](RAVEN_BLE_FRAMING_V1.md)
 
 ## Store-Carry-Bridge
 
-When egress radio is down, persist packed envelope to forward queue; flush when path returns. SQLite expires timestamps MUST clamp to `i64::MAX` (signed INTEGER).
+When egress radio is down, persist packed envelope to forward queue; flush when path returns. SQLite expires timestamps MUST clamp to `i64::MAX` (signed INTEGER). Opaque mailbox / store objects: [`RAVEN_STORE_OBJECT_V1.md`](RAVEN_STORE_OBJECT_V1.md). Delivery vs custody: [`RAVEN_DELIVERY_STATE_V1.md`](RAVEN_DELIVERY_STATE_V1.md).
+
+## Errors
+
+Mapped codes: [`RAVEN_ERROR_CODES_V1.md`](RAVEN_ERROR_CODES_V1.md) (`ENVELOPE_*`, `STORE_*`, `RATE_LIMITED`, …).
 
 ## Tests
 
 - `raven-core` `bridge_v1` cases 1–10+
 - `scripts/bridge_abc_demo.sh` A–B–C + store-carry
 - iOS `RavenEnvelopeBridgeServiceTests` (simulator; no physical radios required for decision tests)
+- Interop: [`RAVEN_INTEROPERABILITY_MATRIX.md`](RAVEN_INTEROPERABILITY_MATRIX.md)

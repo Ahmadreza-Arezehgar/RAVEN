@@ -198,6 +198,35 @@ drops/rejects and stops, or passes the envelope to the next stage.
 13. **ACK** — emit a `RavenAckV1` (`env_type=2`) back to the sender per
     [`RAVEN_ACK_V1.md`](RAVEN_ACK_V1.md).
 
+## 7. Binding sealed content frames (`RVNA1` / `RVNS1` / `RVNH1`)
+
+This section binds existing sealed-content magics into `message_ciphertext`
+**without changing** the 86-byte prefix or signing-bytes rule above.
+
+| Layer | Magic | Where it lives |
+|---|---|---|
+| Outer transport object | `RVN1` (4 bytes) | Envelope offset 0 |
+| ATSAM sealed body | `RVNA1\0\0\0` (8 bytes) | Start of `message_ciphertext` |
+| Noise sealed body | `RVNS1\0\0\0` (8 bytes) | Start of `message_ciphertext` |
+| Noise handshake | `RVNH1\0\0\0` (8 bytes) | Start of `message_ciphertext` |
+
+Normative rules:
+
+1. For `env_type = 1`, production `message_ciphertext` is an opaque sealed
+   content frame (raw bytes on this binary wire — **not** base64). Base64 is
+   a legacy MeshEnvelope/JSON encoding detail only.
+2. `ratchet_header_ciphertext` is opaque to relays; length may be zero when
+   the sealer encodes session state inside the body (e.g. RVNA1 v2 index).
+3. Relays MUST NOT inspect or rewrite bytes inside either ciphertext field.
+4. Codec test fixtures MAY use non-decryptable placeholder bodies to lock
+   pack/sign layout (`shared-vectors/rvn1/envelope/message_alice_to_bob.json`
+   does exactly that). Those placeholders are **not** ATSAM KATs.
+5. Full primitive → threat → vector → implementation mapping:
+   [`ATSAM_PRIMITIVE_MAPPING_V1.md`](ATSAM_PRIMITIVE_MAPPING_V1.md).
+
+Mesh JSON (`MeshEnvelope`) remains the shipping BLE/app carrier until Phase G;
+the target object for internet + eventual BLE is this `RavenEnvelopeV1`.
+
 ## Reference implementation
 
 `protocol/reference/raven_protocol/envelope.py`. Vectors:

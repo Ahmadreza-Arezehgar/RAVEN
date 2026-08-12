@@ -3,6 +3,8 @@
 //! Frame: u32 BE length || envelope bytes. Never logs private keys or plaintext.
 
 mod bridge_run;
+#[cfg(unix)]
+mod ipc_server;
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -122,6 +124,15 @@ enum Commands {
         peer_pub_hex: String,
         #[arg(long, default_value_t = 15)]
         timeout_secs: u64,
+    },
+    /// Always-on local IPC (UDS) for ash ↔ raven-node. macOS/Linux.
+    #[cfg(unix)]
+    Ipc {
+        #[arg(long, default_value = "./raven-data")]
+        data_dir: PathBuf,
+        /// Optional forward queue path for status.pending.
+        #[arg(long)]
+        forward_db: Option<PathBuf>,
     },
 }
 
@@ -776,6 +787,24 @@ async fn main() {
                 eprintln!("raven-node: flush got ACK");
             } else {
                 eprintln!("raven-node: flush done (check pending)");
+            }
+        }
+        #[cfg(unix)]
+        Commands::Ipc {
+            data_dir,
+            forward_db,
+        } => {
+            let fwd = forward_db.or_else(|| {
+                let p = bridge_run::forward_queue_path(&data_dir);
+                if p.exists() {
+                    Some(p)
+                } else {
+                    None
+                }
+            });
+            if let Err(e) = ipc_server::run_ipc_server(data_dir, fwd).await {
+                eprintln!("ipc failed: {e}");
+                std::process::exit(1);
             }
         }
     }

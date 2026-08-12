@@ -74,10 +74,21 @@ this file.
 | [`RAVEN_ALIAS_V1.md`](RAVEN_ALIAS_V1.md) | human-readable alias records, freshness, ambiguity rule | `alias/`, `negative/alias_stale_sequence.json` |
 | [`RAVEN_ROUTING_TAG_V1.md`](RAVEN_ROUTING_TAG_V1.md) | rotating unlinkable routing tags | `routing/` |
 | [`RAVEN_CAPABILITIES_V1.md`](RAVEN_CAPABILITIES_V1.md) | signed capability negotiation, downgrade protection | `capabilities/` |
+| [`ATSAM_PRIMITIVE_MAPPING_V1.md`](ATSAM_PRIMITIVE_MAPPING_V1.md) | ATSAM/Noise sealed-frame ↔ primitive ↔ threat ↔ vectors; binding into envelope body | `raven-security/test-vectors/` (placeholders) + iOS ATSAM; outer layout proven by `envelope/` |
+| [`RAVEN_PREKEY_BUNDLE_V1.md`](RAVEN_PREKEY_BUNDLE_V1.md) | signed hybrid first-contact bundle (X25519 + ML-KEM-768) | `prekey/` + `negative/prekey_bad_sig.json` |
+| [`RAVEN_STORE_OBJECT_V1.md`](RAVEN_STORE_OBJECT_V1.md) | opaque rotating mailbox / custody object | `store/` |
+| [`RAVEN_BLE_FRAMING_V1.md`](RAVEN_BLE_FRAMING_V1.md) | GATT chunk + mock_ble carrier | Rust `ble_adapter` / iOS carrier tests |
+| [`RAVEN_TRANSPORT_INTERFACE_V1.md`](RAVEN_TRANSPORT_INTERFACE_V1.md) | transport adapter + internet hello + discovery | `internet` / dial smokes |
+| [`RAVEN_ERROR_CODES_V1.md`](RAVEN_ERROR_CODES_V1.md) | stable error identifiers | IPC + negatives |
+| [`RAVEN_DELIVERY_STATE_V1.md`](RAVEN_DELIVERY_STATE_V1.md) | delivery-state machine vs local queues | ACK + reliability |
+| [`RAVEN_BRIDGE_V1.md`](RAVEN_BRIDGE_V1.md) | untrusted opaque cross-transport forward | `bridge_v1` + demos |
+| [`RAVEN_INTEROPERABILITY_MATRIX.md`](RAVEN_INTEROPERABILITY_MATRIX.md) | cross-platform evidence table | this matrix |
 
 `identities.json` (the fixed alice/bob RFC-8032 keypairs and their derived
 addresses) underlies every sub-spec's vectors and is not owned by any one of
 them.
+
+**Phase A closeout:** [`docs/superpowers/specs/2026-08-12-phase-a-closeout-design.md`](../docs/superpowers/specs/2026-08-12-phase-a-closeout-design.md).
 
 ## Versioning policy
 

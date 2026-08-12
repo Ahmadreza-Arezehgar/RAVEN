@@ -1,0 +1,8 @@
+{
+  "id": "prekey_bad_sig",
+  "description": "Tampered prekey signature must reject with PREKEY_BAD_SIG",
+  "expected": {
+    "verify_result": "reject",
+    "error": "PREKEY_BAD_SIG"
+  }
+}

@@ -8,11 +8,13 @@ pub mod ack;
 pub mod address;
 pub mod atsam_aead;
 pub mod atsam_kdf;
+pub mod atsam_mlkem;
 pub mod atsam_root;
 pub mod bech32m;
 pub mod ble_adapter;
 pub mod bridge;
 pub mod canon;
+pub mod discovery;
 pub mod envelope;
 pub mod fingerprint;
 pub mod forward_queue;
@@ -21,16 +23,21 @@ pub mod internet;
 pub mod ipc;
 pub mod message_router;
 pub mod node_policy;
+pub mod prekey_bundle;
 pub mod queue;
 pub mod records;
 pub mod routing_tag;
+pub mod sanitize;
 pub mod seal;
+pub mod store_object;
 pub mod transport;
 pub mod vectors;
 
 pub use address::{decode_address, encode_address, from_display, to_display};
 pub use atsam_aead::{build_aad_v1, build_aad_v2, seal_rvna1_v2, unseal_rvna1_v2};
+pub use atsam_mlkem::{initiate_hybrid_root, respond_hybrid_root, HybridKeypair};
 pub use atsam_root::{derive_root, transcript_hash, x25519_shared};
+pub use discovery::{alias_hint_key, DiscoveryStore, PeerRecord, NAT_STATUS};
 pub use internet::{
     bits_to_caps, caps_to_bits, deframe_prefix, frame, opaque_store_tag, pack_hello,
     unpack_verify_hello, CAP_BLE, CAP_BRIDGE, CAP_INTERNET, CAP_RELAY, CAP_STORE,
@@ -55,11 +62,16 @@ pub use message_router::{InboundEnvelope, MessageRouter, RouterOutcome};
 pub use node_policy::{
     load_policy, policy_path, save_policy, BridgeStatusSnapshot, NodePolicy,
 };
+pub use prekey_bundle::{PrekeyBundle, MLKEM768_EK_LEN};
 pub use queue::{DeliveryState, OutgoingQueue, QueueItem};
+pub use sanitize::{had_dangerous_controls, sanitize_terminal_text, strip_ansi, strip_bidi};
 pub use seal::{
     classify_sealed_body, derive_pairwise_key, parse_rvna1_header, rvna1_wire_plausible,
     seal_message, unseal_message, Rvna1Header, SealClass, ATSAM_PROTO_V1, ATSAM_PROTO_V2,
     SEAL_MAGIC_RVNA1, SEAL_MAGIC_RVNA1_STUB, STUB_PROTO,
+};
+pub use store_object::{
+    mailbox_tag, mailbox_tags_with_overlap, store_tag_from_mailbox, StoreMailbox, StoreObject,
 };
 pub use transport::{
     prefer_transport, select_path, NodeCapability, PathChoice, PathContext, TransportKind,

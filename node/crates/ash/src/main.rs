@@ -11,8 +11,12 @@ use clap::{Parser, Subcommand};
 use raven_core::fingerprint::device_fingerprint_v1;
 use raven_core::forward_queue::ForwardQueue;
 use raven_core::identity::Identity;
+use raven_core::ipc::{
+    decode_response, default_socket_path, encode_request, IpcRequest, IpcResponse, IPC_VERSION,
+};
 use raven_core::node_policy::{load_policy, save_policy, BridgeStatusSnapshot, NodePolicy};
 use raven_core::queue::{DeliveryState, OutgoingQueue};
+use raven_core::sanitize::sanitize_terminal_text;
 use serde::{Deserialize, Serialize};
 
 // Brand palette from https://raven-messager.com/ (public CSS vars).
@@ -69,6 +73,8 @@ enum Commands {
     Status,
     /// Diagnose ash vs system ash conflict, paths, and node socket.
     Doctor,
+    /// Ping raven-node UDS IPC (must be running: `raven-node ipc`).
+    IpcPing,
     /// Configure local raven-node policy (bridge/store/relay). Does not stop a running node.
     Node {
         #[command(subcommand)]
@@ -316,14 +322,15 @@ fn cmd_contacts(data_dir: &Path) {
             } else {
                 "—".into()
             };
+            let label = if c.alias.is_empty() {
+                sanitize_terminal_text(&c.address)
+            } else {
+                sanitize_terminal_text(&c.alias)
+            };
             println!(
                 "  {C_CYAN}{}{C_RESET}  {}  {C_DIM}fp={fp}{C_RESET}",
                 i + 1,
-                if c.alias.is_empty() {
-                    &c.address
-                } else {
-                    &c.alias
-                }
+                label
             );
             println!("      {C_DIM}{}{C_RESET}", c.address);
         }
@@ -659,6 +666,57 @@ fn main() {
             run_send(&data_dir, &peer, &peer_pub_hex, &listen, &body);
         }
         Some(Commands::Doctor) => cmd_doctor(&data_dir),
+        Some(Commands::IpcPing) => cmd_ipc_ping(&data_dir),
+    }
+}
+
+fn cmd_ipc_ping(data_dir: &Path) {
+    let sock = default_socket_path(data_dir);
+    if !sock.exists() {
+        eprintln!("ipc socket missing: {}", sock.display());
+        eprintln!("start: raven-node ipc --data-dir {}", data_dir.display());
+        std::process::exit(1);
+    }
+    match ipc_ping_blocking(&sock) {
+        Ok(IpcResponse::Pong { v }) => {
+            println!("{C_GREEN}ipc pong{C_RESET} v={v} sock={}", sock.display());
+        }
+        Ok(other) => {
+            eprintln!("unexpected response: {other:?}");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("ipc ping failed: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn ipc_ping_blocking(sock: &Path) -> Result<IpcResponse, String> {
+    #[cfg(unix)]
+    {
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixStream;
+        let mut stream = UnixStream::connect(sock).map_err(|e| e.to_string())?;
+        let req = encode_request(&IpcRequest::Ping { v: IPC_VERSION })?;
+        stream.write_all(&req).map_err(|e| e.to_string())?;
+        let mut len_buf = [0u8; 4];
+        stream.read_exact(&mut len_buf).map_err(|e| e.to_string())?;
+        let n = u32::from_be_bytes(len_buf) as usize;
+        if n == 0 || n > raven_core::MAX_IPC_FRAME {
+            return Err("IPC_FRAME".into());
+        }
+        let mut body = vec![0u8; n];
+        stream.read_exact(&mut body).map_err(|e| e.to_string())?;
+        let mut frame = Vec::with_capacity(4 + n);
+        frame.extend_from_slice(&len_buf);
+        frame.extend_from_slice(&body);
+        return decode_response(&frame);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = sock;
+        Err("IPC UDS not available on this OS".into())
     }
 }
 
@@ -668,9 +726,21 @@ fn cmd_doctor(data_dir: &Path) {
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| "?".into());
     println!("  this_binary={exe}");
+    println!("  argv0_hint: prefer `raven` as primary command; `ash` is product alias");
     println!("  data_dir={}", data_dir.display());
-    let sock = raven_core::default_socket_path(data_dir);
+    let sock = default_socket_path(data_dir);
     println!("  ipc_sock={} exists={}", sock.display(), sock.exists());
+    if sock.exists() {
+        match ipc_ping_blocking(&sock) {
+            Ok(IpcResponse::Pong { v }) => {
+                println!("  ipc_ping: {C_GREEN}ok{C_RESET} v={v}");
+            }
+            Ok(_) => println!("  ipc_ping: unexpected response"),
+            Err(e) => println!("  ipc_ping: {C_DIM}fail ({e}){C_RESET}"),
+        }
+    } else {
+        println!("  ipc_ping: skipped (start raven-node ipc)");
+    }
     #[cfg(unix)]
     {
         let bin_ash = Path::new("/bin/ash");
@@ -678,9 +748,29 @@ fn cmd_doctor(data_dir: &Path) {
             println!(
                 "  {C_GREEN}note{C_RESET}: /bin/ash exists — Raven must NOT overwrite it"
             );
-            println!("  use `raven` or ~/.local/bin/ash → raven from install scripts");
+            println!("  conflict_detection: system ash present; use `raven` or ~/.local/bin/ash → raven");
+            // Compare inode/path of current exe vs /bin/ash when possible.
+            if let (Ok(cur), Ok(sys)) = (
+                std::fs::canonicalize(&exe),
+                std::fs::canonicalize(bin_ash),
+            ) {
+                if cur == sys {
+                    println!("  {C_PURPLE}WARNING{C_RESET}: running binary IS /bin/ash — unexpected");
+                } else {
+                    println!("  conflict_ok: this binary ≠ /bin/ash");
+                }
+            }
         } else {
             println!("  /bin/ash: absent on this host");
+        }
+        // PATH shadowing check
+        if let Ok(out) = Command::new("sh").args(["-c", "command -v ash; command -v raven"]).output()
+        {
+            let s = String::from_utf8_lossy(&out.stdout);
+            for line in s.lines() {
+                let clean = sanitize_terminal_text(line);
+                println!("  path_which: {clean}");
+            }
         }
     }
     match try_load_identity(data_dir) {
