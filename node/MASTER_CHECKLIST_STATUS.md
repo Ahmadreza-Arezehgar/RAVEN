@@ -4,7 +4,7 @@
 **Baseline start commit:** `18fa01e2a32ef014387ae2857ca272f34555cddd`  
 **Primary land commit:** `ce328dd` (local only — not pushed)  
 **Prior lands:** `11e59ee` / `3ccc258` / `679e5e8` (local only — not pushed)  
-**This session:** pending local commit (device sync, Tags, CI, migration, friend/mesh design)  
+**This session:** cd0b13e (local only — not pushed)  
 **Checklist source:** `docs/MASTER_ENGINEERING_CHECKLIST.md` (also mirrored under `node/`)  
 **Updated:** 2026-08-12  
 
