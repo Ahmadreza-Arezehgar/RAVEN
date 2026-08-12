@@ -6,6 +6,7 @@
 
 pub mod ack;
 pub mod address;
+pub mod alias_record;
 pub mod atsam_aead;
 pub mod atsam_kdf;
 pub mod atsam_mlkem;
@@ -16,10 +17,15 @@ pub mod ble_adapter;
 pub mod bootstrap;
 pub mod bridge;
 pub mod canon;
+pub mod contact_request;
 pub mod device_cert;
 pub mod device_sync;
 pub mod discovery;
+pub mod discovery_resolver;
 pub mod envelope;
+pub mod introduction;
+pub mod nearby;
+pub mod profile_record;
 pub mod fingerprint;
 pub mod forward_queue;
 pub mod identity;
@@ -58,7 +64,16 @@ pub use messaging_path::{
     assert_no_silent_fastapi, path_from_raven_envelope_flag, resolve_terminal_messaging_path,
     MessagingPath, ENV_FORCE_LEGACY_LABEL, ENV_SERVERLESS_RVN1,
 };
+pub use alias_record::{normalize_alias, AliasClaimStore, AliasPublishQuota, AliasRecord};
+pub use contact_request::{ContactAcceptV1, ContactRequestInner, RavenContactRequestV1};
 pub use discovery::{alias_hint_key, DiscoveryStore, PeerRecord, NAT_STATUS};
+pub use discovery_resolver::{
+    result_model_schema_keys, DiscoveryContext, DiscoveryResolver, DiscoveryResult, DiscoveryScope,
+    DiscoverySource, LocalContactRow, VerificationState,
+};
+pub use introduction::{IntroductionInbox, RavenIntroductionV1};
+pub use nearby::{NearbyAdvertisement, NearbyRegistry};
+pub use profile_record::{ProfileStore, RavenProfileRecordV1};
 pub use internet::{
     bits_to_caps, caps_to_bits, deframe_prefix, frame, opaque_store_tag, pack_hello,
     unpack_verify_hello, CAP_BLE, CAP_BRIDGE, CAP_INTERNET, CAP_RELAY, CAP_STORE,

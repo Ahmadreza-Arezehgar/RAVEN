@@ -81,6 +81,8 @@ fingerprint changing.
 
 See [`docs/RAVEN_TAG_V1.md`](../docs/RAVEN_TAG_V1.md): Layer A address/fingerprint, Layer B public `@tag` (Alias V1, non-unique), Layer C device-local **petname** (inbox primary). Pin-on-verify; ambiguity picker; no registrar.
 
+**Alias normalization (Discovery V1):** for V1 publish/lookup, aliases MUST match charset `a-z` `0-9` `_` `-` only (after lowercasing and stripping a leading `@`). See [`docs/RAVEN_DISCOVERY_V1.md`](../docs/RAVEN_DISCOVERY_V1.md).
+
 ---
 
 ## 4. DHT publication constraints

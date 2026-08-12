@@ -11,8 +11,13 @@ use std::process::Command;
 
 use clap::{Parser, Subcommand};
 use raven_core::address::{decode_address, encode_address};
+use raven_core::alias_record::{AliasClaimStore, AliasRecord};
+use raven_core::contact_request::{ContactRequestInner, RavenContactRequestV1};
+use raven_core::discovery_resolver::{
+    DiscoveryContext, DiscoveryResolver, DiscoveryResult, DiscoveryScope, LocalContactRow,
+    VerificationState,
+};
 use raven_core::fingerprint::device_fingerprint_v1;
-use raven_core::forward_queue::ForwardQueue;
 use raven_core::identity::Identity;
 use raven_core::ipc::{
     decode_response, default_socket_path, encode_request, IpcRequest, IpcResponse, IPC_VERSION,
@@ -20,10 +25,13 @@ use raven_core::ipc::{
 use raven_core::messaging_path::{
     assert_no_silent_fastapi, resolve_terminal_messaging_path, MessagingPath,
 };
+use raven_core::nearby::{NearbyAdvertisement, NearbyRegistry};
 use raven_core::node_policy::{load_policy, save_policy, BridgeStatusSnapshot, NodePolicy};
 use raven_core::prekey_bundle::{PrekeyBundle, PrekeyBundleJson, PrekeyStore};
+use raven_core::profile_record::ProfileStore;
 use raven_core::queue::{DeliveryState, OutgoingQueue};
 use raven_core::sanitize::sanitize_terminal_text;
+use raven_core::chat_history::BlockList;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -94,6 +102,30 @@ enum Commands {
         #[command(subcommand)]
         cmd: ContactCommands,
     },
+    /// Multi-lane discovery (DiscoveryResolver — no central Raven DB / no FastAPI).
+    Find {
+        /// Query: `rvn1…`, `@alias`, or local petname/tag text.
+        query: String,
+        /// Local-only (no public fuzzy in V1).
+        #[arg(long, default_value_t = false)]
+        local: bool,
+        /// Exact Raven ID lane only.
+        #[arg(long, default_value_t = false)]
+        exact_id: bool,
+        /// Exact alias lane only.
+        #[arg(long, default_value_t = false)]
+        exact_alias: bool,
+        /// Non-interactive: print all conflict candidates (never silent pick).
+        #[arg(long, default_value_t = false)]
+        all: bool,
+    },
+    /// Nearby BLE ephemeral scan (software mock — no permanent ID in adv).
+    Nearby,
+    /// Publish / manage signed Alias V1 claims (community DHT stand-in).
+    Alias {
+        #[command(subcommand)]
+        cmd: AliasCommands,
+    },
     /// Signed prekey publish/fetch via local untrusted store (OOB/DHT stand-in).
     Prekey {
         #[command(subcommand)]
@@ -152,6 +184,31 @@ enum ContactCommands {
     Resolve {
         #[arg(long)]
         tag: String,
+    },
+    /// Send encrypted contact request (E2EE; delivered via MessageRouter / store).
+    Request {
+        /// Target `@alias` or `rvn1…` address.
+        target: String,
+        /// Optional short message (sealed inside ciphertext).
+        #[arg(long, default_value = "")]
+        message: String,
+        /// When multiple alias claims: pick 1-based index (interactive if omitted).
+        #[arg(long)]
+        pick: Option<usize>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum AliasCommands {
+    /// Publish a signed Alias V1 claim into the local community store.
+    Publish {
+        #[arg(long)]
+        alias: String,
+        #[arg(long, default_value_t = 1)]
+        sequence: u64,
+        /// Expiry unix ms (default: now + 30d).
+        #[arg(long)]
+        expires_at: Option<u64>,
     },
 }
 
@@ -564,6 +621,359 @@ fn contact_fingerprint(c: &Contact) -> String {
 
 fn normalize_tag(tag: &str) -> String {
     sanitize_terminal_text(tag.trim().trim_start_matches('@')).to_lowercase()
+}
+
+fn alias_store_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("alias_claims.json")
+}
+
+fn nearby_store_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("nearby_registry.json")
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AliasClaimJson {
+    alias: String,
+    identity_address: String,
+    sequence: u64,
+    expires_at: u64,
+    signature_hex: String,
+    ed25519_pub_hex: String,
+}
+
+fn load_alias_store(data_dir: &Path, now: u64) -> AliasClaimStore {
+    let mut store = AliasClaimStore::default();
+    let Ok(raw) = std::fs::read_to_string(alias_store_path(data_dir)) else {
+        return store;
+    };
+    let Ok(rows) = serde_json::from_str::<Vec<AliasClaimJson>>(&raw) else {
+        return store;
+    };
+    for row in rows {
+        let Ok(sig_v) = hex::decode(&row.signature_hex) else {
+            continue;
+        };
+        let Ok(pub_v) = hex::decode(&row.ed25519_pub_hex) else {
+            continue;
+        };
+        if sig_v.len() != 64 || pub_v.len() != 32 {
+            continue;
+        }
+        let mut signature = [0u8; 64];
+        signature.copy_from_slice(&sig_v);
+        let mut ed25519_pub = [0u8; 32];
+        ed25519_pub.copy_from_slice(&pub_v);
+        let rec = AliasRecord {
+            alias: row.alias,
+            identity_address: row.identity_address,
+            sequence: row.sequence,
+            expires_at: row.expires_at,
+            signature,
+            ed25519_pub,
+        };
+        let _ = store.put(rec, now);
+    }
+    store
+}
+
+fn save_alias_claim(data_dir: &Path, rec: &AliasRecord) -> Result<(), String> {
+    let path = alias_store_path(data_dir);
+    let mut rows: Vec<AliasClaimJson> = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|r| serde_json::from_str(&r).ok())
+        .unwrap_or_default();
+    rows.retain(|r| {
+        !(r.alias == rec.alias && r.identity_address == rec.identity_address)
+    });
+    rows.push(AliasClaimJson {
+        alias: rec.alias.clone(),
+        identity_address: rec.identity_address.clone(),
+        sequence: rec.sequence,
+        expires_at: rec.expires_at,
+        signature_hex: hex::encode(rec.signature),
+        ed25519_pub_hex: hex::encode(rec.ed25519_pub),
+    });
+    std::fs::create_dir_all(data_dir).map_err(|e| e.to_string())?;
+    let raw = serde_json::to_string_pretty(&rows).map_err(|e| e.to_string())?;
+    std::fs::write(path, raw).map_err(|e| e.to_string())
+}
+
+fn load_profile_store(_data_dir: &Path, _now: u64) -> ProfileStore {
+    ProfileStore::default()
+}
+
+fn build_discovery_ctx(data_dir: &Path) -> DiscoveryContext {
+    let now = now_ms();
+    let contacts: Vec<LocalContactRow> = load_contacts(data_dir)
+        .into_iter()
+        .map(|c| LocalContactRow {
+            raven_id: c.address.clone(),
+            pub_hex: c.pub_hex.clone(),
+            petname: c.petname.clone(),
+            public_tag: if c.public_tag.is_empty() {
+                c.alias.clone()
+            } else {
+                c.public_tag.clone()
+            },
+            display_name: c.petname.clone(),
+            pinned: c.pinned,
+            directly_verified: c.pinned,
+        })
+        .collect();
+    DiscoveryContext {
+        contacts,
+        aliases: load_alias_store(data_dir, now),
+        profiles: load_profile_store(data_dir, now),
+        blocked: BlockList::load(data_dir),
+        serverless: true,
+        public_profile_index_enabled: false,
+        now_ms: now,
+        ..Default::default()
+    }
+}
+
+fn print_discovery_hit(i: usize, h: &DiscoveryResult) {
+    println!(
+        "  {C_CYAN}{}{C_RESET}  {}  {}",
+        i + 1,
+        if h.display_name.is_empty() {
+            "(no display name)".into()
+        } else {
+            sanitize_terminal_text(&h.display_name)
+        },
+        match h.verification_state {
+            VerificationState::AliasConflict => format!("{C_PURPLE}ALIAS_CONFLICT{C_RESET}"),
+            VerificationState::DirectlyVerified => format!("{C_GREEN}DIRECTLY_VERIFIED{C_RESET}"),
+            VerificationState::TrustedContact => format!("{C_GREEN}TRUSTED_CONTACT{C_RESET}"),
+            VerificationState::Blocked => format!("{C_PURPLE}BLOCKED{C_RESET}"),
+            VerificationState::Introduced => "INTRODUCED".into(),
+            VerificationState::NearbyVerified => "NEARBY_VERIFIED".into(),
+            VerificationState::PublicSignedProfile => "PUBLIC_SIGNED_PROFILE".into(),
+            VerificationState::ScopedVerified => "SCOPED_VERIFIED".into(),
+            VerificationState::ExpiredOrStale => "EXPIRED_OR_STALE".into(),
+        }
+    );
+    println!("      {C_DIM}raven_id{C_RESET}  {}", sanitize_terminal_text(&h.raven_id));
+    if !h.aliases.is_empty() {
+        println!(
+            "      {C_DIM}aliases{C_RESET}   {}",
+            h.aliases
+                .iter()
+                .map(|a| format!("@{a}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+    }
+    println!(
+        "      {C_DIM}sources{C_RESET}   {:?}  conflict={}",
+        h.source_set, h.conflict_count
+    );
+}
+
+fn cmd_find(data_dir: &Path, query: &str, local: bool, exact_id: bool, exact_alias: bool, all: bool) {
+    let ctx = build_discovery_ctx(data_dir);
+    let scope = if local {
+        DiscoveryScope::Local
+    } else if exact_id {
+        DiscoveryScope::ExactId
+    } else if exact_alias || query.trim().starts_with('@') {
+        DiscoveryScope::ExactAlias
+    } else if query.trim().starts_with("rvn1") {
+        DiscoveryScope::ExactId
+    } else {
+        // Bare text → local only in V1 (no public fuzzy).
+        DiscoveryScope::Local
+    };
+    let hits = DiscoveryResolver::v1().search(query, scope, &ctx);
+    println!(
+        "{C_BOLD}Discovery{C_RESET} query={} scope={:?} hits={}",
+        sanitize_terminal_text(query),
+        scope,
+        hits.len()
+    );
+    if hits.is_empty() {
+        println!("{C_DIM}No results. Try ash find @alias / rvn1… / --local{C_RESET}");
+        return;
+    }
+    let conflicts = hits
+        .iter()
+        .any(|h| h.verification_state == VerificationState::AliasConflict);
+    for (i, h) in hits.iter().enumerate() {
+        print_discovery_hit(i, h);
+    }
+    if conflicts && !all && hits.len() > 1 {
+        println!(
+            "{C_PURPLE}alias conflict{C_RESET}: {} candidates — pick one (never silent)",
+            hits.len()
+        );
+        print!("pick [1-{}] or Enter to abort: ", hits.len());
+        let _ = io::stdout().flush();
+        let line = read_line();
+        if let Ok(n) = line.trim().parse::<usize>() {
+            if n >= 1 && n <= hits.len() {
+                let h = &hits[n - 1];
+                println!(
+                    "{C_GREEN}selected{C_RESET} {} — use: ash contact request {}",
+                    sanitize_terminal_text(&h.raven_id),
+                    sanitize_terminal_text(&h.raven_id)
+                );
+            }
+        }
+    }
+}
+
+fn cmd_nearby(data_dir: &Path) {
+    let path = nearby_store_path(data_dir);
+    let mut reg = NearbyRegistry::default();
+    if let Ok(raw) = std::fs::read_to_string(&path) {
+        if let Ok(tokens) = serde_json::from_str::<Vec<String>>(&raw) {
+            for t in tokens {
+                if let Ok(v) = hex::decode(&t) {
+                    if v.len() == 16 {
+                        let mut token = [0u8; 16];
+                        token.copy_from_slice(&v);
+                        let mut adv = NearbyAdvertisement::mint(now_ms(), 60_000, b"ash-nearby");
+                        adv.ephemeral_token = token;
+                        let _ = reg.publish_ephemeral(adv);
+                    }
+                }
+            }
+        }
+    }
+    let adv = NearbyAdvertisement::mint(now_ms(), 60_000, b"ash-nearby");
+    if adv.contains_permanent_raven_id() {
+        eprintln!("refused: permanent Raven ID in nearby advertisement");
+        std::process::exit(1);
+    }
+    reg.publish_ephemeral(adv.clone()).unwrap();
+    let mut tokens: Vec<String> = reg
+        .live_ads
+        .iter()
+        .map(|a| hex::encode(a.ephemeral_token))
+        .collect();
+    tokens.sort();
+    tokens.dedup();
+    std::fs::create_dir_all(data_dir).ok();
+    let _ = std::fs::write(path, serde_json::to_string_pretty(&tokens).unwrap_or_default());
+    println!("{C_BOLD}Nearby{C_RESET} (ephemeral — no permanent Raven ID in adv)");
+    for a in reg.scan_live(now_ms()) {
+        println!(
+            "  token={} ttl_ms={} commitment={}",
+            hex::encode(a.ephemeral_token),
+            a.ttl_ms,
+            hex::encode(a.session_commitment)
+        );
+    }
+    println!("{C_DIM}Confirm pairing locally before binding to rvn1 identity.{C_RESET}");
+}
+
+fn cmd_contact_request(
+    data_dir: &Path,
+    target: &str,
+    message: &str,
+    pick: Option<usize>,
+) {
+    let id = ensure_identity(data_dir);
+    let ctx = build_discovery_ctx(data_dir);
+    let q = target.trim();
+    let mut hits = if q.starts_with("rvn1") {
+        DiscoveryResolver::v1().search(q, DiscoveryScope::ExactId, &ctx)
+    } else {
+        DiscoveryResolver::v1().search(q, DiscoveryScope::ExactAlias, &ctx)
+    };
+    // Fall back to local contacts for @tag
+    if hits.is_empty() {
+        hits = DiscoveryResolver::v1().search(q, DiscoveryScope::Local, &ctx);
+    }
+    if hits.is_empty() {
+        eprintln!("no discovery hit for {q}");
+        std::process::exit(1);
+    }
+    let chosen = if hits.len() == 1 {
+        &hits[0]
+    } else if let Some(n) = pick {
+        hits.get(n.saturating_sub(1)).unwrap_or_else(|| {
+            eprintln!("pick out of range");
+            std::process::exit(1);
+        })
+    } else {
+        println!("{C_PURPLE}multiple candidates{C_RESET} — pick one:");
+        for (i, h) in hits.iter().enumerate() {
+            print_discovery_hit(i, h);
+        }
+        print!("pick [1-{}]: ", hits.len());
+        let _ = io::stdout().flush();
+        let line = read_line();
+        let n: usize = line.trim().parse().unwrap_or(0);
+        if n < 1 || n > hits.len() {
+            eprintln!("aborted");
+            std::process::exit(1);
+        }
+        &hits[n - 1]
+    };
+    if chosen.verification_state == VerificationState::Blocked {
+        eprintln!("refused: target is blocked locally");
+        std::process::exit(1);
+    }
+    let peer_pub = if let Some(c) = ctx.contacts.iter().find(|c| c.raven_id == chosen.raven_id) {
+        parse_pub_hex(&c.pub_hex).unwrap_or_else(|e| {
+            eprintln!("{e}");
+            std::process::exit(1);
+        })
+    } else if let Ok(claims) = ctx.aliases.lookup_exact(
+        chosen
+            .aliases
+            .first()
+            .map(|s| s.as_str())
+            .unwrap_or(q),
+        now_ms(),
+    ) {
+        if let Some(claim) = claims.iter().find(|c| c.identity_address == chosen.raven_id) {
+            claim.ed25519_pub
+        } else if claims.len() == 1 {
+            claims[0].ed25519_pub
+        } else {
+            eprintln!("need contact pub_hex or signed alias claim with matching raven_id");
+            std::process::exit(1);
+        }
+    } else {
+        eprintln!("need local contact or signed alias claim to seal request (address alone is not a pubkey)");
+        std::process::exit(1);
+    };
+    let mut request_id = [0u8; 16];
+    {
+        use rand::RngCore;
+        rand::thread_rng().fill_bytes(&mut request_id);
+    }
+    let req = RavenContactRequestV1::create(
+        &id,
+        &peer_pub,
+        &chosen.raven_id,
+        ContactRequestInner {
+            request_id,
+            sender_raven_id: id.address(),
+            sender_display_name: String::new(),
+            sender_aliases: vec![],
+            sender_profile_digest: [0u8; 32],
+            optional_message: sanitize_terminal_text(message),
+            created_at: now_ms(),
+            expires_at: now_ms() + 7 * 24 * 3600 * 1000,
+        },
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("seal failed: {e}");
+        std::process::exit(1);
+    });
+    assert!(req.is_ciphertext_only());
+    let out = data_dir.join(format!("contact_request_{}.bin", hex::encode(request_id)));
+    std::fs::write(&out, &req.ciphertext).ok();
+    println!("{C_GREEN}contact request sealed{C_RESET} (ciphertext-only)");
+    println!("{C_DIM}request_id{C_RESET} {}", hex::encode(request_id));
+    println!("{C_DIM}recipient{C_RESET}  {}", sanitize_terminal_text(&chosen.raven_id));
+    println!("{C_DIM}ciphertext{C_RESET} {}", out.display());
+    println!(
+        "{C_DIM}deliver via MessageRouter (direct/relay/store/BLE/Bridge) — same message_id{C_RESET}"
+    );
 }
 
 /// Resolve @public_tag — never silent pick when multiple match.
@@ -1363,6 +1773,56 @@ fn main() {
                 address.as_deref(),
             ),
             ContactCommands::Resolve { tag } => cmd_contact_resolve(&data_dir, &tag),
+            ContactCommands::Request {
+                target,
+                message,
+                pick,
+            } => cmd_contact_request(&data_dir, &target, &message, pick),
+        },
+        Some(Commands::Find {
+            query,
+            local,
+            exact_id,
+            exact_alias,
+            all,
+        }) => cmd_find(&data_dir, &query, local, exact_id, exact_alias, all),
+        Some(Commands::Nearby) => cmd_nearby(&data_dir),
+        Some(Commands::Alias { cmd }) => match cmd {
+            AliasCommands::Publish {
+                alias,
+                sequence,
+                expires_at,
+            } => {
+                let id = ensure_identity(&data_dir);
+                let exp = expires_at.unwrap_or_else(|| now_ms() + 30 * 24 * 3600 * 1000);
+                let rec = AliasRecord {
+                    alias,
+                    identity_address: String::new(),
+                    sequence,
+                    expires_at: exp,
+                    signature: [0u8; 64],
+                    ed25519_pub: [0u8; 32],
+                }
+                .sign(&id)
+                .unwrap_or_else(|e| {
+                    eprintln!("sign failed: {e}");
+                    std::process::exit(1);
+                });
+                let mut store = load_alias_store(&data_dir, now_ms());
+                if let Err(e) = store.put(rec.clone(), now_ms()) {
+                    eprintln!("rejected: {e}");
+                    std::process::exit(1);
+                }
+                if let Err(e) = save_alias_claim(&data_dir, &rec) {
+                    eprintln!("persist failed: {e}");
+                    std::process::exit(1);
+                }
+                println!(
+                    "{C_GREEN}alias published{C_RESET} @{} → {}",
+                    rec.alias,
+                    sanitize_terminal_text(&rec.identity_address)
+                );
+            }
         },
         Some(Commands::Prekey { cmd }) => match cmd {
             PrekeyCommands::Publish { device_id, out } => {

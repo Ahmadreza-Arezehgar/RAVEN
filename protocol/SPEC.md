@@ -72,6 +72,10 @@ this file.
 | [`RAVEN_ENVELOPE_V1.md`](RAVEN_ENVELOPE_V1.md) | wire envelope byte layout, signing bytes, processing pipeline | `envelope/`, `negative/envelope_bad_magic.json`, `negative/envelope_tampered_body.json`, `negative/envelope_expired.json` |
 | [`RAVEN_ACK_V1.md`](RAVEN_ACK_V1.md) | delivery receipts, delivery-state machine | `ack/`, `negative/ack_wrong_signer.json` |
 | [`RAVEN_ALIAS_V1.md`](RAVEN_ALIAS_V1.md) | human-readable alias records, freshness, ambiguity rule | `alias/`, `negative/alias_stale_sequence.json` |
+| [`RAVEN_PROFILE_RECORD_V1.md`](RAVEN_PROFILE_RECORD_V1.md) | signed profile for exact Raven ID lookup | `raven_core` discovery_v1 |
+| [`RAVEN_INTRODUCTION_V1.md`](RAVEN_INTRODUCTION_V1.md) | recipient-specific encrypted intros | discovery_v1 |
+| [`RAVEN_CONTACT_REQUEST_V1.md`](RAVEN_CONTACT_REQUEST_V1.md) | E2EE contact request / accept | discovery_v1 + bridge_v1 |
+| [`docs/RAVEN_DISCOVERY_V1.md`](../docs/RAVEN_DISCOVERY_V1.md) | multi-lane DiscoveryResolver | `cargo test -p raven-core --test discovery_v1` |
 | [`RAVEN_ROUTING_TAG_V1.md`](RAVEN_ROUTING_TAG_V1.md) | rotating unlinkable routing tags | `routing/` |
 | [`RAVEN_CAPABILITIES_V1.md`](RAVEN_CAPABILITIES_V1.md) | signed capability negotiation, downgrade protection | `capabilities/` |
 | [`ATSAM_PRIMITIVE_MAPPING_V1.md`](ATSAM_PRIMITIVE_MAPPING_V1.md) | ATSAM/Noise sealed-frame ↔ primitive ↔ threat ↔ vectors; binding into envelope body | `raven-security/test-vectors/` (placeholders) + iOS ATSAM; outer layout proven by `envelope/` |

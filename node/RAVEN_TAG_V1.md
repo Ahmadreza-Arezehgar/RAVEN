@@ -78,4 +78,5 @@ Interactive Contacts menu: same rules; stdin for secrets; fingerprint confirm pi
 
 - Friendship plane: `SERVERLESS_FRIEND_MESH_BRIDGE_DESIGN.md`  
 - Wire alias: `protocol/RAVEN_ALIAS_V1.md`  
+- Multi-lane discovery / search / contact request: [`RAVEN_DISCOVERY_V1.md`](RAVEN_DISCOVERY_V1.md)  
 - Migration labels: `MIGRATION_SERVERLESS_V1.md` (`serverless_rvn1` vs `legacy_*`)

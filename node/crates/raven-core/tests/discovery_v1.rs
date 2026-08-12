@@ -1,0 +1,663 @@
+//! Discovery V1 acceptance tests (research §22).
+//!
+//! Multi-lane search / contact request without central Raven DB.
+
+use raven_core::alias_record::{AliasClaimStore, AliasPublishQuota, AliasRecord};
+use raven_core::bootstrap::BootstrapConfig;
+use raven_core::chat_history::BlockList;
+use raven_core::contact_request::{ContactAcceptV1, ContactRequestInner, RavenContactRequestV1};
+use raven_core::discovery_resolver::{
+    result_model_schema_keys, DiscoveryContext, DiscoveryResolver, DiscoveryScope,
+    DiscoverySource, LocalContactRow, VerificationState,
+};
+use raven_core::envelope::{Envelope, EnvType};
+use raven_core::forward_queue::ForwardQueue;
+use raven_core::identity::Identity;
+use raven_core::introduction::{IntroductionInbox, RavenIntroductionV1};
+use raven_core::message_router::{InboundEnvelope, MessageRouter, RouterOutcome};
+use raven_core::messaging_path::{assert_no_silent_fastapi, resolve_terminal_messaging_path};
+use raven_core::nearby::{NearbyAdvertisement, NearbyRegistry};
+use raven_core::profile_record::{ProfileStore, RavenProfileRecordV1};
+use raven_core::seal::{classify_sealed_body, SealClass};
+use raven_core::transport::TransportKind;
+use tempfile::tempdir;
+
+fn now() -> u64 {
+    1_700_000_000_000
+}
+
+fn make_profile(id: &Identity, display: &str, aliases: &[&str], seq: u64, exp: u64) -> RavenProfileRecordV1 {
+    RavenProfileRecordV1 {
+        version: 1,
+        raven_id: String::new(),
+        display_name: display.into(),
+        public_aliases: aliases.iter().map(|s| s.to_string()).collect(),
+        profile_image_digest: [0u8; 32],
+        device_set_commitment: [3u8; 32],
+        prekey_bundle_reference: [4u8; 32],
+        sequence: seq,
+        issued_at: now(),
+        expires_at: exp,
+        visibility: 0,
+        signature: [0u8; 64],
+        ed25519_pub: [0u8; 32],
+    }
+    .sign(id)
+    .unwrap()
+}
+
+fn make_alias(id: &Identity, alias: &str, seq: u64, exp: u64) -> AliasRecord {
+    AliasRecord {
+        alias: alias.into(),
+        identity_address: String::new(),
+        sequence: seq,
+        expires_at: exp,
+        signature: [0u8; 64],
+        ed25519_pub: [0u8; 32],
+    }
+    .sign(id)
+    .unwrap()
+}
+
+fn pack_contact_req_env(sender: &Identity, req: &RavenContactRequestV1) -> Envelope {
+    let mut env = Envelope {
+        env_type: EnvType::Message as u8,
+        flags: 0,
+        message_id: req.request_id,
+        routing_tag: [7u8; 16],
+        dest_device_hint: 0,
+        created_at: now(),
+        expires_at: req.expires_at,
+        hop_limit: 8,
+        replication_budget: 3,
+        anti_replay_nonce: [9u8; 12],
+        ratchet_header_ciphertext: vec![],
+        message_ciphertext: req.ciphertext.clone(),
+        sender_authentication: vec![],
+    };
+    env.sign_with(sender);
+    env
+}
+
+/// 1 Exact Raven ID search with no FastAPI
+#[test]
+fn a01_exact_raven_id_no_fastapi() {
+    let path = resolve_terminal_messaging_path();
+    assert_no_silent_fastapi(path).unwrap();
+    assert!(!path.as_diag_label().contains("fastapi"));
+
+    let id = Identity::generate();
+    let mut ctx = DiscoveryContext {
+        serverless: true,
+        now_ms: now(),
+        ..Default::default()
+    };
+    ctx.profiles
+        .put(make_profile(&id, "Poline", &["poline"], 1, now() + 60_000), now())
+        .unwrap();
+
+    let resolver = DiscoveryResolver::v1();
+    let hits = resolver.search(&id.address(), DiscoveryScope::ExactId, &ctx);
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].raven_id, id.address());
+    assert!(hits[0].source_set.contains(&DiscoverySource::ExactRavenId));
+    assert_eq!(
+        hits[0].verification_state,
+        VerificationState::PublicSignedProfile
+    );
+}
+
+/// 2 Exact alias via local/signed records (community/manual peers)
+#[test]
+fn a02_exact_alias_signed_records() {
+    let id = Identity::generate();
+    let mut ctx = DiscoveryContext {
+        serverless: true,
+        now_ms: now(),
+        ..Default::default()
+    };
+    ctx.aliases.put(make_alias(&id, "poline", 1, now() + 60_000), now()).unwrap();
+    ctx.profiles
+        .put(make_profile(&id, "Poline", &["poline"], 1, now() + 60_000), now())
+        .unwrap();
+
+    let hits = DiscoveryResolver::v1().search("@poline", DiscoveryScope::ExactAlias, &ctx);
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].raven_id, id.address());
+    assert!(hits[0].aliases.iter().any(|a| a == "poline"));
+}
+
+/// 3 Alias partition conflict displays both
+#[test]
+fn a03_alias_partition_conflict_both() {
+    let a = Identity::generate();
+    let b = Identity::generate();
+    let mut ctx = DiscoveryContext {
+        now_ms: now(),
+        ..Default::default()
+    };
+    ctx.aliases.put(make_alias(&a, "alex", 1, now() + 60_000), now()).unwrap();
+    ctx.aliases.put(make_alias(&b, "alex", 1, now() + 60_000), now()).unwrap();
+
+    let hits = DiscoveryResolver::v1().search("@alex", DiscoveryScope::ExactAlias, &ctx);
+    assert_eq!(hits.len(), 2);
+    assert!(hits.iter().all(|h| h.verification_state == VerificationState::AliasConflict));
+    assert!(hits.iter().all(|h| h.conflict_count >= 2));
+    let ids: std::collections::HashSet<_> = hits.iter().map(|h| h.raven_id.clone()).collect();
+    assert_eq!(ids.len(), 2);
+}
+
+/// 4 Forged alias signature rejected
+#[test]
+fn a04_forged_alias_rejected() {
+    let id = Identity::generate();
+    let mut rec = make_alias(&id, "poline", 1, now() + 60_000);
+    rec.signature[0] ^= 0xff;
+    let mut store = AliasClaimStore::default();
+    assert!(store.put(rec, now()).is_err());
+}
+
+/// 5 Old sequence replay rejected
+#[test]
+fn a05_old_sequence_replay_rejected() {
+    let id = Identity::generate();
+    let mut store = AliasClaimStore::default();
+    store
+        .put(make_alias(&id, "poline", 42, now() + 60_000), now())
+        .unwrap();
+    let err = store
+        .put(make_alias(&id, "poline", 41, now() + 60_000), now())
+        .unwrap_err();
+    assert!(err.contains("STALE"));
+}
+
+/// 6 Expired profile not current
+#[test]
+fn a06_expired_profile_not_current() {
+    let id = Identity::generate();
+    let mut store = ProfileStore::default();
+    store
+        .put(make_profile(&id, "X", &[], 1, now() + 10), now())
+        .unwrap();
+    assert!(store.get(&id.address(), now() + 5).is_some());
+    assert!(store.get(&id.address(), now() + 11).is_none());
+
+    let mut ctx = DiscoveryContext {
+        now_ms: now() + 11,
+        profiles: store,
+        ..Default::default()
+    };
+    // Raw expired still in map but resolver ExactId without live profile returns empty-ish candidate
+    // or no PublicSignedProfile with digest — ensure get path treats expired absent.
+    assert!(ctx.profiles.get(&id.address(), ctx.now_ms).is_none());
+}
+
+/// 7 Alias change doesn't change contact raven_id binding
+#[test]
+fn a07_alias_change_keeps_raven_id_binding() {
+    let id = Identity::generate();
+    let mut contacts = vec![LocalContactRow {
+        raven_id: id.address(),
+        pub_hex: hex::encode(id.public_key_bytes()),
+        petname: "Poline Uni".into(),
+        public_tag: "poline".into(),
+        display_name: "Poline".into(),
+        pinned: true,
+        directly_verified: true,
+    }];
+    // Alias rotates
+    contacts[0].public_tag = "poline_new".into();
+    assert_eq!(contacts[0].raven_id, id.address());
+    let mut ctx = DiscoveryContext {
+        contacts,
+        now_ms: now(),
+        ..Default::default()
+    };
+    ctx.aliases
+        .put(make_alias(&id, "poline_new", 2, now() + 60_000), now())
+        .unwrap();
+    let hits = DiscoveryResolver::v1().search("@poline_new", DiscoveryScope::All, &ctx);
+    assert!(hits.iter().any(|h| h.raven_id == id.address()));
+}
+
+/// 8 QR/add without internet (local)
+#[test]
+fn a08_qr_add_without_internet() {
+    let id = Identity::generate();
+    let mut ctx = DiscoveryContext {
+        serverless: true,
+        now_ms: now(),
+        contacts: vec![LocalContactRow {
+            raven_id: id.address(),
+            pub_hex: hex::encode(id.public_key_bytes()),
+            petname: "QR Friend".into(),
+            public_tag: String::new(),
+            display_name: String::new(),
+            pinned: true,
+            directly_verified: true,
+        }],
+        ..Default::default()
+    };
+    // No profiles / aliases / bootstrap needed
+    let hits = DiscoveryResolver::v1().search(&id.address(), DiscoveryScope::Local, &ctx);
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].verification_state, VerificationState::DirectlyVerified);
+}
+
+/// 9 Nearby ephemeral pairing mock (no permanent ID in adv)
+#[test]
+fn a09_nearby_ephemeral_no_permanent_id() {
+    let mut near = NearbyRegistry::default();
+    let adv = NearbyAdvertisement::mint(now(), 30_000, b"confirm-secret");
+    assert!(!adv.contains_permanent_raven_id());
+    near.publish_ephemeral(adv.clone()).unwrap();
+    assert_eq!(near.scan_live(now()).len(), 1);
+
+    let peer = Identity::generate();
+    near.confirm(
+        adv.ephemeral_token,
+        peer.address(),
+        peer.public_key_bytes(),
+        now(),
+    );
+    let mut ctx = DiscoveryContext {
+        nearby: near,
+        now_ms: now(),
+        ..Default::default()
+    };
+    let hits = DiscoveryResolver::v1().search("", DiscoveryScope::Nearby, &ctx);
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].verification_state, VerificationState::NearbyVerified);
+}
+
+/// 10 Contact request while recipient offline (store)
+#[test]
+fn a10_contact_request_offline_store() {
+    let dir = tempdir().unwrap();
+    let sender = Identity::generate();
+    let recipient = Identity::generate();
+    let req = RavenContactRequestV1::create(
+        &sender,
+        &recipient.public_key_bytes(),
+        &recipient.address(),
+        ContactRequestInner {
+            request_id: [10u8; 16],
+            sender_raven_id: sender.address(),
+            sender_display_name: "A".into(),
+            sender_aliases: vec!["ahmad".into()],
+            sender_profile_digest: [0u8; 32],
+            optional_message: "hi".into(),
+            created_at: now(),
+            expires_at: now() + 60_000,
+        },
+    )
+    .unwrap();
+    let env = pack_contact_req_env(&sender, &req);
+    let q = ForwardQueue::open(&dir.path().join("f.sqlite")).unwrap();
+    let router = MessageRouter {
+        bridge_enabled: true,
+        store_enabled: true,
+        endpoint_enabled: false,
+        local_has_ble: true,
+        local_has_internet: false,
+        ..Default::default()
+    };
+    match router.handle_inbound(
+        &q,
+        InboundEnvelope {
+            packed: env.pack(),
+            ingress: TransportKind::MockBle,
+            previous_hop: "phone".into(),
+            now_ms: now(),
+        },
+        true,
+    ) {
+        RouterOutcome::QueuedForForward { message_id, .. } => {
+            assert_eq!(message_id, [10u8; 16]);
+        }
+        other => panic!("expected store queue: {other:?}"),
+    }
+}
+
+/// 11 Ciphertext-only store
+#[test]
+fn a11_ciphertext_only_store() {
+    let sender = Identity::generate();
+    let recipient = Identity::generate();
+    let req = RavenContactRequestV1::create(
+        &sender,
+        &recipient.public_key_bytes(),
+        &recipient.address(),
+        ContactRequestInner {
+            request_id: [11u8; 16],
+            sender_raven_id: sender.address(),
+            sender_display_name: "A".into(),
+            sender_aliases: vec![],
+            sender_profile_digest: [0u8; 32],
+            optional_message: "secret note".into(),
+            created_at: now(),
+            expires_at: now() + 60_000,
+        },
+    )
+    .unwrap();
+    assert!(req.is_ciphertext_only());
+    let ct = String::from_utf8_lossy(&req.ciphertext);
+    assert!(!ct.contains("secret note"));
+    assert!(!ct.contains("rvn1/contact-req-inner"));
+}
+
+/// 12 BLE→Bridge→Internet path for contact request
+#[test]
+fn a12_ble_bridge_internet_contact_request() {
+    let dir = tempdir().unwrap();
+    let q = ForwardQueue::open(&dir.path().join("f.sqlite")).unwrap();
+    let sender = Identity::generate();
+    let recipient = Identity::generate();
+    let req = RavenContactRequestV1::create(
+        &sender,
+        &recipient.public_key_bytes(),
+        &recipient.address(),
+        ContactRequestInner {
+            request_id: [12u8; 16],
+            sender_raven_id: sender.address(),
+            sender_display_name: "A".into(),
+            sender_aliases: vec![],
+            sender_profile_digest: [0u8; 32],
+            optional_message: "via bridge".into(),
+            created_at: now(),
+            expires_at: now() + 60_000,
+        },
+    )
+    .unwrap();
+    let env = pack_contact_req_env(&sender, &req);
+    let router = MessageRouter {
+        bridge_enabled: true,
+        endpoint_enabled: false,
+        local_has_ble: true,
+        local_has_internet: true,
+        ..Default::default()
+    };
+    match router.handle_inbound(
+        &q,
+        InboundEnvelope {
+            packed: env.pack(),
+            ingress: TransportKind::MockBle,
+            previous_hop: "ble-peer".into(),
+            now_ms: now(),
+        },
+        true,
+    ) {
+        RouterOutcome::ForwardNow {
+            packed,
+            egress,
+            identity,
+        } => {
+            assert_eq!(egress, TransportKind::Lan);
+            assert_eq!(identity.message_id, [12u8; 16]);
+            let fwd = Envelope::unpack(&packed).unwrap();
+            assert_eq!(fwd.message_ciphertext, req.ciphertext);
+        }
+        other => panic!("case12: {other:?}"),
+    }
+}
+
+/// 13 Bridge cannot decrypt
+#[test]
+fn a13_bridge_cannot_decrypt() {
+    let sender = Identity::generate();
+    let recipient = Identity::generate();
+    let req = RavenContactRequestV1::create(
+        &sender,
+        &recipient.public_key_bytes(),
+        &recipient.address(),
+        ContactRequestInner {
+            request_id: [13u8; 16],
+            sender_raven_id: sender.address(),
+            sender_display_name: "A".into(),
+            sender_aliases: vec![],
+            sender_profile_digest: [0u8; 32],
+            optional_message: "bridge opaque".into(),
+            created_at: now(),
+            expires_at: now() + 60_000,
+        },
+    )
+    .unwrap();
+    // Bridge only classifies seal class — never opens.
+    match classify_sealed_body(&req.ciphertext) {
+        SealClass::InterimStub | SealClass::OpaqueAtsam { .. } | SealClass::Other => {}
+    }
+    // Opening requires recipient key — bridge identity cannot.
+    let bridge = Identity::generate();
+    assert!(req.open(&bridge).is_err());
+    let inner = req.open(&recipient).unwrap();
+    assert_eq!(inner.optional_message, "bridge opaque");
+}
+
+/// 14 Multi-transport dedup once
+#[test]
+fn a14_multi_transport_dedup() {
+    let dir = tempdir().unwrap();
+    let q = ForwardQueue::open(&dir.path().join("f.sqlite")).unwrap();
+    let sender = Identity::generate();
+    let recipient = Identity::generate();
+    let req = RavenContactRequestV1::create(
+        &sender,
+        &recipient.public_key_bytes(),
+        &recipient.address(),
+        ContactRequestInner {
+            request_id: [14u8; 16],
+            sender_raven_id: sender.address(),
+            sender_display_name: "A".into(),
+            sender_aliases: vec![],
+            sender_profile_digest: [0u8; 32],
+            optional_message: "once".into(),
+            created_at: now(),
+            expires_at: now() + 60_000,
+        },
+    )
+    .unwrap();
+    let packed = pack_contact_req_env(&sender, &req).pack();
+    let router = MessageRouter {
+        bridge_enabled: true,
+        endpoint_enabled: false,
+        ..Default::default()
+    };
+    let first = router.handle_inbound(
+        &q,
+        InboundEnvelope {
+            packed: packed.clone(),
+            ingress: TransportKind::Lan,
+            previous_hop: "a".into(),
+            now_ms: now(),
+        },
+        true,
+    );
+    assert!(matches!(first, RouterOutcome::ForwardNow { .. }));
+    let second = router.handle_inbound(
+        &q,
+        InboundEnvelope {
+            packed,
+            ingress: TransportKind::MockBle,
+            previous_hop: "b".into(),
+            now_ms: now(),
+        },
+        true,
+    );
+    match second {
+        RouterOutcome::Dropped { .. } => {}
+        other => panic!("expected dedup drop: {other:?}"),
+    }
+}
+
+/// 15 Local block
+#[test]
+fn a15_local_block() {
+    let id = Identity::generate();
+    let pub_hex = hex::encode(id.public_key_bytes());
+    let mut blocked = BlockList::default();
+    blocked.block(&pub_hex);
+    let ctx = DiscoveryContext {
+        contacts: vec![LocalContactRow {
+            raven_id: id.address(),
+            pub_hex,
+            petname: "Bad".into(),
+            public_tag: "bad".into(),
+            display_name: "Bad".into(),
+            pinned: false,
+            directly_verified: false,
+        }],
+        blocked,
+        now_ms: now(),
+        ..Default::default()
+    };
+    let hits = DiscoveryResolver::v1().search("bad", DiscoveryScope::Local, &ctx);
+    assert!(hits.iter().any(|h| h.verification_state == VerificationState::Blocked));
+}
+
+/// 16 Sybil quota / rate limit on alias publish
+#[test]
+fn a16_sybil_quota_alias_publish() {
+    let id = Identity::generate();
+    let mut store = AliasClaimStore::with_quota(AliasPublishQuota {
+        max_live_claims_per_pub: 2,
+        max_publishes_per_window: 100,
+        window_ms: 3_600_000,
+    });
+    store
+        .put(make_alias(&id, "a1", 1, now() + 60_000), now())
+        .unwrap();
+    store
+        .put(make_alias(&id, "a2", 1, now() + 60_000), now())
+        .unwrap();
+    let err = store
+        .put(make_alias(&id, "a3", 1, now() + 60_000), now())
+        .unwrap_err();
+    assert!(err.contains("SYBIL") || err.contains("QUOTA") || err.contains("RATE"));
+}
+
+/// 17 Bootstrap disabled + manual peer
+#[test]
+fn a17_bootstrap_disabled_manual_peer() {
+    let mut cfg = BootstrapConfig::default();
+    cfg.remove_raven_defaults();
+    cfg.manual_peers.push("/ip4/127.0.0.1/tcp/4001".into());
+    assert!(cfg.manual_peer_only_ok());
+    assert!(cfg.effective_peers().iter().any(|p| p.contains("127.0.0.1")));
+}
+
+/// 18 No phone/email in DHT fixtures
+#[test]
+fn a18_no_phone_email_in_dht() {
+    let id = Identity::generate();
+    let mut store = AliasClaimStore::default();
+    store
+        .put(make_alias(&id, "poline", 1, now() + 60_000), now())
+        .unwrap();
+    assert!(!store.contains_phone_or_email_marker());
+    // Profile store has no phone fields by schema — digest only.
+    let prof = make_profile(&id, "Poline", &["poline"], 1, now() + 60_000);
+    let wire = format!("{:?}", prof);
+    assert!(!wire.to_lowercase().contains("phone"));
+    assert!(!wire.to_lowercase().contains("email"));
+}
+
+/// 19 Terminal result model stable
+#[test]
+fn a19_terminal_result_model_stable() {
+    let keys = result_model_schema_keys();
+    assert!(keys.contains(&"raven_id"));
+    assert!(keys.contains(&"verification_state"));
+    assert!(keys.contains(&"conflict_count"));
+    assert!(keys.contains(&"source_set"));
+    let id = Identity::generate();
+    let mut ctx = DiscoveryContext {
+        now_ms: now(),
+        ..Default::default()
+    };
+    ctx.aliases
+        .put(make_alias(&id, "poline", 1, now() + 60_000), now())
+        .unwrap();
+    let hits = DiscoveryResolver::v1().search("@poline", DiscoveryScope::ExactAlias, &ctx);
+    let json = serde_json::to_value(&hits[0]).unwrap();
+    for k in keys {
+        assert!(json.get(*k).is_some(), "missing key {k}");
+    }
+}
+
+/// 20 Provenance + conflict on results
+#[test]
+fn a20_provenance_and_conflict() {
+    let a = Identity::generate();
+    let b = Identity::generate();
+    let mut ctx = DiscoveryContext {
+        now_ms: now(),
+        serverless: true,
+        ..Default::default()
+    };
+    ctx.aliases.put(make_alias(&a, "poline", 1, now() + 60_000), now()).unwrap();
+    ctx.aliases.put(make_alias(&b, "poline", 1, now() + 60_000), now()).unwrap();
+    let hits = DiscoveryResolver::v1().search("@poline", DiscoveryScope::All, &ctx);
+    assert!(hits.len() >= 2);
+    for h in &hits {
+        assert!(!h.source_set.is_empty());
+        assert_eq!(h.verification_state, VerificationState::AliasConflict);
+        assert!(h.conflict_count >= 2);
+    }
+    // Legacy server not required
+    assert!(!hits
+        .iter()
+        .any(|h| h.source_set.contains(&DiscoverySource::LegacyServer)));
+}
+
+/// Contact accept roundtrip + intro lane smoke
+#[test]
+fn contact_accept_and_intro_lane() {
+    let intro = Identity::generate();
+    let subject = Identity::generate();
+    let recipient = Identity::generate();
+    let note = RavenIntroductionV1::seal_note(
+        &intro,
+        &recipient.public_key_bytes(),
+        &recipient.address(),
+        b"meet poline",
+        &[9u8; 16],
+    )
+    .unwrap();
+    let intro_rec = RavenIntroductionV1 {
+        intro_id: [9u8; 16],
+        introducer_raven_id: String::new(),
+        subject_raven_id: subject.address(),
+        recipient_raven_id: recipient.address(),
+        subject_display_name: "Poline".into(),
+        subject_aliases: vec!["poline".into()],
+        created_at: now(),
+        expires_at: now() + 60_000,
+        note_ciphertext: note,
+        signature: [0u8; 64],
+        introducer_pub: [0u8; 32],
+    }
+    .sign(&intro)
+    .unwrap();
+    let mut inbox = IntroductionInbox::default();
+    inbox.add(intro_rec, now()).unwrap();
+    let mut ctx = DiscoveryContext {
+        intros: inbox,
+        now_ms: now(),
+        ..Default::default()
+    };
+    let hits = DiscoveryResolver::v1().search("@poline", DiscoveryScope::MyNetwork, &ctx);
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].verification_state, VerificationState::Introduced);
+
+    let accept = ContactAcceptV1 {
+        request_id: [1u8; 16],
+        accepter_raven_id: String::new(),
+        requester_raven_id: intro.address(),
+        accepted_at: now(),
+        signature: [0u8; 64],
+        accepter_pub: [0u8; 32],
+    }
+    .sign(&recipient)
+    .unwrap();
+    accept.verify().unwrap();
+}

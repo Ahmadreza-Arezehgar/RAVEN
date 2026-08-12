@@ -4,7 +4,8 @@
 **Baseline start commit:** `18fa01e2a32ef014387ae2857ca272f34555cddd`  
 **Primary land commit:** `ce328dd` (local only — not pushed)  
 **Prior lands:** `11e59ee` / `3ccc258` / `679e5e8` / `cd0b13e` / `0bd0b68` / `eea1029` / `7acbef7` (local only — not pushed)  
-**This session:** `215ba30` (local only — not pushed)  
+**This session:** Discovery V1 land (local only — not pushed)  
+**Prior session:** `215ba30` (local only — not pushed)  
 **Checklist source:** `docs/MASTER_ENGINEERING_CHECKLIST.md` (also mirrored under `node/`)  
 **Updated:** 2026-08-12  
 
@@ -30,8 +31,8 @@ Reviewer for all IMPLEMENTED rows: **pending human** unless noted.
 | 8 | Phase A Protocol Freeze | IMPLEMENTED | Specs + `docs/PROTOCOL_FREEZE_HASHES_V1.md`; independent freeze review **BLOCKED_HUMAN** |
 | 9 | Raven Identity | IMPLEMENTED | protocol + raven-core + iOS fingerprint binding |
 | 10 | Raven Address | FROZEN | `RAVEN_ADDRESS_V1` + vectors; `from_display` fixed |
-| 11 | Aliases and Contacts | IMPLEMENTED | Soft Unique Tags; ash `contact *`; iOS inbox uses `RavenTagDisplay` |
-| 12 | Asynchronous First Contact | IMPLEMENTED | Real hybrid prekey publish; `contact add --prekey-file`; no FastAPI |
+| 11 | Aliases and Contacts | IMPLEMENTED | Soft Unique Tags; ash `contact *` / `find` / `nearby` / `alias publish`; Discovery V1 |
+| 12 | Asynchronous First Contact | IMPLEMENTED | Real hybrid prekey publish; `contact add --prekey-file`; `contact request` E2EE; no FastAPI |
 | 13 | Cryptographic Requirements | IN_PROGRESS | Envelope + ATSAM KATs + ML-KEM shared CT KATs; CryptoKit CT interop open |
 | 14 | Key Storage | IN_PROGRESS | identity.seed 0600; Keychain on iOS; prekey_hybrid.secret 0600 |
 | 15 | Canonical Raven Envelope | FROZEN | vectors + rust/swift/python |
@@ -44,7 +45,7 @@ Reviewer for all IMPLEMENTED rows: **pending human** unless noted.
 | 26 | Secure CLI Usage | IMPLEMENTED | argv plaintext refused; seal-in-ash + IPC / `--send-stdin` |
 | 27 | Local DB and Queues | IMPLEMENTED | SQLite outbox + forward_queue + chat_history.json |
 | 28 | Internet P2P Networking | IMPLEMENTED | InternetTransport + libp2p swarm; FastAPI out of path |
-| 29 | DHT and Peer Discovery | IN_PROGRESS | PeerRecord + local Kad; public Internet Kad **BLOCKED_HARDWARE** |
+| 29 | DHT and Peer Discovery | IN_PROGRESS | PeerRecord + AliasClaimStore + ProfileStore + DiscoveryResolver; public Internet Kad **BLOCKED_HARDWARE** |
 | 30 | Bootstrap Nodes | IMPLEMENTED | disable-raven-defaults + manual peer; §59 harness + smoke |
 | 31 | NAT Traversal | BLOCKED_HARDWARE | software substitutes: `docs/NAT_SOFTWARE_SIM.md` + `scripts/nat_docker_sim.sh` (SKIP if Docker down) |
 | 32 | Offline Store-and-Forward | IMPLEMENTED | StoreObject + mailbox + §59 offline-recipient step |
@@ -75,6 +76,7 @@ Reviewer for all IMPLEMENTED rows: **pending human** unless noted.
 
 ## Design memos / handoff
 
+- `docs/RAVEN_DISCOVERY_V1.md` — multi-lane search / contact request (no central Raven DB)  
 - `docs/EXTERNAL_REVIEW_PACKET.md` — threat model, freeze hashes, crypto map, vector cmds  
 - `docs/PROTOCOL_FREEZE_HASHES_V1.md` — SHA-256 freeze  
 - `docs/FINAL_SERVERLESS_PROOF.md` + `scripts/final_serverless_proof.sh`  
