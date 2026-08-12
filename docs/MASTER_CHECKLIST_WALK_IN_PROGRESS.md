@@ -3,7 +3,7 @@
 **Branch:** `feature/raven-serverless-v1`  
 **Walk started:** 2026-08-12 (this session)  
 **Baseline HEAD at walk start:** `6189f2e`  
-**Security-fix commit: `113bf33af5f65da7df96f1efa50a38ca48c92cde`
+**Security-fix commit:** `113bf33af5f65da7df96f1efa50a38ca48c92cde`  
 **Operator:** automated desktop agent (evidence-backed; human review still required)
 
 > Formal §1–§60 walk. Status values: `PASS` | `FAIL` | `BLOCKED_HUMAN` | `BLOCKED_HARDWARE` | `IN_PROGRESS`.  
