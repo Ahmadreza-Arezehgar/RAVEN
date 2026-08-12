@@ -1,0 +1,260 @@
+# RAVEN terminal demo (safe — no secrets)
+
+Local-only walkthrough for the serverless **`ash`** product CLI and `raven-node`.
+Uses **ephemeral identities** (`mktemp -d` / Windows TEMP). Never paste real production keys,
+tokens, APNs/JWT material, or recovery secrets into this file or shell history demos.
+
+**Brand:** [raven-messager.com](https://raven-messager.com/) · public logo  
+`https://raven-messager.com/raven_logo.png` (also `/raven_logo_64.png`, `/raven_logo_192.png`)  
+Palette (site CSS): cyan `#40f2ff`, purple `#bf73ff`, blue `#298dff`, dark `#030305`.
+
+## Prerequisites
+
+```bash
+cd /path/to/hybrid_messenger/node
+cargo build -p raven-core -p raven-node -p ash
+cargo test -p raven-core -p ash
+cargo test -p raven-core --test reliability
+```
+
+Python oracle (repo venv has `cryptography`):
+
+```bash
+cd /path/to/hybrid_messenger/protocol/reference
+../.venv/bin/python -m pytest -q
+```
+
+**Windows:** see [`WINDOWS.md`](./WINDOWS.md) (native MSVC build → `ash.exe` / `raven-node.exe`, or cross-compile notes). No installer yet.
+
+## Primary entry: `ash` interactive welcome
+
+`ash` with **no subcommand** opens the Raven Node shell (not Cursor/ash-autonomous).
+
+```bash
+cd /path/to/hybrid_messenger/node
+DATA=$(mktemp -d)
+./target/debug/ash --data-dir "$DATA" init     # public bits only
+./target/debug/ash --data-dir "$DATA" banner   # non-interactive welcome
+./target/debug/ash --data-dir "$DATA"          # interactive menu
+```
+
+**Welcome (text stand-in; ANSI colors in a real TTY):**
+
+```
+        .--.     ╭──────────────────────────────╮
+       /  ◉\    │  Welcome to Raven Node        │
+      /  /\ \   │  Messaging Beyond             │
+     /__/  \_\  │  Connectivity                 │
+    ≺═══◈═══≻   ╰──────────────────────────────╯
+         serverless · ATSAM · peer-to-peer
+
+Brand logo (PNG): https://raven-messager.com/raven_logo.png
+Site:             https://raven-messager.com/
+
+● identity ready (public bits only)
+address     rvn1q…          # placeholder — yours will differ
+fingerprint XXXX-XXXX-XXXX
+pub_hex     <64 hex chars>  # public Ed25519 only — never a seed
+
+  Menu
+  1  Messages      queue status (ids + delivery only)
+  2  Send New Message
+  3  Contacts
+  4  Status
+  q  Quit
+
+raven>
+```
+
+### Banner / CLI security checklist
+
+| Check | Status |
+|---|---|
+| No private keys / seeds / session keys / tokens in banner or menu | **Yes** |
+| After identity: only `address` / `fingerprint` / `pub_hex` | **Yes** |
+| Messages view: msg id prefix + delivery state + peer address — no plaintext, no packed envelopes logged | **Yes** |
+| Contacts store public `address` + `pub_hex` (+ optional alias) only | **Yes** |
+| No unauthenticated localhost admin HTTP | **Yes** — ash/raven-node local files only; no daemon HTTP |
+| Demo data dirs ephemeral (`mktemp -d`) | **Yes** |
+| E2EE / ATSAM path unchanged; node logs lengths / opaque status only | **Yes** |
+
+## One-shot reliability demo
+
+```bash
+cd /path/to/hybrid_messenger/node
+./scripts/two_node_demo.sh
+./scripts/lan_path_smoke.sh
+./scripts/bridge_abc_demo.sh
+cargo test -p raven-core --test bridge_v1
+```
+
+**Expected:** four `round N OK` + `ALL DEMO CHECKS PASSED`; `mode=interim OK`, `mode=opaque-atsam OK`;  
+`bridge_abc_demo` → three A–B–C rounds + store-carry + `ALL BRIDGE A-B-C CHECKS PASSED`.
+
+## Bridge A–B–C (local, mock BLE)
+
+See **[`BRIDGE_V1.md`](./BRIDGE_V1.md)** for the full Bridge V1 spec walkthrough.
+
+Topology: **A** LAN-only → **B** bridge (LAN + mock BLE) → **C** BLE-only. Same opaque `RavenEnvelopeV1`; B never decrypts; Delivered ACK only from C.
+
+```bash
+cd /path/to/hybrid_messenger/node
+cargo build -p raven-node -p ash
+./scripts/bridge_abc_demo.sh
+```
+
+### ash Bridge controls (config only — does not stop `raven-node`)
+
+```bash
+DATA_B=$(mktemp -d)
+./target/debug/ash --data-dir "$DATA_B" init
+./target/debug/ash --data-dir "$DATA_B" node bridge on
+./target/debug/ash --data-dir "$DATA_B" node store on
+./target/debug/ash --data-dir "$DATA_B" node relay off
+./target/debug/ash --data-dir "$DATA_B" status
+```
+
+Sample status (safe fields only):
+
+```
+Bridge
+  bridge     on
+  store      on
+  relay      off
+  transports lan, mock_ble
+  caps       ble, internet, store, bridge
+  forward_q  0 pending / N total
+note      ash configures only — raven-node bridge keeps running after ash exits
+```
+
+Start B daemon separately (survives ash quit):
+
+```bash
+./target/debug/raven-node bridge \
+  --data-dir "$DATA_B" \
+  --lan-listen 127.0.0.1:0 \
+  --ble-listen 127.0.0.1:0 \
+  --write-lan-addr /tmp/raven-b.lan \
+  --write-ble-addr /tmp/raven-b.ble \
+  --timeout-secs 0
+```
+
+## Manual two-node DM (`raven-node`)
+
+Terminal A (receiver):
+
+```bash
+cd /path/to/hybrid_messenger/node
+DATA_A=$(mktemp -d) DATA_B=$(mktemp -d)
+./target/debug/raven-node init --data-dir "$DATA_A"
+./target/debug/raven-node init --data-dir "$DATA_B"
+# Note pub_hex from each init (public only).
+./target/debug/raven-node run \
+  --data-dir "$DATA_B" \
+  --listen 127.0.0.1:0 \
+  --peer-pub-hex <A_PUB_HEX> \
+  --write-addr /tmp/raven-b.listen \
+  --exit-after-recv 1 \
+  --timeout-secs 30
+```
+
+Terminal B (sender) — after `/tmp/raven-b.listen` exists:
+
+```bash
+./target/debug/raven-node run \
+  --data-dir "$DATA_A" \
+  --listen 127.0.0.1:0 \
+  --peer "$(cat /tmp/raven-b.listen)" \
+  --peer-pub-hex <B_PUB_HEX> \
+  --send "hello from terminal" \
+  --exit-after-ack \
+  --timeout-secs 30
+```
+
+**Expected:** `ACK delivered` / `DELIVERED bytes=…` (length only).
+
+## Phone ↔ Mac terminal (flagged LAN)
+
+**Goal:** iOS packs sealed chat bytes into `RavenEnvelopeV1` and TCP to `raven-node`. MeshEnvelope stays active.
+
+### A. Mac listener
+
+```bash
+cd /path/to/hybrid_messenger/node
+DATA=$(mktemp -d)
+./target/debug/raven-node init --data-dir "$DATA"
+./target/debug/raven-node run \
+  --data-dir "$DATA" \
+  --listen 0.0.0.0:7420 \
+  --peer-pub-hex <IOS_PUB_HEX> \
+  --timeout-secs 300
+```
+
+### B. Phone — Account → Serverless LAN
+
+1. Enable **RavenEnvelopeV1 (serverless)**
+2. Copy device **pub hex** into Mac `--peer-pub-hex`
+3. Host = Mac LAN IP (or `127.0.0.1` for Simulator + loopback listen)
+4. Port `7420`; Peer pub = node `pub_hex`
+5. Save — UI shows fingerprint only (no seeds)
+
+### C. Send a chat message
+
+Mac: `DELIVERED opaque_atsam …` or `DELIVERED bytes=N`. Never screenshot seeds/plaintext.
+
+```bash
+./scripts/lan_path_smoke.sh   # automated stand-in
+```
+
+## BLE raw RavenEnvelopeV1 (Phase G — flagged)
+
+Behind `FeatureFlag.ravenEnvelopeV1` (default **OFF**):
+
+- `RavenBleRvn1Carrier` packs/unpacks signed `RVN1` for BLE (Message + ACK)
+- `MessageRouter` may enqueue parallel BLE RVN1 when preference is `bleMesh`
+- `BLEMeshEngine` peeks `RVN1` magic before Mesh JSON; posts `.ravenEnvelopeV1BleReceived` (opaque — no decrypt)
+- `RavenEnvelopeBridgeService`: BLE↔LAN forward; **ACK relay** (waiter on LAN socket); destination vs bridge role
+- `RavenEnvelopeEndpointIngest`: when this device is destination, posts `.ravenEnvelopeV1EndpointIngest` with sealed body for chat sealer (BridgeSubsystem stays key-free)
+- `RavenEnvelopeChatWire`: observes that notification → `MessageContentSealer` decrypt/display + opaque Delivered ACK emit; sender LAN/BLE ACK → UI **Delivered** ticks (`MeshACKReceived`) without bridge keys
+- MeshEnvelope default path **unchanged** when flag is off
+
+Unit tests: `RavenBleRvn1CarrierTests`, `RavenEnvelopeBridgeServiceTests`, `RavenEnvelopeEndpointIngestTests`, `RavenEnvelopeChatWireTests`.  
+Rust: `cargo test -p raven-core --test bridge_v1` (cases 1–10).
+
+### Verify locally (run twice)
+
+```bash
+cd /path/to/hybrid_messenger/node
+cargo test -p raven-core --test bridge_v1
+./scripts/bridge_abc_demo.sh
+./scripts/two_node_demo.sh
+./scripts/lan_path_smoke.sh
+# repeat:
+cargo test -p raven-core --test bridge_v1 && ./scripts/bridge_abc_demo.sh
+```
+
+## Portable ATSAM KATs (Rust)
+
+| Vector | Meaning |
+|---|---|
+| `shared-vectors/rvn1/atsam/chain_kdf_001.json` | Chain HKDF labels |
+| `shared-vectors/rvn1/atsam/rvna1_header_layouts_001.json` | Header classify |
+| `shared-vectors/rvn1/atsam/rvna1_v2_aead_known_root_001.json` | RVNA1 v2 AEAD + AAD with **known** `K_root` (no ML-KEM) |
+
+Network path for shipping ATSAM without a known root remains **opaque ACK**.
+
+## What is NOT ready yet
+
+- Full ATSAM ML-KEM pairing in Rust (needs known root or ML-KEM port)
+- libp2p DHT / NAT in Rust (InternetTransport stubbed behind path selection)
+- Windows MSI/MSIX installer / WinUI LAN UI
+- raven-node CoreBluetooth/BlueZ GATT (mock_ble stays for CI; iOS GATT via BLEMeshEngine)
+- ash-autonomous (out of scope)
+
+## Safety rules for public/GitHub demos
+
+- Show only `address=` / `pub_hex=` / fingerprints / delivery status
+- Credit logo URL from raven-messager.com (public asset)
+- Use `mktemp -d`; do not commit `identity.seed`, queue DBs, or `.env`
+- Do not dump message plaintext
+- Prefer local demos; do not push secrets or demo data dirs

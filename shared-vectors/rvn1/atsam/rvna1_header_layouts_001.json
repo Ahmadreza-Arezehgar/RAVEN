@@ -1,0 +1,29 @@
+{
+  "cases": [
+    {
+      "class": "interim_stub",
+      "index": null,
+      "min_len": 38,
+      "name": "interim_0x7f",
+      "wire_prefix_hex": "52564e41310000007f01"
+    },
+    {
+      "class": "opaque_atsam",
+      "index": null,
+      "min_len": 38,
+      "name": "atsam_v1",
+      "proto": 1,
+      "wire_prefix_hex": "52564e41310000000101"
+    },
+    {
+      "class": "opaque_atsam",
+      "index": 7,
+      "min_len": 42,
+      "name": "atsam_v2_index7",
+      "proto": 2,
+      "wire_prefix_hex": "52564e4131000000020100000007"
+    }
+  ],
+  "description": "RVNA1 header layouts for classification (no AEAD)",
+  "id": "rvn1_rvna1_header_layouts_001"
+}

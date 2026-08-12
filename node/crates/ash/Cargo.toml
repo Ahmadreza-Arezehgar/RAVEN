@@ -1,0 +1,22 @@
+[package]
+name = "ash"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "RAVEN terminal CLI (product name ash) — local node control"
+
+[[bin]]
+name = "ash"
+path = "src/main.rs"
+
+[[bin]]
+name = "raven"
+path = "src/main.rs"
+
+[dependencies]
+raven-core = { workspace = true }
+clap = { workspace = true }
+hex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }

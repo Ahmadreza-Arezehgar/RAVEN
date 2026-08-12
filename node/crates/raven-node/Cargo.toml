@@ -1,0 +1,20 @@
+[package]
+name = "raven-node"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "RAVEN local node — queue, TCP peer, envelope DM"
+
+[[bin]]
+name = "raven-node"
+path = "src/main.rs"
+
+[dependencies]
+raven-core = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+hex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rand = { workspace = true }
+zeroize = { workspace = true }

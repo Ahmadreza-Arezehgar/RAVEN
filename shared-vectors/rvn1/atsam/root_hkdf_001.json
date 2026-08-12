@@ -1,0 +1,15 @@
+{
+  "description": "ATSAM K_root HKDF with known Z_X||Z_PQ and transcript (no ML-KEM). Matches raven-core::atsam_root and iOS ATSAMRootDerivation labels.",
+  "expected": {
+    "k_root_hex": "67d6ad5db5b0e7012df9e9a7c7167cddb238b8c4bd0b4098a36cfbe7452ed8de",
+    "transcript_hash_hex": "46256683869ab07b5ea52f5d46628d027b04a400d8ee160366388e38606ffe46"
+  },
+  "id": "atsam_root_hkdf_001",
+  "input": {
+    "pair_init_utf8": "ATSAM/v1/pair-init",
+    "transcript_domain_utf8": "ATSAM/v1/transcript",
+    "transcript_material_utf8": "kat-pair-material",
+    "z_pq_hex": "2222222222222222222222222222222222222222222222222222222222222222",
+    "z_x_hex": "1111111111111111111111111111111111111111111111111111111111111111"
+  }
+}

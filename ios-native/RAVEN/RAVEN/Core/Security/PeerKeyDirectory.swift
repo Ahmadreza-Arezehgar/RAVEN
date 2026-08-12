@@ -230,6 +230,19 @@ actor PeerKeyDirectory {
             .map { String($0.dropFirst(prefix.count)) }
     }
 
+    /// Reverse lookup candidates: pinned identity pub → userId (envelope sender resolve).
+    func identityCandidates() -> [(userId: String, pub: Data)] {
+        let prefix = identityPrefix
+        var out: [(String, Data)] = []
+        for (key, value) in defaults.dictionaryRepresentation() {
+            guard key.hasPrefix(prefix), let pub = value as? Data, pub.count == 32 else {
+                continue
+            }
+            out.append((String(key.dropFirst(prefix.count)), pub))
+        }
+        return out
+    }
+
     // MARK: - Private helpers
 
     private func applyFetchedBundle(_ fetched: VerifiedBundle?, for userId: String) -> Data? {

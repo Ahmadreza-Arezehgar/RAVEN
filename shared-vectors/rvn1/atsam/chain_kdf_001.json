@@ -1,0 +1,17 @@
+{
+  "ck0_hex": "39f17981af60a336e251a8febf51c70f559c536fad19875776cc87fd7f76781d",
+  "ck1_hex": "6aaed354f7111c07091980aaa6c700464439f7b9d2033f59178f960261a4a0cd",
+  "description": "ATSAM v2 chain HKDF labels without ML-KEM \u2014 portable KAT for Rust/Swift agreement",
+  "gap": "ML-KEM hybrid root establishment is NOT covered \u2014 this KAT assumes a known K_root. iOS remains canonical for pairing until Rust ports ML-KEM-768.",
+  "id": "rvn1_atsam_chain_kdf_001",
+  "k_msg_hex": "d74716298bd6d3a7211ace359f053f6417f9ad6d6b485257a0846d14da9cd5a0",
+  "labels": {
+    "chain_advance": "ATSAM/v2/chain-advance",
+    "chain_init": "ATSAM/v2/chain-init",
+    "msg_key": "ATSAM/v2/msg-key",
+    "msg_seal_salt": "ATSAM/v2/msg-seal/salt"
+  },
+  "recipient": "bob",
+  "root_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+  "sender": "alice"
+}

@@ -115,8 +115,6 @@
 		50289D2CDE603BCDE38AC83B /* AttachmentPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC7A3F574DCF6EB50141F169 /* AttachmentPickerView.swift */; };
 		5038B87699804D59BC8988E8 /* MeshCapabilities.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0AE3373508DC4FA807E938DB /* MeshCapabilities.swift */; };
 		5157445F784814D7B6A5F5CA /* SafetyNumberView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECCE3EAC175ECBF8E2D33B11 /* SafetyNumberView.swift */; };
-		5157BB032F2D369C003B3AB8 /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = 5157BB042F2D369C003B3AB9 /* GoogleSignIn */; };
-		5157BB052F2D369C003B3ABA /* GoogleSignInSwift in Frameworks */ = {isa = PBXBuildFile; productRef = 5157BB062F2D369C003B3ABB /* GoogleSignInSwift */; };
 		5157BB332F2E1B11003B3AB7 /* FriendRequestsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5157BB322F2E1B11003B3AB7 /* FriendRequestsView.swift */; };
 		5157BB512F2ECED6003B3AB7 /* OutboxManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5157BB4B2F2ECED6003B3AB7 /* OutboxManager.swift */; };
 		5157BB542F2EDA76003B3AB7 /* DeviceIdentityService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5157BB522F2EDA76003B3AB7 /* DeviceIdentityService.swift */; };
@@ -125,7 +123,6 @@
 		5157BB5A2F2EDAAD003B3AB7 /* FriendDevice.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5157BB592F2EDAAD003B3AB7 /* FriendDevice.swift */; };
 		5157BB5D2F2EDACD003B3AB7 /* PairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5157BB5C2F2EDACD003B3AB7 /* PairingView.swift */; };
 		5157BB5E2F2EDACD003B3AB7 /* DeviceIdentitySettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5157BB5B2F2EDACD003B3AB7 /* DeviceIdentitySettingsView.swift */; };
-		51784DE72F329757006BC45A /* LiveKit in Frameworks */ = {isa = PBXBuildFile; productRef = 51784DE62F329757006BC45A /* LiveKit */; };
 		51F30F4D2F4BBC8F00F4CA42 /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 51F30F4C2F4BBC8F00F4CA42 /* WidgetKit.framework */; };
 		51F30F4F2F4BBC8F00F4CA42 /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 51F30F4E2F4BBC8F00F4CA42 /* SwiftUI.framework */; };
 		51F30F602F4BBC8F00F4CA42 /* RavenWidgetsExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 51F30F4A2F4BBC8F00F4CA42 /* RavenWidgetsExtension.appex */; platformFilters = (ios, ); settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -155,6 +152,8 @@
 		682AF5248D378CE0801BDAB1 /* CoverTrafficEmitter.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6ECFCA8BCF060BAA3342643 /* CoverTrafficEmitter.swift */; };
 		699494391A4C64905E80CA9C /* EditRecipe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 149129F092F88C093B686993 /* EditRecipe.swift */; };
 		6999D3F7E23220142F18887C /* MyQRCodeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58EB746CE4984776EA79B5B8 /* MyQRCodeView.swift */; };
+		C3D1E0FA2A0CBB45A5E19002 /* RemoteInviteService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3D1E0FA2A0CBB45A5E19001 /* RemoteInviteService.swift */; };
+		C3D1E0FA2A0CBB45A5E19004 /* RemoteInviteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3D1E0FA2A0CBB45A5E19003 /* RemoteInviteView.swift */; };
 		69AA36BC95769525BB610773 /* TrustIndicator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B3180AB80AD49C2609074B5 /* TrustIndicator.swift */; };
 		6A46863FC1F60483C0889D62 /* PrivacySettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1275BC26B1AB83079513DD75 /* PrivacySettingsView.swift */; };
 		6AB7B2F4B1146FA966C369AF /* MessageStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78987C8DA1C8D8E8BF114041 /* MessageStore.swift */; };
@@ -346,7 +345,29 @@
 		E979FD7267BEC4D904649879 /* TabPager.swift in Sources */ = {isa = PBXBuildFile; fileRef = TP2234567890ABCD12345678 /* TabPager.swift */; };
 		EB7D788F93029959CFC11715 /* FullScreenImageViewer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81EED4FF1C595A9D2C6356EE /* FullScreenImageViewer.swift */; };
 		ECEAE418F6AAF8722F68D38C /* ComposeFAB.swift in Sources */ = {isa = PBXBuildFile; fileRef = 754A56795F5EB931E25A465E /* ComposeFAB.swift */; };
+		D4E2F1AB3B0CBB45A5E1A002 /* ATSAMChainRatchet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4E2F1AB3B0CBB45A5E1A001 /* ATSAMChainRatchet.swift */; };
 		ED2BCE86767953D0D35B26F2 /* KeyBackupServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12FD2A1C31D0CBB45A5E1464 /* KeyBackupServiceTests.swift */; };
+		F6A4B3CD5D0CBB45A5E1C002 /* MeshImpersonationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6A4B3CD5D0CBB45A5E1C001 /* MeshImpersonationTests.swift */; };
+		E5F3A2BC4C0CBB45A5E1B002 /* MeshRelayIntegrityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5F3A2BC4C0CBB45A5E1B001 /* MeshRelayIntegrityTests.swift */; };
+		E7A1B2C3D4E5F60718293A02 /* RavenEnvelopeV1.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293A01 /* RavenEnvelopeV1.swift */; };
+		E7A1B2C3D4E5F60718293A04 /* RavenEnvelopeV1VectorsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293A03 /* RavenEnvelopeV1VectorsTests.swift */; };
+		E7A1B2C3D4E5F60718293A06 /* RavenInterimSeal.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293A05 /* RavenInterimSeal.swift */; };
+		E7A1B2C3D4E5F60718293A08 /* RavenServerlessLanPath.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293A07 /* RavenServerlessLanPath.swift */; };
+		E7A1B2C3D4E5F60718293A0A /* RavenServerlessLanPathTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293A09 /* RavenServerlessLanPathTests.swift */; };
+		E7A1B2C3D4E5F60718293A0C /* RavenServerlessLanSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293A0B /* RavenServerlessLanSettingsView.swift */; };
+		E7A1B2C3D4E5F60718293A0E /* RavenServerlessLanSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293A0D /* RavenServerlessLanSettingsTests.swift */; };
+		E7A1B2C3D4E5F60718293A10 /* RavenBleRvn1Carrier.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293A0F /* RavenBleRvn1Carrier.swift */; };
+		E7A1B2C3D4E5F60718293A12 /* RavenBleRvn1CarrierTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293A11 /* RavenBleRvn1CarrierTests.swift */; };
+		E7A1B2C3D4E5F60718293A16 /* RavenEnvelopeBridgeServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293A15 /* RavenEnvelopeBridgeServiceTests.swift */; };
+		E7A1B2C3D4E5F60718293A14 /* RavenEnvelopeBridgeService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293A13 /* RavenEnvelopeBridgeService.swift */; };
+		E7A1B2C3D4E5F60718293A18 /* RavenEnvelopeEndpointIngest.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293A17 /* RavenEnvelopeEndpointIngest.swift */; };
+		E7A1B2C3D4E5F60718293A1A /* RavenEnvelopeEndpointIngestTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293A19 /* RavenEnvelopeEndpointIngestTests.swift */; };
+		E7A1B2C3D4E5F60718293A1C /* RavenEnvelopeChatWire.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293A1B /* RavenEnvelopeChatWire.swift */; };
+		E7A1B2C3D4E5F60718293A1E /* RavenEnvelopeChatWireTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293A1D /* RavenEnvelopeChatWireTests.swift */; };
+		E7A1B2C3D4E5F60718293A20 /* RavenEnvelopeSenderResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293A1F /* RavenEnvelopeSenderResolver.swift */; };
+		E7A1B2C3D4E5F60718293A22 /* RavenEnvelopeSenderResolverTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293A21 /* RavenEnvelopeSenderResolverTests.swift */; };
+		D4E2F1AB3B0CBB45A5E1A004 /* ATSAMChainRatchetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4E2F1AB3B0CBB45A5E1A003 /* ATSAMChainRatchetTests.swift */; };
+		B7A1C0DE1F0CBB45A5E17182 /* ATSAMPairingRootAgreementTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7A1C0DE1F0CBB45A5E17181 /* ATSAMPairingRootAgreementTests.swift */; };
 		EDBF4EC6E4871DC1C55318C0 /* RelayReceipt.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3397C365AA11ECF59A599C8 /* RelayReceipt.swift */; };
 		EFEF0C69D1C91E1E98320717 /* HopMACChain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8928A6E365DB471828D3463B /* HopMACChain.swift */; };
 		EN_STRINGS_BUILD_001 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = EN_STRINGS_FILEREF_001 /* Localizable.strings */; };
@@ -515,7 +536,29 @@
 		0F5193D552DE038A5321D355 /* NotificationPipeline.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = NotificationPipeline.swift; path = RAVEN/Core/Notifications/NotificationPipeline.swift; sourceTree = "<group>"; };
 		1190122660C1ACB62E12D867 /* DeepLinkRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeepLinkRouter.swift; sourceTree = "<group>"; };
 		1275BC26B1AB83079513DD75 /* PrivacySettingsView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PrivacySettingsView.swift; sourceTree = "<group>"; };
+		E7A1B2C3D4E5F60718293A01 /* RavenEnvelopeV1.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RavenEnvelopeV1.swift; path = RAVEN/Core/Protocol/RavenEnvelopeV1.swift; sourceTree = "<group>"; };
+		E7A1B2C3D4E5F60718293A03 /* RavenEnvelopeV1VectorsTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RavenEnvelopeV1VectorsTests.swift; sourceTree = "<group>"; };
+		E7A1B2C3D4E5F60718293A05 /* RavenInterimSeal.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RavenInterimSeal.swift; path = RAVEN/Core/Protocol/RavenInterimSeal.swift; sourceTree = "<group>"; };
+		E7A1B2C3D4E5F60718293A07 /* RavenServerlessLanPath.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RavenServerlessLanPath.swift; path = RAVEN/Core/Protocol/RavenServerlessLanPath.swift; sourceTree = "<group>"; };
+		E7A1B2C3D4E5F60718293A09 /* RavenServerlessLanPathTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RavenServerlessLanPathTests.swift; sourceTree = "<group>"; };
+		E7A1B2C3D4E5F60718293A0B /* RavenServerlessLanSettingsView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RavenServerlessLanSettingsView.swift; sourceTree = "<group>"; };
+		E7A1B2C3D4E5F60718293A0D /* RavenServerlessLanSettingsTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RavenServerlessLanSettingsTests.swift; sourceTree = "<group>"; };
+		E7A1B2C3D4E5F60718293A0F /* RavenBleRvn1Carrier.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RavenBleRvn1Carrier.swift; path = RAVEN/Core/Protocol/RavenBleRvn1Carrier.swift; sourceTree = "<group>"; };
+		E7A1B2C3D4E5F60718293A11 /* RavenBleRvn1CarrierTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RavenBleRvn1CarrierTests.swift; sourceTree = "<group>"; };
+		E7A1B2C3D4E5F60718293A15 /* RavenEnvelopeBridgeServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RavenEnvelopeBridgeServiceTests.swift; sourceTree = "<group>"; };
+		E7A1B2C3D4E5F60718293A13 /* RavenEnvelopeBridgeService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RavenEnvelopeBridgeService.swift; path = RAVEN/Core/Protocol/RavenEnvelopeBridgeService.swift; sourceTree = "<group>"; };
+		E7A1B2C3D4E5F60718293A17 /* RavenEnvelopeEndpointIngest.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RavenEnvelopeEndpointIngest.swift; path = RAVEN/Core/Protocol/RavenEnvelopeEndpointIngest.swift; sourceTree = "<group>"; };
+		E7A1B2C3D4E5F60718293A19 /* RavenEnvelopeEndpointIngestTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RavenEnvelopeEndpointIngestTests.swift; sourceTree = "<group>"; };
+		E7A1B2C3D4E5F60718293A1B /* RavenEnvelopeChatWire.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RavenEnvelopeChatWire.swift; path = RAVEN/Core/Protocol/RavenEnvelopeChatWire.swift; sourceTree = "<group>"; };
+		E7A1B2C3D4E5F60718293A1D /* RavenEnvelopeChatWireTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RavenEnvelopeChatWireTests.swift; sourceTree = "<group>"; };
+		E7A1B2C3D4E5F60718293A1F /* RavenEnvelopeSenderResolver.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RavenEnvelopeSenderResolver.swift; path = RAVEN/Core/Protocol/RavenEnvelopeSenderResolver.swift; sourceTree = "<group>"; };
+		E7A1B2C3D4E5F60718293A21 /* RavenEnvelopeSenderResolverTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RavenEnvelopeSenderResolverTests.swift; sourceTree = "<group>"; };
+		D4E2F1AB3B0CBB45A5E1A001 /* ATSAMChainRatchet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMChainRatchet.swift; sourceTree = "<group>"; };
 		12FD2A1C31D0CBB45A5E1464 /* KeyBackupServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KeyBackupServiceTests.swift; sourceTree = "<group>"; };
+		F6A4B3CD5D0CBB45A5E1C001 /* MeshImpersonationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MeshImpersonationTests.swift; sourceTree = "<group>"; };
+		E5F3A2BC4C0CBB45A5E1B001 /* MeshRelayIntegrityTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MeshRelayIntegrityTests.swift; sourceTree = "<group>"; };
+		D4E2F1AB3B0CBB45A5E1A003 /* ATSAMChainRatchetTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMChainRatchetTests.swift; sourceTree = "<group>"; };
+		B7A1C0DE1F0CBB45A5E17181 /* ATSAMPairingRootAgreementTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMPairingRootAgreementTests.swift; sourceTree = "<group>"; };
 		1457CBC83D6BDD5AA559E7FD /* InboxView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = InboxView.swift; sourceTree = "<group>"; };
 		149129F092F88C093B686993 /* EditRecipe.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = EditRecipe.swift; sourceTree = "<group>"; };
 		14BF57EF1C8F5D93444D5685 /* SeenByUser.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SeenByUser.swift; sourceTree = "<group>"; };
@@ -619,6 +662,8 @@
 		57E3CD269488745FE38D2463 /* SwipeReplyModifier.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Modifiers/SwipeReplyModifier.swift; sourceTree = "<group>"; };
 		587193F5374400847B89D49B /* NetworkMonitor.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NetworkMonitor.swift; sourceTree = "<group>"; };
 		58EB746CE4984776EA79B5B8 /* MyQRCodeView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MyQRCodeView.swift; sourceTree = "<group>"; };
+		C3D1E0FA2A0CBB45A5E19001 /* RemoteInviteService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RemoteInviteService.swift; sourceTree = "<group>"; };
+		C3D1E0FA2A0CBB45A5E19003 /* RemoteInviteView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RemoteInviteView.swift; sourceTree = "<group>"; };
 		594587E5BB6D367D18FE661A /* GHChallenge.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GHChallenge.swift; sourceTree = "<group>"; };
 		5A269047A65E82B007A8B83F /* AuthService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthService.swift; sourceTree = "<group>"; };
 		5AD158C3B021418E93BA6572 /* RAVENNotificationService.entitlements */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.entitlements; path = RAVENNotificationService.entitlements; sourceTree = "<group>"; };
@@ -984,9 +1029,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				51784DE72F329757006BC45A /* LiveKit in Frameworks */,
-				5157BB032F2D369C003B3AB8 /* GoogleSignIn in Frameworks */,
-				5157BB052F2D369C003B3ABA /* GoogleSignInSwift in Frameworks */,
 				F503642FD16698774552E23D /* SQLCipher in Frameworks */,
 				B8FDA13799CDD59F05A9F3A7 /* RavenLibp2p.xcframework in Frameworks */,
 			);
@@ -1116,6 +1158,7 @@
 				3CBB282C73677BF2525AA1C4 /* ATSAMKeyTree.swift */,
 				C97094E6B36DEF3A5476BBAD /* ATSAMHybridPairing.swift */,
 				B1F7E2B0C3D4E5F6A7B8C9D0 /* ATSAMMessageSealer.swift */,
+				D4E2F1AB3B0CBB45A5E1A001 /* ATSAMChainRatchet.swift */,
 				B2F7E2B1C3D4E5F6A7B8C9D1 /* ATSAMRootStorage.swift */,
 				4BCE3D6E55D175EBB9274E9D /* Online */,
 			);
@@ -1229,6 +1272,7 @@
 				048FC01795342E1FADE259AC /* VaultModeSettingsView.swift */,
 				4AD86E7C2DF00C97A7B4090F /* ATSAMPairView.swift */,
 				C383A9DBA4B1E209921AB26D /* ATSAMOnlinePairView.swift */,
+				E7A1B2C3D4E5F60718293A0B /* RavenServerlessLanSettingsView.swift */,
 			);
 			path = Settings;
 			sourceTree = "<group>";
@@ -1557,6 +1601,8 @@
 			isa = PBXGroup;
 			children = (
 				58EB746CE4984776EA79B5B8 /* MyQRCodeView.swift */,
+				C3D1E0FA2A0CBB45A5E19001 /* RemoteInviteService.swift */,
+				C3D1E0FA2A0CBB45A5E19003 /* RemoteInviteView.swift */,
 				D9C632B9C997B91857AE9DE0 /* ScanQRCodeView.swift */,
 				DLAV2234567890ABCD12345678 /* DesktopLoginApprovalView.swift */,
 				C46984BC788D649CBC935B16 /* FriendQRPayload.swift */,
@@ -1654,6 +1700,18 @@
 			children = (
 				A882C069EB8ED4E7A736D581 /* E2EERatchetTests.swift */,
 				12FD2A1C31D0CBB45A5E1464 /* KeyBackupServiceTests.swift */,
+				B7A1C0DE1F0CBB45A5E17181 /* ATSAMPairingRootAgreementTests.swift */,
+				D4E2F1AB3B0CBB45A5E1A003 /* ATSAMChainRatchetTests.swift */,
+				E5F3A2BC4C0CBB45A5E1B001 /* MeshRelayIntegrityTests.swift */,
+				F6A4B3CD5D0CBB45A5E1C001 /* MeshImpersonationTests.swift */,
+				E7A1B2C3D4E5F60718293A03 /* RavenEnvelopeV1VectorsTests.swift */,
+				E7A1B2C3D4E5F60718293A09 /* RavenServerlessLanPathTests.swift */,
+				E7A1B2C3D4E5F60718293A0D /* RavenServerlessLanSettingsTests.swift */,
+				E7A1B2C3D4E5F60718293A11 /* RavenBleRvn1CarrierTests.swift */,
+				E7A1B2C3D4E5F60718293A15 /* RavenEnvelopeBridgeServiceTests.swift */,
+				E7A1B2C3D4E5F60718293A19 /* RavenEnvelopeEndpointIngestTests.swift */,
+				E7A1B2C3D4E5F60718293A1D /* RavenEnvelopeChatWireTests.swift */,
+				E7A1B2C3D4E5F60718293A21 /* RavenEnvelopeSenderResolverTests.swift */,
 				15B36E34E30E171DA9D47854 /* MeshInteropVectorsTests.swift */,
 			);
 			name = RAVENTests;
@@ -2108,6 +2166,14 @@
 				ECC36D3FC7FEBC7E14E4B650 /* RAVEN */,
 				A274D0CECB09A541861B45F6 /* AppConfig.swift */,
 				2C2025034B508D382AD62276 /* MeshDedupRepository.swift */,
+				E7A1B2C3D4E5F60718293A01 /* RavenEnvelopeV1.swift */,
+				E7A1B2C3D4E5F60718293A05 /* RavenInterimSeal.swift */,
+				E7A1B2C3D4E5F60718293A07 /* RavenServerlessLanPath.swift */,
+				E7A1B2C3D4E5F60718293A0F /* RavenBleRvn1Carrier.swift */,
+				E7A1B2C3D4E5F60718293A13 /* RavenEnvelopeBridgeService.swift */,
+				E7A1B2C3D4E5F60718293A17 /* RavenEnvelopeEndpointIngest.swift */,
+				E7A1B2C3D4E5F60718293A1B /* RavenEnvelopeChatWire.swift */,
+				E7A1B2C3D4E5F60718293A1F /* RavenEnvelopeSenderResolver.swift */,
 				01597C194B704D9DACFDD069 /* MeshBridgeReceiver.swift */,
 				FC7E3F7E3B80DD73A6C65081 /* MeshCryptoService.swift */,
 				VLT_FILEREF_001 /* VaultCrypto.swift */,
@@ -2318,9 +2384,6 @@
 			);
 			name = RAVEN;
 			packageProductDependencies = (
-				5157BB042F2D369C003B3AB9 /* GoogleSignIn */,
-				5157BB062F2D369C003B3ABB /* GoogleSignInSwift */,
-				51784DE62F329757006BC45A /* LiveKit */,
 				521FEB9344DC6D60786129F5 /* SQLCipher */,
 			);
 			productName = RAVEN;
@@ -2424,8 +2487,6 @@
 			);
 			mainGroup = EA2ADDE5C377CB5E09D14B71;
 			packageReferences = (
-				5157BB022F2D369C003B3AB7 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */,
-				51784DE52F329757006BC45A /* XCRemoteSwiftPackageReference "client-sdk-swift" */,
 				3C8B25AF49760BBD3F6B67BA /* XCRemoteSwiftPackageReference "SQLCipher" */,
 			);
 			productRefGroup = 068F80C7519D0528FB08E821 /* Products */;
@@ -2621,6 +2682,8 @@
 				8BC1239CF1B446142193D955 /* LanguageSettingsView.swift in Sources */,
 				A175795BD4C630DAD74CE72B /* AboutView.swift in Sources */,
 				6999D3F7E23220142F18887C /* MyQRCodeView.swift in Sources */,
+				C3D1E0FA2A0CBB45A5E19002 /* RemoteInviteService.swift in Sources */,
+				C3D1E0FA2A0CBB45A5E19004 /* RemoteInviteView.swift in Sources */,
 				0D9AAD390ECCC055A18C495E /* ScanQRCodeView.swift in Sources */,
 				DLAV1234567890ABCD12345678 /* DesktopLoginApprovalView.swift in Sources */,
 				MFRB1234567890ABCD12345678 /* MeshFriendRequestBroadcaster.swift in Sources */,
@@ -2714,6 +2777,14 @@
 				4CC97CF2B5BCBCFC8EB93FFA /* OnboardingView.swift in Sources */,
 				FB630DD7A99DEECC16C0E196 /* AppConfig.swift in Sources */,
 				5ADAC0597C80885A1C2482B7 /* MeshDedupRepository.swift in Sources */,
+				E7A1B2C3D4E5F60718293A02 /* RavenEnvelopeV1.swift in Sources */,
+				E7A1B2C3D4E5F60718293A06 /* RavenInterimSeal.swift in Sources */,
+				E7A1B2C3D4E5F60718293A08 /* RavenServerlessLanPath.swift in Sources */,
+				E7A1B2C3D4E5F60718293A10 /* RavenBleRvn1Carrier.swift in Sources */,
+				E7A1B2C3D4E5F60718293A14 /* RavenEnvelopeBridgeService.swift in Sources */,
+				E7A1B2C3D4E5F60718293A18 /* RavenEnvelopeEndpointIngest.swift in Sources */,
+				E7A1B2C3D4E5F60718293A1C /* RavenEnvelopeChatWire.swift in Sources */,
+				E7A1B2C3D4E5F60718293A20 /* RavenEnvelopeSenderResolver.swift in Sources */,
 				7AAC8AAC20584241B41428D9 /* MeshBridgeReceiver.swift in Sources */,
 				849F913859E4F75643818245 /* MeshCryptoService.swift in Sources */,
 				13C86EF7DBEB25CB11A3B504 /* EditProfileView.swift in Sources */,
@@ -2831,6 +2902,7 @@
 				B36CE1B42D9E8F84FDD1DD4E /* ATSAMRootKey.swift in Sources */,
 				0B5F415ADF33037C23EE3C6F /* ATSAMKeyTree.swift in Sources */,
 				A0E6F1A1B2C3D4E5F6A7B8C9 /* ATSAMMessageSealer.swift in Sources */,
+				D4E2F1AB3B0CBB45A5E1A002 /* ATSAMChainRatchet.swift in Sources */,
 				A2E6F1A2B2C3D4E5F6A7B8CA /* ATSAMRootStorage.swift in Sources */,
 				7D59216EFDE247D377539852 /* ATSAMHybridPairing.swift in Sources */,
 				1C522F1E21BFF33EF7938F02 /* BBEConstants.swift in Sources */,
@@ -2857,6 +2929,7 @@
 				1C71697D36C8CEEDDAB16A74 /* SecurityBadge.swift in Sources */,
 				8B635C17F13C4C1F68590FD3 /* PVPadUsageWarning.swift in Sources */,
 				FFE79819F28FA72A378C353D /* ATSAMSettingsView.swift in Sources */,
+				E7A1B2C3D4E5F60718293A0C /* RavenServerlessLanSettingsView.swift in Sources */,
 				33595E88603F154D7C18380A /* VaultModeSettingsView.swift in Sources */,
 				8044D95A1FD8238FB71C723C /* ATSAMPairView.swift in Sources */,
 				86859374F4523A83EC3305D8 /* MeshGhostRouteAdapter.swift in Sources */,
@@ -2915,6 +2988,18 @@
 			files = (
 				CF6F0582EF17D1BCC03C805C /* E2EERatchetTests.swift in Sources */,
 				ED2BCE86767953D0D35B26F2 /* KeyBackupServiceTests.swift in Sources */,
+				B7A1C0DE1F0CBB45A5E17182 /* ATSAMPairingRootAgreementTests.swift in Sources */,
+				D4E2F1AB3B0CBB45A5E1A004 /* ATSAMChainRatchetTests.swift in Sources */,
+				E5F3A2BC4C0CBB45A5E1B002 /* MeshRelayIntegrityTests.swift in Sources */,
+				F6A4B3CD5D0CBB45A5E1C002 /* MeshImpersonationTests.swift in Sources */,
+				E7A1B2C3D4E5F60718293A04 /* RavenEnvelopeV1VectorsTests.swift in Sources */,
+				E7A1B2C3D4E5F60718293A0A /* RavenServerlessLanPathTests.swift in Sources */,
+				E7A1B2C3D4E5F60718293A0E /* RavenServerlessLanSettingsTests.swift in Sources */,
+				E7A1B2C3D4E5F60718293A12 /* RavenBleRvn1CarrierTests.swift in Sources */,
+				E7A1B2C3D4E5F60718293A16 /* RavenEnvelopeBridgeServiceTests.swift in Sources */,
+				E7A1B2C3D4E5F60718293A1A /* RavenEnvelopeEndpointIngestTests.swift in Sources */,
+				E7A1B2C3D4E5F60718293A1E /* RavenEnvelopeChatWireTests.swift in Sources */,
+				E7A1B2C3D4E5F60718293A22 /* RavenEnvelopeSenderResolverTests.swift in Sources */,
 				67A59FEE502B09BDD8872314 /* MeshInteropVectorsTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -3030,6 +3115,8 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = "../../RAVEN-WatchApp/RAVEN-Watch/Resources/Info.plist";
+				MARKETING_VERSION = 2.1;
+				CURRENT_PROJECT_VERSION = 2026072401;
 				PRODUCT_BUNDLE_IDENTIFIER = app.raven.ios.watchkitapp;
 				PRODUCT_NAME = "RAVEN-Watch";
 				SDKROOT = watchos;
@@ -3051,6 +3138,8 @@
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = 72QQ5Q324C;
 				INFOPLIST_FILE = RavenShareExtension/Info.plist;
+				MARKETING_VERSION = 2.1;
+				CURRENT_PROJECT_VERSION = 2026072401;
 				INFOPLIST_KEY_CFBundleDisplayName = RAVEN;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -3092,7 +3181,7 @@
 				CODE_SIGN_ENTITLEMENTS = RAVEN/RAVEN.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2026052701;
+				CURRENT_PROJECT_VERSION = 2026072401;
 				DEVELOPMENT_TEAM = 72QQ5Q324C;
 				ENABLE_PREVIEWS = YES;
 				FRAMEWORK_SEARCH_PATHS = (
@@ -3115,7 +3204,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.71;
+				MARKETING_VERSION = 2.1;
 				ONLY_ACTIVE_ARCH = YES;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
@@ -3141,7 +3230,7 @@
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODE_SIGN_ENTITLEMENTS = RAVENNotificationService/RAVENNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2026052701;
+				CURRENT_PROJECT_VERSION = 2026072401;
 				DEVELOPMENT_TEAM = 72QQ5Q324C;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -3152,7 +3241,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.71;
+				MARKETING_VERSION = 2.1;
 				PRODUCT_BUNDLE_IDENTIFIER = app.raven.ios.RAVENNotificationService;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -3177,7 +3266,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2026052701;
+				CURRENT_PROJECT_VERSION = 2026072401;
 				DEVELOPMENT_TEAM = 72QQ5Q324C;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
@@ -3192,7 +3281,7 @@
 					"@executable_path/../../Frameworks",
 				);
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
-				MARKETING_VERSION = 1.71;
+				MARKETING_VERSION = 2.1;
 				PRODUCT_BUNDLE_IDENTIFIER = app.raven.ios.RavenWidgets;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -3219,7 +3308,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2026052701;
+				CURRENT_PROJECT_VERSION = 2026072401;
 				DEVELOPMENT_TEAM = 72QQ5Q324C;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
@@ -3234,7 +3323,7 @@
 					"@executable_path/../../Frameworks",
 				);
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
-				MARKETING_VERSION = 1.71;
+				MARKETING_VERSION = 2.1;
 				PRODUCT_BUNDLE_IDENTIFIER = app.raven.ios.RavenWidgets;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -3259,6 +3348,8 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = "../../RAVEN-WatchApp/RAVEN-Watch/Resources/Info.plist";
+				MARKETING_VERSION = 2.1;
+				CURRENT_PROJECT_VERSION = 2026072401;
 				PRODUCT_BUNDLE_IDENTIFIER = app.raven.ios.watchkitapp;
 				PRODUCT_NAME = "RAVEN-Watch";
 				SDKROOT = watchos;
@@ -3340,7 +3431,7 @@
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODE_SIGN_ENTITLEMENTS = RAVENNotificationService/RAVENNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2026052701;
+				CURRENT_PROJECT_VERSION = 2026072401;
 				DEVELOPMENT_TEAM = 72QQ5Q324C;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -3351,7 +3442,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.71;
+				MARKETING_VERSION = 2.1;
 				PRODUCT_BUNDLE_IDENTIFIER = app.raven.ios.RAVENNotificationService;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -3368,7 +3459,7 @@
 				CODE_SIGN_ENTITLEMENTS = RAVEN/RAVEN.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2026052701;
+				CURRENT_PROJECT_VERSION = 2026072401;
 				DEVELOPMENT_TEAM = 72QQ5Q324C;
 				ENABLE_PREVIEWS = YES;
 				FRAMEWORK_SEARCH_PATHS = (
@@ -3391,7 +3482,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.71;
+				MARKETING_VERSION = 2.1;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-lresolv",
@@ -3419,6 +3510,8 @@
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = 72QQ5Q324C;
 				INFOPLIST_FILE = RavenShareExtension/Info.plist;
+				MARKETING_VERSION = 2.1;
+				CURRENT_PROJECT_VERSION = 2026072401;
 				INFOPLIST_KEY_CFBundleDisplayName = RAVEN;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -3512,40 +3605,9 @@
 				version = 0.0.4;
 			};
 		};
-		5157BB022F2D369C003B3AB7 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/google/GoogleSignIn-iOS";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 9.1.0;
-			};
-		};
-		51784DE52F329757006BC45A /* XCRemoteSwiftPackageReference "client-sdk-swift" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/livekit/client-sdk-swift";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 2.11.0;
-			};
-		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		5157BB042F2D369C003B3AB9 /* GoogleSignIn */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 5157BB022F2D369C003B3AB7 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */;
-			productName = GoogleSignIn;
-		};
-		5157BB062F2D369C003B3ABB /* GoogleSignInSwift */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 5157BB022F2D369C003B3AB7 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */;
-			productName = GoogleSignInSwift;
-		};
-		51784DE62F329757006BC45A /* LiveKit */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 51784DE52F329757006BC45A /* XCRemoteSwiftPackageReference "client-sdk-swift" */;
-			productName = LiveKit;
-		};
 		521FEB9344DC6D60786129F5 /* SQLCipher */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 3C8B25AF49760BBD3F6B67BA /* XCRemoteSwiftPackageReference "SQLCipher" */;

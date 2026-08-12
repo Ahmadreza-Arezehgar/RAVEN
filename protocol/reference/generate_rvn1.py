@@ -2,10 +2,11 @@
 # protocol/reference/generate_rvn1.py
 """Deterministic generator for the frozen rvn1 cross-platform vector tree.
 Source of truth: raven_protocol.*  ·  Fixed keys: shared-vectors identities  ·  Epoch 1700000000."""
-import argparse, json, hashlib, pathlib, sys
+import argparse, json, hashlib, hmac, pathlib, sys
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from raven_protocol import address, fingerprint, routing_tag, envelope, ack, alias, device_cert, capabilities
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 
 EPOCH_S = 1700000000
 EPOCH_MS = EPOCH_S * 1000
@@ -18,6 +19,20 @@ BOB_X_PUB     = bytes.fromhex("de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674da
 # strip-shortens-to-11-chars branch — the ~31% path no clean-key vector exercises.
 DAVE_ED_PUB   = bytes.fromhex("e61a185bcef2613a6c7cb79763ce945d3b245d76114dd440bcf5f2dc1aa57057")
 K_ROUTE       = bytes(range(32))
+
+def hkdf_sha256(ikm, salt, info, length=32):
+    """RFC 5869 HKDF-SHA256 (salt None → HashLen zeros). Matches CryptoKit / Rust hkdf."""
+    if salt is None:
+        salt = b"\x00" * 32
+    prk = hmac.new(salt, ikm, hashlib.sha256).digest()
+    t = b""
+    okm = b""
+    counter = 1
+    while len(okm) < length:
+        t = hmac.new(prk, t + info + bytes([counter]), hashlib.sha256).digest()
+        okm += t
+        counter += 1
+    return okm[:length]
 
 def write(out, rel, obj):
     p = pathlib.Path(out) / rel
@@ -188,6 +203,126 @@ def main():
          "original_signature_hex": cap.signature.hex(),
          "identity_ed_public_hex": ALICE_ED_PUB.hex()},
         {"verify_result": "reject"}))
+
+    # --- Portable ATSAM / interim KATs (no ML-KEM; label agreement only) ---
+    local_pub = bytes([0x01] * 32)
+    peer_pub = bytes([0x02] * 32)
+    a, b = (local_pub, peer_pub) if local_pub <= peer_pub else (peer_pub, local_pub)
+    interim_ikm = hashlib.sha256(b"raven/rvn1/interim-psk" + a + b"|" + b).digest()
+    interim_key = hkdf_sha256(interim_ikm, None, b"raven/rvn1/interim-seal/v0")
+    write(out, "seal/interim_pairwise_001.json", {
+        "id": "rvn1_interim_pairwise_001",
+        "description": "Interim seal pairwise demo key (proto 0x7F). Not shipping ATSAM.",
+        "local_pub_hex": local_pub.hex(),
+        "peer_pub_hex": peer_pub.hex(),
+        "pairwise_key_hex": interim_key.hex(),
+        "notes": "SHA-256(raven/rvn1/interim-psk || sort(pubA,pubB) with '|') then HKDF-Expand info raven/rvn1/interim-seal/v0",
+    })
+
+    root = bytes([0x11] * 32)
+    s, r = b"alice", b"bob"
+    ck0 = hkdf_sha256(root, None, b"ATSAM/v2/chain-init\x00" + s + b"\x00" + r)
+    ck1 = hkdf_sha256(ck0, None, b"ATSAM/v2/chain-advance")
+    kmsg = hkdf_sha256(ck0, b"ATSAM/v2/msg-seal/salt", b"ATSAM/v2/msg-key\x00" + s + b"\x00" + r)
+    write(out, "atsam/chain_kdf_001.json", {
+        "id": "rvn1_atsam_chain_kdf_001",
+        "description": "ATSAM v2 chain HKDF labels without ML-KEM — portable KAT for Rust/Swift agreement",
+        "root_hex": root.hex(),
+        "sender": "alice",
+        "recipient": "bob",
+        "ck0_hex": ck0.hex(),
+        "ck1_hex": ck1.hex(),
+        "k_msg_hex": kmsg.hex(),
+        "labels": {
+            "chain_init": "ATSAM/v2/chain-init",
+            "chain_advance": "ATSAM/v2/chain-advance",
+            "msg_key": "ATSAM/v2/msg-key",
+            "msg_seal_salt": "ATSAM/v2/msg-seal/salt",
+        },
+        "gap": "ML-KEM hybrid root establishment is NOT covered — this KAT assumes a known K_root. iOS remains canonical for pairing until Rust ports ML-KEM-768.",
+    })
+    # Root HKDF (Z_X||Z_PQ + transcript) — matches raven-core::atsam_root / ATSAMRootDerivation
+    z_x = bytes([0x11] * 32)
+    z_pq = bytes([0x22] * 32)
+    transcript_material = b"kat-pair-material"
+    transcript_hash = hashlib.sha256(b"ATSAM/v1/transcript" + transcript_material).digest()
+    k_root = hkdf_sha256(z_x + z_pq, transcript_hash, b"ATSAM/v1/pair-init" + transcript_hash)
+    write(out, "atsam/root_hkdf_001.json", {
+        "id": "atsam_root_hkdf_001",
+        "description": "ATSAM K_root HKDF with known Z_X||Z_PQ and transcript (no ML-KEM). Matches raven-core::atsam_root and iOS ATSAMRootDerivation labels.",
+        "input": {
+            "z_x_hex": z_x.hex(),
+            "z_pq_hex": z_pq.hex(),
+            "transcript_material_utf8": transcript_material.decode(),
+            "transcript_domain_utf8": "ATSAM/v1/transcript",
+            "pair_init_utf8": "ATSAM/v1/pair-init",
+        },
+        "expected": {
+            "transcript_hash_hex": transcript_hash.hex(),
+            "k_root_hex": k_root.hex(),
+        },
+    })
+    # AAD + AEAD with known K_root (no ML-KEM) — matches ATSAMMessageSealer v2
+    msg_id = b"msg-001"
+    index = 0
+    nonce = bytes([0xAB] * 12)
+    plaintext = b"portable-atsam-v2"
+    aad_v2 = hashlib.sha256(
+        b"ATSAM/v1/msg-seal/aad\x00"
+        + bytes([0x02, 0x01])
+        + index.to_bytes(4, "big")
+        + b"\x00" + s + b"\x00" + r + b"\x00" + msg_id
+    ).digest()
+    aad_v1 = hashlib.sha256(
+        b"ATSAM/v1/msg-seal/aad\x00\x00" + s + b"\x00" + r + b"\x00" + msg_id
+    ).digest()
+    ct_tag = ChaCha20Poly1305(kmsg).encrypt(nonce, plaintext, aad_v2)
+    wire = b"RVNA1\x00\x00\x00" + bytes([0x02, 0x01]) + index.to_bytes(4, "big") + nonce + ct_tag
+    write(out, "atsam/rvna1_v2_aead_known_root_001.json", {
+        "id": "rvn1_atsam_rvna1_v2_aead_known_root_001",
+        "description": "RVNA1 v2 ChaCha20-Poly1305 + AAD given known K_root (no ML-KEM pairing)",
+        "root_hex": root.hex(),
+        "sender": "alice",
+        "recipient": "bob",
+        "msg_id": msg_id.decode(),
+        "index": index,
+        "nonce_hex": nonce.hex(),
+        "plaintext_hex": plaintext.hex(),
+        "k_msg_hex": kmsg.hex(),
+        "aad_v2_hex": aad_v2.hex(),
+        "aad_v1_hex": aad_v1.hex(),
+        "wire_hex": wire.hex(),
+        "gap": "Does not cover ML-KEM hybrid pairing or skipped-key cache; only AEAD+AAD+chain index 0.",
+    })
+    write(out, "atsam/rvna1_header_layouts_001.json", {
+        "id": "rvn1_rvna1_header_layouts_001",
+        "description": "RVNA1 header layouts for classification (no AEAD)",
+        "cases": [
+            {
+                "name": "interim_0x7f",
+                "wire_prefix_hex": "52564e41310000007f01",
+                "min_len": 38,
+                "class": "interim_stub",
+                "index": None,
+            },
+            {
+                "name": "atsam_v1",
+                "wire_prefix_hex": "52564e41310000000101",
+                "min_len": 38,
+                "class": "opaque_atsam",
+                "proto": 1,
+                "index": None,
+            },
+            {
+                "name": "atsam_v2_index7",
+                "wire_prefix_hex": "52564e4131000000020100000007",
+                "min_len": 42,
+                "class": "opaque_atsam",
+                "proto": 2,
+                "index": 7,
+            },
+        ],
+    })
 
 if __name__ == "__main__":
     main()
