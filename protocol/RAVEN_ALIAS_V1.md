@@ -98,6 +98,19 @@ untrusted store MUST satisfy all of:
   theoretical ceiling has no legitimate use as a human-typed alias, and
   admitting oversized values is a cheap amplification/storage-exhaustion
   vector against the store.
+  - **`lp()` overflow is fail-closed, not wrap-around.** The 2-byte length
+    means a field longer than 65,535 bytes MUST be **rejected**, never
+    truncated or wrapped. A naive port that writes `len as u16` (Rust/C#)
+    would silently wrap the length and corrupt the field boundary, producing
+    signing bytes that disagree across implementations. The reference `lp()`
+    raises rather than emit a wrapped prefix; every port MUST do the same.
+- **Bound to its signer.** `verify()` alone only proves the record is signed
+  by *some* key; a resolver MUST additionally check that the verifying key's
+  `RavenAddressV1` equals the record's `identity_address`. Otherwise a record
+  validly signed by key K but carrying someone else's `identity_address` would
+  pass a signature-only check. The binding is `address.encode(signer_pub) ==
+  identity_address`. The same rule applies to `RavenProtocolCapabilitiesV1`
+  ([`RAVEN_CAPABILITIES_V1.md`](RAVEN_CAPABILITIES_V1.md)).
 
 ## Reference implementation
 

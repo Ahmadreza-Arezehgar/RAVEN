@@ -119,15 +119,27 @@ one is current.
 | `RavenDeviceFingerprintV1` (canonical) | `SHA-256(edPub)[:9] → base64 → strip '+'/'/'  → first 12 chars → XXXX-XXXX-XXXX` | **current — app scheme** |
 | MeshV1 hex | `SHA-256(edPub)[:6] → hex → uppercase → XXXX-XXXX-XXXX` | **deprecated** — frozen only because it is the value already committed in `shared-vectors/v1/identities.json` (the pre-`rvn1` vector tree) |
 
-For alice's RFC-8032 test key (`d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a`):
+**Exact `RavenDeviceFingerprintV1` algorithm (a port MUST follow this precisely
+— it is the human safety number, so any divergence reads to users as a MITM):**
 
-- canonical: `If4x-36FU-omFi`
-- MeshV1 hex (deprecated): `21FE-31DF-A154`
+1. `h = SHA-256(edPub_raw_32)`; take `h[:9]` (9 bytes).
+2. Encode those 9 bytes with **standard** Base64 (RFC 4648 §4 alphabet `A–Za–z0–9+/`).
+   9 bytes → exactly 12 Base64 chars, no `=` padding. **Do not use Base64URL** (`-_`).
+3. **Remove** every `+` and `/` character. Because a `+`/`/` may or may not be
+   present, the result is 10–12 chars. Do **not** re-pad and do **not** truncate
+   to 12 *before* stripping.
+4. Insert `-` after every 4th character of the **remaining** string (so a
+   12-char result is `XXXX-XXXX-XXXX`; an 11-char result is `XXXX-XXXX-XXX`).
 
-**Vector:** `shared-vectors/rvn1/identities/fingerprint_alice.json` carries
-both values so a new implementation can prove it reproduces the deprecated
-value too — purely as a backward-compatibility/migration check, not because
-new code should compute or display it.
+For alice's RFC-8032 test key (`d75a98…511a`): clean 12-char branch → `If4x-36FU-omFi`
+(MeshV1 hex deprecated: `21FE-31DF-A154`). For dave's key
+(`e61a18…7057`): the Base64 `NN72hvSxN/7W` contains `/`, so after stripping the
+fingerprint is the 11-char `NN72-hvSx-N7W`.
+
+**Vectors:** `shared-vectors/rvn1/identities/fingerprint_alice.json` (clean
+branch) and `…/fingerprint_dave.json` (the `+`/`/` strip branch — ~31% of real
+keys hit it; it is pinned so no port can silently diverge on it). Each carries
+the deprecated MeshV1 hex value too, purely as a migration check.
 
 **The machine identity is the `RavenAddressV1`** ([`RAVEN_ADDRESS_V1.md`](RAVEN_ADDRESS_V1.md)),
 not either fingerprint. Fingerprints are **human cross-check strings** — read
@@ -198,5 +210,8 @@ table) is Phase B/C implementation work and intentionally out of scope here.
 `protocol/reference/raven_protocol/fingerprint.py`,
 `protocol/reference/raven_protocol/device_cert.py`. Vectors:
 `shared-vectors/rvn1/identities.json`,
-`shared-vectors/rvn1/identities/fingerprint_alice.json`,
-`shared-vectors/rvn1/device_cert/bob_device1.json`.
+`shared-vectors/rvn1/identities/fingerprint_alice.json` (clean branch),
+`shared-vectors/rvn1/identities/fingerprint_dave.json` (`+`/`/` strip branch),
+`shared-vectors/rvn1/device_cert/bob_device1.json`, and the negative
+`shared-vectors/rvn1/negative/device_cert_wrong_signer.json` (a cert not signed
+by the claimed user identity must be rejected).

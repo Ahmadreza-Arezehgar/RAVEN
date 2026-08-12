@@ -4,8 +4,7 @@
 Source of truth: raven_protocol.*  ·  Fixed keys: shared-vectors identities  ·  Epoch 1700000000."""
 import argparse, json, hashlib, pathlib, sys
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from raven_protocol import address, fingerprint, routing_tag, envelope, ack, alias, device_cert
-from raven_protocol._canon import lp, u64
+from raven_protocol import address, fingerprint, routing_tag, envelope, ack, alias, device_cert, capabilities
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 EPOCH_S = 1700000000
@@ -15,12 +14,15 @@ ALICE_ED_PUB  = bytes.fromhex("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325a
 BOB_ED_PRIV   = bytes.fromhex("4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb")
 BOB_ED_PUB    = bytes.fromhex("3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c")
 BOB_X_PUB     = bytes.fromhex("de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f")
+# dave: SHA-256(edPub)[:9] base64 contains '/', so its device fingerprint hits the
+# strip-shortens-to-11-chars branch — the ~31% path no clean-key vector exercises.
+DAVE_ED_PUB   = bytes.fromhex("e61a185bcef2613a6c7cb79763ce945d3b245d76114dd440bcf5f2dc1aa57057")
 K_ROUTE       = bytes(range(32))
 
 def write(out, rel, obj):
     p = pathlib.Path(out) / rel
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(obj, indent=2, sort_keys=True) + "\n")
+    p.write_text(json.dumps(obj, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 def vec(name, desc, inputs, expected, **extra):
     return {"name": name, "description": desc, "protocol_version": "rvn1",
@@ -55,10 +57,17 @@ def main():
          "display": address.to_display(address.encode(ALICE_ED_PUB))}))
 
     write(out, "identities/fingerprint_alice.json", vec(
-        "Fingerprints — alice", "canonical device fp (app scheme) + deprecated MeshV1 hex",
+        "Fingerprints — alice (clean base64 branch)", "canonical device fp (app scheme) + deprecated MeshV1 hex",
         {"ed_public_hex": ALICE_ED_PUB.hex()},
         {"device_fingerprint_v1": fingerprint.device_fingerprint_v1(ALICE_ED_PUB),
          "mesh_v1_hex_deprecated": fingerprint.mesh_v1_hex_fingerprint(ALICE_ED_PUB)}))
+    write(out, "identities/fingerprint_dave.json", vec(
+        "Fingerprints — dave (strip branch)",
+        "SHA256(edPub)[:9] base64 contains '/'; stripping shortens to 11 chars → last group is 3. "
+        "Pins the ~31% branch: standard base64, strip '+'/'/' only, group the remaining chars.",
+        {"ed_public_hex": DAVE_ED_PUB.hex()},
+        {"device_fingerprint_v1": fingerprint.device_fingerprint_v1(DAVE_ED_PUB),
+         "mesh_v1_hex_deprecated": fingerprint.mesh_v1_hex_fingerprint(DAVE_ED_PUB)}))
 
     write(out, "routing/tag_alice_bob_000.json", vec(
         "RavenRoutingTagV1 — counter 0", "HMAC-SHA256(K_route, label||epoch||counter)[:16]",
@@ -113,18 +122,14 @@ def main():
         {"signing_bytes_hex": device_cert.signing_bytes(c).hex(), "signature_hex": c.signature.hex()}))
 
     # RavenProtocolCapabilitiesV1 — signed capability set (downgrade protection).
-    # Signing bytes built inline from _canon helpers (no dedicated module needed):
-    #   "rvn1/caps" || lp(identity_address_utf8) || u64(capability_bits) || u64(expires_at_ms)
-    cap_addr = address.encode(ALICE_ED_PUB)
-    cap_bits = 0b1111
-    cap_expires = EPOCH_MS + 604800000
-    cap_signing = b"rvn1/caps" + lp(cap_addr.encode()) + u64(cap_bits) + u64(cap_expires)
-    cap_sig = Ed25519PrivateKey.from_private_bytes(ALICE_ED_PRIV).sign(cap_signing)
+    cap = capabilities.Capabilities(identity_address=address.encode(ALICE_ED_PUB),
+                                    capability_bits=0b1111, expires_at=EPOCH_MS + 604800000)
+    cap.signature = Ed25519PrivateKey.from_private_bytes(ALICE_ED_PRIV).sign(capabilities.signing_bytes(cap))
     write(out, "capabilities/alice_v1.json", vec(
         "RavenProtocolCapabilitiesV1 — alice", "identity-signed capability set for downgrade protection",
-        {"identity_address": cap_addr, "capability_bits": cap_bits, "expires_at_ms": cap_expires,
-         "identity_ed_public_hex": ALICE_ED_PUB.hex()},
-        {"signing_bytes_hex": cap_signing.hex(), "signature_hex": cap_sig.hex()}))
+        {"identity_address": cap.identity_address, "capability_bits": cap.capability_bits,
+         "expires_at_ms": cap.expires_at, "identity_ed_public_hex": ALICE_ED_PUB.hex()},
+        {"signing_bytes_hex": capabilities.signing_bytes(cap).hex(), "signature_hex": cap.signature.hex()}))
 
     # ---- negative vectors ----
     bad_addr = address.encode(ALICE_ED_PUB)
@@ -163,6 +168,25 @@ def main():
         "ACK verified against wrong key must fail", "signed by alice, verified as bob",
         {"signing_bytes_hex": ack.signing_bytes(a).hex(), "signature_hex": awrong.hex(),
          "claimed_signer_ed_public_hex": BOB_ED_PUB.hex()},
+        {"verify_result": "reject"}))
+
+    # Device cert signed by a non-identity key must not authorize the device.
+    dc_wrong = Ed25519PrivateKey.from_private_bytes(BOB_ED_PRIV).sign(device_cert.signing_bytes(c))
+    write(out, "negative/device_cert_wrong_signer.json", vec(
+        "Device certificate not signed by the claimed user identity must fail",
+        "signed by bob, verified against alice-identity",
+        {"signing_bytes_hex": device_cert.signing_bytes(c).hex(), "signature_hex": dc_wrong.hex(),
+         "claimed_user_identity_ed_public_hex": ALICE_ED_PUB.hex()},
+        {"verify_result": "reject"}))
+
+    # Capability set with a flipped bit after signing must fail verification (downgrade defense).
+    cap_tam = capabilities.Capabilities(identity_address=cap.identity_address,
+                                        capability_bits=0b0001, expires_at=cap.expires_at)
+    write(out, "negative/capabilities_tampered_bits.json", vec(
+        "Capability bits changed after signing must fail verify", "advertised bits downgraded post-sign",
+        {"signing_bytes_hex": capabilities.signing_bytes(cap_tam).hex(),
+         "original_signature_hex": cap.signature.hex(),
+         "identity_ed_public_hex": ALICE_ED_PUB.hex()},
         {"verify_result": "reject"}))
 
 if __name__ == "__main__":

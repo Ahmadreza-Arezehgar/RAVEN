@@ -101,9 +101,11 @@ is Phase B/C scope, not part of this freeze.
 
 ## Reference implementation
 
-Signing bytes are built inline in `protocol/reference/generate_rvn1.py` from
-the shared `lp`/`u64` helpers in `protocol/reference/raven_protocol/_canon.py`
-(no dedicated `capabilities.py` module exists yet — the record is simple
-enough that the generator constructs it directly; a re-implementer should
-still treat the signing-bytes formula in §1 as frozen). Vector:
-`shared-vectors/rvn1/capabilities/alice_v1.json`.
+`protocol/reference/raven_protocol/capabilities.py`, built on the shared
+`lp`/`u64` helpers in `protocol/reference/raven_protocol/_canon.py`. As with
+alias records, `verify()` proves only that *some* key signed the set; a peer
+MUST additionally bind it by checking `address.encode(signer_pub) ==
+identity_address` before honouring the advertised capabilities (§1). Vectors:
+`shared-vectors/rvn1/capabilities/alice_v1.json` and the negative
+`shared-vectors/rvn1/negative/capabilities_tampered_bits.json` (a post-sign
+bit flip must fail verification — the downgrade defense).

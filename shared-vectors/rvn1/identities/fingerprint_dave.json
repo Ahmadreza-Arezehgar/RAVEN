@@ -1,0 +1,13 @@
+{
+  "description": "SHA256(edPub)[:9] base64 contains '/'; stripping shortens to 11 chars \u2192 last group is 3. Pins the ~31% branch: standard base64, strip '+'/'/' only, group the remaining chars.",
+  "deterministic": true,
+  "expected": {
+    "device_fingerprint_v1": "NN72-hvSx-N7W",
+    "mesh_v1_hex_deprecated": "34DE-F686-F4B1"
+  },
+  "inputs": {
+    "ed_public_hex": "e61a185bcef2613a6c7cb79763ce945d3b245d76114dd440bcf5f2dc1aa57057"
+  },
+  "name": "Fingerprints \u2014 dave (strip branch)",
+  "protocol_version": "rvn1"
+}
