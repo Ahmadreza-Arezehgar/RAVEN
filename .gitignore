@@ -178,3 +178,8 @@ flutter_launcher_icons.yaml
 hybrid_messenger.iml
 .flutter-plugins
 .flutter-plugins-dependencies
+node/proof_artifacts/*/
+
+# Unsigned release layouts (local only)
+dist/
+!node/proof_artifacts/README.md

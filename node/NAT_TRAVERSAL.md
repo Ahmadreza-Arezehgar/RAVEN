@@ -25,3 +25,12 @@
 
 - Spec: `protocol/RAVEN_TRANSPORT_INTERFACE_V1.md` §5–6
 - Constant: `raven_core::discovery::NAT_STATUS`
+
+
+## Expanded substitutes (REST wave)
+
+| Substitute | Evidence |
+|------------|----------|
+| Docker dual-network isolation | `scripts/nat_docker_sim.sh` (SKIP if daemon down) |
+| Docs | `docs/NAT_SOFTWARE_SIM.md` |
+| §59 automated path | `scripts/final_serverless_proof.sh` store-forward + bridge |

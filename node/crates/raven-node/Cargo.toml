@@ -9,6 +9,11 @@ description = "RAVEN local node — queue, TCP peer, envelope DM"
 name = "raven-node"
 path = "src/main.rs"
 
+[features]
+default = []
+# Experimental macOS CoreBluetooth seam (no live radio in CI). See src/corebluetooth_exp.rs.
+corebluetooth = []
+
 [dependencies]
 raven-core = { workspace = true }
 tokio = { workspace = true }

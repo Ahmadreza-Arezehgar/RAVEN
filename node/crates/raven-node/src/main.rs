@@ -3,6 +3,8 @@
 //! Frame: u32 BE length || envelope bytes. Never logs private keys or plaintext.
 
 mod bridge_run;
+#[cfg(feature = "corebluetooth")]
+mod corebluetooth_exp;
 #[cfg(unix)]
 mod ipc_server;
 
@@ -149,6 +151,8 @@ enum Commands {
         #[arg(long, default_value_t = 0)]
         timeout_secs: u64,
     },
+    /// Report BLE adapter selection (mock vs platform). Safe fields only.
+    BleStatus,
 }
 
 fn now_ms() -> u64 {
@@ -876,6 +880,31 @@ async fn main() {
             if let Err(e) = bridge_result {
                 eprintln!("service bridge failed: {e}");
                 std::process::exit(1);
+            }
+        }
+        Commands::BleStatus => {
+            let kind = raven_core::ble_adapter::select_ble_adapter_from_env();
+            println!("ble_adapter={}", kind.as_str());
+            println!("transport={:?}", kind.transport());
+            println!(
+                "hint=set RAVEN_BLE_PLATFORM=1 to prefer platform GATT; default mock_ble for CI"
+            );
+            #[cfg(feature = "corebluetooth")]
+            {
+                let (k, st) = corebluetooth_exp::probe();
+                println!("corebluetooth_feature=on");
+                println!("corebluetooth_kind={}", k.as_str());
+                println!("corebluetooth_state={}", st.as_str());
+                if let Err(e) = corebluetooth_exp::try_start_gatt() {
+                    println!("corebluetooth_start={e}");
+                }
+            }
+            #[cfg(not(feature = "corebluetooth"))]
+            {
+                println!("corebluetooth_feature=off");
+                println!(
+                    "corebluetooth_build=cargo build -p raven-node --features corebluetooth"
+                );
             }
         }
     }
