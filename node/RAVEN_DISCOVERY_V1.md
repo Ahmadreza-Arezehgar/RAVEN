@@ -71,7 +71,15 @@ DiscoveryResult {
 | `RavenIntroductionV1` | Encrypted to recipient |
 | `RavenContactRequestV1` + `ContactAcceptV1` | E2EE async (prekey / pairwise seal) |
 
-Contact requests ride existing **MessageRouter** paths: direct / relay / store / BLE / Bridge — opaque envelope, same `message_id`.
+Contact requests ride existing **MessageRouter** paths: direct / relay / store / BLE / Bridge — **full outer wire** as envelope body (`rvn1/contact-req-wire`); inner fields stay in sealed ciphertext. Same `message_id`. Bridge MUST NOT decrypt / open.
+
+## Contact-request accept path
+
+1. Recipient opens wire locally → `ContactRequestInbox` (dedup on `request_id`)
+2. **Accept** → signed `ContactAcceptV1` + local **binding** (`raven_id` + petname, `TRUSTED_CONTACT`)
+3. **Decline** → drop pending (local only)
+4. **Block** → drop pending + local block list (no central moderation)
+5. Accept wire delivered opaque via MessageRouter (same store/BLE/Bridge rules)
 
 ## ash CLI
 
@@ -79,11 +87,16 @@ Contact requests ride existing **MessageRouter** paths: direct / relay / store /
 ash find @poline
 ash find rvn1…
 ash find poline --local          # no public fuzzy in V1
-ash nearby
+ash nearby                       # shows safety phrase — confirm OOB before pin
 ash alias publish --alias poline
 ash contact add …                # QR / OOB pin
 ash contact request @poline
 ash contact request rvn1…
+ash contact pending
+ash contact ingest --file contact_request_….wire
+ash contact accept <request_id_hex> --petname "Ada (work)"
+ash contact decline <request_id_hex>
+ash contact block <request_id_hex>
 ```
 
 Interactive picker on alias conflicts (same resolver as future mobile).
@@ -92,7 +105,9 @@ Interactive picker on alias conflicts (same resolver as future mobile).
 
 `DiscoveryResolver`-equivalent types + tests under serverless flag; discovery path must not call FastAPI when RavenEnvelopeV1 / serverless is ON.
 
-**Search UI (V1):** `FindContactsView` + `DiscoverySearchViewModel` behind `FeatureFlag.ravenEnvelopeV1` — scopes **All / My Network / Public (exact alias|id) / Nearby**, petname-first rows, provenance + alias-conflict picker (never silent pick), `RavenContactRequestV1` seal + LAN/BLE delivery. QR add path remains. MeshEnvelope default when flag OFF (QR-only sheet; no contacts FastAPI sync).
+**Search UI (V1):** `FindContactsView` + `DiscoverySearchViewModel` behind `FeatureFlag.ravenEnvelopeV1` — scopes **All / My Network / Public (exact alias|id) / Nearby**, petname-first rows, provenance + alias-conflict picker (never silent pick), `RavenContactRequestV1` seal + LAN/BLE delivery. Nearby confirm requires safety phrase before bind. QR add path remains. MeshEnvelope default when flag OFF (QR-only sheet; no contacts FastAPI sync).
+
+**Accept inbox (V1):** `ContactRequestInboxView` behind the same flag — pending inbound requests, Accept (emit `ContactAcceptV1` + bind petname) / Decline / Block. Ingests opaque wire from BLE/LAN notifications.
 
 ## V1 MUST NOT include
 
@@ -104,17 +119,17 @@ Interactive picker on alias conflicts (same resolver as future mobile).
 ## Phases
 
 | Phase | Scope |
-|-------|-------|
-| **V1** | Exact ID, exact alias, local/QR, nearby ephemeral, introductions, E2EE contact request via MessageRouter, conflict display, Sybil quota on alias publish |
+|-------|------|
+| **V1** | Exact ID, exact alias, local/QR, nearby ephemeral, introductions, E2EE contact request via MessageRouter, conflict display, Sybil quota on alias publish, accept inbox |
 | **V1.5** | Opt-in public profile tokens (bounded), scoped handles, richer intro UX, mobile search UI parity |
 | **V2** | Private directory / PSI research path, fuzzy index with cost, FOAF vouch (optional) |
 
 ## Acceptance
 
-Automated suite: `cd node && cargo test -p raven-core --test discovery_v1` (research §22 cases 1–20).
+Automated suite: `cd node && cargo test -p raven-core --test discovery_v1` (research §22 cases 1–20 + accept/decline/block + nearby phrase).
 
 ## Cross-links
 
 - Soft Unique Tags UX: [`RAVEN_TAG_V1.md`](RAVEN_TAG_V1.md)  
 - Checklist: [`MASTER_CHECKLIST_STATUS.md`](MASTER_CHECKLIST_STATUS.md) §11 / §29  
-- Rust: `raven_core::discovery_resolver`, `alias_record`, `profile_record`, `contact_request`, `nearby`, `introduction`
+- Rust: `raven_core::discovery_resolver`, `alias_record`, `profile_record`, `contact_request` (`ContactRequestInbox`), `nearby`, `introduction`

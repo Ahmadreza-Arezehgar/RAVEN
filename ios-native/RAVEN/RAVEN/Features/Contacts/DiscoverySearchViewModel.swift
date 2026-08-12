@@ -292,6 +292,79 @@ final class DiscoverySearchViewModel {
         statusMessage = "Contact request sealed → \(shortId(chosen.ravenId))"
     }
 
+    /// Confirm nearby peer → Raven ID only after safety phrase match.
+    func confirmNearbyPeer(
+        deviceId: String,
+        displayName: String,
+        userId: String?,
+        enteredPhrase: String
+    ) throws {
+        guard FeatureFlag.isRavenEnvelopeV1Enabled else {
+            throw RavenContactRequestError.missingKeys
+        }
+        let (token, commitment) = Self.nearbyMaterial(deviceId: deviceId)
+        let expected = NearbySafetyPhrase.phrase(token: token, commitment: commitment)
+        guard NearbySafetyPhrase.matches(expected: expected, entered: enteredPhrase) else {
+            throw RavenContactRequestError.badSignature // reuse: phrase mismatch
+        }
+        guard let seed = DeviceIdentityService.shared.deviceSigningSeed,
+              let pub = liveNearbyPeerPub(deviceId: deviceId, userId: userId) else {
+            throw RavenContactRequestError.missingKeys
+        }
+        let ravenId = RavenAddressV1.encode(ed25519PublicKey: pub)
+            ?? userId
+            ?? deviceId
+        let now = UInt64(Date().timeIntervalSince1970 * 1000)
+        DiscoveryNearbyStore.confirm(NearbyConfirmBinding(
+            ephemeralTokenHex: token.ravenHex,
+            peerRavenId: ravenId,
+            peerPubHex: pub.ravenHex,
+            confirmedAtMs: now
+        ))
+        // Also bind a local petname row (unverified until Accept/QR pin).
+        let pet = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        DiscoveryContactBindingStore.upsert(LocalDiscoveryContact(
+            ravenId: ravenId,
+            pubHex: pub.ravenHex,
+            petname: pet.isEmpty ? shortId(ravenId) : pet,
+            publicTag: "",
+            displayName: pet,
+            pinned: false,
+            directlyVerified: false
+        ))
+        pubHexByRavenId[ravenId] = pub.ravenHex
+        statusMessage = "Nearby confirmed — \(pet.isEmpty ? shortId(ravenId) : pet)"
+        runSearch()
+    }
+
+    func nearbySafetyPhrase(forDeviceId deviceId: String) -> String {
+        let (token, commitment) = Self.nearbyMaterial(deviceId: deviceId)
+        return NearbySafetyPhrase.phrase(token: token, commitment: commitment)
+    }
+
+    private static func nearbyMaterial(deviceId: String) -> (Data, Data) {
+        let dig = Data(SHA256.hash(data: Data(deviceId.utf8)))
+        let token = Data(dig.prefix(16))
+        var commitIn = Data("raven/nearby/v1".utf8)
+        commitIn.append(token)
+        commitIn.append(Data("confirm-local".utf8))
+        let commitment = Data(SHA256.hash(data: commitIn))
+        return (token, commitment)
+    }
+
+    private func liveNearbyPeerPub(deviceId: String, userId: String?) -> Data? {
+        let peers = BLEMeshEngine.shared.discoveredPeers + BLEMeshEngine.shared.connectedPeers
+        if let p = peers.first(where: { $0.deviceId == deviceId }),
+           let key = p.publicKey, key.count == 32 {
+            return key
+        }
+        // Fallback: if we already know pub for userId via contacts/alias.
+        if let uid = userId, let hex = pubHexByRavenId[uid], let d = Data(ravenHex: hex) {
+            return d
+        }
+        return nil
+    }
+
     // MARK: - Sources
 
     private func loadSources() async {
@@ -317,6 +390,11 @@ final class DiscoverySearchViewModel {
                 )
             }
         }
+        // Merge Accept bindings (petname-first local contacts).
+        for b in DiscoveryContactBindingStore.load() {
+            pubs[b.ravenId] = b.pubHex
+            byUser[b.ravenId] = b
+        }
         contactsCache = Array(byUser.values)
         pubHexByRavenId = pubs
 
@@ -337,6 +415,7 @@ final class DiscoverySearchViewModel {
         }
         r.aliasClaims = DiscoveryAliasClaimStore.load()
         r.nearbyConfirmed = DiscoveryNearbyStore.load()
+        r.blockedPubHex = DiscoveryBlockStore.load()
         // Seed pubhex from alias claims / nearby.
         for c in r.aliasClaims {
             pubHexByRavenId[c.identityAddress] = c.ed25519PubHex
@@ -358,6 +437,9 @@ final class DiscoverySearchViewModel {
         for b in DiscoveryNearbyStore.load() where b.peerRavenId == result.ravenId {
             return b.peerPubHex
         }
+        for c in DiscoveryContactBindingStore.load() where c.ravenId == result.ravenId {
+            return c.pubHex
+        }
         return nil
     }
 
@@ -365,11 +447,13 @@ final class DiscoverySearchViewModel {
         _ req: RavenContactRequestV1,
         signingKey: Curve25519.Signing.PrivateKey
     ) async {
-        // Opaque body = sealed contact-request ciphertext (bridge MUST NOT decrypt).
+        // Full wire object as opaque body — Bridge/store see ciphertext field only, never open.
+        let wire = req.encodeWire()
+        precondition(req.isCiphertextOnly)
         let messageId = req.requestId
-        let routingTag = Data(SHA256.hash(data: req.ciphertext.prefix(64) + messageId)).prefix(16)
+        let routingTag = Data(SHA256.hash(data: wire.prefix(64) + messageId)).prefix(16)
         let env = RavenServerlessLanPath.packSealedMessage(
-            sealedBody: req.ciphertext,
+            sealedBody: wire,
             messageId: messageId,
             routingTag: Data(routingTag),
             signingKey: signingKey
@@ -390,9 +474,9 @@ final class DiscoverySearchViewModel {
             }
         }
 
-        // Persist pending request metadata (ciphertext-only).
+        // Persist outbound pending metadata (wire, not plaintext).
         let pendingKey = "raven.discovery.pending_contact_req.\(req.requestId.ravenHex)"
-        UserDefaults.standard.set(req.ciphertext, forKey: pendingKey)
+        UserDefaults.standard.set(wire, forKey: pendingKey)
     }
 
     private func shortId(_ id: String) -> String {

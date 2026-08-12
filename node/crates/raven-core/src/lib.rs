@@ -65,14 +65,17 @@ pub use messaging_path::{
     MessagingPath, ENV_FORCE_LEGACY_LABEL, ENV_SERVERLESS_RVN1,
 };
 pub use alias_record::{normalize_alias, AliasClaimStore, AliasPublishQuota, AliasRecord};
-pub use contact_request::{ContactAcceptV1, ContactRequestInner, RavenContactRequestV1};
+pub use contact_request::{
+    ContactAcceptOutcome, ContactAcceptV1, ContactBinding, ContactRequestInbox,
+    ContactRequestInner, PendingContactRequest, RavenContactRequestV1,
+};
 pub use discovery::{alias_hint_key, DiscoveryStore, PeerRecord, NAT_STATUS};
 pub use discovery_resolver::{
     result_model_schema_keys, DiscoveryContext, DiscoveryResolver, DiscoveryResult, DiscoveryScope,
     DiscoverySource, LocalContactRow, VerificationState,
 };
 pub use introduction::{IntroductionInbox, RavenIntroductionV1};
-pub use nearby::{NearbyAdvertisement, NearbyRegistry};
+pub use nearby::{nearby_safety_phrase, NearbyAdvertisement, NearbyRegistry};
 pub use profile_record::{ProfileStore, RavenProfileRecordV1};
 pub use internet::{
     bits_to_caps, caps_to_bits, deframe_prefix, frame, opaque_store_tag, pack_hello,

@@ -10,6 +10,9 @@ struct FindContactsView: View {
     @State private var showMyQR = false
     @State private var isSending = false
     @State private var sendError: String?
+    @State private var nearbyConfirmPeer: (deviceId: String, displayName: String, userId: String?)?
+    @State private var nearbyPhraseInput = ""
+    @State private var nearbyConfirmError: String?
 
     private var serverless: Bool { FeatureFlag.isRavenEnvelopeV1Enabled }
 
@@ -50,6 +53,38 @@ struct FindContactsView: View {
             }
             .sheet(isPresented: $showMyQR) {
                 MyQRCodeView()
+            }
+            .alert(
+                "Confirm nearby",
+                isPresented: Binding(
+                    get: { nearbyConfirmPeer != nil },
+                    set: { if !$0 { nearbyConfirmPeer = nil } }
+                )
+            ) {
+                TextField("Safety phrase", text: $nearbyPhraseInput)
+                Button("Bind") {
+                    guard let peer = nearbyConfirmPeer else { return }
+                    do {
+                        try model.confirmNearbyPeer(
+                            deviceId: peer.deviceId,
+                            displayName: peer.displayName,
+                            userId: peer.userId,
+                            enteredPhrase: nearbyPhraseInput
+                        )
+                        nearbyConfirmPeer = nil
+                    } catch {
+                        nearbyConfirmError = "Phrase mismatch or missing peer key — verify OOB first"
+                    }
+                }
+                Button("Cancel", role: .cancel) {
+                    nearbyConfirmPeer = nil
+                }
+            } message: {
+                if let peer = nearbyConfirmPeer {
+                    Text("Show phrase on both devices, then type it to bind:\n\(model.nearbySafetyPhrase(forDeviceId: peer.deviceId))\nFinding nearby ≠ verifying a person.")
+                } else {
+                    Text("Confirm safety phrase before pin.")
+                }
             }
         }
         .task {
@@ -144,17 +179,28 @@ struct FindContactsView: View {
                 if !model.liveNearbyPeers.isEmpty {
                     Section {
                         ForEach(model.liveNearbyPeers, id: \.deviceId) { peer in
-                            HStack {
-                                Image(systemName: "wave.3.right")
-                                    .foregroundStyle(.secondary)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(peer.displayName)
-                                        .font(.body)
-                                    Text("Ephemeral BLE — confirm before binding to Raven ID")
-                                        .font(.caption2)
+                            Button {
+                                nearbyPhraseInput = ""
+                                nearbyConfirmError = nil
+                                nearbyConfirmPeer = peer
+                            } label: {
+                                HStack {
+                                    Image(systemName: "wave.3.right")
                                         .foregroundStyle(.secondary)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(peer.displayName)
+                                            .font(.body)
+                                            .foregroundStyle(.primary)
+                                        Text("Ephemeral BLE — confirm safety phrase before binding")
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Image(systemName: "hand.raised")
+                                        .foregroundStyle(.orange)
                                 }
                             }
+                            .buttonStyle(.plain)
                         }
                     } header: {
                         Text("Nearby (live)")

@@ -12,12 +12,15 @@ use std::process::Command;
 use clap::{Parser, Subcommand};
 use raven_core::address::{decode_address, encode_address};
 use raven_core::alias_record::{AliasClaimStore, AliasRecord};
-use raven_core::contact_request::{ContactRequestInner, RavenContactRequestV1};
+use raven_core::contact_request::{
+    ContactRequestInbox, ContactRequestInner, RavenContactRequestV1,
+};
 use raven_core::discovery_resolver::{
     DiscoveryContext, DiscoveryResolver, DiscoveryResult, DiscoveryScope, LocalContactRow,
     VerificationState,
 };
 use raven_core::fingerprint::device_fingerprint_v1;
+use raven_core::forward_queue::ForwardQueue;
 use raven_core::identity::Identity;
 use raven_core::ipc::{
     decode_response, default_socket_path, encode_request, IpcRequest, IpcResponse, IPC_VERSION,
@@ -195,6 +198,28 @@ enum ContactCommands {
         /// When multiple alias claims: pick 1-based index (interactive if omitted).
         #[arg(long)]
         pick: Option<usize>,
+    },
+    /// List pending inbound contact requests (opened locally).
+    Pending,
+    /// Ingest a received RavenContactRequestV1 wire blob into the local inbox.
+    Ingest {
+        #[arg(long)]
+        file: PathBuf,
+    },
+    /// Accept a pending request: emit ContactAcceptV1 + bind petname locally.
+    Accept {
+        /// request_id hex (32 chars).
+        request_id: String,
+        #[arg(long)]
+        petname: String,
+    },
+    /// Decline a pending request (local only — no central moderation).
+    Decline {
+        request_id: String,
+    },
+    /// Block sender of a pending request (local block list).
+    Block {
+        request_id: String,
     },
 }
 
@@ -857,11 +882,15 @@ fn cmd_nearby(data_dir: &Path) {
     let _ = std::fs::write(path, serde_json::to_string_pretty(&tokens).unwrap_or_default());
     println!("{C_BOLD}Nearby{C_RESET} (ephemeral — no permanent Raven ID in adv)");
     for a in reg.scan_live(now_ms()) {
+        let phrase = raven_core::nearby_safety_phrase(&a.ephemeral_token, &a.session_commitment);
         println!(
             "  token={} ttl_ms={} commitment={}",
             hex::encode(a.ephemeral_token),
             a.ttl_ms,
             hex::encode(a.session_commitment)
+        );
+        println!(
+            "  {C_PURPLE}safety phrase{C_RESET} {phrase}  {C_DIM}(confirm OOB before pin){C_RESET}"
         );
     }
     println!("{C_DIM}Confirm pairing locally before binding to rvn1 identity.{C_RESET}");
@@ -965,15 +994,192 @@ fn cmd_contact_request(
         std::process::exit(1);
     });
     assert!(req.is_ciphertext_only());
-    let out = data_dir.join(format!("contact_request_{}.bin", hex::encode(request_id)));
-    std::fs::write(&out, &req.ciphertext).ok();
-    println!("{C_GREEN}contact request sealed{C_RESET} (ciphertext-only)");
+    let wire = req.encode_wire().unwrap_or_else(|e| {
+        eprintln!("wire encode failed: {e}");
+        std::process::exit(1);
+    });
+    // Ciphertext-only file (opaque to store/bridge) + full wire for endpoint delivery.
+    let out_ct = data_dir.join(format!("contact_request_{}.bin", hex::encode(request_id)));
+    let out_wire = data_dir.join(format!("contact_request_{}.wire", hex::encode(request_id)));
+    std::fs::write(&out_ct, &req.ciphertext).ok();
+    std::fs::write(&out_wire, &wire).ok();
+    println!("{C_GREEN}contact request sealed{C_RESET} (ciphertext-only for store/bridge)");
     println!("{C_DIM}request_id{C_RESET} {}", hex::encode(request_id));
     println!("{C_DIM}recipient{C_RESET}  {}", sanitize_terminal_text(&chosen.raven_id));
-    println!("{C_DIM}ciphertext{C_RESET} {}", out.display());
+    println!("{C_DIM}ciphertext{C_RESET} {}", out_ct.display());
+    println!("{C_DIM}wire{C_RESET}       {}", out_wire.display());
     println!(
-        "{C_DIM}deliver via MessageRouter (direct/relay/store/BLE/Bridge) — same message_id{C_RESET}"
+        "{C_DIM}deliver wire via MessageRouter (direct/relay/store/BLE/Bridge) — same message_id{C_RESET}"
     );
+}
+
+fn contact_inbox_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("contact_inbox")
+}
+
+fn parse_request_id_hex(s: &str) -> [u8; 16] {
+    let v = hex::decode(s.trim()).unwrap_or_else(|_| {
+        eprintln!("bad request_id hex");
+        std::process::exit(1);
+    });
+    if v.len() != 16 {
+        eprintln!("request_id must be 16 bytes (32 hex chars)");
+        std::process::exit(1);
+    }
+    let mut id = [0u8; 16];
+    id.copy_from_slice(&v);
+    id
+}
+
+fn load_contact_inbox(data_dir: &Path) -> ContactRequestInbox {
+    let id = ensure_identity(data_dir);
+    let mut inbox = ContactRequestInbox::default();
+    let dir = contact_inbox_dir(data_dir);
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return inbox;
+    };
+    for ent in entries.flatten() {
+        let path = ent.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("wire") {
+            continue;
+        }
+        let Ok(raw) = std::fs::read(&path) else {
+            continue;
+        };
+        let Ok(outer) = RavenContactRequestV1::decode_wire(&raw) else {
+            continue;
+        };
+        let _ = inbox.ingest(outer, &id, now_ms());
+    }
+    inbox
+}
+
+fn persist_inbox_wire(data_dir: &Path, outer: &RavenContactRequestV1) -> Result<(), String> {
+    let dir = contact_inbox_dir(data_dir);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(format!("{}.wire", hex::encode(outer.request_id)));
+    let wire = outer.encode_wire()?;
+    std::fs::write(path, wire).map_err(|e| e.to_string())
+}
+
+fn remove_inbox_wire(data_dir: &Path, request_id: &[u8; 16]) {
+    let path = contact_inbox_dir(data_dir).join(format!("{}.wire", hex::encode(request_id)));
+    let _ = std::fs::remove_file(path);
+}
+
+fn cmd_contact_pending(data_dir: &Path) {
+    let inbox = load_contact_inbox(data_dir);
+    println!(
+        "{C_BOLD}Pending contact requests{C_RESET} ({})",
+        inbox.pending().len()
+    );
+    if inbox.pending().is_empty() {
+        println!(
+            "{C_DIM}None. Ingest with: ash contact ingest --file contact_request_….wire{C_RESET}"
+        );
+        return;
+    }
+    for (i, p) in inbox.pending().iter().enumerate() {
+        println!(
+            "  {C_CYAN}{}{C_RESET}  id={}  from={}  name=\"{}\"  msg=\"{}\"",
+            i + 1,
+            hex::encode(p.outer.request_id),
+            sanitize_terminal_text(&p.inner.sender_raven_id),
+            sanitize_terminal_text(&p.inner.sender_display_name),
+            sanitize_terminal_text(&p.inner.optional_message)
+        );
+    }
+    println!(
+        "{C_DIM}ash contact accept <id> --petname \"…\" | decline <id> | block <id>{C_RESET}"
+    );
+}
+
+fn cmd_contact_ingest(data_dir: &Path, file: &Path) {
+    let id = ensure_identity(data_dir);
+    let raw = std::fs::read(file).unwrap_or_else(|e| {
+        eprintln!("read failed: {e}");
+        std::process::exit(1);
+    });
+    let outer = RavenContactRequestV1::decode_wire(&raw).unwrap_or_else(|e| {
+        eprintln!("bad wire: {e}");
+        std::process::exit(1);
+    });
+    // Bridge/store opacity: wire encodes outer metadata + opaque ciphertext.
+    assert!(outer.is_ciphertext_only());
+    let mut inbox = ContactRequestInbox::default();
+    let inner = inbox.ingest(outer.clone(), &id, now_ms()).unwrap_or_else(|e| {
+        eprintln!("ingest refused: {e}");
+        std::process::exit(1);
+    });
+    if let Err(e) = persist_inbox_wire(data_dir, &outer) {
+        eprintln!("persist failed: {e}");
+        std::process::exit(1);
+    }
+    println!("{C_GREEN}ingested{C_RESET} request {}", hex::encode(inner.request_id));
+    println!(
+        "{C_DIM}from{C_RESET} {} — {}",
+        sanitize_terminal_text(&inner.sender_raven_id),
+        sanitize_terminal_text(&inner.sender_display_name)
+    );
+}
+
+fn cmd_contact_accept(data_dir: &Path, request_id_hex: &str, petname: &str) {
+    let id = ensure_identity(data_dir);
+    let rid = parse_request_id_hex(request_id_hex);
+    let mut inbox = load_contact_inbox(data_dir);
+    let outcome = inbox.accept(&rid, &id, petname, now_ms()).unwrap_or_else(|e| {
+        eprintln!("accept failed: {e}");
+        std::process::exit(1);
+    });
+    remove_inbox_wire(data_dir, &rid);
+    // Bind local contact (raven_id + petname); verification = trusted contact.
+    if let Err(e) = add_contact(
+        data_dir,
+        &outcome.binding.raven_id,
+        &outcome.binding.pub_hex,
+        &outcome.binding.petname,
+        "",
+        None,
+    ) {
+        eprintln!("bind note: {e}");
+    }
+    let wire = outcome.accept.encode_wire().unwrap_or_else(|e| {
+        eprintln!("accept wire: {e}");
+        std::process::exit(1);
+    });
+    let out = data_dir.join(format!("contact_accept_{}.wire", hex::encode(rid)));
+    std::fs::write(&out, &wire).ok();
+    println!("{C_GREEN}accepted{C_RESET} + bound petname \"{}\"", sanitize_terminal_text(&outcome.binding.petname));
+    println!("{C_DIM}raven_id{C_RESET} {}", sanitize_terminal_text(&outcome.binding.raven_id));
+    println!("{C_DIM}verify{C_RESET}   {:?}", outcome.binding.verification_state);
+    println!("{C_DIM}accept wire{C_RESET} {} (deliver opaque via MessageRouter)", out.display());
+}
+
+fn cmd_contact_decline(data_dir: &Path, request_id_hex: &str) {
+    let rid = parse_request_id_hex(request_id_hex);
+    let mut inbox = load_contact_inbox(data_dir);
+    if let Err(e) = inbox.decline(&rid) {
+        eprintln!("decline failed: {e}");
+        std::process::exit(1);
+    }
+    remove_inbox_wire(data_dir, &rid);
+    println!("{C_GREEN}declined{C_RESET} {}", hex::encode(rid));
+}
+
+fn cmd_contact_block(data_dir: &Path, request_id_hex: &str) {
+    let rid = parse_request_id_hex(request_id_hex);
+    let mut inbox = load_contact_inbox(data_dir);
+    let mut blocks = BlockList::load(data_dir);
+    if let Err(e) = inbox.block(&rid, &mut blocks) {
+        eprintln!("block failed: {e}");
+        std::process::exit(1);
+    }
+    if let Err(e) = blocks.save(data_dir) {
+        eprintln!("block save failed: {e}");
+        std::process::exit(1);
+    }
+    remove_inbox_wire(data_dir, &rid);
+    println!("{C_GREEN}blocked{C_RESET} sender of {}", hex::encode(rid));
 }
 
 /// Resolve @public_tag — never silent pick when multiple match.
@@ -1778,6 +1984,16 @@ fn main() {
                 message,
                 pick,
             } => cmd_contact_request(&data_dir, &target, &message, pick),
+            ContactCommands::Pending => cmd_contact_pending(&data_dir),
+            ContactCommands::Ingest { file } => cmd_contact_ingest(&data_dir, &file),
+            ContactCommands::Accept {
+                request_id,
+                petname,
+            } => cmd_contact_accept(&data_dir, &request_id, &petname),
+            ContactCommands::Decline { request_id } => {
+                cmd_contact_decline(&data_dir, &request_id)
+            }
+            ContactCommands::Block { request_id } => cmd_contact_block(&data_dir, &request_id),
         },
         Some(Commands::Find {
             query,

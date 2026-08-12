@@ -60,6 +60,7 @@ fn make_alias(id: &Identity, alias: &str, seq: u64, exp: u64) -> AliasRecord {
 }
 
 fn pack_contact_req_env(sender: &Identity, req: &RavenContactRequestV1) -> Envelope {
+    let wire = req.encode_wire().expect("wire");
     let mut env = Envelope {
         env_type: EnvType::Message as u8,
         flags: 0,
@@ -72,7 +73,7 @@ fn pack_contact_req_env(sender: &Identity, req: &RavenContactRequestV1) -> Envel
         replication_budget: 3,
         anti_replay_nonce: [9u8; 12],
         ratchet_header_ciphertext: vec![],
-        message_ciphertext: req.ciphertext.clone(),
+        message_ciphertext: wire,
         sender_authentication: vec![],
     };
     env.sign_with(sender);
@@ -395,7 +396,11 @@ fn a12_ble_bridge_internet_contact_request() {
             assert_eq!(egress, TransportKind::Lan);
             assert_eq!(identity.message_id, [12u8; 16]);
             let fwd = Envelope::unpack(&packed).unwrap();
-            assert_eq!(fwd.message_ciphertext, req.ciphertext);
+            // Wire body carries outer metadata + opaque ciphertext; plaintext note absent.
+            assert!(!String::from_utf8_lossy(&fwd.message_ciphertext).contains("via bridge"));
+            let decoded = RavenContactRequestV1::decode_wire(&fwd.message_ciphertext).unwrap();
+            assert_eq!(decoded.ciphertext, req.ciphertext);
+            assert!(decoded.is_ciphertext_only());
         }
         other => panic!("case12: {other:?}"),
     }
@@ -660,4 +665,149 @@ fn contact_accept_and_intro_lane() {
     .sign(&recipient)
     .unwrap();
     accept.verify().unwrap();
+}
+
+/// Contact-request inbox: accept binds petname + raven_id, emits ContactAcceptV1
+#[test]
+fn contact_inbox_accept_binds() {
+    use raven_core::contact_request::ContactRequestInbox;
+
+    let requester = Identity::generate();
+    let accepter = Identity::generate();
+    let req = RavenContactRequestV1::create(
+        &requester,
+        &accepter.public_key_bytes(),
+        &accepter.address(),
+        ContactRequestInner {
+            request_id: [0xACu8; 16],
+            sender_raven_id: requester.address(),
+            sender_display_name: "Ada".into(),
+            sender_aliases: vec!["ada".into()],
+            sender_profile_digest: [0u8; 32],
+            optional_message: "hi".into(),
+            created_at: now(),
+            expires_at: now() + 60_000,
+        },
+    )
+    .unwrap();
+    let wire = req.encode_wire().unwrap();
+    assert!(!String::from_utf8_lossy(&wire).contains("hi"));
+    let decoded = RavenContactRequestV1::decode_wire(&wire).unwrap();
+    assert_eq!(decoded.request_id, req.request_id);
+
+    let mut inbox = ContactRequestInbox::default();
+    inbox.ingest(decoded, &accepter, now()).unwrap();
+    assert_eq!(inbox.pending().len(), 1);
+
+    let outcome = inbox
+        .accept(&[0xACu8; 16], &accepter, "Ada (work)", now())
+        .unwrap();
+    outcome.accept.verify().unwrap();
+    assert_eq!(outcome.accept.requester_raven_id, requester.address());
+    assert_eq!(outcome.binding.raven_id, requester.address());
+    assert_eq!(outcome.binding.petname, "Ada (work)");
+    assert_eq!(
+        outcome.binding.verification_state,
+        VerificationState::TrustedContact
+    );
+    assert_eq!(outcome.binding.pub_hex, hex::encode(requester.public_key_bytes()));
+    assert!(inbox.pending().is_empty());
+}
+
+/// Decline removes pending without binding
+#[test]
+fn contact_inbox_decline() {
+    use raven_core::contact_request::ContactRequestInbox;
+
+    let requester = Identity::generate();
+    let accepter = Identity::generate();
+    let req = RavenContactRequestV1::create(
+        &requester,
+        &accepter.public_key_bytes(),
+        &accepter.address(),
+        ContactRequestInner {
+            request_id: [0xDEu8; 16],
+            sender_raven_id: requester.address(),
+            sender_display_name: "Bob".into(),
+            sender_aliases: vec![],
+            sender_profile_digest: [0u8; 32],
+            optional_message: String::new(),
+            created_at: now(),
+            expires_at: now() + 60_000,
+        },
+    )
+    .unwrap();
+    let mut inbox = ContactRequestInbox::default();
+    inbox.ingest(req, &accepter, now()).unwrap();
+    inbox.decline(&[0xDEu8; 16]).unwrap();
+    assert!(inbox.pending().is_empty());
+}
+
+/// Block removes pending and adds sender pub to local block list
+#[test]
+fn contact_inbox_block() {
+    use raven_core::contact_request::ContactRequestInbox;
+
+    let requester = Identity::generate();
+    let accepter = Identity::generate();
+    let req = RavenContactRequestV1::create(
+        &requester,
+        &accepter.public_key_bytes(),
+        &accepter.address(),
+        ContactRequestInner {
+            request_id: [0xBBu8; 16],
+            sender_raven_id: requester.address(),
+            sender_display_name: "Eve".into(),
+            sender_aliases: vec![],
+            sender_profile_digest: [0u8; 32],
+            optional_message: String::new(),
+            created_at: now(),
+            expires_at: now() + 60_000,
+        },
+    )
+    .unwrap();
+    let mut inbox = ContactRequestInbox::default();
+    inbox.ingest(req, &accepter, now()).unwrap();
+    let mut blocks = BlockList::default();
+    inbox.block(&[0xBBu8; 16], &mut blocks).unwrap();
+    assert!(inbox.pending().is_empty());
+    assert!(blocks.is_blocked(&hex::encode(requester.public_key_bytes())));
+}
+
+/// Nearby safety phrase required before confirm-to-bind
+#[test]
+fn nearby_confirm_requires_safety_phrase() {
+    use raven_core::nearby::{nearby_safety_phrase, NearbyRegistry};
+
+    let adv = NearbyAdvertisement::mint(now(), 30_000, b"confirm-secret");
+    let phrase = nearby_safety_phrase(&adv.ephemeral_token, &adv.session_commitment);
+    assert!(!phrase.is_empty());
+    assert!(phrase.contains('-'));
+
+    let peer = Identity::generate();
+    let mut near = NearbyRegistry::default();
+    near.publish_ephemeral(adv.clone()).unwrap();
+    // Wrong phrase must refuse bind
+    assert!(near
+        .confirm_with_phrase(
+            adv.ephemeral_token,
+            peer.address(),
+            peer.public_key_bytes(),
+            now(),
+            &adv.session_commitment,
+            "wrong-phrase",
+        )
+        .is_err());
+    assert!(near.confirmed.is_empty());
+    // Matching phrase binds
+    near.confirm_with_phrase(
+        adv.ephemeral_token,
+        peer.address(),
+        peer.public_key_bytes(),
+        now(),
+        &adv.session_commitment,
+        &phrase,
+    )
+    .unwrap();
+    assert_eq!(near.confirmed.len(), 1);
 }

@@ -22,6 +22,10 @@ enum RavenContactRequestError: Error, Equatable {
     case blocked
     case ambiguousPick
     case noCandidate
+    case wrongRecipient
+    case idMismatch
+    case notFound
+    case petnameRequired
 }
 
 struct ContactRequestInner: Equatable {
@@ -102,6 +106,10 @@ struct ContactRequestInner: Equatable {
         let slice = raw.subdata(in: start..<(start + len))
         guard let s = String(data: slice, encoding: .utf8) else { throw RavenContactRequestError.utf8 }
         return (s, start + len)
+    }
+
+    fileprivate static func readLPStringPublic(_ raw: Data, _ off: Int) throws -> (String, Int) {
+        try readLPString(raw, off)
     }
 }
 
@@ -198,6 +206,51 @@ struct RavenContactRequestV1: Equatable {
         return true
     }
 
+    static let wireMagic = Data("rvn1/contact-req-wire".utf8)
+
+    /// Full outer object for MessageRouter body (ciphertext remains opaque to Bridge).
+    func encodeWire() -> Data {
+        var out = Self.wireMagic
+        out.append(requestId)
+        out.append(Self.lp(Data(recipientRavenId.utf8)))
+        out.appendUInt64BE(createdAt)
+        out.appendUInt64BE(expiresAt)
+        out.append(Self.lp(ciphertext))
+        out.append(senderAuthentication)
+        out.append(senderPub)
+        return out
+    }
+
+    static func decodeWire(_ raw: Data) throws -> RavenContactRequestV1 {
+        guard raw.count >= wireMagic.count + 16 + 64 + 32 else {
+            throw RavenContactRequestError.truncated
+        }
+        guard raw.prefix(wireMagic.count) == wireMagic else {
+            throw RavenContactRequestError.badMagic
+        }
+        var off = wireMagic.count
+        let requestId = raw.subdata(in: off..<(off + 16)); off += 16
+        let (recipient, o1) = try ContactRequestInner.readLPStringPublic(raw, off); off = o1
+        guard off + 16 <= raw.count else { throw RavenContactRequestError.truncated }
+        let created = raw.readUInt64BE(at: off); off += 8
+        let expires = raw.readUInt64BE(at: off); off += 8
+        guard off + 2 <= raw.count else { throw RavenContactRequestError.truncated }
+        let ctLen = Int(raw.readUInt16BE(at: off)); off += 2
+        guard off + ctLen + 64 + 32 <= raw.count else { throw RavenContactRequestError.truncated }
+        let ciphertext = raw.subdata(in: off..<(off + ctLen)); off += ctLen
+        let auth = raw.subdata(in: off..<(off + 64)); off += 64
+        let pub = raw.subdata(in: off..<(off + 32))
+        return RavenContactRequestV1(
+            requestId: requestId,
+            recipientRavenId: recipient,
+            createdAt: created,
+            expiresAt: expires,
+            ciphertext: ciphertext,
+            senderAuthentication: auth,
+            senderPub: pub
+        )
+    }
+
     fileprivate static func lp(_ data: Data) -> Data {
         var out = Data()
         out.appendUInt16BE(UInt16(data.count))
@@ -241,6 +294,135 @@ struct ContactAcceptV1: Equatable {
         guard pub.isValidSignature(signature, for: signingBytes()) else {
             throw RavenContactRequestError.badSignature
         }
+    }
+
+    static let wireMagic = Data("rvn1/contact-accept-wire".utf8)
+
+    func encodeWire() -> Data {
+        var out = Self.wireMagic
+        out.append(requestId)
+        out.append(RavenContactRequestV1.lp(Data(accepterRavenId.utf8)))
+        out.append(RavenContactRequestV1.lp(Data(requesterRavenId.utf8)))
+        out.appendUInt64BE(acceptedAt)
+        out.append(signature)
+        out.append(accepterPub)
+        return out
+    }
+
+    static func decodeWire(_ raw: Data) throws -> ContactAcceptV1 {
+        guard raw.count >= wireMagic.count + 16 + 64 + 32 else {
+            throw RavenContactRequestError.truncated
+        }
+        guard raw.prefix(wireMagic.count) == wireMagic else {
+            throw RavenContactRequestError.badMagic
+        }
+        var off = wireMagic.count
+        let requestId = raw.subdata(in: off..<(off + 16)); off += 16
+        let (accepter, o1) = try ContactRequestInner.readLPStringPublic(raw, off); off = o1
+        let (requester, o2) = try ContactRequestInner.readLPStringPublic(raw, off); off = o2
+        guard off + 8 + 64 + 32 <= raw.count else { throw RavenContactRequestError.truncated }
+        let acceptedAt = raw.readUInt64BE(at: off); off += 8
+        let signature = raw.subdata(in: off..<(off + 64)); off += 64
+        let accepterPub = raw.subdata(in: off..<(off + 32))
+        return ContactAcceptV1(
+            requestId: requestId,
+            accepterRavenId: accepter,
+            requesterRavenId: requester,
+            acceptedAt: acceptedAt,
+            signature: signature,
+            accepterPub: accepterPub
+        )
+    }
+}
+
+// MARK: - Inbox (Accept / Decline / Block)
+
+struct PendingContactRequest: Equatable, Identifiable {
+    var id: String { outer.requestId.ravenHex }
+    var outer: RavenContactRequestV1
+    var inner: ContactRequestInner
+    var receivedAt: UInt64
+}
+
+struct ContactBinding: Equatable {
+    var ravenId: String
+    var pubHex: String
+    var petname: String
+    var verificationState: VerificationState
+}
+
+struct ContactAcceptOutcome: Equatable {
+    var accept: ContactAcceptV1
+    var binding: ContactBinding
+}
+
+/// Recipient-side inbox. Opens sealed requests locally; Bridge never sees plaintext.
+struct ContactRequestInbox: Equatable {
+    var pending: [PendingContactRequest] = []
+
+    mutating func ingest(
+        outer: RavenContactRequestV1,
+        recipientSigningKey: Curve25519.Signing.PrivateKey,
+        recipientAddr: String,
+        nowMs: UInt64
+    ) throws -> ContactRequestInner {
+        try outer.verifyOuter(nowMs: nowMs)
+        guard outer.recipientRavenId == recipientAddr else {
+            throw RavenContactRequestError.wrongRecipient
+        }
+        let inner = try outer.open(recipientSigningKey: recipientSigningKey)
+        guard inner.requestId == outer.requestId else {
+            throw RavenContactRequestError.idMismatch
+        }
+        if pending.contains(where: { $0.outer.requestId == outer.requestId }) {
+            return inner
+        }
+        pending.append(PendingContactRequest(outer: outer, inner: inner, receivedAt: nowMs))
+        return inner
+    }
+
+    private mutating func take(_ requestId: Data) throws -> PendingContactRequest {
+        guard let i = pending.firstIndex(where: { $0.outer.requestId == requestId }) else {
+            throw RavenContactRequestError.notFound
+        }
+        return pending.remove(at: i)
+    }
+
+    mutating func accept(
+        requestId: Data,
+        accepterKey: Curve25519.Signing.PrivateKey,
+        petname: String,
+        nowMs: UInt64
+    ) throws -> ContactAcceptOutcome {
+        let item = try take(requestId)
+        let pet = petname.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !pet.isEmpty else { throw RavenContactRequestError.petnameRequired }
+        var accept = ContactAcceptV1(
+            requestId: item.outer.requestId,
+            accepterRavenId: "",
+            requesterRavenId: item.inner.senderRavenId,
+            acceptedAt: nowMs,
+            signature: Data(),
+            accepterPub: Data()
+        )
+        try accept.sign(with: accepterKey)
+        let binding = ContactBinding(
+            ravenId: item.inner.senderRavenId,
+            pubHex: item.outer.senderPub.ravenHex,
+            petname: pet,
+            verificationState: .trustedContact
+        )
+        return ContactAcceptOutcome(accept: accept, binding: binding)
+    }
+
+    mutating func decline(requestId: Data) throws {
+        _ = try take(requestId)
+    }
+
+    /// Local block — no central moderation.
+    mutating func block(requestId: Data) throws -> String {
+        let item = try take(requestId)
+        return item.outer.senderPub.ravenHex
     }
 }
 

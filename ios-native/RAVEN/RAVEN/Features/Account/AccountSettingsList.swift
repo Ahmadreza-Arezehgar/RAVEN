@@ -44,6 +44,21 @@ struct AccountSettingsContent: View {
                 }
                 .buttonStyle(.plain)
 
+                if FeatureFlag.isRavenEnvelopeV1Enabled {
+                    GlassDivider()
+                    NavigationLink {
+                        ContactRequestInboxView()
+                    } label: {
+                        GlassSettingsRow(
+                            title: "Contact Requests",
+                            icon: "person.crop.circle.badge.questionmark",
+                            iconColor: DS.accentPurple,
+                            showChevron: true
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+
                 // ✨ On-device AI (iOS 26+ Foundation Models)
                 if FoundationAIService.shared.isAvailable {
                     GlassDivider()

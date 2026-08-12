@@ -98,4 +98,55 @@ impl NearbyRegistry {
             confirmed_at_ms: now_ms,
         });
     }
+
+    /// Confirm-to-bind only when the user-entered safety phrase matches.
+    pub fn confirm_with_phrase(
+        &mut self,
+        token: [u8; 16],
+        peer_raven_id: String,
+        peer_pub: [u8; 32],
+        now_ms: u64,
+        session_commitment: &[u8; 32],
+        phrase: &str,
+    ) -> Result<(), String> {
+        let expect = nearby_safety_phrase(&token, session_commitment);
+        if !constant_eq_ascii(&expect, phrase.trim()) {
+            return Err("NEARBY_SAFETY_PHRASE_MISMATCH".into());
+        }
+        self.confirm(token, peer_raven_id, peer_pub, now_ms);
+        Ok(())
+    }
+}
+
+/// Short human-checkable phrase from ephemeral token + session commitment.
+/// Shown OOB before pin — finding nearby ≠ verifying a person.
+pub fn nearby_safety_phrase(token: &[u8; 16], commitment: &[u8; 32]) -> String {
+    const WORDS: [&str; 32] = [
+        "amber", "birch", "cedar", "delta", "ember", "flint", "grove", "harbor",
+        "iris", "jade", "kite", "lotus", "maple", "nova", "olive", "pine",
+        "quartz", "river", "sage", "tide", "umbra", "vale", "willow", "xenon",
+        "yarrow", "zephyr", "coral", "dusk", "echo", "fern", "glen", "haze",
+    ];
+    let mut h = Sha256::new();
+    h.update(b"raven/nearby/safety-phrase/v1");
+    h.update(token);
+    h.update(commitment);
+    let dig: [u8; 32] = h.finalize().into();
+    let a = WORDS[(dig[0] as usize) % WORDS.len()];
+    let b = WORDS[(dig[1] as usize) % WORDS.len()];
+    let c = WORDS[(dig[2] as usize) % WORDS.len()];
+    format!("{a}-{b}-{c}")
+}
+
+fn constant_eq_ascii(a: &str, b: &str) -> bool {
+    let a = a.as_bytes();
+    let b = b.as_bytes();
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for i in 0..a.len() {
+        diff |= a[i] ^ b[i];
+    }
+    diff == 0
 }

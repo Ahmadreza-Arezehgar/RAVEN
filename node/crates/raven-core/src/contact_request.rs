@@ -2,8 +2,12 @@
 //!
 //! Delivered as opaque RavenEnvelopeV1 message bodies through MessageRouter
 //! (direct / relay / store / BLE / Bridge). Bridge never decrypts.
+//!
+//! Recipient opens locally into `ContactRequestInbox`, then Accept / Decline / Block.
 
 use crate::canon::{lp, u64_be};
+use crate::chat_history::BlockList;
+use crate::discovery_resolver::VerificationState;
 use crate::identity::Identity;
 use crate::seal::{derive_pairwise_key, seal_message, unseal_message};
 use sha2::{Digest, Sha256};
@@ -11,6 +15,8 @@ use sha2::{Digest, Sha256};
 pub const CONTACT_REQ_DOMAIN: &[u8] = b"rvn1/contact-req";
 pub const CONTACT_ACCEPT_DOMAIN: &[u8] = b"rvn1/contact-accept";
 pub const CONTACT_REQ_INNER: &[u8] = b"rvn1/contact-req-inner";
+pub const CONTACT_REQ_WIRE: &[u8] = b"rvn1/contact-req-wire";
+pub const CONTACT_ACCEPT_WIRE: &[u8] = b"rvn1/contact-accept-wire";
 
 /// Cleartext fields that live *inside* the sealed payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -197,6 +203,65 @@ impl RavenContactRequestV1 {
         h.update(&self.ciphertext);
         h.finalize().into()
     }
+
+    /// Full outer object for MessageRouter body (ciphertext remains opaque to Bridge).
+    pub fn encode_wire(&self) -> Result<Vec<u8>, String> {
+        let mut out = CONTACT_REQ_WIRE.to_vec();
+        out.extend_from_slice(&self.request_id);
+        out.extend(lp(self.recipient_raven_id.as_bytes())?);
+        out.extend_from_slice(&u64_be(self.created_at));
+        out.extend_from_slice(&u64_be(self.expires_at));
+        out.extend(lp(&self.ciphertext)?);
+        out.extend_from_slice(&self.sender_authentication);
+        out.extend_from_slice(&self.sender_pub);
+        Ok(out)
+    }
+
+    pub fn decode_wire(raw: &[u8]) -> Result<Self, String> {
+        if raw.len() < CONTACT_REQ_WIRE.len() + 16 + 64 + 32 {
+            return Err("contact req wire short".into());
+        }
+        if &raw[..CONTACT_REQ_WIRE.len()] != CONTACT_REQ_WIRE {
+            return Err("contact req wire magic".into());
+        }
+        let mut off = CONTACT_REQ_WIRE.len();
+        let mut request_id = [0u8; 16];
+        request_id.copy_from_slice(&raw[off..off + 16]);
+        off += 16;
+        let (recipient_raven_id, n) = read_lp_str(raw, off)?;
+        off = n;
+        if off + 16 > raw.len() {
+            return Err("timestamps".into());
+        }
+        let created_at = u64::from_be_bytes(raw[off..off + 8].try_into().unwrap());
+        off += 8;
+        let expires_at = u64::from_be_bytes(raw[off..off + 8].try_into().unwrap());
+        off += 8;
+        if off + 2 > raw.len() {
+            return Err("ct lp".into());
+        }
+        let ct_len = u16::from_be_bytes([raw[off], raw[off + 1]]) as usize;
+        off += 2;
+        if off + ct_len + 64 + 32 > raw.len() {
+            return Err("ct trunc".into());
+        }
+        let ciphertext = raw[off..off + ct_len].to_vec();
+        off += ct_len;
+        let mut sender_authentication = [0u8; 64];
+        sender_authentication.copy_from_slice(&raw[off..off + 64]);
+        off += 64;
+        let mut sender_pub = [0u8; 32];
+        sender_pub.copy_from_slice(&raw[off..off + 32]);
+        Ok(Self {
+            request_id,
+            recipient_raven_id,
+            created_at,
+            expires_at,
+            ciphertext,
+            sender_authentication,
+            sender_pub,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -232,6 +297,172 @@ impl ContactAcceptV1 {
         if !Identity::verify(&self.accepter_pub, &sb, &self.signature) {
             return Err("CONTACT_ACCEPT_BAD_SIG".into());
         }
+        Ok(())
+    }
+
+    pub fn encode_wire(&self) -> Result<Vec<u8>, String> {
+        let mut out = CONTACT_ACCEPT_WIRE.to_vec();
+        out.extend_from_slice(&self.request_id);
+        out.extend(lp(self.accepter_raven_id.as_bytes())?);
+        out.extend(lp(self.requester_raven_id.as_bytes())?);
+        out.extend_from_slice(&u64_be(self.accepted_at));
+        out.extend_from_slice(&self.signature);
+        out.extend_from_slice(&self.accepter_pub);
+        Ok(out)
+    }
+
+    pub fn decode_wire(raw: &[u8]) -> Result<Self, String> {
+        if raw.len() < CONTACT_ACCEPT_WIRE.len() + 16 + 64 + 32 {
+            return Err("contact accept wire short".into());
+        }
+        if &raw[..CONTACT_ACCEPT_WIRE.len()] != CONTACT_ACCEPT_WIRE {
+            return Err("contact accept wire magic".into());
+        }
+        let mut off = CONTACT_ACCEPT_WIRE.len();
+        let mut request_id = [0u8; 16];
+        request_id.copy_from_slice(&raw[off..off + 16]);
+        off += 16;
+        let (accepter_raven_id, n) = read_lp_str(raw, off)?;
+        off = n;
+        let (requester_raven_id, n) = read_lp_str(raw, off)?;
+        off = n;
+        if off + 8 + 64 + 32 > raw.len() {
+            return Err("accept trunc".into());
+        }
+        let accepted_at = u64::from_be_bytes(raw[off..off + 8].try_into().unwrap());
+        off += 8;
+        let mut signature = [0u8; 64];
+        signature.copy_from_slice(&raw[off..off + 64]);
+        off += 64;
+        let mut accepter_pub = [0u8; 32];
+        accepter_pub.copy_from_slice(&raw[off..off + 32]);
+        Ok(Self {
+            request_id,
+            accepter_raven_id,
+            requester_raven_id,
+            accepted_at,
+            signature,
+            accepter_pub,
+        })
+    }
+}
+
+/// Opened pending request held locally until Accept / Decline / Block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingContactRequest {
+    pub outer: RavenContactRequestV1,
+    pub inner: ContactRequestInner,
+    pub received_at: u64,
+}
+
+/// Local contact row produced on Accept (bound by Raven ID, not alias).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContactBinding {
+    pub raven_id: String,
+    pub pub_hex: String,
+    pub petname: String,
+    pub verification_state: VerificationState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContactAcceptOutcome {
+    pub accept: ContactAcceptV1,
+    pub binding: ContactBinding,
+}
+
+/// Recipient-side inbox. Opens sealed requests locally; Bridge never sees plaintext.
+#[derive(Default)]
+pub struct ContactRequestInbox {
+    pub pending: Vec<PendingContactRequest>,
+}
+
+impl ContactRequestInbox {
+    pub fn pending(&self) -> &[PendingContactRequest] {
+        &self.pending
+    }
+
+    /// Verify outer + open with recipient key; dedup on request_id.
+    pub fn ingest(
+        &mut self,
+        outer: RavenContactRequestV1,
+        recipient: &Identity,
+        now_ms: u64,
+    ) -> Result<ContactRequestInner, String> {
+        outer.verify_outer(now_ms)?;
+        if outer.recipient_raven_id != recipient.address() {
+            return Err("CONTACT_REQ_WRONG_RECIPIENT".into());
+        }
+        let inner = outer.open(recipient)?;
+        if inner.request_id != outer.request_id {
+            return Err("CONTACT_REQ_ID_MISMATCH".into());
+        }
+        if self.pending.iter().any(|p| p.outer.request_id == outer.request_id) {
+            return Ok(inner);
+        }
+        self.pending.push(PendingContactRequest {
+            outer,
+            inner: inner.clone(),
+            received_at: now_ms,
+        });
+        Ok(inner)
+    }
+
+    fn take(&mut self, request_id: &[u8; 16]) -> Result<PendingContactRequest, String> {
+        if let Some(i) = self
+            .pending
+            .iter()
+            .position(|p| &p.outer.request_id == request_id)
+        {
+            Ok(self.pending.remove(i))
+        } else {
+            Err("CONTACT_REQ_NOT_FOUND".into())
+        }
+    }
+
+    /// Accept → signed ContactAcceptV1 + local binding (raven_id + petname).
+    pub fn accept(
+        &mut self,
+        request_id: &[u8; 16],
+        accepter: &Identity,
+        petname: &str,
+        now_ms: u64,
+    ) -> Result<ContactAcceptOutcome, String> {
+        let pending = self.take(request_id)?;
+        let pet = petname.trim();
+        if pet.is_empty() {
+            return Err("CONTACT_ACCEPT_PETNAME_REQUIRED".into());
+        }
+        let accept = ContactAcceptV1 {
+            request_id: pending.outer.request_id,
+            accepter_raven_id: String::new(),
+            requester_raven_id: pending.inner.sender_raven_id.clone(),
+            accepted_at: now_ms,
+            signature: [0u8; 64],
+            accepter_pub: [0u8; 32],
+        }
+        .sign(accepter)?;
+        let binding = ContactBinding {
+            raven_id: pending.inner.sender_raven_id,
+            pub_hex: hex::encode(pending.outer.sender_pub),
+            petname: pet.to_string(),
+            verification_state: VerificationState::TrustedContact,
+        };
+        Ok(ContactAcceptOutcome { accept, binding })
+    }
+
+    pub fn decline(&mut self, request_id: &[u8; 16]) -> Result<(), String> {
+        let _ = self.take(request_id)?;
+        Ok(())
+    }
+
+    /// Local block — no central moderation. Removes pending + blocks sender pub.
+    pub fn block(
+        &mut self,
+        request_id: &[u8; 16],
+        blocks: &mut BlockList,
+    ) -> Result<(), String> {
+        let pending = self.take(request_id)?;
+        blocks.block(&hex::encode(pending.outer.sender_pub));
         Ok(())
     }
 }
