@@ -2,12 +2,15 @@
 
 **Branch:** `feature/raven-serverless-v1`  
 **Baseline start commit:** `18fa01e2a32ef014387ae2857ca272f34555cddd`  
-**Checklist source:** `docs/MASTER_ENGINEERING_CHECKLIST.md`  
+**Primary land commit:** `ce328dd` (local only — not pushed)  
+**Checklist source:** `docs/MASTER_ENGINEERING_CHECKLIST.md` (also mirrored under `node/`)  
 **Updated:** 2026-08-12  
 
 Status legend: `NOT_STARTED` | `IN_PROGRESS` | `IMPLEMENTED` | `REVIEWED` | `FROZEN` | `BLOCKED_HUMAN`
 
 Reviewer for all IMPLEMENTED rows: **pending human** unless noted.
+
+**Last green proofs (this machine):** `cargo test -p raven-core -p ash`; `bridge_v1`; `two_node_demo`; `lan_path_smoke`; `internet_dial_smoke`; `bridge_abc_demo` (incl. reverse); `python3 -m pytest` (25); iOS `RavenEnvelope*` XCTest (25) on iPhone 17 sim.
 
 | § | Section | Status | Evidence / notes |
 |---|---------|--------|------------------|
