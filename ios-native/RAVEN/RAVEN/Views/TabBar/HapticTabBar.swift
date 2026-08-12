@@ -161,7 +161,7 @@ struct HapticTabBar: View {
                     .foregroundStyle(.white)
                     .padding(.horizontal, 5)
                     .padding(.vertical, 2)
-                    .background(Capsule().fill(Color.red))
+                    .background(Capsule().fill(DS.violet))
                     .offset(x: 12, y: -10)
                     .transition(.scale.combined(with: .opacity))
             }

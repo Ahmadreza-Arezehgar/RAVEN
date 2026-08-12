@@ -131,6 +131,7 @@ struct NetworkHubView: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
         .glassSurface(in: RoundedRectangle(cornerRadius: 20))
     }
@@ -155,30 +156,29 @@ struct NetworkHubView: View {
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
         .glassSurface(in: RoundedRectangle(cornerRadius: 20))
     }
 
     private var isBluetoothActive: Bool {
-        bleEngine.bluetoothState == .poweredOn && bleEngine.isScanning
+        bleEngine.bluetoothState == .poweredOn
     }
 
     private var bluetoothStateText: String {
         switch bleEngine.bluetoothState {
         case .poweredOn:
-            return bleEngine.isScanning ? "Powered on · scanning" : "Powered on"
+            return bleEngine.isScanning ? "Active · scanning" : "Active"
         case .poweredOff:
-            return "Powered off"
+            return "Bluetooth is off"
         case .unauthorized:
-            return "Not authorized"
+            return "No Bluetooth permission"
         case .unsupported:
             return "Not supported on this device"
-        case .resetting:
-            return "Resetting"
-        case .unknown:
-            fallthrough
+        case .resetting, .unknown:
+            return "Starting…"
         @unknown default:
-            return "Unknown"
+            return "Starting…"
         }
     }
 
@@ -186,7 +186,7 @@ struct NetworkHubView: View {
 
     private var lanCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Serverless node (LAN)")
+            Text("Serverless node")
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(.secondary)
 
@@ -200,16 +200,17 @@ struct NetworkHubView: View {
             .font(.system(size: 14, weight: .semibold))
             .foregroundStyle(DS.violetSoft)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
         .glassSurface(in: RoundedRectangle(cornerRadius: 20))
     }
 
     private var lanStatusText: String {
-        guard ravenFlagOn else { return "Flag off — LAN path idle" }
+        guard ravenFlagOn else { return "Off" }
         if let lanHostPort {
-            return "Flag on · \(lanHostPort)"
+            return lanHostPort
         }
-        return "Flag on · no peer configured"
+        return "On · not configured"
     }
 
     // MARK: - Internet bridge card
@@ -222,17 +223,15 @@ struct NetworkHubView: View {
             Text(bridgeStatusText)
                 .font(.system(size: 15, weight: .medium))
                 .foregroundStyle(.primary)
-            Text(internetBridgeFlagOn ? "Feature flag: Enabled" : "Feature flag: Disabled")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
         .glassSurface(in: RoundedRectangle(cornerRadius: 20))
     }
 
     private var bridgeStatusText: String {
-        guard internetBridgeFlagOn else { return "Disabled" }
-        return bridgeConnected ? "Connected" : "Not connected"
+        guard internetBridgeFlagOn else { return "Off" }
+        return bridgeConnected ? "Connected" : "Idle"
     }
 
     // MARK: - Refresh (non-published sources only; BLE state updates via @Published)

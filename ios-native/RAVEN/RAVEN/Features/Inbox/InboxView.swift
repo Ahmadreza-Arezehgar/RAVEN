@@ -40,9 +40,9 @@ struct InboxView: View {
         if !networkMonitor.isOnline {
             return .offline
         }
-        if !networkMonitor.serverReachable {
-            return .serviceUnavailable
-        }
+        // OBSIDIAN CLEANUP (2026-08): `.serviceUnavailable` ("Service issue ·
+        // Try again") removed — server reachability is meaningless in the
+        // serverless build and the banner was pure noise.
         if bleEngine.bluetoothState == .poweredOff {
             return .bluetoothOff
         }
@@ -101,14 +101,9 @@ struct InboxView: View {
                             .padding(.horizontal, 24)
                         }
                         
-                        // 🆕 Filter pill bar (All / Unread) — local-only,
-                        // hidden when there's nothing to filter to keep
-                        // the chrome quiet.
-                        if conversationStore.filteredConversations.contains(where: { $0.unreadCount > 0 }) {
-                            InboxFilterPills(selection: $unreadFilter)
-                                .padding(.horizontal, 16)
-                                .padding(.bottom, 4)
-                        }
+                        // OBSIDIAN CLEANUP (2026-08): All/Unread filter pills
+                        // removed — user wants minimal chrome; the filter enum
+                        // stays at .all so list behavior is unchanged.
 
                         // Split pending message requests from active conversations
                         let baseList: [Conversation] = {
@@ -170,41 +165,38 @@ struct InboxView: View {
             .navigationBarTitleDisplayMode(.inline)
             // Note: .searchable removed to avoid duplicate search behind bottom bar
             .toolbar {
-                // Left: New Group button
+                // OBSIDIAN CLEANUP (2026-08): the old three-button cluster
+                // (new-group + plus-menu + compose) collapsed into ONE
+                // trailing compose menu — the big in-list title carries the
+                // screen identity, so the bar stays nearly empty.
                 ToolbarItem(placement: .topBarLeading) {
-                    HStack(spacing: 8) {
-                        if conversationStore.isLoading {
-                            ProgressView().scaleEffect(0.7)
-                        }
-                        GlassCapsuleButton(icon: "person.2.badge.plus", size: 38) {
-                            showNewGroup = true
-                        }
-
-                        Menu {
-                            Button {
-                                showNewGroup = true
-                            } label: {
-                                Label("New Group", systemImage: "person.3")
-                            }
-                            Button {
-                                showSavedMessages = true
-                            } label: {
-                                Label("Saved Messages", systemImage: "bookmark")
-                            }
-                        } label: {
-                            GlassCapsuleButton(icon: "plus", size: 38) {}
-                        }
+                    if conversationStore.isLoading {
+                        ProgressView().scaleEffect(0.7)
                     }
                 }
-
-                // Right: New Chat button
                 ToolbarItem(placement: .topBarTrailing) {
-                    GlassCapsuleButton(icon: "square.and.pencil", size: 38) {
-                        showNewChat = true
+                    Menu {
+                        Button {
+                            showNewChat = true
+                        } label: {
+                            Label("New Chat", systemImage: "square.and.pencil")
+                        }
+                        Button {
+                            showNewGroup = true
+                        } label: {
+                            Label("New Group", systemImage: "person.3")
+                        }
+                        Button {
+                            showSavedMessages = true
+                        } label: {
+                            Label("Saved Messages", systemImage: "bookmark")
+                        }
+                    } label: {
+                        GlassCapsuleButton(icon: "plus", size: 38) {}
                     }
                 }
             }
-            .toolbarBackground(.ultraThinMaterial, for: .navigationBar)
+            .toolbarBackground(.hidden, for: .navigationBar)
             .refreshable {
                 await conversationStore.fetchConversations(forceFull: true)
             }
