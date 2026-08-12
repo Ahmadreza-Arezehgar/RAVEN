@@ -1,0 +1,14 @@
+{
+  "description": "signed by alice, verified as bob",
+  "deterministic": true,
+  "expected": {
+    "verify_result": "reject"
+  },
+  "inputs": {
+    "claimed_signer_ed_public_hex": "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
+    "signature_hex": "48a14acd9e009575f9ba1cb430e6d0ac5ecf97755b0b38ff79aacb12789340cf497231f609040b39271e0b1012fe660867ce92bc17a224c70408a131bafe280b",
+    "signing_bytes_hex": "72766e312f61636b00000000000000000000000000000001010000000000000000000000020000018bcfe56be8"
+  },
+  "name": "ACK verified against wrong key must fail",
+  "protocol_version": "rvn1"
+}

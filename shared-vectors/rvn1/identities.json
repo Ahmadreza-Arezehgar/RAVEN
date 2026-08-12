@@ -1,0 +1,7 @@
+{
+  "alice_address": "rvn1qysluvwl5922yctzd0u9gpr06gn3k7ldfvecule0",
+  "bob_address": "rvn1qyulwy7s5ezz20cy222zrw04rwds39uapqakqskn",
+  "epoch_seconds": 1700000000,
+  "note": "Same RFC-8032 keys as shared-vectors/v1/identities.json.",
+  "protocol_version": "rvn1"
+}

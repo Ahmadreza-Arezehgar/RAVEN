@@ -1,0 +1,17 @@
+{
+  "description": "ack signing bytes + Ed25519 signature (bob)",
+  "deterministic": true,
+  "expected": {
+    "signature_hex": "d07e3df8d65380cdf7c22a6451385fed401c27744d10178feb625ea398d1af0adc9b07f6d525ba32f7c8b7e35a62cd4cb3dfbdb445410251247aaf2b7ea5ae04",
+    "signing_bytes_hex": "72766e312f61636b00000000000000000000000000000001010000000000000000000000020000018bcfe56be8"
+  },
+  "inputs": {
+    "ack_nonce_hex": "000000000000000000000002",
+    "acked_message_id_hex": "00000000000000000000000000000001",
+    "created_at_ms": 1700000001000,
+    "signer_ed_public_hex": "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
+    "status": 1
+  },
+  "name": "RavenAckV1 \u2014 delivered",
+  "protocol_version": "rvn1"
+}

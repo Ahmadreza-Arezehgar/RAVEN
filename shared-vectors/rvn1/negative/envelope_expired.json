@@ -1,0 +1,13 @@
+{
+  "description": "expires_at < validation clock",
+  "deterministic": true,
+  "expected": {
+    "relay_action": "drop"
+  },
+  "inputs": {
+    "expires_at_ms": 1699999999000,
+    "validation_clock_ms": 1700000000000
+  },
+  "name": "Envelope past expires_at must be dropped by relays",
+  "protocol_version": "rvn1"
+}
