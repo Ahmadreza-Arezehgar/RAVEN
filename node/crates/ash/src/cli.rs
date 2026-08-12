@@ -673,7 +673,33 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// Detect pasted zsh/bash setup lines (export PATH, cargo build, mktemp, $DATA…).
+fn looks_like_shell_input(s: &str) -> bool {
+    for line in s.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let lower = line.to_ascii_lowercase();
+        if lower.starts_with("export ")
+            || lower.starts_with("cargo ")
+            || lower.contains("mktemp")
+            || lower.contains("$data")
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn shell_paste_rejection() -> &'static str {
+    "That looks like a Terminal shell command. Exit ash (q), run those in zsh. Here paste only rvn1… or 64-char pub_hex from the other person's: ash whoami"
+}
+
 fn parse_pub_hex(s: &str) -> Result<[u8; 32], String> {
+    if looks_like_shell_input(s) {
+        return Err(shell_paste_rejection().into());
+    }
     let h = s.trim().to_lowercase();
     if h.len() != 64 {
         return Err("pub_hex must be 64 hex chars (32 bytes)".into());
@@ -1472,6 +1498,10 @@ fn cmd_contact_add_interactive(data_dir: &Path) {
         println!("{dim}cancelled.{reset}");
         return;
     }
+    if looks_like_shell_input(&who) {
+        eprintln!("{}", shell_paste_rejection());
+        return;
+    }
 
     let address;
     let pub_hex;
@@ -1485,12 +1515,23 @@ fn cmd_contact_add_interactive(data_dir: &Path) {
         let claims = resolve_alias_claims_for_add(data_dir, &tag);
         if claims.is_empty() {
             println!("{dim}No local alias claim for @{tag}.{reset}");
-            println!("{dim}Ask them for their rvn1… address + pub_hex (ash whoami), or:{reset}");
-            println!("  {bold}ash find @{tag}{reset}");
+            println!(
+                "{dim}Serverless: there is no global @alias directory. You need their rvn1… + pub_hex from their{reset} {bold}ash whoami{reset}{dim},{reset}"
+            );
+            println!(
+                "{dim}or they must publish the alias first and that claim must reach you (local/peers).{reset}"
+            );
+            println!(
+                "{dim}ash find @{tag} only helps when a claim is already available — it does not work as offline lookup.{reset}"
+            );
             print!("Paste rvn1… address instead (or Enter to cancel): ");
             let _ = io::stdout().flush();
             address = read_line();
             if address.trim().is_empty() {
+                return;
+            }
+            if looks_like_shell_input(&address) {
+                eprintln!("{}", shell_paste_rejection());
                 return;
             }
             print!("pub_hex (64 chars, public only): ");
@@ -1538,6 +1579,11 @@ fn cmd_contact_add_interactive(data_dir: &Path) {
         print!("optional public @tag (Soft Unique, e.g. poline): ");
         let _ = io::stdout().flush();
         tag = read_line();
+    }
+
+    if looks_like_shell_input(&address) || looks_like_shell_input(&pub_hex) {
+        eprintln!("{}", shell_paste_rejection());
+        return;
     }
 
     print!("Optional petname (e.g. \"Poline\" — local label): ");
@@ -2534,5 +2580,26 @@ mod tests {
         assert!(!C_PURPLE.contains("38;2"));
         assert!(!C_GREEN.contains("38;2"));
         assert_eq!(C_CYAN, C_BOLD);
+    }
+
+    #[test]
+    fn shell_looking_paste_is_detected() {
+        assert!(looks_like_shell_input("export PATH=\"$HOME/.cargo/bin:$PATH\""));
+        assert!(looks_like_shell_input("cargo build -p ash"));
+        assert!(looks_like_shell_input("DATA=$(mktemp -d)"));
+        assert!(looks_like_shell_input("ash --data-dir \"$DATA\" whoami"));
+        assert!(!looks_like_shell_input("rvn1qexampleaddressonly"));
+        assert!(!looks_like_shell_input(
+            "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+        ));
+        assert!(!looks_like_shell_input("@poline"));
+    }
+
+    #[test]
+    fn parse_pub_hex_rejects_shell_paste_clearly() {
+        let err = parse_pub_hex("export PATH=/usr/bin:$PATH").unwrap_err();
+        assert!(err.contains("Terminal shell command"));
+        assert!(err.contains("ash whoami"));
+        assert!(!err.contains("64 hex"));
     }
 }
