@@ -1,0 +1,80 @@
+# Raven serverless node CI — raven-core / ash / raven-swarm / protocol vectors
+# Local workflow file (§57). Not pushed unless the user requests.
+name: Raven Serverless Node
+
+on:
+  push:
+    paths:
+      - "node/**"
+      - "protocol/**"
+      - "shared-vectors/**"
+      - ".github/workflows/raven-serverless.yml"
+  pull_request:
+    paths:
+      - "node/**"
+      - "protocol/**"
+      - "shared-vectors/**"
+      - ".github/workflows/raven-serverless.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: raven-serverless-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust-linux:
+    name: Rust + vectors (Linux)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: node
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: node
+      - name: fmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy -p raven-core -p ash -p raven-node -p raven-swarm -- -W clippy::all
+      - name: test raven-core + ash
+        run: cargo test -p raven-core -p ash
+      - name: bridge + fuzz smoke
+        run: cargo test -p raven-core --test bridge_v1 --test fuzz_smoke
+      - name: build swarm
+        run: cargo build -p raven-swarm -p raven-node
+      - name: libp2p swarm smoke
+        run: ./scripts/libp2p_swarm_smoke.sh
+      - name: bootstrap manual-peer smoke
+        run: ./scripts/bootstrap_manual_peer_smoke.sh
+      - name: internet dial smoke
+        run: ./scripts/internet_dial_smoke.sh
+      - name: protocol vectors (python)
+        working-directory: protocol/reference
+        run: |
+          python3 -m pip install -q pytest
+          python3 -m pytest -q
+
+  rust-macos:
+    name: Rust (macOS)
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: node
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: node
+      - name: test raven-core + ash + swarm build
+        run: |
+          cargo test -p raven-core -p ash
+          cargo build -p raven-swarm -p raven-node
+      - name: libp2p swarm smoke
+        run: ./scripts/libp2p_swarm_smoke.sh
+      - name: bootstrap manual-peer smoke
+        run: ./scripts/bootstrap_manual_peer_smoke.sh

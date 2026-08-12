@@ -58,6 +58,48 @@ impl PeerRecord {
         h.update(self.ed25519_pub);
         h.finalize().into()
     }
+
+    /// Wire bytes for DHT put/get (no secrets).
+    /// Format: lp(dial) || ed25519_pub32 || caps_u32_be || expires_u64_be || sig64
+    pub fn encode(&self) -> Result<Vec<u8>, String> {
+        let mut out = Vec::new();
+        out.extend(lp(self.dial.as_bytes())?);
+        out.extend_from_slice(&self.ed25519_pub);
+        out.extend_from_slice(&self.caps.to_be_bytes());
+        out.extend_from_slice(&u64_be(self.expires_at_ms));
+        out.extend_from_slice(&self.signature);
+        Ok(out)
+    }
+
+    pub fn decode(raw: &[u8]) -> Result<Self, String> {
+        if raw.len() < 2 + 32 + 4 + 8 + 64 {
+            return Err("peer record short".into());
+        }
+        let dial_len = u16::from_be_bytes([raw[0], raw[1]]) as usize;
+        let mut off = 2;
+        if raw.len() < off + dial_len + 32 + 4 + 8 + 64 {
+            return Err("peer record truncated".into());
+        }
+        let dial = String::from_utf8(raw[off..off + dial_len].to_vec())
+            .map_err(|_| "dial utf8".to_string())?;
+        off += dial_len;
+        let mut ed25519_pub = [0u8; 32];
+        ed25519_pub.copy_from_slice(&raw[off..off + 32]);
+        off += 32;
+        let caps = u32::from_be_bytes([raw[off], raw[off + 1], raw[off + 2], raw[off + 3]]);
+        off += 4;
+        let expires_at_ms = u64::from_be_bytes(raw[off..off + 8].try_into().unwrap());
+        off += 8;
+        let mut signature = [0u8; 64];
+        signature.copy_from_slice(&raw[off..off + 64]);
+        Ok(Self {
+            dial,
+            ed25519_pub,
+            caps,
+            expires_at_ms,
+            signature,
+        })
+    }
 }
 
 /// Opaque alias→identity hint for gossip (alias bytes hashed; not plaintext index required).
@@ -146,4 +188,27 @@ mod tests {
     fn nat_status_mentions_blocked_hardware() {
         assert!(NAT_STATUS.contains("BLOCKED_HARDWARE"));
     }
+
+    #[test]
+    fn peer_record_encode_decode() {
+        let id = Identity::generate();
+        let rec = PeerRecord {
+            dial: "/ip4/127.0.0.1/tcp/4001".into(),
+            ed25519_pub: [0u8; 32],
+            caps: CAP_INTERNET_HINT,
+            expires_at_ms: u64::MAX / 2,
+            signature: [0u8; 64],
+        }
+        .sign(&id)
+        .unwrap();
+        let raw = rec.encode().unwrap();
+        let back = PeerRecord::decode(&raw).unwrap();
+        assert_eq!(back.dial, rec.dial);
+        assert_eq!(back.ed25519_pub, rec.ed25519_pub);
+        back.verify(1).unwrap();
+    }
 }
+
+/// Capability bit used only in encode tests (mirrors internet CAP_INTERNET loosely).
+#[cfg(test)]
+const CAP_INTERNET_HINT: u32 = 1 << 1;

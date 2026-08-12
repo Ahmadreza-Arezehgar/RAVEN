@@ -3,9 +3,10 @@ resolver = "2"
 members = [
     "crates/raven-core",
     "crates/raven-node",
+    "crates/raven-swarm",
     "crates/ash",
 ]
-default-members = ["crates/raven-core", "crates/raven-node", "crates/ash"]
+default-members = ["crates/raven-core", "crates/raven-node", "crates/raven-swarm", "crates/ash"]
 
 [workspace.package]
 version = "0.1.0"

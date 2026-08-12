@@ -12,8 +12,10 @@ pub mod atsam_mlkem;
 pub mod atsam_root;
 pub mod bech32m;
 pub mod ble_adapter;
+pub mod bootstrap;
 pub mod bridge;
 pub mod canon;
+pub mod device_cert;
 pub mod discovery;
 pub mod envelope;
 pub mod fingerprint;
@@ -37,6 +39,13 @@ pub use address::{decode_address, encode_address, from_display, to_display};
 pub use atsam_aead::{build_aad_v1, build_aad_v2, seal_rvna1_v2, unseal_rvna1_v2};
 pub use atsam_mlkem::{initiate_hybrid_root, respond_hybrid_root, HybridKeypair};
 pub use atsam_root::{derive_root, transcript_hash, x25519_shared};
+pub use bootstrap::{
+    bootstrap_path, load_bootstrap, save_bootstrap, BootstrapConfig, BootstrapError,
+};
+pub use device_cert::{
+    device_registry_path, load_device_registry, save_device_registry, DeviceCertificate,
+    DeviceRegistry,
+};
 pub use discovery::{alias_hint_key, DiscoveryStore, PeerRecord, NAT_STATUS};
 pub use internet::{
     bits_to_caps, caps_to_bits, deframe_prefix, frame, opaque_store_tag, pack_hello,

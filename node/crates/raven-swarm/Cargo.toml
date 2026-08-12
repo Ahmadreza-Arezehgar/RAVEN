@@ -1,0 +1,32 @@
+[package]
+name = "raven-swarm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "RAVEN rust-libp2p TCP/QUIC swarm + Kad discovery (no FastAPI)"
+
+[[bin]]
+name = "raven-swarm"
+path = "src/main.rs"
+
+[dependencies]
+raven-core = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+hex = { workspace = true }
+sha2 = { workspace = true }
+futures = "0.3"
+libp2p = { version = "0.56", features = [
+    "tokio",
+    "tcp",
+    "quic",
+    "noise",
+    "yamux",
+    "kad",
+    "identify",
+    "ping",
+    "macros",
+] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

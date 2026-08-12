@@ -7,9 +7,9 @@
 //! RNG bridging: workspace `rand` 0.8 ≠ ml-kem's rand_core 0.10 `CryptoRng`, so we
 //! draw bytes via `RngCore` and feed seed / deterministic encap (`hazmat`) APIs.
 //!
-//! Honest gap: Apple CryptoKit ML-KEM ciphertext bytes are not yet cross-checked
-//! against these KATs in CI (OS-gated on iOS). Rust proves encap/decap agreement
-//! and hybrid root derivation.
+//! Honest gap closed for software KATs: shared-vectors/rvn1/atsam/mlkem768_hybrid_kat_001.json
+//! is verified by Rust (`atsam_mlkem` tests) and by Swift CryptoKit on macOS/iOS 26+
+//! (`ATSAMMlKemHybridKatTests`). Public Internet Kad / CGNAT remain BLOCKED_HARDWARE.
 
 use ml_kem::kem::{Decapsulate, Key, KeyExport};
 use ml_kem::{B32, DecapsulationKey, EncapsulationKey, MlKem768, Seed};
@@ -127,9 +127,13 @@ pub fn encapsulate_deterministic(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::atsam_root::transcript_hash;
+    use crate::atsam_root::{derive_root, transcript_hash, x25519_shared};
+    use ml_kem::kem::Decapsulate;
+    use ml_kem::{DecapsulationKey, MlKem768, Seed};
     use rand::rngs::StdRng;
     use rand::SeedableRng;
+    use serde_json::Value;
+    use std::path::PathBuf;
 
     #[test]
     fn hybrid_agreement() {
@@ -156,5 +160,98 @@ mod tests {
         assert_eq!(root_a, root_b);
         assert_eq!(ct.len(), CT_LEN);
         assert_eq!(bob.mlkem_ek_bytes.len(), EK_LEN);
+    }
+
+    fn vectors_root() -> PathBuf {
+        let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        p.pop();
+        p.pop();
+        p.pop();
+        p.join("shared-vectors").join("rvn1")
+    }
+
+    fn load_kat() -> Value {
+        let path = vectors_root().join("atsam/mlkem768_hybrid_kat_001.json");
+        let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{e} {}", path.display()));
+        serde_json::from_str(&raw).expect("json")
+    }
+
+    fn hex32(s: &str) -> [u8; 32] {
+        let v = hex::decode(s).unwrap();
+        let mut a = [0u8; 32];
+        a.copy_from_slice(&v);
+        a
+    }
+
+    fn hex64(s: &str) -> [u8; 64] {
+        let v = hex::decode(s).unwrap();
+        let mut a = [0u8; 64];
+        a.copy_from_slice(&v);
+        a
+    }
+
+    #[test]
+    fn shared_vector_rust_deterministic_encap_and_hybrid_root() {
+        let v = load_kat();
+        let inp = &v["input"];
+        let exp = &v["expected"];
+        let seed = hex64(inp["mlkem_seed_hex"].as_str().unwrap());
+        let m = hex32(inp["mlkem_m_hex"].as_str().unwrap());
+        let (ct, z_pq) = encapsulate_deterministic(
+            &hex::decode(exp["mlkem_ek_hex"].as_str().unwrap()).unwrap(),
+            &m,
+        )
+        .unwrap();
+        assert_eq!(hex::encode(&ct), exp["mlkem_ct_hex"].as_str().unwrap());
+        assert_eq!(hex::encode(z_pq), exp["z_pq_hex"].as_str().unwrap());
+
+        // Seed → EK match
+        let dk_seed = Seed::try_from(seed.as_slice()).unwrap();
+        let dk = DecapsulationKey::<MlKem768>::from_seed(dk_seed);
+        assert_eq!(
+            hex::encode(dk.encapsulation_key().to_bytes().as_slice()),
+            exp["mlkem_ek_hex"].as_str().unwrap()
+        );
+
+        let alice_x = hex32(inp["alice_x25519_secret_hex"].as_str().unwrap());
+        let bob_x = hex32(inp["bob_x25519_secret_hex"].as_str().unwrap());
+        let bob_pk = hex32(exp["bob_x25519_public_hex"].as_str().unwrap());
+        let z_x = x25519_shared(&alice_x, &bob_pk);
+        assert_eq!(hex::encode(z_x), exp["z_x_hex"].as_str().unwrap());
+        let th = transcript_hash(inp["transcript_material_utf8"].as_str().unwrap().as_bytes());
+        assert_eq!(
+            hex::encode(th),
+            exp["transcript_hash_hex"].as_str().unwrap()
+        );
+        let root = derive_root(&z_x, &z_pq, &th);
+        assert_eq!(hex::encode(root), exp["k_root_hex"].as_str().unwrap());
+
+        // Decap of deterministic CT via seed
+        let root_b = respond_hybrid_root(
+            &bob_x,
+            &hex32(exp["alice_x25519_public_hex"].as_str().unwrap()),
+            &seed,
+            &ct,
+            &th,
+        )
+        .unwrap();
+        assert_eq!(root_b, root);
+    }
+
+    #[test]
+    fn shared_vector_rust_decaps_cryptokit_ciphertext() {
+        let v = load_kat();
+        let inp = &v["input"];
+        let exp = &v["expected"];
+        let seed = hex64(inp["mlkem_seed_hex"].as_str().unwrap());
+        let ct = hex::decode(exp["cryptokit_ct_hex"].as_str().unwrap()).unwrap();
+        let dk_seed = Seed::try_from(seed.as_slice()).unwrap();
+        let dk = DecapsulationKey::<MlKem768>::from_seed(dk_seed);
+        let ct_arr = ct.as_slice().try_into().expect("ct");
+        let ss = dk.decapsulate(&ct_arr);
+        assert_eq!(
+            hex::encode(ss.as_slice()),
+            exp["cryptokit_z_pq_hex"].as_str().unwrap()
+        );
     }
 }

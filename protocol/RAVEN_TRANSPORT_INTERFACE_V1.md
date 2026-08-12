@@ -59,10 +59,10 @@ Ed25519-signed. MAY be published into a Kademlia DHT when `rust-libp2p` integrat
 | Feature | V1 status |
 |---------|-----------|
 | TCP length-prefix + hello | **IMPLEMENTED** |
-| QUIC / Noise / Yamux stack | Scaffold / optional — not required for serverless proof substitutes |
-| DHT signed discovery | Record format **IMPLEMENTED**; live DHT **IN_PROGRESS** |
+| QUIC / Noise / Yamux stack | **IMPLEMENTED** local swarm (`raven-swarm`: TCP+Noise+Yamux; QUIC listen attempted) |
+| DHT signed discovery | Record format **IMPLEMENTED**; local Kad put/get **IMPLEMENTED**; public Internet Kad **BLOCKED_HARDWARE** |
 | Circuit relay / DCUtR | Not complete — see BLOCKED_HARDWARE |
 
 ## 7. Tests
 
-`internet` unit tests, `internet_dial_smoke.sh`, `lan_path_smoke.sh`, bridge demos.
+`internet` unit tests, `internet_dial_smoke.sh`, `lan_path_smoke.sh`, `libp2p_swarm_smoke.sh`, `bootstrap_manual_peer_smoke.sh`, bridge demos.

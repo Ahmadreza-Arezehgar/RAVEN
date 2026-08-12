@@ -9,7 +9,7 @@
 - Public-to-NAT, NAT-to-NAT, carrier-grade NAT
 - AutoNAT reachability probes on real networks
 - Circuit Relay v2 reservations + DCUtR hole punch
-- Full `rust-libp2p` Quic+Kad swarm on the public Internet
+- Full `rust-libp2p` Quic+Kad swarm on the **public Internet** (localhost two-node TCP+Kad software proof: `node/scripts/libp2p_swarm_smoke.sh`)
 
 ## Software substitutes (landed)
 
