@@ -14,6 +14,7 @@ struct NewChatView: View {
     @State private var errorMessage: String?
     @State private var showScanner = false
     @State private var showMyQR = false
+    @State private var showRemoteInvite = false
     @State private var pendingRemove: GroupFriendInfo?   // swipe-to-remove confirm
 
     private var filteredFriends: [GroupFriendInfo] {
@@ -69,6 +70,14 @@ struct NewChatView: View {
                         } label: {
                             Label("My QR Code", systemImage: "qrcode")
                         }
+                        Divider()
+                        // The only path that works when the other person is not
+                        // physically present.
+                        Button {
+                            showRemoteInvite = true
+                        } label: {
+                            Label("Add Someone Remotely", systemImage: "link.circle")
+                        }
                     } label: {
                         Image(systemName: "qrcode.viewfinder")
                     }
@@ -80,6 +89,9 @@ struct NewChatView: View {
             }
             .sheet(isPresented: $showMyQR) {
                 MyQRCodeView()
+            }
+            .sheet(isPresented: $showRemoteInvite, onDismiss: { Task { await loadFriends() } }) {
+                RemoteInviteView()
             }
         }
         .scrollDismissesKeyboard(.interactively)
@@ -117,10 +129,17 @@ struct NewChatView: View {
                             Text(friend.safeDisplayName)
                                 .font(.body)
                                 .foregroundStyle(.primary)
-                            
-                            Text("@\(friend.username)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+
+                            // Local QR-scanned contacts often have an empty
+                            // username (or one identical to the display name),
+                            // which previously rendered a bare "@" line. Only
+                            // show a real "@username"; otherwise fall back to a
+                            // short fingerprint so the row still has a subtitle.
+                            if let subtitle = friend.pickerSubtitle {
+                                Text(subtitle)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                         
                         Spacer()
@@ -164,9 +183,21 @@ struct NewChatView: View {
     /// can't be sealed to without a fresh out-of-band (QR) re-pin.
     private func removeContact(_ friend: GroupFriendInfo) async {
         let userId = friend.id
-        let devices = await FriendDeviceRepository.shared.getTrustedDevices(forUser: userId)
-        for d in devices {
-            try? await FriendDeviceRepository.shared.deleteDevice(d.fingerprint)
+        // 🔧 FIX: wipe EVERY pinned device row for this peer regardless of
+        // trustState — not just `.trusted`. Previously only trusted rows were
+        // deleted, so pending/unverified/revoked rows for the same friendUserId
+        // lingered, causing the contact to reappear / surface stale state. The
+        // repository exposes no `delete(byUserId:)`, so we resolve all matching
+        // fingerprints straight from the friend_devices table (any trust_state)
+        // and delete each through the existing per-fingerprint API, which keeps
+        // the repository's in-memory cache coherent.
+        let rows = (try? await DatabaseService.shared.query(
+            "SELECT fingerprint FROM friend_devices WHERE friend_user_id = ?",
+            params: [userId]
+        )) ?? []
+        let fingerprints = rows.compactMap { $0["fingerprint"] as? String }
+        for fp in fingerprints {
+            try? await FriendDeviceRepository.shared.deleteDevice(fp)
         }
         PeerKeyDirectory.shared.clearAgreementKey(for: userId)
         pendingRemove = nil
@@ -283,6 +314,23 @@ struct NewChatView: View {
         onSelect(conversation)
         // BUG FIX: Removed `dismiss()` to prevent a double-dismissal crash.
         // The parent view naturally dismisses this sheet when changing the state variable.
+    }
+}
+
+// MARK: - Row subtitle helper
+
+private extension GroupFriendInfo {
+    /// Subtitle shown under the display name in the picker.
+    /// Returns "@username" only when the username is non-empty and distinct
+    /// from the display name; otherwise a short id fingerprint; `nil` when
+    /// neither is meaningful (so the caller hides the line entirely).
+    var pickerSubtitle: String? {
+        let handle = username.trimmingCharacters(in: .whitespaces)
+        if !handle.isEmpty && handle.caseInsensitiveCompare(safeDisplayName) != .orderedSame {
+            return "@\(handle)"
+        }
+        let fp = String(id.prefix(8))
+        return fp.isEmpty ? nil : fp
     }
 }
 

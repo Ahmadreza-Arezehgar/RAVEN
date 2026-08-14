@@ -97,6 +97,7 @@ grep -q 'contact saved' "$WORKDIR/a.contact"
 printf 'hello-from-ash-contact\n' | "$ASH" --data-dir "$WORKDIR/a" send \
   --peer "$B_LISTEN" \
   --peer-pub-hex "$B_PUB" \
+  --stdin-text \
   >"$WORKDIR/a.send" 2>&1
 
 wait "$BPID" || true

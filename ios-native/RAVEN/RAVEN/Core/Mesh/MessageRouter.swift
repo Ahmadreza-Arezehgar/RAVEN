@@ -265,6 +265,12 @@ final class MessageRouter: ObservableObject {
             #endif
             return
         }
+        guard RavenServerlessLanPath.isEligibleOutboundSealedBody(sealed) else {
+            #if DEBUG
+            print("🔒 [LAN] hold \(mid.prefix(8)) — no authenticated session ciphertext")
+            #endif
+            return
+        }
         let wifiUp: Bool = {
             let mon = NetworkMonitor.shared
             switch mon.connectionType {
@@ -309,21 +315,13 @@ final class MessageRouter: ObservableObject {
             hybridPQHint: hybrid
         )
         do {
-            let ack = try await RavenServerlessLanPath.sendEnvelope(
-                env,
+            try await RavenServerlessLanPath.sendPackedFireAndForget(
+                env.pack(),
                 host: config.host,
                 port: config.port
             )
-            // Real endpoint ACK (opaque) → UI Delivered ticks; no bridge keys.
-            if let acked = RavenEnvelopeEndpointIngest.opaqueAckedMessageId(from: ack) {
-                _ = await RavenEnvelopeChatWire.shared.applyDeliveredFromAck(
-                    ackedEnvelopeId: Data(acked)
-                )
-            } else {
-                await RavenEnvelopeChatWire.applyDelivered(clientMessageId: mid)
-            }
             #if DEBUG
-            print("🕊️ [LAN] ACK → Delivered for \(mid.prefix(8))")
+            print("🕊️ [LAN] submitted opaque envelope for \(mid.prefix(8)); awaiting authenticated endpoint receipt")
             #endif
         } catch {
             #if DEBUG
@@ -351,6 +349,12 @@ final class MessageRouter: ObservableObject {
         ) else { return }
 
         guard let sealed = Data(base64Encoded: sealedBase64), sealed.count >= 8 else { return }
+        guard RavenServerlessLanPath.isEligibleOutboundSealedBody(sealed) else {
+            #if DEBUG
+            print("🔒 [BLE-RVN1] hold \(mid.prefix(8)) — no authenticated session ciphertext")
+            #endif
+            return
+        }
         guard let seed = DeviceIdentityService.shared.deviceSigningSeed,
               let signingKey = try? Curve25519.Signing.PrivateKey(rawRepresentation: seed) else {
             return

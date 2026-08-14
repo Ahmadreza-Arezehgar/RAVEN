@@ -112,7 +112,9 @@ pub fn sanitize_terminal_text(input: &str) -> String {
 /// True if input contained dangerous controls before sanitization.
 pub fn had_dangerous_controls(input: &str) -> bool {
     sanitize_terminal_text(input) != input
-        || input.chars().any(|c| c == '\u{1b}' || BIDI_CONTROLS.contains(&c))
+        || input
+            .chars()
+            .any(|c| c == '\u{1b}' || BIDI_CONTROLS.contains(&c))
 }
 
 #[cfg(test)]
@@ -128,7 +130,7 @@ mod tests {
     #[test]
     fn strips_bidi_override() {
         // RLO can reverse displayed order: spoof "alice" as something else in some UIs.
-        let s = format!("evila\u{202E}ecila");
+        let s = "evila\u{202E}ecila".to_string();
         let clean = sanitize_terminal_text(&s);
         assert!(!clean.contains('\u{202E}'));
         assert_eq!(clean, "evilaecila");

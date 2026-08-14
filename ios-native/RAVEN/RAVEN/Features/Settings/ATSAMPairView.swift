@@ -18,6 +18,11 @@
 import SwiftUI
 import CryptoKit
 
+// This developer scaffold has only a DEBUG-gated entry point
+// (SecuritySettingsView), so the entire file is excluded from
+// Release builds.
+#if DEBUG
+
 struct ATSAMPairView: View {
 
     @StateObject private var model = ATSAMPairModel()
@@ -301,11 +306,11 @@ private extension Data {
     }
 }
 
-#if DEBUG
 #Preview {
     NavigationStack {
         ATSAMPairView()
     }
     .preferredColorScheme(.dark)
 }
-#endif
+
+#endif // DEBUG

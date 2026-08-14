@@ -43,6 +43,24 @@ final class RavenEnvelopeV1VectorsTests: XCTestCase {
         return data
     }
 
+    private func structurallyValidEnvelope() -> RavenEnvelopeV1 {
+        RavenEnvelopeV1(
+            envType: RavenEnvelopeV1.EnvType.message.rawValue,
+            messageId: Data(repeating: 0x11, count: 16),
+            routingTag: Data(repeating: 0x22, count: 16),
+            createdAtMs: 10,
+            expiresAtMs: 20,
+            hopLimit: 8,
+            replicationBudget: 3,
+            antiReplayNonce: Data(repeating: 0x33, count: 12),
+            ratchetHeaderCiphertext: Data(repeating: 0x44, count: 3),
+            messageCiphertext: Data(repeating: 0x55, count: 5),
+            // Structure decoding checks the canonical signature width.
+            // Authenticity remains the caller's subsequent endpoint check.
+            senderAuthentication: Data(repeating: 0, count: 64)
+        )
+    }
+
     func testAliceAddressMatchesVector() throws {
         let v = try loadJSON("address/encode_alice.json")
         let inputs = v["inputs"] as! [String: Any]
@@ -50,6 +68,39 @@ final class RavenEnvelopeV1VectorsTests: XCTestCase {
         let ed = hex(inputs["ed_public_hex"] as! String)
         let addr = RavenAddressV1.encode(ed25519PublicKey: ed)
         XCTAssertEqual(addr, expected["address"] as? String)
+    }
+
+    func testRoutingTagMatchesFrozenVectors() throws {
+        let first = try loadJSON("routing/tag_alice_bob_000.json")
+        let firstInputs = first["inputs"] as! [String: Any]
+        let firstExpected = first["expected"] as! [String: Any]
+        let key = hex(firstInputs["k_route_hex"] as! String)
+        let epoch = firstInputs["epoch"] as! UInt64
+        let firstCounter = firstInputs["counter"] as! UInt64
+        let firstTag = try XCTUnwrap(
+            RavenRoutingTagV1.derive(kRoute: key, epoch: epoch, counter: firstCounter)
+        )
+        XCTAssertEqual(
+            firstTag.map { String(format: "%02x", $0) }.joined(),
+            firstExpected["tag_hex"] as? String
+        )
+
+        let second = try loadJSON("routing/tag_unlinkable_001.json")
+        let secondInputs = second["inputs"] as! [String: Any]
+        let secondExpected = second["expected"] as! [String: Any]
+        let secondTag = try XCTUnwrap(
+            RavenRoutingTagV1.derive(
+                kRoute: key,
+                epoch: secondInputs["epoch"] as! UInt64,
+                counter: secondInputs["counter"] as! UInt64
+            )
+        )
+        XCTAssertEqual(
+            secondTag.map { String(format: "%02x", $0) }.joined(),
+            secondExpected["tag_hex"] as? String
+        )
+        XCTAssertTrue(RavenRoutingTagV1.matches(firstTag, firstTag))
+        XCTAssertFalse(RavenRoutingTagV1.matches(firstTag, secondTag))
     }
 
     func testEnvelopePackSignMatchesVector() throws {
@@ -112,6 +163,55 @@ final class RavenEnvelopeV1VectorsTests: XCTestCase {
         XCTAssertNil(RavenEnvelopeV1.unpack(raw))
     }
 
+    func testStrictUnpackAcceptsRegisteredTypeAndDefinedFlags() {
+        var envelope = structurallyValidEnvelope()
+        envelope.envType = RavenEnvelopeV1.EnvType.capabilities.rawValue
+        envelope.flags = 0b0000_0011
+
+        XCTAssertEqual(RavenEnvelopeV1.unpack(envelope.pack()), envelope)
+    }
+
+    func testStrictUnpackRejectsUnknownTypeAndReservedFlags() {
+        let packed = structurallyValidEnvelope().pack()
+
+        for unknownType: UInt8 in [0, 5, .max] {
+            var malformed = packed
+            malformed[5] = unknownType
+            XCTAssertNil(RavenEnvelopeV1.unpack(malformed))
+        }
+
+        var reservedFlags = packed
+        reservedFlags.replaceSubrange(6..<8, with: [0x00, 0x04])
+        XCTAssertNil(RavenEnvelopeV1.unpack(reservedFlags))
+    }
+
+    func testStrictUnpackRequiresCanonicalAuthenticationLength() {
+        var envelope = structurallyValidEnvelope()
+        envelope.senderAuthentication = Data(repeating: 0, count: 63)
+        XCTAssertNil(RavenEnvelopeV1.unpack(envelope.pack()))
+
+        envelope.senderAuthentication = Data()
+        XCTAssertNil(RavenEnvelopeV1.unpack(envelope.pack()))
+    }
+
+    func testStrictUnpackRejectsNonIncreasingTimeInterval() {
+        var envelope = structurallyValidEnvelope()
+        envelope.expiresAtMs = envelope.createdAtMs
+        XCTAssertNil(RavenEnvelopeV1.unpack(envelope.pack()))
+
+        envelope.expiresAtMs = envelope.createdAtMs - 1
+        XCTAssertNil(RavenEnvelopeV1.unpack(envelope.pack()))
+    }
+
+    func testStrictUnpackRejectsLengthAbuseAndOversizedFrames() {
+        var impossibleBody = structurallyValidEnvelope().pack()
+        impossibleBody.replaceSubrange(80..<84, with: [0xFF, 0xFF, 0xFF, 0xFF])
+        XCTAssertNil(RavenEnvelopeV1.unpack(impossibleBody))
+
+        let oversized = Data(repeating: 0, count: RavenEnvelopeV1.maximumWireLength + 1)
+        XCTAssertNil(RavenEnvelopeV1.unpack(oversized))
+    }
+
     func testTamperedBodyFailsVerify() throws {
         let v = try loadJSON("negative/envelope_tampered_body.json")
         let inputs = v["inputs"] as! [String: Any]
@@ -120,5 +220,33 @@ final class RavenEnvelopeV1VectorsTests: XCTestCase {
         let pub = hex("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a")
         let pk = try Curve25519.Signing.PublicKey(rawRepresentation: pub)
         XCTAssertFalse(env.verify(publicKey: pk))
+    }
+
+    func testRelayObjectDigestIgnoresHopMutationButNotBodyCollision() {
+        let signer = Curve25519.Signing.PrivateKey()
+        var first = RavenEnvelopeV1(
+            envType: RavenEnvelopeV1.EnvType.message.rawValue,
+            messageId: Data(repeating: 0x11, count: 16),
+            routingTag: Data(repeating: 0x22, count: 16),
+            createdAtMs: 10,
+            expiresAtMs: 20,
+            hopLimit: 8,
+            replicationBudget: 3,
+            antiReplayNonce: Data(repeating: 0x33, count: 12),
+            messageCiphertext: Data("first".utf8)
+        )
+        first.sign(with: signer)
+
+        var forwarded = first
+        forwarded.destDeviceHint = 99
+        forwarded.hopLimit = 1
+        forwarded.replicationBudget = 1
+        XCTAssertEqual(first.relayObjectDigest(), forwarded.relayObjectDigest())
+
+        var collision = first
+        collision.messageCiphertext = Data("second".utf8)
+        collision.sign(with: signer)
+        XCTAssertEqual(collision.messageId, first.messageId)
+        XCTAssertNotEqual(collision.relayObjectDigest(), first.relayObjectDigest())
     }
 }

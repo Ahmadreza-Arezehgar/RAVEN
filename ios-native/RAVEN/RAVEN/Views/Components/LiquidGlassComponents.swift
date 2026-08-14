@@ -1190,6 +1190,7 @@ final class LinkedDevicesService {
     /// Call once on cold start (and on resume) to register/refresh this device.
     @discardableResult
     func heartbeat() async -> String? {
+        guard RavenRuntimePolicy.allowsExternalSideEffects else { return nil }
         // UIDevice.current is sync, MainActor-isolated. Read everything on
         // the main actor in one hop instead of awaiting each property.
         let body = await MainActor.run { () -> HeartbeatRequest in
@@ -1215,6 +1216,7 @@ final class LinkedDevicesService {
     }
 
     func reload() async {
+        guard RavenRuntimePolicy.allowsExternalSideEffects else { return }
         isLoading = true
         defer { isLoading = false }
         do {
@@ -2386,6 +2388,7 @@ final class DiagnosticsService: NSObject, MXMetricManagerSubscriber {
     private override init() { super.init() }
 
     func start() {
+        guard RavenRuntimePolicy.allowsExternalSideEffects else { return }
         MXMetricManager.shared.add(self)
     }
 
@@ -2405,6 +2408,7 @@ final class DiagnosticsService: NSObject, MXMetricManagerSubscriber {
     // MARK: Forwarding
 
     nonisolated private func forward(_ payload: MXDiagnosticPayload) {
+        guard RavenRuntimePolicy.allowsExternalSideEffects else { return }
         let summaries: [(String, String, Date)] = Self.extract(payload: payload)
         guard !summaries.isEmpty else { return }
 
@@ -2417,6 +2421,7 @@ final class DiagnosticsService: NSObject, MXMetricManagerSubscriber {
 
         for (type, summary, occurredAt) in summaries {
             Task { @MainActor in
+                guard RavenRuntimePolicy.allowsExternalSideEffects else { return }
                 // UIDevice.current is MainActor-isolated, so capture device/os
                 // strings here rather than from the surrounding nonisolated
                 // context (which would fail to compile under Swift 6).

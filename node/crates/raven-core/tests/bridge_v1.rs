@@ -1,13 +1,18 @@
 //! Integration tests for Raven Bridge V1 (cases 1–8). Mock BLE = TCP length-prefix.
 
-use raven_core::bridge::DropReason;
-use raven_core::envelope::{Envelope, EnvType};
+use raven_core::ack::{Ack, STATUS_DELIVERED};
+use raven_core::atsam_aead::{seal_rvna1_v2, unseal_rvna1_v2};
+use raven_core::bridge::{authenticated_object_digest, DropReason};
+use raven_core::envelope::{EnvType, Envelope};
 use raven_core::forward_queue::{ForwardItem, ForwardQueue, ForwardState};
 use raven_core::identity::Identity;
 use raven_core::message_router::{InboundEnvelope, MessageRouter, RouterOutcome};
-use raven_core::seal::{derive_pairwise_key, seal_message, unseal_message};
 use raven_core::transport::TransportKind;
 use tempfile::tempdir;
+
+/// A known test-session root. This exercises the shipping RVNA1 v2 wire and
+/// AEAD path without pretending that public identity keys are a secret.
+const BRIDGE_TEST_ROOT: [u8; 32] = [0x42; 32];
 
 fn now() -> u64 {
     1_700_000_000_000
@@ -21,13 +26,17 @@ fn make_env(
     hop: u8,
     expires_at: u64,
 ) -> Envelope {
-    let key = derive_pairwise_key(&signer.public_key_bytes(), &seal_to.public_key_bytes());
-    let sealed = seal_message(
-        &key,
-        plaintext,
+    let message_id_text = hex::encode(message_id);
+    let mut nonce = [0u8; 12];
+    nonce.copy_from_slice(&message_id[..12]);
+    let sealed = seal_rvna1_v2(
+        &BRIDGE_TEST_ROOT,
         &signer.address(),
         &seal_to.address(),
-        &message_id,
+        &message_id_text,
+        0,
+        plaintext,
+        &nonce,
     )
     .unwrap();
     let mut env = Envelope {
@@ -118,7 +127,9 @@ fn case02_internet_to_ble_forward() {
         },
         true,
     ) {
-        RouterOutcome::ForwardNow { egress, identity, .. } => {
+        RouterOutcome::ForwardNow {
+            egress, identity, ..
+        } => {
             assert_eq!(egress, TransportKind::MockBle);
             assert_eq!(identity.message_id, mid);
         }
@@ -290,7 +301,9 @@ fn case07_crash_recover_queue() {
     let packed = make_env(&a, &c, b"custody", mid, 8, now() + 60_000).pack();
     {
         let q = ForwardQueue::open(&path).unwrap();
+        let env = Envelope::unpack(&packed).unwrap();
         q.enqueue(&ForwardItem {
+            object_digest: authenticated_object_digest(&env),
             message_id: mid,
             packed_envelope: packed.clone(),
             ingress: TransportKind::MockBle,
@@ -385,13 +398,12 @@ fn e2ee_survives_bridge_hop() {
     };
     let fwd = Envelope::unpack(&out).unwrap();
     assert_eq!(fwd.message_ciphertext, body_before);
-    let key = derive_pairwise_key(&c.public_key_bytes(), &a.public_key_bytes());
-    let pt = unseal_message(
-        &key,
+    let pt = unseal_rvna1_v2(
+        &BRIDGE_TEST_ROOT,
         &fwd.message_ciphertext,
         &a.address(),
         &c.address(),
-        &mid,
+        &hex::encode(mid),
     )
     .unwrap();
     assert_eq!(pt, b"secret-e2ee");
@@ -462,15 +474,27 @@ fn case09_per_peer_rate_limit() {
     }
 }
 
-fn make_ack(signer: &Identity, acked_message_id: [u8; 16]) -> Envelope {
-    let mut body = Vec::new();
-    body.extend_from_slice(&acked_message_id);
-    body.push(1); // STATUS_DELIVERED
-    body.extend_from_slice(&[0x11u8; 12]);
-    body.extend_from_slice(&now().to_be_bytes());
-    body.extend_from_slice(&[0x22u8; 64]); // opaque sig bytes for relay (not verified here)
+fn make_ack(signer: &Identity, recipient: &Identity, acked_message_id: [u8; 16]) -> Envelope {
+    let ack = Ack {
+        acked_message_id,
+        status: STATUS_DELIVERED,
+        ack_nonce: [0x11u8; 12],
+        created_at: now(),
+    };
+    let mut plaintext = ack.signing_bytes()[b"rvn1/ack".len()..].to_vec();
+    plaintext.extend_from_slice(&ack.sign(signer));
     let mut mid = [0xACu8; 16];
     mid[0] = acked_message_id[0];
+    let body = seal_rvna1_v2(
+        &BRIDGE_TEST_ROOT,
+        &signer.address(),
+        &recipient.address(),
+        &hex::encode(mid),
+        0,
+        &plaintext,
+        &[0x33u8; 12],
+    )
+    .unwrap();
     let mut env = Envelope {
         env_type: EnvType::Ack as u8,
         flags: 0,
@@ -490,17 +514,22 @@ fn make_ack(signer: &Identity, acked_message_id: [u8; 16]) -> Envelope {
     env
 }
 
-/// 10. Recipient ACK reverse: BLE→LAN on B; opaque body preserved; A mid peeked.
+/// 10. Recipient ACK reverse: BLE→LAN on B; sealed body stays opaque and
+///
+/// Byte-preserved. The relay never parses `acked_message_id`.
 #[test]
 fn case10_ack_reverse_relay_opaque() {
-    use raven_core::opaque_acked_message_id;
     let dir = tempdir().unwrap();
     let q = ForwardQueue::open(&dir.path().join("f.sqlite")).unwrap();
+    let a = Identity::generate();
     let c = Identity::generate();
     let acked = [0x10u8; 16];
-    let ack = make_ack(&c, acked);
+    let ack = make_ack(&c, &a, acked);
     let packed = ack.pack();
-    assert_eq!(opaque_acked_message_id(&packed), Some(acked));
+    assert!(!ack
+        .message_ciphertext
+        .windows(acked.len())
+        .any(|window| window == acked));
 
     let router = MessageRouter {
         bridge_enabled: true,
@@ -529,8 +558,17 @@ fn case10_ack_reverse_relay_opaque() {
             let fwd = Envelope::unpack(&out).unwrap();
             assert_eq!(fwd.env_type, EnvType::Ack as u8);
             assert_eq!(fwd.message_ciphertext, ack.message_ciphertext);
-            assert_eq!(opaque_acked_message_id(&out), Some(acked));
             assert!(fwd.verify(&c.public_key_bytes()));
+            let opened = unseal_rvna1_v2(
+                &BRIDGE_TEST_ROOT,
+                &fwd.message_ciphertext,
+                &c.address(),
+                &a.address(),
+                &hex::encode(fwd.message_id),
+            )
+            .unwrap();
+            assert_eq!(&opened[..16], &acked);
+            assert_eq!(opened[16], STATUS_DELIVERED);
         }
         other => panic!("case10: {other:?}"),
     }

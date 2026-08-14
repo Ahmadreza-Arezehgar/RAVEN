@@ -846,8 +846,15 @@ def _resolve_reported_user_id(db: Session, target_type: str, target_id: str) -> 
             row = db.query(Post).filter(Post.id == target_id).first()
             return row.author_id if row else None
         if target_type == "comment":
-            from models import PostComment
-            row = db.query(PostComment).filter(PostComment.id == target_id).first()
+            # 🔒 SECURITY (audit PB-H3): the model is `Comment`, not
+            # `PostComment`. The wrong name raised ImportError (swallowed
+            # by the except below) so the owner never resolved,
+            # reported_user_id stayed NULL, and EVERY admin moderation
+            # branch on a reported comment silently no-op'd (ban/tempban/
+            # restrict/mute/warn/shadowban), plus the self-report guard
+            # was bypassed for comments.
+            from models import Comment
+            row = db.query(Comment).filter(Comment.id == target_id).first()
             if not row:
                 return None
             return getattr(row, "author_id", None) or getattr(row, "user_id", None)
@@ -884,17 +891,34 @@ def _fetch_target_info(db: Session, target_type: str, target_id: str) -> dict:
                 }
         elif target_type == "post":
             from models import Post
+            from encryption import decrypt_text
             post = db.query(Post).filter(Post.id == target_id).first()
             if post:
+                # 🔒 (audit PB-H3): content is AES-GCM/Fernet at rest —
+                # decrypt so admins review the actual text, not ciphertext.
+                _c = None
+                if post.content:
+                    try:
+                        _c = decrypt_text(post.content)[:500]
+                    except Exception:
+                        _c = None
                 return {
-                    "content": post.content[:500] if post.content else None,
+                    "content": _c,
                     "author_id": post.author_id,
                 }
         elif target_type == "comment":
-            from models import PostComment
-            comment = db.query(PostComment).filter(PostComment.id == target_id).first()
+            # 🔒 (audit PB-H3): correct model is `Comment`; decrypt too.
+            from models import Comment
+            from encryption import decrypt_text
+            comment = db.query(Comment).filter(Comment.id == target_id).first()
             if comment:
-                return {"content": comment.content[:500] if comment.content else None}
+                _c = None
+                if comment.content:
+                    try:
+                        _c = decrypt_text(comment.content)[:500]
+                    except Exception:
+                        _c = None
+                return {"content": _c, "author_id": getattr(comment, "author_id", None)}
     except Exception as e:
         print(f"⚠️ [Report] Error fetching target info: {e}")
     

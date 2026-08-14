@@ -32,6 +32,9 @@ class PresenceService {
     /// Check if recipient is online and has internet
     /// Returns default (offline) if check fails
     func checkPresence(_ userId: String) async -> PresenceResponse {
+        guard RavenRuntimePolicy.allowsExternalSideEffects else {
+            return PresenceResponse(online: false, hasInternet: false, lastSeenAt: nil, mutualRoomCount: nil)
+        }
         do {
             let response: PresenceResponse = try await NetworkService.shared.get(
                 path: "/api/presence/\(userId)"
@@ -52,6 +55,7 @@ class PresenceService {
     
     /// Start sending heartbeats to server
     func startHeartbeat() {
+        guard RavenRuntimePolicy.allowsExternalSideEffects else { return }
         guard heartbeatTimer == nil else { return }
         
         // Send immediately
@@ -71,6 +75,8 @@ class PresenceService {
     func stopHeartbeat() {
         heartbeatTimer?.invalidate()
         heartbeatTimer = nil
+
+        guard RavenRuntimePolicy.allowsExternalSideEffects else { return }
         
         // Notify server we're going offline
         Task { await goOffline() }
@@ -83,6 +89,7 @@ class PresenceService {
     // MARK: - Private
     
     private func sendHeartbeat() async {
+        guard RavenRuntimePolicy.allowsExternalSideEffects else { return }
         do {
             let _: [String: String] = try await NetworkService.shared.post(
                 path: "/api/presence/heartbeat",
@@ -94,6 +101,7 @@ class PresenceService {
     }
     
     private func goOffline() async {
+        guard RavenRuntimePolicy.allowsExternalSideEffects else { return }
         do {
             let _: [String: String] = try await NetworkService.shared.post(
                 path: "/api/presence/offline",

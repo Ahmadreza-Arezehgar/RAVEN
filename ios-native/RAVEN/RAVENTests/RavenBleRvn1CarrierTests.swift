@@ -112,7 +112,7 @@ final class RavenBleRvn1CarrierTests: XCTestCase {
         XCTAssertEqual(RavenBleRvn1Carrier.ingest(json), .notRvn1)
     }
 
-    func testIngestAckOpaque() {
+    func testIngestAckExposesOnlyOpaquePackedObject() {
         FeatureFlag.ravenEnvelopeV1.setEnabled(true)
         let sk = Curve25519.Signing.PrivateKey()
         let acked = Data(repeating: 0x42, count: 16)
@@ -136,11 +136,32 @@ final class RavenBleRvn1CarrierTests: XCTestCase {
         env.sign(with: sk)
         let packed = env.pack()
         switch RavenBleRvn1Carrier.ingest(packed) {
-        case let .ack(_, ackedMessageId, gotPacked):
-            XCTAssertEqual(ackedMessageId, acked)
+        case let .opaqueAck(gotPacked):
             XCTAssertEqual(gotPacked, packed)
         default:
-            XCTFail("expected ack")
+            XCTFail("expected opaqueAck")
         }
+    }
+
+    func testAckWithWrongExpectedOuterKeyIsRejected() {
+        FeatureFlag.ravenEnvelopeV1.setEnabled(true)
+        let signer = Curve25519.Signing.PrivateKey()
+        let wrong = Curve25519.Signing.PrivateKey()
+        var env = RavenEnvelopeV1(
+            envType: RavenEnvelopeV1.EnvType.ack.rawValue,
+            messageId: Data(repeating: 0xAC, count: 16),
+            routingTag: Data(repeating: 7, count: 16),
+            createdAtMs: 1,
+            expiresAtMs: .max,
+            hopLimit: 4,
+            replicationBudget: 1,
+            antiReplayNonce: Data(repeating: 3, count: 12),
+            messageCiphertext: Data(repeating: 0x55, count: 96)
+        )
+        env.sign(with: signer)
+        XCTAssertEqual(
+            RavenBleRvn1Carrier.ingest(env.pack(), senderPublicKey: wrong.publicKey),
+            .badSignature
+        )
     }
 }

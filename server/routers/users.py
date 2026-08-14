@@ -3173,9 +3173,22 @@ def get_user_posts(
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    
+
+    # 🔒 SECURITY (audit H9 — block bypass): mirror get_user's block
+    # gate. If the target has blocked the caller, return 404 so a
+    # blocked user cannot read the target's posts. Without this, the
+    # is_private-only check below leaves every public account's posts
+    # readable by someone they've blocked.
+    if user_id != current_user.id:
+        from models import Block
+        if db.query(Block).filter(
+            Block.blocker_id == user_id,
+            Block.blocked_id == current_user.id,
+        ).first() is not None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
     is_private = getattr(user, 'is_private', False)
-    
+
     # Privacy check: if private, only friends can see posts
     if is_private and user_id != current_user.id:
         is_friend = db.query(FriendRequest).filter(
@@ -3275,9 +3288,20 @@ def get_user_friends(
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    
+
+    # 🔒 SECURITY (audit H9 — block bypass): mirror get_user's block
+    # gate so a blocked user cannot enumerate the target's friend graph
+    # (ids, usernames, decrypted names, bios).
+    if user_id != current_user.id:
+        from models import Block
+        if db.query(Block).filter(
+            Block.blocker_id == user_id,
+            Block.blocked_id == current_user.id,
+        ).first() is not None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
     is_private = getattr(user, 'is_private', False)
-    
+
     # Privacy check
     if is_private and user_id != current_user.id:
         is_friend = db.query(FriendRequest).filter(

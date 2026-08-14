@@ -434,7 +434,11 @@ actor NetworkService {
         tlsDelegate = TLSValidationDelegate()
         
         // Use delegate for TLS chain validation
-        session = URLSession(configuration: config, delegate: tlsDelegate, delegateQueue: nil)
+        session = URLSession(
+            configuration: RavenRuntimePolicy.protectForXCTest(config),
+            delegate: tlsDelegate,
+            delegateQueue: nil
+        )
         
         decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .custom { decoder in
@@ -478,12 +482,14 @@ actor NetworkService {
     /// first real API call doesn't pay the handshake cost. ~150-300ms saved
     /// on cold start. Best-effort; silently no-ops on failure.
     func warmConnection() async {
+        guard RavenRuntimePolicy.allowsExternalSideEffects else { return }
         guard let url = URL(string: "\(baseURL)/health") else { return }
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.timeoutInterval = 5
         request.cachePolicy = .reloadIgnoringLocalCacheData
         do {
+            RavenTestExternalSideEffectAudit.recordActual(.http)
             _ = try await session.data(for: request)
             #if DEBUG
             print("⚡ [NetworkService] Warm connection ready (shared session)")
@@ -651,6 +657,9 @@ actor NetworkService {
         retries: Int,
         currentDelay: TimeInterval = 0.4
     ) async throws -> T {
+        guard RavenRuntimePolicy.allowsExternalSideEffects else {
+            throw APIError.networkError(URLError(.dataNotAllowed))
+        }
         // Stop zombie retries if the Task was cancelled (e.g. user left screen)
         try Task.checkCancellation()
         
@@ -676,6 +685,7 @@ actor NetworkService {
             }
             #endif
             
+            RavenTestExternalSideEffectAudit.recordActual(.http)
             let (data, response) = try await session.data(for: request)
             
             guard let httpResponse = response as? HTTPURLResponse else {
@@ -1032,6 +1042,9 @@ actor NetworkService {
     /// FIX: Now throws instead of returning Bool.
     /// Network errors propagate as-is so callers know it's NOT an auth failure.
     private func performRefresh() async throws {
+        guard RavenRuntimePolicy.allowsExternalSideEffects else {
+            throw APIError.networkError(URLError(.dataNotAllowed))
+        }
         guard let refreshToken = await KeychainService.shared.getRefreshToken() else {
             AuthLogger.log(.refreshFailed, detail: "no refresh token in Keychain")
             throw APIError.unauthorized
@@ -1055,6 +1068,7 @@ actor NetworkService {
         let data: Data
         let response: URLResponse
         do {
+            RavenTestExternalSideEffectAudit.recordActual(.http)
             let result = try await session.data(for: request)
             data = result.0
             response = result.1
@@ -1305,6 +1319,9 @@ extension NetworkService {
         body: B,
         signedBody: Bool = false
     ) async throws -> T {
+        guard RavenRuntimePolicy.allowsExternalSideEffects else {
+            throw APIError.networkError(URLError(.dataNotAllowed))
+        }
         guard let url = URL(string: baseURL + path) else {
             throw APIError.invalidURL
         }
@@ -1333,6 +1350,7 @@ extension NetworkService {
         // request-construction code.
         func sendOnce() async throws -> (Data, HTTPURLResponse) {
             let req = await buildRequest()
+            RavenTestExternalSideEffectAudit.recordActual(.http)
             let (data, response) = try await session.data(for: req)
             guard let http = response as? HTTPURLResponse else {
                 throw APIError.serverError

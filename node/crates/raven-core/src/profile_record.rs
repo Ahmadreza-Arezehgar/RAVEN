@@ -86,7 +86,7 @@ impl RavenProfileRecordV1 {
         if let Ok(sb) = self.signing_bytes() {
             h.update(&sb);
         }
-        h.update(&self.signature);
+        h.update(self.signature);
         h.finalize().into()
     }
 }

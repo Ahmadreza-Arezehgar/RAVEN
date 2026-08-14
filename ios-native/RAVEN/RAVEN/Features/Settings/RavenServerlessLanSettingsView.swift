@@ -8,17 +8,21 @@
 //
 
 import SwiftUI
+import Darwin
+import UIKit
 
 struct RavenServerlessLanSettingsView: View {
     @State private var flagEnabled = FeatureFlag.ravenEnvelopeV1.isEnabled
     @State private var host: String = ""
     @State private var portText: String = "7420"
-    @State private var listenPortText: String = "0"
+    @State private var listenPortText: String = "7421"
     @State private var peerPubHex: String = ""
     @State private var statusMessage: String?
     @State private var localFingerprint: String = ""
     @State private var localPubHex: String = ""
+    @State private var localRavenAddress: String = ""
     @State private var copiedLocalPub = false
+    @State private var copiedWhoami = false
 
     var body: some View {
         Form {
@@ -33,14 +37,17 @@ struct RavenServerlessLanSettingsView: View {
                     }
                 }
                 .tint(.blue)
+                .disabled(!FeatureFlag.canEnableRavenEnvelopeV1)
                 .onChange(of: flagEnabled) { _, newValue in
                     FeatureFlag.ravenEnvelopeV1.setEnabled(newValue)
-                    if newValue {
+                    if FeatureFlag.isRavenEnvelopeV1Enabled {
                         RavenEnvelopeBridgeService.shared.start()
                         RavenEnvelopeChatWire.shared.start()
+                        ATSAMLabEndpointHost.shared.start()
                     } else {
                         RavenEnvelopeBridgeService.shared.stop()
                         RavenEnvelopeChatWire.shared.stop()
+                        ATSAMLabEndpointHost.shared.stop()
                     }
                     statusMessage = newValue
                         ? "Flag on — MeshEnvelope path stays active; LAN is parallel."
@@ -49,7 +56,9 @@ struct RavenServerlessLanSettingsView: View {
             } header: {
                 Text("Feature flag")
             } footer: {
-                Text("Default OFF. Turn ON for Discover + paste ash whoami / rvn1…. When on, MessageRouter may also TCP-frame sealed bytes to the peer below. Chat BLE/server paths are unchanged.\n\nبرای Discover و چسباندن whoami این فلگ را روشن کنید.")
+                Text(FeatureFlag.canEnableRavenEnvelopeV1
+                    ? "Debug lab only. New sends are accepted only when the body is already authenticated ciphertext; plaintext and interim-demo bodies are refused."
+                    : "Security hold: unavailable in production until indexed ATSAM sessions, private routing tags, and encrypted ACKs interoperate.")
             }
 
             Section {
@@ -57,6 +66,16 @@ struct RavenServerlessLanSettingsView: View {
                     Text(localFingerprint.isEmpty ? "—" : localFingerprint)
                         .font(.system(.body, design: .monospaced))
                         .textSelection(.enabled)
+                }
+                if !localRavenAddress.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Raven address (rvn1…)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(localRavenAddress)
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                    }
                 }
                 if !localPubHex.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
@@ -66,39 +85,78 @@ struct RavenServerlessLanSettingsView: View {
                         Text(localPubHex)
                             .font(.system(.caption, design: .monospaced))
                             .textSelection(.enabled)
-                        Button {
-                            SecurePasteboard.copy(localPubHex)
-                            copiedLocalPub = true
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                                copiedLocalPub = false
+                        HStack(spacing: 12) {
+                            Button {
+                                SecurePasteboard.copy(localPubHex)
+                                copiedLocalPub = true
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                                    copiedLocalPub = false
+                                }
+                            } label: {
+                                Label(
+                                    copiedLocalPub ? "Copied" : "Copy pub hex",
+                                    systemImage: copiedLocalPub ? "checkmark.circle.fill" : "doc.on.doc"
+                                )
                             }
-                        } label: {
-                            Label(
-                                copiedLocalPub ? "Copied" : "Copy pub hex",
-                                systemImage: copiedLocalPub ? "checkmark.circle.fill" : "doc.on.doc"
-                            )
+                            if !localRavenAddress.isEmpty {
+                                Button {
+                                    SecurePasteboard.copy(ashWhoamiBlock)
+                                    copiedWhoami = true
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                                        copiedWhoami = false
+                                    }
+                                } label: {
+                                    Label(
+                                        copiedWhoami ? "Copied" : "Copy whoami for ash",
+                                        systemImage: copiedWhoami ? "checkmark.circle.fill" : "terminal"
+                                    )
+                                }
+                            }
                         }
                     }
                 }
             } header: {
                 Text("This device (public only)")
             } footer: {
-                Text("Never share seeds or private keys. Terminal demos need only this pub hex and the node’s pub_hex.")
+                Text("Never share seeds or private keys. For Mac Terminal: Copy whoami for ash, then in ash menu 3 → a paste that block (not cargo / cd).\n\nTo receive Mac→phone messages: leave Raven open with this Host/Port saved — the app pulls the Mac queue over Wi‑Fi.")
             }
 
             Section {
-                TextField("Host (LAN IP or 127.0.0.1)", text: $host)
+                TextField("Host = Mac Wi‑Fi IP (e.g. 192.168.100.209)", text: $host)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .keyboardType(.asciiCapable)
-                TextField("Port", text: $portText)
+                TextField("Port (Mac listen, usually 7420)", text: $portText)
                     .keyboardType(.numberPad)
-                TextField("Listen port (0=off, LAN→BLE reverse)", text: $listenPortText)
+                TextField("Listen port (7421=Mac can dial this phone)", text: $listenPortText)
                     .keyboardType(.numberPad)
-                TextField("Peer pub hex (64 chars)", text: $peerPubHex)
+                if let wifi = Self.wifiIPv4() {
+                    LabeledContent("This iPhone Wi‑Fi IP") {
+                        Text(wifi)
+                            .font(.system(.body, design: .monospaced))
+                            .textSelection(.enabled)
+                    }
+                    Text("On Mac ash after WAITING: paste \(wifi):7421 as LAN dial (or when prompted).")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                TextField("Peer pub hex = Mac pub_hex from ash whoami", text: $peerPubHex)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .font(.system(.body, design: .monospaced))
+
+                Button {
+                    pasteMacEndpointFromClipboard()
+                } label: {
+                    Label("Paste Mac whoami / pub into Peer", systemImage: "doc.on.clipboard")
+                }
+
+                if host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || !Self.isValidPubHex(peerPubHex) {
+                    Text("⚠️ Host and Peer pub are required — Save stays disabled until both are filled. Pull will not run.\nFA: Host = آی‌پی مک + Peer pub = pub_hex مک را پر کن و Save بزن.")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
 
                 if let fp = Self.fingerprint(ofPubHex: peerPubHex) {
                     LabeledContent("Peer fingerprint") {
@@ -108,10 +166,68 @@ struct RavenServerlessLanSettingsView: View {
                     }
                 }
             } header: {
-                Text("raven-node endpoint")
+                Text("Mac endpoint (required for Pull)")
             } footer: {
-                Text("Peer pub is the node’s public Ed25519 from `raven-node init` (pub_hex=…). Host is the Mac’s LAN IP when testing a physical phone.")
+                Text("Host = Mac LAN IP. Peer pub = Mac `pub_hex` from ash whoami (not this phone’s pub). Listen 7421 lets Mac dial you if Pull fails.")
             }
+
+            #if DEBUG
+            Section {
+                Toggle(isOn: Binding(
+                    get: { UserDefaults.standard.bool(forKey: "raven.lab.test_a") },
+                    set: { UserDefaults.standard.set($0, forKey: "raven.lab.test_a") }
+                )) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Lab Test A unlock")
+                            .font(.body.weight(.semibold))
+                        Text("DEBUG only. Enables PairInit / indexed session path (same as RAVEN_LAB_TEST_A=1). Release stays fail-closed.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .tint(.orange)
+
+                Button("Ensure lab cert + prekey") {
+                    do {
+                        _ = try ATSAMLabTrustStore.ensureLocalMaterial()
+                        statusMessage = "Lab cert + prekey ready (Keychain)."
+                    } catch {
+                        statusMessage = "Lab material failed: \(error.localizedDescription)"
+                    }
+                }
+                Button("Copy my lab cert JSON") {
+                    do {
+                        let json = try ATSAMLabTrustStore.exportLocalCertJSON()
+                        SecurePasteboard.copy(json)
+                        statusMessage = "Copied cert JSON — paste into Mac: ash lab import-peer-cert"
+                    } catch {
+                        statusMessage = "Export cert failed: \(error.localizedDescription)"
+                    }
+                }
+                Button("Copy my lab prekey JSON") {
+                    do {
+                        let json = try ATSAMLabTrustStore.exportLocalPrekeyJSON()
+                        SecurePasteboard.copy(json)
+                        statusMessage = "Copied prekey JSON — paste into Mac: ash lab import-peer-prekey / prekey fetch --file"
+                    } catch {
+                        statusMessage = "Export prekey failed: \(error.localizedDescription)"
+                    }
+                }
+                Button("Paste Mac cert JSON from clipboard") {
+                    let clip = UIPasteboard.general.string ?? ""
+                    do {
+                        try ATSAMLabTrustStore.importPeerCertJSON(clip)
+                        statusMessage = "Imported Mac device cert."
+                    } catch {
+                        statusMessage = "Import cert failed: \(error.localizedDescription)"
+                    }
+                }
+            } header: {
+                Text("Test A trust OOB (paste)")
+            } footer: {
+                Text("Exchange public cert + prekey JSON over the same Wi‑Fi lab only. Never paste private keys. After Accept, PairResponse uplinks to Mac:7420 automatically.")
+            }
+            #endif
 
             Section {
                 Button("Save LAN config") {
@@ -120,19 +236,32 @@ struct RavenServerlessLanSettingsView: View {
                 .disabled(!canSave)
 
                 if RavenServerlessLanConfig.stored != nil {
+                    Button {
+                        Task {
+                            let n = await RavenEnvelopeBridgeService.shared.pullMacQueueNow()
+                            statusMessage = n > 0
+                                ? "Pulled \(n) message(s) from Mac queue."
+                                : "Pull done — 0 messages. Check: flag ON, Local Network Allow, Host=\(host) Port=\(portText), same Wi‑Fi. If iOS asked for Local Network — Allow."
+                        }
+                    } label: {
+                        Label("Pull from Mac now", systemImage: "arrow.down.circle")
+                    }
+
                     Button("Clear LAN config", role: .destructive) {
                         RavenServerlessLanConfig.clear()
                         host = ""
                         portText = "7420"
-                        listenPortText = "0"
+                        listenPortText = "7421"
                         peerPubHex = ""
                         statusMessage = "Cleared. LAN path will not attempt sends."
                         RavenEnvelopeBridgeService.shared.stop()
                         if FeatureFlag.isRavenEnvelopeV1Enabled {
                             RavenEnvelopeBridgeService.shared.start()
                             RavenEnvelopeChatWire.shared.start()
+                            ATSAMLabEndpointHost.shared.start()
                         } else {
                             RavenEnvelopeChatWire.shared.stop()
+                            ATSAMLabEndpointHost.shared.stop()
                         }
                     }
                 }
@@ -168,17 +297,32 @@ struct RavenServerlessLanSettingsView: View {
         return true
     }
 
+    /// ash-compatible public identity block (never a seed).
+    private var ashWhoamiBlock: String {
+        """
+        address     \(localRavenAddress)
+        fingerprint \(localFingerprint)
+        pub_hex     \(localPubHex)
+        """
+    }
+
     private func load() {
         flagEnabled = FeatureFlag.ravenEnvelopeV1.isEnabled
         if let stored = RavenServerlessLanConfig.stored {
             host = stored.host
             portText = String(stored.port)
-            listenPortText = String(stored.listenPort)
+            listenPortText = stored.listenPort > 0 ? String(stored.listenPort) : "7421"
             peerPubHex = stored.peerPubHex
+        } else {
+            listenPortText = "7421"
         }
         localFingerprint = DeviceIdentityService.shared.fingerprint ?? ""
         if let pub = DeviceIdentityService.shared.publicKeyData {
             localPubHex = pub.map { String(format: "%02x", $0) }.joined()
+            localRavenAddress = RavenAddressV1.encode(ed25519PublicKey: pub) ?? ""
+        } else {
+            localPubHex = ""
+            localRavenAddress = ""
         }
     }
 
@@ -189,7 +333,9 @@ struct RavenServerlessLanSettingsView: View {
             statusMessage = "Invalid host, port, or peer pub hex."
             return
         }
-        let listenPort = UInt16(listenPortText) ?? 0
+        var listenPort = UInt16(listenPortText) ?? 0
+        if listenPort == 0 { listenPort = 7421 }
+        listenPortText = String(listenPort)
         let cfg = RavenServerlessLanConfig(
             host: trimmedHost,
             port: port,
@@ -199,12 +345,73 @@ struct RavenServerlessLanSettingsView: View {
         cfg.save()
         peerPubHex = hex
         let peerFp = Self.fingerprint(ofPubHex: hex) ?? "—"
-        statusMessage = "Saved \(trimmedHost):\(port) listen=\(listenPort) · peer \(peerFp). No secrets stored."
+        let phoneIp = Self.wifiIPv4() ?? "?"
+        statusMessage = "Saved Mac \(trimmedHost):\(port) · phone listens :\(listenPort) · this IP \(phoneIp) · peer \(peerFp). Allow Local Network if asked."
         RavenEnvelopeBridgeService.shared.stop()
         RavenEnvelopeBridgeService.shared.start()
         if FeatureFlag.isRavenEnvelopeV1Enabled {
             RavenEnvelopeChatWire.shared.start()
         }
+    }
+
+    private func pasteMacEndpointFromClipboard() {
+        let raw = UIPasteboard.general.string ?? ""
+        let lower = raw.lowercased()
+        // Prefer labeled pub_hex=… / pub_hex     …
+        if let r = lower.range(of: #"pub_hex\s*[:=]?\s*([0-9a-f]{64})"#, options: .regularExpression) {
+            let m = String(lower[r])
+            if let hex = m.split(whereSeparator: { !$0.isHexDigit }).first(where: { $0.count == 64 }) {
+                peerPubHex = String(hex)
+            }
+        } else if let hex = lower.split(whereSeparator: { !$0.isHexDigit }).first(where: { $0.count == 64 }) {
+            peerPubHex = String(hex)
+        }
+        // Optional host from "192.168.x.x:7420"
+        if host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           let hr = raw.range(of: #"\b(\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?\b"#, options: .regularExpression) {
+            let token = String(raw[hr])
+            host = token.split(separator: ":").first.map(String.init) ?? token
+        }
+        if host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            host = "192.168.100.209"
+        }
+        if portText.isEmpty { portText = "7420" }
+        statusMessage = Self.isValidPubHex(peerPubHex)
+            ? "Pasted Peer pub. Confirm Host=\(host) Port=\(portText), then Save."
+            : "Clipboard had no 64-char pub_hex. Copy Mac ash whoami first."
+    }
+
+    /// Best-effort Wi‑Fi IPv4 for Mac dial instructions (en0-style).
+    static func wifiIPv4() -> String? {
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return nil }
+        defer { freeifaddrs(first) }
+        var ptr: UnsafeMutablePointer<ifaddrs>? = first
+        while let p = ptr {
+            defer { ptr = p.pointee.ifa_next }
+            let flags = Int32(p.pointee.ifa_flags)
+            guard (flags & IFF_UP) != 0, (flags & IFF_LOOPBACK) == 0 else { continue }
+            guard let addr = p.pointee.ifa_addr, addr.pointee.sa_family == UInt8(AF_INET) else { continue }
+            var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            let name = String(cString: p.pointee.ifa_name)
+            guard name.hasPrefix("en") || name.hasPrefix("wlan") else { continue }
+            let ret = getnameinfo(
+                addr,
+                socklen_t(addr.pointee.sa_len),
+                &hostname,
+                socklen_t(hostname.count),
+                nil,
+                0,
+                NI_NUMERICHOST
+            )
+            if ret == 0 {
+                let ip = String(cString: hostname)
+                if ip.hasPrefix("192.168.") || ip.hasPrefix("10.") || ip.hasPrefix("172.") {
+                    return ip
+                }
+            }
+        }
+        return nil
     }
 
     static func isValidPubHex(_ hex: String) -> Bool {

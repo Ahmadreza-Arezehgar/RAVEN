@@ -424,13 +424,13 @@ public final class NoiseSession {
 ///
 /// **E.3 replay enforcement** is mostly free here: the nonce is
 /// derived from the monotonic counter `n`, so an attacker re-injecting
-/// an old ciphertext sees AEAD-tag-mismatch immediately. The on-receive
-/// `n` and on-send `n` MUST stay in lock-step; reordering on the wire
-/// breaks decrypt. For lossy / out-of-order transports (BLE relays,
-/// Wi-Fi Aware) the bitmap window in
-/// ``NoiseReplayWindow`` tracks recently-seen counters and the engine
-/// rewinds `n` to the correct value before retrying — see
-/// `decryptWithAd(_:ciphertext:counter:)`.
+/// an old ciphertext sees AEAD-tag-mismatch immediately. Transport
+/// decrypt is strictly IN-ORDER: the on-receive `n` and on-send `n`
+/// MUST stay in lock-step, so `decryptWithAd(_:ciphertext:)` only
+/// succeeds for the next expected counter. There is NO out-of-order
+/// recovery — reordering on the wire breaks decrypt, and the caller is
+/// responsible for delivering transport frames to this state in send
+/// order.
 ///
 /// **E.6 forward-secrecy quotas** are exposed through `messageCount`
 /// + `establishedAt` + `shouldRotate`. Engines call `shouldRotate`
@@ -514,89 +514,5 @@ public final class NoiseCipherState {
         }
         n &+= 1
         return plaintext
-    }
-}
-
-// MARK: - Replay window (Phase E.3)
-
-/// Sliding-bitmap anti-replay window — IPsec / RFC 6479 style.
-///
-/// Tracks the highest counter seen plus a bitmap of which of the previous
-/// ``SecurityConstants/Replay/bitmapWindowSize`` slots have been
-/// delivered. Lets us accept slightly-out-of-order frames (common on
-/// lossy BLE relays) while still rejecting genuine replays and
-/// far-future jumps.
-///
-/// Independent of the AEAD nonce: a determined attacker who knows the
-/// session key could craft a frame with any nonce, but they can't
-/// guess one in the future window without breaking AEAD anyway. The
-/// window is defence-in-depth — drops obviously-bad frames before we
-/// burn CPU on the AEAD verify, and catches the "buffered frame
-/// re-injected later" attack the 24h Bloom filter can't see across.
-public struct NoiseReplayWindow {
-    private(set) var highest: UInt64 = 0
-    /// Bit i = true iff counter `(highest - i)` has been delivered.
-    /// `bitmap[0]` corresponds to `highest`.
-    private var bitmap: [Bool]
-
-    /// Default size mirrors `SecurityConstants.Replay.bitmapWindowSize` (1024).
-    /// Kept as a literal here because `SecurityConstants` is internal and
-    /// cannot appear in a `public` default-argument expression.
-    public init(size: Int = 1024) {
-        self.bitmap = [Bool](repeating: false, count: max(64, size))
-    }
-
-    /// Returns `.fresh` if `counter` is new + in-window, otherwise
-    /// the reason for rejection. Caller must invoke `commit(counter:)`
-    /// AFTER successful AEAD verify — never on the pre-check alone.
-    public func check(counter: UInt64) -> ReplayDecision {
-        if counter > highest {
-            let jump = counter - highest
-            if jump > SecurityConstants.Replay.acceptableJumpAhead {
-                return .tooFarAhead
-            }
-            return .fresh
-        }
-        let delta = Int(highest - counter)
-        if delta >= bitmap.count {
-            return .tooOld
-        }
-        return bitmap[delta] ? .alreadySeen : .fresh
-    }
-
-    /// Records that `counter` was successfully delivered. Updates the
-    /// high-water mark + shifts the bitmap if we jumped ahead.
-    public mutating func commit(counter: UInt64) {
-        if counter > highest {
-            let shift = counter - highest
-            if shift >= UInt64(bitmap.count) {
-                // Counter jumped clear over the window — wipe and start
-                // fresh at the new high.
-                bitmap = [Bool](repeating: false, count: bitmap.count)
-            } else {
-                // Slide existing bits down by `shift` slots.
-                let shiftAmount = Int(shift)
-                for i in stride(from: bitmap.count - 1, through: shiftAmount, by: -1) {
-                    bitmap[i] = bitmap[i - shiftAmount]
-                }
-                for i in 0..<shiftAmount {
-                    bitmap[i] = false
-                }
-            }
-            highest = counter
-            bitmap[0] = true
-            return
-        }
-        let delta = Int(highest - counter)
-        if delta < bitmap.count {
-            bitmap[delta] = true
-        }
-    }
-
-    public enum ReplayDecision: Equatable {
-        case fresh           // accept, then call commit on AEAD success
-        case alreadySeen     // exact replay — drop silently
-        case tooOld          // dropped out of window — drop, no alarm
-        case tooFarAhead     // counter jumped past window — likely attack, drop + log
     }
 }

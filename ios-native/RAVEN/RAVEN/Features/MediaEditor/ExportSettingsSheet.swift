@@ -7,7 +7,6 @@ struct ExportSettingsSheet: View {
     
     @State private var selectedQuality: ExportQuality = .auto
     @State private var stripLocationData = true
-    @State private var showPaywall = false
     @State private var isExporting = false
     @Environment(\.dismiss) private var dismiss
     
@@ -33,11 +32,6 @@ struct ExportSettingsSheet: View {
             VStack(spacing: 8) {
                 ForEach(ExportQuality.allCases) { quality in
                     Button {
-                        // Gate "High Quality" behind premium
-                        if quality == .high && !PremiumLimits.isPremium {
-                            showPaywall = true
-                            return
-                        }
                         withAnimation(.spring(response: 0.25)) {
                             selectedQuality = quality
                         }
@@ -62,10 +56,6 @@ struct ExportSettingsSheet: View {
                                 Image(systemName: "checkmark.circle.fill")
                                     .font(.system(size: 18))
                                     .foregroundStyle(.blue)
-                            } else if quality == .high && !PremiumLimits.isPremium {
-                                Image(systemName: "crown.fill")
-                                    .font(.system(size: 14))
-                                    .foregroundStyle(.orange)
                             }
                         }
                         .padding(.horizontal, 14)
@@ -139,9 +129,6 @@ struct ExportSettingsSheet: View {
             .disabled(isExporting)
             .padding(.horizontal, 20)
             .padding(.bottom, 8)
-        }
-        .sheet(isPresented: $showPaywall) {
-            RavenPlusPaywallView()
         }
     }
 }

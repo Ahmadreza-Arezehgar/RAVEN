@@ -46,7 +46,7 @@ final class DiscoverySearchViewModelTests: XCTestCase {
 
         vm.selectCandidate(vm.results[0])
         XCTAssertEqual(vm.selectedRavenId, vm.results[0].ravenId)
-        XCTAssertTrue(vm.canSendRequest)
+        XCTAssertFalse(vm.canSendRequest, "contact transport remains held until ATSAM session state is durable")
     }
 
     func testMyNetworkUsesLocalPetname() {

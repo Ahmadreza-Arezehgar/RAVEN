@@ -157,7 +157,7 @@ final class MeshBridgeReceiver: NSObject, ObservableObject {
         }
         do {
             let secureEnv = try await MeshCryptoService.shared.decryptEnvelope(payload, sharedKey: sharedKey)
-            let envelope = secureEnv.toMeshEnvelope()
+            var envelope = secureEnv.toMeshEnvelope()
             // Manual signature verify — iOS `MeshCryptoService.verifySignature`
             // is keyed on `SignedMeshPayload` (the legacy signed wrapper),
             // not on `EncryptedMeshPayload`. The Mac sibling calls
@@ -190,6 +190,15 @@ final class MeshBridgeReceiver: NSObject, ObservableObject {
             // not one of them; allow an unknown sender through (first contact /
             // TOFU) so we don't drop a legitimate first message — the same
             // posture the BLE ingest path takes.
+            // 🔴 2026-07-24 — this is the FOURTH ingest site, and it was
+            // missed when `senderAuthenticated` was introduced at the three BLE
+            // sites. It performs a full identity binding below (equal to or
+            // stricter than BLE), then handed the envelope on without recording
+            // the result — so every libp2p-bridge message, the serverless
+            // pivot's primary non-BLE transport, arrived flagged as unproven.
+            // That marked legitimate bodies "unverified" and would have dropped
+            // any friend_request or group_create arriving this way.
+            var authorProven = (signerStr == DeviceIdentityService.shared.publicKeyBase64)
             if signerStr != DeviceIdentityService.shared.publicKeyBase64 {
                 // Gather EVERY key we already associate with this senderId —
                 // trusted FriendDevices AND an out-of-band-pinned identity key
@@ -204,6 +213,8 @@ final class MeshBridgeReceiver: NSObject, ObservableObject {
                         logger.debug("reject: bridge signer not a known key for \(envelope.senderId, privacy: .private) — impersonation")
                         return
                     }
+                    // Signer is bound to the claimed sender: authorship proven.
+                    authorProven = true
                 } else {
                     // True first contact (no FriendDevice, no pinned identity).
                     // Accept as TOFU but DO NOT auto-pin — the conversation is
@@ -238,20 +249,30 @@ final class MeshBridgeReceiver: NSObject, ObservableObject {
             // event exposes it. Branch on (recipient == me OR I'm
             // a member of the target group) and discard otherwise.
             let myId = await KeychainService.shared.getUserId() ?? ""
-            let isForMe: Bool = {
-                guard !myId.isEmpty else { return false }
-                if envelope.recipientId == myId { return true }
-                if envelope.senderId == myId { return true }   // own send arriving via bridge
-                if envelope.isGroup == true {
-                    // For groups we don't know membership cheaply
-                    // here — fall through to the normal handler;
-                    // the GroupKeyService.decrypt path already
-                    // refuses to decrypt without the group key, so
-                    // a non-member's row never ends up readable.
-                    return true
-                }
-                return false
-            }()
+            let isForMe: Bool
+            if myId.isEmpty {
+                isForMe = false
+            } else if envelope.recipientId == myId {
+                isForMe = true
+            } else if envelope.senderId == myId {
+                isForMe = true   // own send arriving via bridge
+            } else if envelope.isGroup == true {
+                // Group transit: persist only if WE are a member.
+                // For group messages recipientId == groupId (see
+                // MeshEnvelope.isGroup), matching the BLE relay path
+                // (BLEMeshEngine ~2428). `GroupRepository.isMember`
+                // returns false only when the group is known locally
+                // AND we are provably not in its member list; it
+                // returns true when the group is unknown (or has no
+                // members_json yet) so we don't drop a legitimate
+                // first-sync message before the group has been
+                // mirrored locally.
+                isForMe = await GroupRepository().isMember(
+                    userId: myId, groupId: envelope.recipientId
+                )
+            } else {
+                isForMe = false
+            }
             guard isForMe else {
                 logger.debug("dropping bridge-only message \(envelope.clientMessageId, privacy: .private) — recipient is not us; refusing local persistence to limit blast radius.")
                 return
@@ -262,6 +283,7 @@ final class MeshBridgeReceiver: NSObject, ObservableObject {
             // group routing, group-key decryption, and ACK uplink. The
             // helper lives on `AppDelegate` (where the BLE callback is
             // wired in `start()`), not on the SwiftUI `App` struct.
+            envelope.senderAuthenticated = authorProven
             await AppDelegate.handleMeshMessage(envelope)
         } catch {
             #if DEBUG

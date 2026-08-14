@@ -1,8 +1,35 @@
 # RAVEN Threat Model — Serverless P2P (Phase A)
 
-**Status:** Current. Supersedes `raven-security/THREAT_MODEL.md`, which is
-retained only as a pre-pivot historical snapshot (see the header on that
-file).
+> **2026-08-13 security correction:** RVN1 is under a production hold. The
+> audit found a publicly derivable interim cipher, plaintext/unverified ACK
+> paths, ACK-before-decrypt/commit, pre-authentication dedup poisoning, and
+> unauthenticated mutable hop ceilings. Until the gates in
+> [`protocol/SECURITY_ERRATA_RVN1_2026-08-13.md`](../protocol/SECURITY_ERRATA_RVN1_2026-08-13.md)
+> pass, every older “Protected” verdict that depends on endpoint E2EE, ACK
+> authentication, replay/dedup ordering, ratchet durability, or bounded
+> multi-hop forwarding is superseded by **Not protected in the audited
+> implementation / fail-closed containment in progress**. The adversary
+> descriptions remain useful; they are not release evidence.
+
+**Status:** Audited design record under the RVN1 production hold. The detailed
+verdicts below describe the intended/frozen design and are **not release
+claims**. The executable posture in the table immediately below is normative;
+it supersedes every older `Protected` label until the corresponding gate is
+closed. `raven-security/THREAT_MODEL.md` is retained only as a pre-pivot
+historical snapshot.
+
+### Current executable posture (2026-08-13)
+
+| Area | Current verdict | Evidence / remaining gate |
+|---|---|---|
+| Content confidentiality | **Fail-closed, not production-enabled** | Public-material demo sealers are disabled and plaintext carrier admission is rejected. A transcript-bound, persisted ATSAM session is not yet active. |
+| Message/ACK endpoint acceptance | **Fail-closed, production-disabled** | Rust and Swift reference actors now verify PairInit-bound device certificates, route/AAD/AEAD, exact inbox/outstanding rows, sealed ACKs, replay state, and recoverable message/ACK journals. Swift concrete Keychain/SQLCipher/queue adapters, a bound ACK sender, live wiring, and external review remain gates. |
+| Relay/store opacity | **Partially implemented** | Queues store immutable opaque envelopes and deduplicate by authenticated-object digest. Production route/mailbox keys still require the authenticated session actor. |
+| Replay/dedup | **Implemented in disabled reference actors** | Relay cache poisoning by attacker-chosen IDs is contained. Rust and Swift reference actors commit authenticated object/logical-ID/ACK-nonce replay state with their ratchets; live paths remain disabled until concrete adapters and integration pass review. |
+| Resource exhaustion | **Bounded at audited wire boundaries** | Go bridge and raw Rust TCP handlers cap streams/handlers, declared bytes, frame size, and deadlines before allocation. The gated NAT profile also caps pending/established/per-peer connections and AutoNAT candidates. Peer scoring/Sybil resistance remains future work. |
+| Hop/replication ceilings | **Cooperative-policy only** | RVN1 does not authenticate mutable hop fields. No Byzantine forwarding bound is claimed until a versioned custody wrapper exists. |
+| Revocation freshness | **Partition-limited** | Local deny lists and certificate expiry work; V1 has no globally fresh signed revocation distribution guarantee. |
+| Release status | **HOLD** | iOS Release hard-disables RVN1, default Rust origination requires an authenticated session, and the external security review/real-device matrix has not happened. |
 
 This document explains, in plain language, what RAVEN is designed to protect
 and what it explicitly does not protect, for the serverless peer-to-peer
@@ -64,21 +91,21 @@ document. **Verdict** is one of:
 
 | # | Adversary | Verdict | Mechanism / reason |
 |---|---|---|---|
-| 3.1 | Malicious relay | Protected | Two encryption layers; opaque envelope + rotating tag |
-| 3.2 | Malicious store node | Protected | Store-node-cannot-derive routing tag |
-| 3.3 | Malicious peer (direct connection) | Partially protected | Envelope pipeline + Noise auth; known pre-validation allocation gap |
+| 3.1 | Malicious relay | Design target; production held | Opaque envelope/object queue exists; authenticated session-derived encryption and routing are not live |
+| 3.2 | Malicious store node | Design target; production held | Opaque TTL store exists; mailbox derivation is vector-only and ACK deletion is forbidden |
+| 3.3 | Malicious peer (direct connection) | Partially protected | Strict parser plus bounded Go/Rust connection, byte, deadline, and gated NAT admission; endpoint reference transaction exists but is not live |
 | 3.4 | Passive ISP | Partially protected | Transport Noise hides envelope bytes; connection metadata still visible |
 | 3.5 | Active MITM | Partially protected | QR pairing + safety number; wrong-person pairing is user's responsibility |
-| 3.6 | Stolen locked device | Protected | Hardware-bound Keychain/Secure-Enclave key storage |
+| 3.6 | Stolen locked device | Partially protected | iOS roots use device-only Keychain; terminal backend strength is platform-dependent |
 | 3.7 | Stolen unlocked device | Out of scope | Endpoint sets the floor |
 | 3.8 | Sybil swarm | Partially protected | Peer/store diversity + replication budget; Peer ID ≠ identity; full defense is future work |
 | 3.9 | Eclipse attacker | Partially protected | Same mitigations as Sybil; full defense is future work |
-| 3.10 | Replay attacker | Protected | message_id dedup + anti_replay_nonce + TTL |
+| 3.10 | Replay attacker | Design implemented; production held | Relay object-digest cache and disabled Rust/Swift authenticated endpoint replay journals are bounded; concrete live integration remains |
 | 3.11 | Spam attacker | Partially protected | Contact-first + message requests + blocking; no central moderation (by design) |
 | 3.12 | DHT poisoning | Partially protected | Signed/versioned/expiry-bound/size-limited records |
-| 3.13 | Alias impersonation | Protected | Identity-signed alias, monotonic sequence, key-change warning |
-| 3.14 | Downgrade attacker | Protected | Signed, authenticated capability negotiation |
-| 3.15 | Malformed-packet attacker | Protected | Strict ordered incoming pipeline, reject-before-crypto |
+| 3.13 | Alias impersonation | Design target | Identity-signed aliases exist; live discovery acceptance still needs the final session/device binding audit |
+| 3.14 | Downgrade attacker | Incomplete; production held | Capabilities are signed, but the exact indexed-session profile must be transcript-bound by PairInit |
+| 3.15 | Malformed-packet attacker | Partially protected | Strict cross-language envelope parsing and bounded framing are implemented; endpoint state-machine fuzzing remains |
 | 3.16 | Local malware | Out of scope | Endpoint sets the floor |
 | 3.17 | Traffic analyst | Out of scope | Explicit non-goal of the routing-tag design; future work |
 
@@ -92,10 +119,10 @@ document. **Verdict** is one of:
 `RavenEnvelopeV1` traffic between strangers, with no trust relationship to
 either party.
 
-**Verdict: Protected.**
+**Verdict: Design target; production held.**
 
-**Why:** RAVEN uses two independent encryption layers. Message content is
-sealed by the recipient's session key before it ever reaches a relay
+**Intended mechanism:** RAVEN uses two independent encryption layers. Message content is
+to be sealed by the recipient's session key before it ever reaches a relay
 (`protocol/RAVEN_ENVELOPE_V1.md` §5, "No plaintext identities on the wire");
 the recipient locator carried alongside it is not a stable identifier but a
 rotating HMAC tag (`protocol/RAVEN_ROUTING_TAG_V1.md` §1–2) that changes
@@ -114,6 +141,12 @@ envelope (`protocol/RAVEN_ACK_V1.md` §2; vector:
 `shared-vectors/rvn1/negative/ack_wrong_signer.json`,
 `verify_result: reject`).
 
+**Current executable boundary:** the publicly derivable interim sealer and
+unverified delivery transitions are disabled. Production-disabled Rust and
+Swift actors implement the transcript-bound indexed session and recoverable
+inbox/ACK transaction, but they have no approved live transport/UI wiring, so
+the statements above remain design/test evidence rather than production claims.
+
 **What still leaks:** Envelope size and forwarding timestamp at that relay.
 That is a traffic-analysis question, addressed (and scoped out) at §3.17.
 
@@ -123,23 +156,29 @@ That is a traffic-analysis question, addressed (and scoped out) at §3.17.
 recipients who are not currently reachable, and inspect or tamper with
 whatever it stores.
 
-**Verdict: Protected.**
+**Verdict: Design target; production held.**
 
-**Why:** A store node is architecturally the same untrusted party as a
+**Intended mechanism:** A store node is architecturally the same untrusted party as a
 relay (§3.1) — it never receives `K_route`, which lives only in the two
-endpoints' key trees. `protocol/RAVEN_ROUTING_TAG_V1.md` §3 states this as a
-design invariant: a store node can index and re-serve envelopes by the tag
-bytes it observed, and recognize a previously-seen tag by byte equality, but
-it can never compute the next tag in a sequence, confirm two different tags
-belong to the same conversation, or map a tag back to an identity. Vector
+endpoints' key trees. A recipient explicitly presents a separately derived,
+daily rotating `store_tag`; the store can link every access and object using
+that same tag during its day window, as well as the source libp2p Peer ID, but
+cannot derive another day's tag or map the capability to a Raven address. Vector
 `shared-vectors/rvn1/routing/tag_unlinkable_001.json` demonstrates that two
 tags derived from the same `K_route` at adjacent counters are structurally
 unrelated byte strings. Content and authentication protections are
 identical to §3.1.
 
-**What still leaks:** Same as §3.1 — size/timing at the store node, and how
+**Current executable boundary:** the store validates strict opaque envelopes,
+uses separately derived mailbox tags, enforces count/byte/stream/time limits,
+persists atomically, and deletes only by TTL. A production-disabled libp2p
+PUT/GET service proves sender-disconnect/store-restart/recipient retrieval.
+Session-derived live mailbox keys, multi-store discovery/replication, and
+authenticated endpoint retrieval are still held.
+
+**What still leaks:** Size/timing, same-day tag reuse, source Peer ID, and how
 long an envelope sat there before being claimed (queue-depth side channel).
-Not separately defended in V1.
+These are not separately defended in V1.
 
 ### 3.3 Malicious peer (direct connection)
 
@@ -148,25 +187,22 @@ without being an authorized contact, and send it arbitrary bytes.
 
 **Verdict: Partially protected.**
 
-**Why (protected sub-case):** Once a frame reaches the envelope pipeline,
-every stage before decrypt is a rejection gate a malicious peer cannot
-bypass: size → decode → version → structure → dedup → replay → TTL →
-hop/replication → tag/session → authenticate → decrypt, in that order
-(`protocol/RAVEN_ENVELOPE_V1.md` §6). A peer cannot get content decrypted or
-persisted without passing signature authentication first; a peer without a
-recognized session or the counterpart's private key cannot forge that
-signature.
+**Intended endpoint gate:** Once a frame reaches the envelope pipeline, the
+required order is size → strict decode → TTL → local route/session → outer
+authentication → AEAD open → transactional commit. Current release
+containment rejects unknown or undecryptable bodies and emits no ACK. Disabled
+Rust and Swift reference actors exercise this complete order and its crash
+matrix, but the transaction is not active in the app/node, so this is not a
+production claim.
 
-**Why (gap, explicitly acknowledged in the spec itself):**
-`protocol/RAVEN_ENVELOPE_V1.md` §4 documents a known issue: the shipped
-`ios-native/RAVEN/Libp2pBridge/bridge.go` checks a peer-declared length
-prefix against the 24 MiB ceiling and then immediately allocates a buffer of
-that full claimed length (`bridge.go:242-245`, `env := make([]byte, envLen)`)
-**before** running any of the size→decode→version→structure checks above. A
-malicious peer can open many concurrent streams each declaring a length near
-24 MiB, forcing large allocations ahead of validation — a memory-exhaustion
-vector distinct from, and not fixed by, the per-frame ceiling. This is
-explicitly flagged as a Phase B fix, not something already closed.
+**Current boundary:** the earlier pre-validation allocation gap is closed at
+the audited transport layer. The Go bridge reserves nonblocking per-peer and
+global stream/declared-byte budgets before allocation, bounds idempotency
+keys, resets malformed or stalled streams, and releases reservations on every
+exit. The raw Rust TCP listener independently enforces a 1 MiB frame ceiling,
+64-handler global cap, idle/frame/write/lifetime deadlines, and exact reads.
+These controls bound one peer's pre-parser resource footprint; they do not
+replace authenticated endpoint admission, peer scoring, or Sybil resistance.
 
 ### 3.4 Passive ISP
 
@@ -202,21 +238,17 @@ attempt to substitute their own key material for a legitimate contact's.
 
 **Verdict: Partially protected.**
 
-**Why (protected sub-case):** Pairing exchanges the two devices' static
-public key material via an out-of-band channel — a QR code scanned in
-person (`ios-native/RAVEN/RAVEN/Features/Settings/PairingView.swift`) rather
-than over the network path an attacker controls — and produces a hybrid
-X25519 + ML-KEM-768 shared root (`ios-native/RAVEN/RAVEN/Core/Security/
-ATSAM/ATSAMHybridPairing.swift`). Every subsequent envelope from that
-identity is signature-bound (`protocol/RAVEN_ENVELOPE_V1.md` §2); a network
-MITM without the private key cannot forge a message that verifies. Protocol
-feature/capability negotiation is likewise signed
-(`protocol/RAVEN_CAPABILITIES_V1.md` §2), so an on-path attacker cannot flip
-an unsigned bit to force a weaker mode — closing the specific gap the legacy
-unsigned BLE `Capabilities` advertisement had (§3.14). Contacts also have a
-human-comparable safety number for a manual "did the key change?" check
-(`ios-native/RAVEN/RAVEN/Features/Settings/SafetyNumberView.swift`;
-fingerprint scheme defined in `protocol/RAVEN_IDENTITY_V1.md` §3).
+**Protected sub-case:** a correctly scanned in-person QR code and a manually
+compared safety number provide an out-of-band identity check. Signed device
+certificates, prekey bundles, envelopes, and capability records prevent an
+on-path party from altering those exact authenticated records unnoticed.
+
+**Current boundary:** PairInit V1 now byte-binds the two device certificates,
+responder prekey, hybrid contributions, roles, profile, and suite. It is
+byte-for-byte verified by Python, Rust, and Swift but remains
+production-disabled pending a confidential carrier, protected durable endpoint
+state, one-time-prekey lifecycle, and external review. Older ad-hoc
+pairing code is not evidence that every live message path has this binding.
 
 **Why (user-responsibility sub-case):** Cryptographic pairing verifies "the
 key I now hold matches the key the other device holds" — it cannot verify
@@ -234,23 +266,20 @@ compare-in-person-or-by-call flow, not an automated re-scan.
 **Can do:** Gain physical possession of a device that is powered on but
 locked (passcode/biometric not entered).
 
-**Verdict: Protected.**
+**Verdict: Partially protected; platform-dependent.**
 
-**Why:** Per-peer ATSAM root keys are Keychain-backed, not stored in
-UserDefaults or any world-readable location
-(`ios-native/RAVEN/RAVEN/Core/Security/ATSAM/ATSAMRootStorage.swift:5-16`,
-"Per-peer storage for hybrid (X25519 + ML-KEM-768) ATSAM root keys ...
-Keychain-backed so the root survives app restart AND device reboot ...
-Keychain at-rest protection limits exposure"). The ML-KEM-768 decapsulation
-key material is generated and can be held via Secure Enclave-backed storage
-(`ios-native/RAVEN/RAVEN/Core/Security/ATSAM/ATSAMMLKem.swift:19`,
-`SecureEnclave.MLKEM768.PrivateKey`). iOS Keychain/Secure Enclave protection
-classes tie key availability to the device being unlocked, so a locked,
-powered device does not expose key material to extraction.
+**Why:** iOS roots are Keychain-backed, device-only, and excluded from
+backup. Rust identity/session storage uses Keychain on macOS, Secret Service
+on Linux, and DPAPI on Windows, and refuses the protected session store when
+no supported backend exists.
 
-**What still leaks:** Nothing beyond what the OS lock screen itself exposes
-(notification previews, if enabled at the OS level — an OS/UX setting, not
-a RAVEN protocol property).
+**Limit:** the current iOS root accessibility is
+`AfterFirstUnlockThisDeviceOnly`. After the first unlock following boot, that
+class can remain available while the screen is locked. It prevents simple
+file-copy extraction but is not a claim that keys are cryptographically
+unavailable throughout every locked interval. Notification previews, OS
+compromise, memory capture, backup policy, and each desktop keyring's lock
+state remain platform concerns.
 
 ### 3.7 Stolen unlocked device
 
@@ -275,14 +304,13 @@ table, or store-node selection.
 
 **Verdict: Partially protected.**
 
-**Why (protected sub-case):** Two structural mitigations exist. First, the
-envelope carries an explicit `replication_budget` field, decremented on
-each hop and required to stay above zero for a relay to keep forwarding
-(`protocol/RAVEN_ENVELOPE_V1.md` byte layout, offset 65; incoming pipeline
-step 8), which bounds how much any single hostile relay path can affect
-overall delivery by capping fan-out rather than depending on any one node's
-honesty. Second, `hop_limit` (offset 64) independently bounds propagation
-depth.
+**Protected sub-case:** audited Go and Rust ingress paths enforce hard
+connection/handler, stream, frame-byte, deadline, and aggregate-store limits.
+These constrain resource use by each admitted transport identity.
+
+**Cooperative-only fields:** `replication_budget` and `hop_limit` help honest
+routers but are excluded from the RVN1 sender signature. A Byzantine relay can
+reset them, and they therefore provide no Sybil security bound.
 
 **Why (out-of-scope sub-case, stated honestly):** RAVEN does not yet
 implement peer scoring, per-remote connection-count limits, or diverse
@@ -303,35 +331,33 @@ network (e.g. poisoned alias records, withheld envelopes).
 
 **Verdict: Partially protected.**
 
-**Why:** The same structural bounds as §3.8 (`hop_limit`,
-`replication_budget`) limit what a single controlled path can suppress
-end-to-end for any one message, since a sender's envelope is not required
-to route through only one peer relationship to reach a store node. But
+**Why:** Signed DHT records prevent a surrounding attacker from forging the
+record owner, but do not force that attacker to return or forward records.
 RAVEN does not yet implement diverse/independent peer selection,
 connection-count limits per subnet, or any other structural defense
 specifically against eclipse positioning — this is the same gap as §3.8,
 under a different attack goal (isolate rather than merely flood). We are
-not claiming a defense that does not exist; full eclipse resistance is
-future work.
+not claiming a censorship defense that does not exist. The unauthenticated
+RVN1 hop fields do not change this result.
 
 ### 3.10 Replay attacker
 
 **Can do:** Capture a valid, signed envelope and resend it later, hoping to
 cause duplicate delivery or reuse of stale state.
 
-**Verdict: Protected.**
+**Verdict: Incomplete; production held.**
 
-**Why:** The incoming pipeline enforces three independent layers before an
-envelope can be committed (`protocol/RAVEN_ENVELOPE_V1.md` §6, steps 5–7):
-`message_id` dedup against a bounded recently-seen set (silently drops exact
-repeats); `anti_replay_nonce` checked against a per-sender/per-tag replay
-window (catches a captured-and-resent ciphertext even if `message_id` were
-altered); and `expires_at` TTL enforcement, dropped past expiry (vector:
-`shared-vectors/rvn1/negative/envelope_expired.json`,
-`relay_action: drop`). ACKs get the same protection at the application
-layer on top of envelope-level dedup: a repeat `status=1`/`status=2` ack for
-a message already at that state is a no-op, so a replayed ack cannot
-re-trigger a "message read" notification (`protocol/RAVEN_ACK_V1.md` §4).
+**Current protection:** strict TTL validation, immutable-object relay caches,
+monotonic queue transitions, and bounded ratchet prototypes have negative
+tests. Relays no longer durably deduplicate on an attacker-chosen public
+message ID alone.
+
+**Remaining gate:** endpoint replay acceptance must be committed atomically
+with authenticated AEAD open, receive-ratchet/skipped-key state, inbox dedup,
+and ACK-outbox intent. The indexed protected Rust store advances ratchets
+without rollback, but it is deliberately not yet coupled to an inbox
+transaction. Until that actor exists on both Rust and Swift, replay defense is
+not production-complete.
 
 ### 3.11 Spam attacker
 
@@ -394,9 +420,9 @@ work, not addressed by record-level signing alone.
 **Can do:** Attempt to claim, hijack, or roll back a human-readable alias
 that legitimately belongs to someone else.
 
-**Verdict: Protected.**
+**Verdict: Partially protected; alias is discovery, not trust.**
 
-**Why:** Every alias record is self-signed by the identity it claims to
+**Why:** Every accepted alias record is self-signed by the identity it claims to
 belong to — signed by `identity_address`'s own Ed25519 identity key over
 domain-separated bytes (`protocol/RAVEN_ALIAS_V1.md` §1) — so an attacker
 without that private key cannot forge a claim for someone else's address. A
@@ -415,6 +441,9 @@ alias string (a namespace-ambiguity case, not impersonation of a specific
 identity — the namespace has no registrar and is not unique by design) MUST
 be surfaced as ambiguous, never silently resolved by a predictable
 tie-break, since a predictable tie-break is itself attacker-exploitable.
+This proves control of that Raven identity, not the human's real-world name.
+Only a pinned address/fingerprint or out-of-band verification establishes a
+trusted contact; live alias discovery cannot silently replace that binding.
 
 ### 3.14 Downgrade attacker
 
@@ -422,9 +451,9 @@ tie-break, since a predictable tie-break is itself attacker-exploitable.
 into negotiating a weaker capability set than both actually support (e.g.
 stripping a post-quantum-hybrid or delivery-authentication bit).
 
-**Verdict: Protected.**
+**Verdict: Incomplete; production held.**
 
-**Why:** `protocol/RAVEN_CAPABILITIES_V1.md` replaces the legacy unsigned
+**Current protection:** `protocol/RAVEN_CAPABILITIES_V1.md` replaces the legacy unsigned
 BLE `Capabilities` advertisement — which any on-path relay could read or
 alter without either side detecting it (§2, citing
 `ios-native/RAVEN/RAVEN/Core/Mesh/RUMProtocolV2.swift:155-218`) — with a
@@ -435,7 +464,10 @@ freshly signed and unexpired (§3): an attacker cannot replay an old,
 validly-signed, lower-capability record once its `expires_at_ms` has
 passed, and cannot forge a new one without the identity's private key.
 
-**Scope note carried forward honestly:** V1's capability record has no
+**Remaining gate:** a signed record by itself does not bind the suite actually
+used by a session. PairInit V1 now transcript-binds the exact suite, roles,
+profile, certificates, and prekey contribution, but is production-disabled.
+V1's capability record also has no
 monotonic sequence field (unlike alias records) — freshness relies on
 `expires_at_ms` alone. Two differently-signed records with *overlapping*
 validity windows have no defined tie-break in V1; the spec recommends
@@ -447,14 +479,26 @@ a sequence field. This is a stated scope gap, not a vector-backed guarantee.
 **Can do:** Send a structurally invalid, truncated, oversized, or
 field-tampered `RavenEnvelopeV1` frame to a peer, relay, or store node.
 
-**Verdict: Protected.**
+**Verdict: Partially protected.**
 
-**Why:** `protocol/RAVEN_ENVELOPE_V1.md` §6 mandates a strict, ordered
-incoming pipeline — size → decode → version → structure → dedup → replay →
-TTL → hop/replication → tag/session → **authenticate** → decrypt → commit →
-ACK — where every stage before `authenticate` either passes a
-structurally-valid frame forward or drops it, and nothing reaches session/
-crypto logic before authentication succeeds. A zeroed magic byte is
+**Implemented boundary:** Rust and Swift envelope decoders reject oversized,
+unknown-type, unknown-flag, invalid-time, non-64-byte-auth, length-overflow,
+trailing, and truncated objects before endpoint logic. Go and Rust transport
+admission bounds declared sizes and stalled reads before allocation. Existing
+negative vectors cover bad magic, tampering, expiry, and framing.
+
+**Remaining gate:** the production-disabled PairInit, indexed session state,
+ACK codec, store request protocol, and complete endpoint state machine still
+need sustained fuzz campaigns and cross-platform stateful fuzzing. Therefore
+strict envelope parsing is implemented, but malformed-input protection for
+the whole future endpoint is not yet a complete claim.
+
+The corrected endpoint order in
+`protocol/ATSAM_ENDPOINT_TRANSACTION_V1.md` is size → strict decode/type/time →
+bounded session/tag candidate → outer device authentication → read-only
+object duplicate check → AEAD open → recoverable ratchet/inbox/dedup/ACK-intent
+commit → ACK worker. Attacker-chosen IDs are not durably inserted before
+authentication. A zeroed magic byte is
 rejected at decode (vector:
 `shared-vectors/rvn1/negative/envelope_bad_magic.json`,
 `unpack_result: reject`); a body altered after signing fails at the
@@ -466,11 +510,8 @@ before authentication is even attempted (vector:
 `shared-vectors/rvn1/negative/envelope_expired.json`,
 `relay_action: drop`).
 
-**Related but distinct gap:** a malformed *length prefix* specifically (as
-opposed to a malformed envelope body) intersects with the bridge
-allocate-before-validate issue described under §3.3 — that is a resource-
-exhaustion concern about validation *order* at the transport layer, not a
-case where a malformed envelope is incorrectly accepted.
+The earlier allocate-before-validate bridge issue is closed by preallocation
+budgets and exact length limits; it remains covered by regression tests.
 
 ### 3.16 Local malware
 

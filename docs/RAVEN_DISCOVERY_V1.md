@@ -69,7 +69,7 @@ DiscoveryResult {
 | `RavenProfileRecordV1` | Signed expiring profile; DHT key `H("raven/profile/v1"\|\|id)` |
 | `RavenAliasRecordV1` | Bounded set of claims; charset `a-z0-9_-` |
 | `RavenIntroductionV1` | Encrypted to recipient |
-| `RavenContactRequestV1` + `ContactAcceptV1` | E2EE async (prekey / pairwise seal) |
+| `RavenContactRequestV1` + `ContactAcceptV1` | ATSAM-root codec frozen; product send/open held pending durable indexed-session state |
 
 Contact requests ride existing **MessageRouter** paths: direct / relay / store / BLE / Bridge — opaque envelope, same `message_id`.
 
@@ -82,8 +82,8 @@ ash find poline --local          # no public fuzzy in V1
 ash nearby
 ash alias publish --alias poline
 ash contact add …                # QR / OOB pin
-ash contact request @poline
-ash contact request rvn1…
+ash contact request @poline     # currently fails closed: ATSAM session required
+ash contact request rvn1…       # currently fails closed: ATSAM session required
 ```
 
 Interactive picker on alias conflicts (same resolver as future mobile).
@@ -92,7 +92,7 @@ Interactive picker on alias conflicts (same resolver as future mobile).
 
 `DiscoveryResolver`-equivalent types + tests under serverless flag; discovery path must not call FastAPI when RavenEnvelopeV1 / serverless is ON.
 
-**Search UI (V1):** `FindContactsView` + `DiscoverySearchViewModel` behind `FeatureFlag.ravenEnvelopeV1` — scopes **All / My Network / Public (exact alias|id) / Nearby**, petname-first rows, provenance + alias-conflict picker (never silent pick), `RavenContactRequestV1` seal + LAN/BLE delivery. QR add path remains. MeshEnvelope default when flag OFF (QR-only sheet; no contacts FastAPI sync).
+**Search UI (V1):** `FindContactsView` + `DiscoverySearchViewModel` behind `FeatureFlag.ravenEnvelopeV1` — scopes **All / My Network / Public (exact alias|id) / Nearby**, petname-first rows, provenance + alias-conflict picker (never silent pick). Contact-request send/open remains on a visible security hold until authenticated ATSAM root, crash-safe chain state, private routing, and sealed accepts interoperate. QR add remains available; no contacts FastAPI sync is introduced.
 
 ## V1 MUST NOT include
 

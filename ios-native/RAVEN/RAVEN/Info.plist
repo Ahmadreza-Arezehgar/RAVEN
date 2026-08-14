@@ -27,16 +27,6 @@
 			<key>CFBundleTypeRole</key>
 			<string>Editor</string>
 			<key>CFBundleURLName</key>
-			<string>Google Sign In</string>
-			<key>CFBundleURLSchemes</key>
-			<array>
-				<string>com.googleusercontent.apps.516053629173-teh5np0h3i3ar6b25sd78d6o8ft1qhg9</string>
-			</array>
-		</dict>
-		<dict>
-			<key>CFBundleTypeRole</key>
-			<string>Editor</string>
-			<key>CFBundleURLName</key>
 			<string>app.raven.ios</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
@@ -46,8 +36,6 @@
 	</array>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
-	<key>GIDClientID</key>
-	<string>516053629173-teh5np0h3i3ar6b25sd78d6o8ft1qhg9.apps.googleusercontent.com</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>NSBluetoothAlwaysUsageDescription</key>
@@ -58,6 +46,7 @@
 	<array>
 		<string>_raven-mesh._tcp</string>
 		<string>_raven-mesh._udp</string>
+		<string>_raven-ash._tcp</string>
 	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>RAVEN needs camera access to take photos and videos</string>
@@ -66,7 +55,7 @@
 	<key>NSFaceIDUsageDescription</key>
 	<string>RAVEN uses Face ID to protect your privacy and secure access to the app.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>RAVEN uses the local network to transfer photos, videos, and files to nearby devices at high speed when internet is unavailable.</string>
+	<string>RAVEN uses the local network to pull messages from your Mac (ash / raven-node on Wi‑Fi), transfer media nearby, and discover devices when internet is unavailable.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
 	<string>RAVEN uses background location for two features: (1) Live Location Sharing, which lets you share your real-time location with friends in a conversation, and (2) mesh networking, which relays messages to nearby users offline. You can disable either feature at any time.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
@@ -95,30 +84,6 @@
 			<string>New message</string>
 			<key>UIApplicationShortcutItemType</key>
 			<string>app.raven.shortcut.newMessage</string>
-		</dict>
-		<dict>
-			<key>UIApplicationShortcutItemIconType</key>
-			<string>UIApplicationShortcutIconTypeAdd</string>
-			<key>UIApplicationShortcutItemTitle</key>
-			<string>New post</string>
-			<key>UIApplicationShortcutItemType</key>
-			<string>app.raven.shortcut.newPost</string>
-		</dict>
-		<dict>
-			<key>UIApplicationShortcutItemIconType</key>
-			<string>UIApplicationShortcutIconTypeSearch</string>
-			<key>UIApplicationShortcutItemTitle</key>
-			<string>Search</string>
-			<key>UIApplicationShortcutItemType</key>
-			<string>app.raven.shortcut.search</string>
-		</dict>
-		<dict>
-			<key>UIApplicationShortcutItemIconType</key>
-			<string>UIApplicationShortcutIconTypeAudio</string>
-			<key>UIApplicationShortcutItemTitle</key>
-			<string>Voice note</string>
-			<key>UIApplicationShortcutItemType</key>
-			<string>app.raven.shortcut.voiceNote</string>
 		</dict>
 	</array>
 	<key>UIBackgroundModes</key>

@@ -347,6 +347,14 @@
 		EB7D788F93029959CFC11715 /* FullScreenImageViewer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81EED4FF1C595A9D2C6356EE /* FullScreenImageViewer.swift */; };
 		ECEAE418F6AAF8722F68D38C /* ComposeFAB.swift in Sources */ = {isa = PBXBuildFile; fileRef = 754A56795F5EB931E25A465E /* ComposeFAB.swift */; };
 		D4E2F1AB3B0CBB45A5E1A002 /* ATSAMChainRatchet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4E2F1AB3B0CBB45A5E1A001 /* ATSAMChainRatchet.swift */; };
+		A71D3E0F8A1346C9B2760001 /* ATSAMIndexedSessionProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = A71D3E0F8A1346C9B2760002 /* ATSAMIndexedSessionProfile.swift */; };
+		E9A713500000000000000001 /* ATSAMEndpointTransactionV1.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9A713500000000000000002 /* ATSAMEndpointTransactionV1.swift */; };
+		F1A2B3C4D5E6F708192A3B01 /* RavenPairInitLanOob.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1A2B3C4D5E6F708192A3B02 /* RavenPairInitLanOob.swift */; };
+		F1A2B3C4D5E6F708192A3B03 /* ATSAMEndpointDurableAdapters.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1A2B3C4D5E6F708192A3B04 /* ATSAMEndpointDurableAdapters.swift */; };
+		F1A2B3C4D5E6F708192A3B11 /* ATSAMLabTrustStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1A2B3C4D5E6F708192A3B12 /* ATSAMLabTrustStore.swift */; };
+		F1A2B3C4D5E6F708192A3B13 /* ATSAMPairInitAcceptService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1A2B3C4D5E6F708192A3B14 /* ATSAMPairInitAcceptService.swift */; };
+		F1A2B3C4D5E6F708192A3B15 /* ATSAMLabEndpointHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1A2B3C4D5E6F708192A3B16 /* ATSAMLabEndpointHost.swift */; };
+		C8A813500000000000000002 /* ATSAMPairInitV1.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8A813500000000000000001 /* ATSAMPairInitV1.swift */; };
 		ED2BCE86767953D0D35B26F2 /* KeyBackupServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12FD2A1C31D0CBB45A5E1464 /* KeyBackupServiceTests.swift */; };
 		F6A4B3CD5D0CBB45A5E1C002 /* MeshImpersonationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6A4B3CD5D0CBB45A5E1C001 /* MeshImpersonationTests.swift */; };
 		E5F3A2BC4C0CBB45A5E1B002 /* MeshRelayIntegrityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5F3A2BC4C0CBB45A5E1B001 /* MeshRelayIntegrityTests.swift */; };
@@ -380,6 +388,9 @@
 		E7A1B2C3D4E5F60718293B28 /* ContactRequestInboxTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293B27 /* ContactRequestInboxTests.swift */; };
 		E7A1B2C3D4E5F60718293C02 /* RavenEnvelopeSenderResolverTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293C01 /* RavenEnvelopeSenderResolverTests.swift */; };
 		D4E2F1AB3B0CBB45A5E1A004 /* ATSAMChainRatchetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4E2F1AB3B0CBB45A5E1A003 /* ATSAMChainRatchetTests.swift */; };
+		A71D3E0F8A1346C9B2760003 /* ATSAMIndexedSessionProfileTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A71D3E0F8A1346C9B2760004 /* ATSAMIndexedSessionProfileTests.swift */; };
+		E9A713500000000000000003 /* ATSAMEndpointTransactionV1Tests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9A713500000000000000004 /* ATSAMEndpointTransactionV1Tests.swift */; };
+		C8A813500000000000000004 /* ATSAMPairInitV1Tests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8A813500000000000000003 /* ATSAMPairInitV1Tests.swift */; };
 		B7A1C0DE1F0CBB45A5E17182 /* ATSAMPairingRootAgreementTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7A1C0DE1F0CBB45A5E17181 /* ATSAMPairingRootAgreementTests.swift */; };
 		EDBF4EC6E4871DC1C55318C0 /* RelayReceipt.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3397C365AA11ECF59A599C8 /* RelayReceipt.swift */; };
 		EFEF0C69D1C91E1E98320717 /* HopMACChain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8928A6E365DB471828D3463B /* HopMACChain.swift */; };
@@ -579,10 +590,21 @@
 		E7A1B2C3D4E5F60718293B27 /* ContactRequestInboxTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ContactRequestInboxTests.swift; sourceTree = "<group>"; };
 		E7A1B2C3D4E5F60718293C01 /* RavenEnvelopeSenderResolverTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RavenEnvelopeSenderResolverTests.swift; sourceTree = "<group>"; };
 		D4E2F1AB3B0CBB45A5E1A001 /* ATSAMChainRatchet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMChainRatchet.swift; sourceTree = "<group>"; };
+		A71D3E0F8A1346C9B2760002 /* ATSAMIndexedSessionProfile.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMIndexedSessionProfile.swift; sourceTree = "<group>"; };
+		E9A713500000000000000002 /* ATSAMEndpointTransactionV1.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMEndpointTransactionV1.swift; sourceTree = "<group>"; };
+		F1A2B3C4D5E6F708192A3B02 /* RavenPairInitLanOob.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RavenPairInitLanOob.swift; path = RAVEN/Core/Protocol/RavenPairInitLanOob.swift; sourceTree = "<group>"; };
+		F1A2B3C4D5E6F708192A3B04 /* ATSAMEndpointDurableAdapters.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMEndpointDurableAdapters.swift; sourceTree = "<group>"; };
+		F1A2B3C4D5E6F708192A3B12 /* ATSAMLabTrustStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMLabTrustStore.swift; sourceTree = "<group>"; };
+		F1A2B3C4D5E6F708192A3B14 /* ATSAMPairInitAcceptService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMPairInitAcceptService.swift; sourceTree = "<group>"; };
+		F1A2B3C4D5E6F708192A3B16 /* ATSAMLabEndpointHost.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMLabEndpointHost.swift; sourceTree = "<group>"; };
+		C8A813500000000000000001 /* ATSAMPairInitV1.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMPairInitV1.swift; sourceTree = "<group>"; };
 		12FD2A1C31D0CBB45A5E1464 /* KeyBackupServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KeyBackupServiceTests.swift; sourceTree = "<group>"; };
 		F6A4B3CD5D0CBB45A5E1C001 /* MeshImpersonationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MeshImpersonationTests.swift; sourceTree = "<group>"; };
 		E5F3A2BC4C0CBB45A5E1B001 /* MeshRelayIntegrityTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MeshRelayIntegrityTests.swift; sourceTree = "<group>"; };
 		D4E2F1AB3B0CBB45A5E1A003 /* ATSAMChainRatchetTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMChainRatchetTests.swift; sourceTree = "<group>"; };
+		A71D3E0F8A1346C9B2760004 /* ATSAMIndexedSessionProfileTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMIndexedSessionProfileTests.swift; sourceTree = "<group>"; };
+		E9A713500000000000000004 /* ATSAMEndpointTransactionV1Tests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMEndpointTransactionV1Tests.swift; sourceTree = "<group>"; };
+		C8A813500000000000000003 /* ATSAMPairInitV1Tests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMPairInitV1Tests.swift; sourceTree = "<group>"; };
 		B7A1C0DE1F0CBB45A5E17181 /* ATSAMPairingRootAgreementTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMPairingRootAgreementTests.swift; sourceTree = "<group>"; };
 		1457CBC83D6BDD5AA559E7FD /* InboxView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = InboxView.swift; sourceTree = "<group>"; };
 		149129F092F88C093B686993 /* EditRecipe.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = EditRecipe.swift; sourceTree = "<group>"; };
@@ -1185,6 +1207,13 @@
 				C97094E6B36DEF3A5476BBAD /* ATSAMHybridPairing.swift */,
 				B1F7E2B0C3D4E5F6A7B8C9D0 /* ATSAMMessageSealer.swift */,
 				D4E2F1AB3B0CBB45A5E1A001 /* ATSAMChainRatchet.swift */,
+				A71D3E0F8A1346C9B2760002 /* ATSAMIndexedSessionProfile.swift */,
+				E9A713500000000000000002 /* ATSAMEndpointTransactionV1.swift */,
+				F1A2B3C4D5E6F708192A3B04 /* ATSAMEndpointDurableAdapters.swift */,
+				F1A2B3C4D5E6F708192A3B12 /* ATSAMLabTrustStore.swift */,
+				F1A2B3C4D5E6F708192A3B14 /* ATSAMPairInitAcceptService.swift */,
+				F1A2B3C4D5E6F708192A3B16 /* ATSAMLabEndpointHost.swift */,
+				C8A813500000000000000001 /* ATSAMPairInitV1.swift */,
 				B2F7E2B1C3D4E5F6A7B8C9D1 /* ATSAMRootStorage.swift */,
 				4BCE3D6E55D175EBB9274E9D /* Online */,
 			);
@@ -1736,6 +1765,9 @@
 				12FD2A1C31D0CBB45A5E1464 /* KeyBackupServiceTests.swift */,
 				B7A1C0DE1F0CBB45A5E17181 /* ATSAMPairingRootAgreementTests.swift */,
 				D4E2F1AB3B0CBB45A5E1A003 /* ATSAMChainRatchetTests.swift */,
+				A71D3E0F8A1346C9B2760004 /* ATSAMIndexedSessionProfileTests.swift */,
+				E9A713500000000000000004 /* ATSAMEndpointTransactionV1Tests.swift */,
+				C8A813500000000000000003 /* ATSAMPairInitV1Tests.swift */,
 				E5F3A2BC4C0CBB45A5E1B001 /* MeshRelayIntegrityTests.swift */,
 				F6A4B3CD5D0CBB45A5E1C001 /* MeshImpersonationTests.swift */,
 				E7A1B2C3D4E5F60718293A03 /* RavenEnvelopeV1VectorsTests.swift */,
@@ -2209,6 +2241,7 @@
 				E7A1B2C3D4E5F60718293A01 /* RavenEnvelopeV1.swift */,
 				E7A1B2C3D4E5F60718293A05 /* RavenInterimSeal.swift */,
 				E7A1B2C3D4E5F60718293A07 /* RavenServerlessLanPath.swift */,
+				F1A2B3C4D5E6F708192A3B02 /* RavenPairInitLanOob.swift */,
 				E7A1B2C3D4E5F60718293A0F /* RavenBleRvn1Carrier.swift */,
 				E7A1B2C3D4E5F60718293A13 /* RavenEnvelopeBridgeService.swift */,
 				E7A1B2C3D4E5F60718293A17 /* RavenEnvelopeEndpointIngest.swift */,
@@ -2958,6 +2991,14 @@
 				0B5F415ADF33037C23EE3C6F /* ATSAMKeyTree.swift in Sources */,
 				A0E6F1A1B2C3D4E5F6A7B8C9 /* ATSAMMessageSealer.swift in Sources */,
 				D4E2F1AB3B0CBB45A5E1A002 /* ATSAMChainRatchet.swift in Sources */,
+				A71D3E0F8A1346C9B2760001 /* ATSAMIndexedSessionProfile.swift in Sources */,
+				E9A713500000000000000001 /* ATSAMEndpointTransactionV1.swift in Sources */,
+				F1A2B3C4D5E6F708192A3B01 /* RavenPairInitLanOob.swift in Sources */,
+				F1A2B3C4D5E6F708192A3B03 /* ATSAMEndpointDurableAdapters.swift in Sources */,
+				F1A2B3C4D5E6F708192A3B11 /* ATSAMLabTrustStore.swift in Sources */,
+				F1A2B3C4D5E6F708192A3B13 /* ATSAMPairInitAcceptService.swift in Sources */,
+				F1A2B3C4D5E6F708192A3B15 /* ATSAMLabEndpointHost.swift in Sources */,
+				C8A813500000000000000002 /* ATSAMPairInitV1.swift in Sources */,
 				A2E6F1A2B2C3D4E5F6A7B8CA /* ATSAMRootStorage.swift in Sources */,
 				7D59216EFDE247D377539852 /* ATSAMHybridPairing.swift in Sources */,
 				1C522F1E21BFF33EF7938F02 /* BBEConstants.swift in Sources */,
@@ -3045,6 +3086,9 @@
 				ED2BCE86767953D0D35B26F2 /* KeyBackupServiceTests.swift in Sources */,
 				B7A1C0DE1F0CBB45A5E17182 /* ATSAMPairingRootAgreementTests.swift in Sources */,
 				D4E2F1AB3B0CBB45A5E1A004 /* ATSAMChainRatchetTests.swift in Sources */,
+				A71D3E0F8A1346C9B2760003 /* ATSAMIndexedSessionProfileTests.swift in Sources */,
+				E9A713500000000000000003 /* ATSAMEndpointTransactionV1Tests.swift in Sources */,
+				C8A813500000000000000004 /* ATSAMPairInitV1Tests.swift in Sources */,
 				E5F3A2BC4C0CBB45A5E1B002 /* MeshRelayIntegrityTests.swift in Sources */,
 				F6A4B3CD5D0CBB45A5E1C002 /* MeshImpersonationTests.swift in Sources */,
 				E7A1B2C3D4E5F60718293A04 /* RavenEnvelopeV1VectorsTests.swift in Sources */,

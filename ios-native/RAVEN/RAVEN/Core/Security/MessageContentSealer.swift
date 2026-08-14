@@ -176,10 +176,17 @@ enum MessageContentSealer {
         recipientAgreementPubKey: Data?,
         msgId: String
     ) async -> SealedContent {
-        // Hardening: reject empty plaintext outright. An empty bubble
-        // is never a legitimate user-typed message and lets a server
-        // generate "ghost" bubbles from forged sends. (Audit C4.)
-        guard !plaintext.isEmpty else {
+        // Hardening: reject empty OR whitespace-only plaintext outright.
+        // An empty/blank bubble is never a legitimate user-typed message
+        // and lets a server generate "ghost" bubbles from forged sends.
+        // (Audit C4.)
+        //
+        // whitespace-seal-guard: a string of only spaces/newlines/tabs
+        // passes `!plaintext.isEmpty` and was silently sealed by the
+        // Noise fallback even though ATSAM rejects it — divergent
+        // behaviour. Promote the guard to trim first so BOTH paths
+        // reject blank content with the SAME empty SealedContent shape.
+        guard !plaintext.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return SealedContent(
                 base64: "",
                 isEncrypted: false,
@@ -525,7 +532,40 @@ enum MessageContentSealer {
         }
 
         if magic == plainMagic {
-            // Reject non-UTF-8 RVNP1 too — same reason: only legit
+            // ⚠️ DOWNGRADE GAP (open, deliberately not closed here).
+            //
+            // This branch dispatches purely on the wire magic and never
+            // consults the peer's established security level, even
+            // though `seal` (above) keys off exactly that — so a
+            // compromised server can replace a stored `content` with
+            // base64("RVNP1\0\0\0" + text) for a peer we are ATSAM-
+            // paired with and have it render as that contact's
+            // message. (Mesh is unaffected: Ed25519 identity binding
+            // already blocks it there.)
+            //
+            // The obvious guard — "drop RVNP1 from any sender we hold
+            // an ATSAM root for" — was implemented and REVERTED on
+            // 2026-07-18, because roots are keyed by userId, not by
+            // device, and having a root does NOT imply the peer can
+            // seal:
+            //   • RAVEN-Android has no ATSAM implementation at all and
+            //     emits RVNP1 as its normal no-session fallback
+            //     (feature/e2ee/.../MessageSealer.kt:72), so every
+            //     message from a paired contact's Android device would
+            //     be discarded.
+            //   • Our own sender emits RVNP1 when `resolvedSender` is
+            //     transiently nil (see the note at the top of `seal`).
+            //   • The drop is persisted — MessageStore rewrites the row
+            //     to the failure placeholder and dedup prevents a
+            //     re-unseal — so the loss is irreversible.
+            //
+            // Closing this needs a PER-PEER, PERSISTED "has sealed to
+            // us before" capability bit (a session-scoped one still
+            // loses to an attacker who injects before the first sealed
+            // frame), plus a decision about the first-contact window.
+            // Tracked as a design decision, not a one-line guard.
+            //
+            // Reject non-UTF-8 RVNP1 — only legit
             // senders write valid UTF-8 here.
             guard let str = String(data: rest, encoding: .utf8) else {
                 return UnsealedContent(plaintext: "", isEncrypted: false, reason: .decryptFailed)

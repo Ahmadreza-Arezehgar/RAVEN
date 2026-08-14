@@ -1,8 +1,15 @@
 # RAVEN Store Object V1
 
 **Version:** 1 (`rvn1`)  
-**Status:** Binding for offline store-and-forward mailboxes  
-**Companions:** [`RAVEN_ROUTING_TAG_V1.md`](RAVEN_ROUTING_TAG_V1.md), [`RAVEN_ENVELOPE_V1.md`](RAVEN_ENVELOPE_V1.md), [`RAVEN_BRIDGE_V1.md`](RAVEN_BRIDGE_V1.md)
+**Status:** Record layout binding; production security hold and deletion errata
+
+**Companions:** [`RAVEN_ROUTING_TAG_V1.md`](RAVEN_ROUTING_TAG_V1.md), [`RAVEN_ENVELOPE_V1.md`](RAVEN_ENVELOPE_V1.md), [`RAVEN_BRIDGE_V1.md`](RAVEN_BRIDGE_V1.md), [`RAVEN_MAILBOX_TRANSPORT_V1.md`](RAVEN_MAILBOX_TRANSPORT_V1.md)
+
+The mandatory privacy and deletion corrections in
+[`SECURITY_ERRATA_RVN1_2026-08-13.md`](SECURITY_ERRATA_RVN1_2026-08-13.md)
+override earlier behavior: an offline polling address is never derived from an
+individual envelope's `routing_tag`, and an opaque ACK never authorizes store
+deletion.
 
 ## 1. Purpose
 
@@ -24,7 +31,7 @@ store_tag = SHA-256("raven/relay-tag/v1" || mailbox_tag)[:16]
 
 | Rule | Requirement |
 |------|-------------|
-| Epoch | unix-day or explicit u64; rotate ≥ daily when online |
+| Epoch | unix-day or a separately versioned explicit u64; rotate ≥ daily when online |
 | Overlap | accept `epoch-1` and `epoch` during ±skew window |
 | Stability | MUST NOT use permanent stable recipient tags |
 | Public index | store indexes `store_tag` only — never usernames / `rvn1…` addresses |
@@ -49,7 +56,14 @@ Max `envelope_len`: 1 MiB. Max objects per `store_tag`: implementation-defined �
 
 ## 4. Retrieval
 
-Claimant presents `store_tag` (+ optional proof-of-knowledge of mailbox_tag via challenge). Store returns matching non-expired objects. Forged retrieval without tag knowledge MUST fail closed. After verified recipient ACK (opaque relay of ACK envelope), store MAY delete by `message_id`.
+Claimant presents `store_tag` (+ optional proof-of-knowledge of mailbox_tag via challenge). Store returns matching non-expired objects. Forged retrieval without tag knowledge MUST fail closed.
+
+**Deletion errata:** Store Object V1 is TTL-delete only. A store cannot inspect
+the acknowledged message ID inside a sealed ACK, and the arrival of opaque ACK
+bytes proves neither recipient acceptance nor authority over a custody row.
+Early deletion requires a future versioned deletion token that a store can
+verify and that is cryptographically bound to the exact custody object. No
+such token exists in V1.
 
 ## 5. Replication / TTL
 
@@ -66,7 +80,15 @@ E2EE does **not** hide timing or volume. Store operators see sizes, arrival time
 | Tag unlinkability | `shared-vectors/rvn1/store/mailbox_tag_001.json` |
 | Rust | `raven_core::store_object` unit tests + forward_queue store-carry |
 | Demo | `scripts/bridge_abc_demo.sh` store-carry path |
+| Feature-gated network binding | `raven-swarm::mailbox` + `scripts/swarm_mailbox_smoke.sh` |
 
 ## 8. Bridge interaction
 
-When egress is down, Bridge persists packed envelopes (forward queue). When a store role is enabled, objects MAY additionally be published under `store_tag` derived from the envelope `routing_tag` via `opaque_store_tag`.
+When egress is down, Bridge persists packed envelopes (forward queue). A
+store-enabled bridge MUST NOT derive `store_tag` by hashing or transforming an
+envelope's per-message `routing_tag`: an offline recipient cannot predict an
+unseen per-envelope tag, so that construction is not a polling namespace.
+Publication requires an endpoint-supplied tag from a separately derived,
+rotating mailbox schedule. The production-disabled indexed-session mapping is
+specified in [`ATSAM_INDEXED_SESSION_PROFILE_V1.md`](ATSAM_INDEXED_SESSION_PROFILE_V1.md)
+§6; bridges and stores never receive its key material.

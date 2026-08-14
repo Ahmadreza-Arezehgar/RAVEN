@@ -56,7 +56,6 @@ struct ChatView: View {
     @State private var showVaultSheet = false         // Droplet menu: Vault
     @State private var pendingVaultLock: VaultLock? = nil  // Vault lock to attach to next message
     @State private var showSharedMedia = false
-    @State private var showPaywall = false
     @State private var imageForEditor: UIImage? = nil // Media Editor integration
     /// Round 18 (d): when set, a `VideoPreviewBeforeSendSheet`
     /// presents over the chat so the user can watch / trim / cancel
@@ -1411,7 +1410,6 @@ struct ChatView: View {
             imageForEditor: $imageForEditor,
             showDocumentPicker: $showDocumentPicker,
             showLocationSheet: $showLocationSheet,
-            showPaywall: $showPaywall,
             showDeleteConfirmation: $showDeleteConfirmation,
             selectedMessageForForward: $selectedMessageForForward,
             selectedMessageIds: selectedMessageIds,
@@ -1596,11 +1594,6 @@ struct ChatView: View {
             // Vault flag. Suppress here so we don't double-report.
             guard selectedImageURL == nil else { return }
             handleScreenshotDetected(isVaultPhoto: false)
-        }
-        // RAVEN+ upsell: show paywall when voice recording hits free-tier limit
-        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ShowPaywall"))) { _ in
-            Haptics.warning()
-            showPaywall = true
         }
         // Contact-card "Open profile" tap → slide UserProfileView up from
         // the bottom (same pattern the location-tap → map sheet uses).
@@ -2814,14 +2807,9 @@ struct ChatView: View {
             } catch let error as PremiumLimitError {
                 // FIXED: MainActor.run to update UI on Main Thread
                 await MainActor.run {
-                    if PremiumLimits.isPremium {
-                        self.errorMessage = error.localizedDescription
-                        self.showErrorAlert = true
-                        Haptics.error()
-                    } else {
-                        self.showPaywall = true
-                        Haptics.warning()
-                    }
+                    self.errorMessage = error.localizedDescription
+                    self.showErrorAlert = true
+                    Haptics.error()
                 }
             } catch {
                 #if DEBUG
@@ -2871,14 +2859,9 @@ struct ChatView: View {
             } catch let error as PremiumLimitError {
                 // FIXED: MainActor.run to update UI on Main Thread
                 await MainActor.run {
-                    if PremiumLimits.isPremium {
-                        self.errorMessage = error.localizedDescription
-                        self.showErrorAlert = true
-                        Haptics.error()
-                    } else {
-                        self.showPaywall = true
-                        Haptics.warning()
-                    }
+                    self.errorMessage = error.localizedDescription
+                    self.showErrorAlert = true
+                    Haptics.error()
                 }
             } catch {
                 #if DEBUG
@@ -2933,16 +2916,9 @@ struct ChatView: View {
                 )
             } catch let error as PremiumLimitError {
                 await MainActor.run {
-                    if PremiumLimits.isPremium {
-                        // Premium user hit hard limit — show error, not paywall
-                        errorMessage = error.localizedDescription
-                        showErrorAlert = true
-                        Haptics.error()
-                    } else {
-                        // Free user — show purchase screen
-                        showPaywall = true
-                        Haptics.warning()
-                    }
+                    errorMessage = error.localizedDescription
+                    showErrorAlert = true
+                    Haptics.error()
                 }
             } catch {
                 #if DEBUG
@@ -5826,7 +5802,6 @@ struct ChatSheetsModifier: ViewModifier {
     @Binding var imageForEditor: UIImage?
     @Binding var showDocumentPicker: Bool
     @Binding var showLocationSheet: Bool
-    @Binding var showPaywall: Bool
     @Binding var showDeleteConfirmation: Bool
     @Binding var selectedMessageForForward: ChatMessage?
     let selectedMessageIds: Set<String>
@@ -6018,9 +5993,6 @@ struct ChatSheetsModifier: ViewModifier {
                     onSendCurrent: { location in onSendLocation(location) },
                     onStartLive: { duration, location in onStartLive(duration, location) }
                 )
-            }
-            .sheet(isPresented: $showPaywall) {
-                RavenPlusPaywallView()
             }
             .sheet(item: $selectedMessageForForward) { msg in
                 ForwardSheet(message: msg) { conv in

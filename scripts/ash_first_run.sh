@@ -13,6 +13,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 NODE_DIR="$REPO_ROOT/node"
+# Stable profile — NEVER mktemp (new identity every run breaks iPhone Peer pub).
+DATA_DIR="${ASH_DATA_DIR:-$HOME/.raven-ash}"
 
 NO_RUN=0
 INIT_ONLY=0
@@ -25,10 +27,13 @@ for arg in "$@"; do
 ash_first_run.sh — portable Raven ash bootstrap
 
   Detects hybrid_messenger repo relative to this script (any username/home).
-  Builds ash + raven-node + raven-core, then launches ash with an ephemeral data dir.
+  Builds ash + raven-node + raven-core, then launches ash with ~/.raven-ash
+  (stable identity — re-use the same Mac whoami on iPhone).
 
   --no-run      build only
   --init-only   build, init identity, print whoami, exit
+
+  Override profile: ASH_DATA_DIR=/path bash scripts/ash_first_run.sh
 EOF
       exit 0
       ;;
@@ -36,38 +41,22 @@ EOF
 done
 
 export PATH="${HOME}/.cargo/bin:${PATH}"
+# Avoid macOS Keychain prompts hanging ash whoami/init in Terminal.
+export RAVEN_IDENTITY_BACKEND="${RAVEN_IDENTITY_BACKEND:-locked-file}"
 
 die_tooling() {
-  cat <<'EOF' >&2
-
-╔══════════════════════════════════════════════════════════════════╗
-║  Missing Rust toolchain (rustc / cargo)                          ║
-║  ابزار Rust نصب نیست (rustc / cargo)                             ║
-╠══════════════════════════════════════════════════════════════════╣
-║  EN: Install from https://rustup.rs then re-run this script.     ║
-║  FA: از https://rustup.rs نصب کنید، بعد دوباره این اسکریپت را    ║
-║      اجرا کنید.                                                  ║
-║                                                                  ║
-║  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh  ║
-║  source "$HOME/.cargo/env"                                       ║
-╚══════════════════════════════════════════════════════════════════╝
-
-EOF
+  echo "ERROR: $1" >&2
+  echo "FA: Rust لازم است — https://rustup.rs" >&2
+  echo "EN: Install Rust from https://rustup.rs then re-run." >&2
   exit 1
 }
 
-command -v rustc >/dev/null 2>&1 || die_tooling
-command -v cargo >/dev/null 2>&1 || die_tooling
+command -v rustc >/dev/null || die_tooling "rustc not found"
+command -v cargo >/dev/null || die_tooling "cargo not found"
 
-if [[ ! -f "$NODE_DIR/Cargo.toml" ]]; then
-  echo "ERROR: node/Cargo.toml not found under $REPO_ROOT" >&2
-  echo "خطا: پوشه node در کنار scripts پیدا نشد — کل ریپو را کلون/کپی کنید." >&2
-  exit 1
-fi
-
-echo "=== Raven ash first-run ==="
 echo "repo:  $REPO_ROOT"
 echo "node:  $NODE_DIR"
+echo "data:  $DATA_DIR  (stable — keep this for iPhone Peer pub)"
 echo "rustc: $(rustc --version)"
 echo "cargo: $(cargo --version)"
 echo
@@ -82,21 +71,19 @@ if [[ ! -x "$ASH" ]]; then
   exit 1
 fi
 
+mkdir -p "$DATA_DIR"
+
 if [[ "$NO_RUN" -eq 1 ]]; then
   echo "Build OK — skip launch (--no-run)."
-  echo "Next: DATA=\$(mktemp -d); $ASH --data-dir \"\$DATA\""
+  echo "Next: $ASH --data-dir \"$DATA_DIR\""
+  echo "Or:   $ASH   (defaults to ~/.raven-ash)"
   exit 0
 fi
 
-DATA="$(mktemp -d "${TMPDIR:-/tmp}/raven-ash-XXXXXX")"
-echo "Data dir: $DATA"
-echo "(ephemeral — delete when done: rm -rf \"$DATA\")"
-echo
-
 if [[ "$INIT_ONLY" -eq 1 ]]; then
-  "$ASH" --data-dir "$DATA" init
+  "$ASH" --data-dir "$DATA_DIR" init
   echo "--- whoami (share these public bits only) ---"
-  "$ASH" --data-dir "$DATA" whoami
+  "$ASH" --data-dir "$DATA_DIR" whoami
   echo
   echo "FA: فقط address / fingerprint / pub_hex را بفرستید — هرگز seed را نه."
   echo "EN: Share address / fingerprint / pub_hex only — never a seed."
@@ -106,5 +93,6 @@ fi
 echo "Launching interactive ash…"
 echo "FA: منوی ۴ Status هویت می‌سازد؛ منوی ۳ مخاطب؛ منوی ۲ ارسال."
 echo "EN: Menu 4 Status creates identity; 3 Contacts; 2 Send/Chat."
+echo "FA: دیگر mktemp نزنید — هویت مک ثابت می‌ماند."
 echo
-exec "$ASH" --data-dir "$DATA"
+exec "$ASH" --data-dir "$DATA_DIR"

@@ -11,8 +11,12 @@ pub const MAX_IPC_FRAME: usize = 256 * 1024;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum IpcRequest {
-    Ping { v: u16 },
-    Status { v: u16 },
+    Ping {
+        v: u16,
+    },
+    Status {
+        v: u16,
+    },
     /// Policy toggle — no secrets.
     SetPolicy {
         v: u16,
@@ -31,7 +35,9 @@ pub enum IpcRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "ok", rename_all = "snake_case")]
 pub enum IpcResponse {
-    Pong { v: u16 },
+    Pong {
+        v: u16,
+    },
     Status {
         v: u16,
         bridge: bool,
@@ -40,8 +46,14 @@ pub enum IpcResponse {
         forward_pending: u64,
         capabilities: Vec<String>,
     },
-    Accepted { v: u16 },
-    Error { v: u16, code: String, message: String },
+    Accepted {
+        v: u16,
+    },
+    Error {
+        v: u16,
+        code: String,
+        message: String,
+    },
 }
 
 pub fn encode_request(req: &IpcRequest) -> Result<Vec<u8>, String> {

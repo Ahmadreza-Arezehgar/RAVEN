@@ -3,6 +3,10 @@
 Opaque **cross-transport** forward of the same `RavenEnvelopeV1` between LAN/Internet and BLE (mock BLE = TCP length-prefix in CI).  
 Bridge ≠ trusted server: never decrypts, never re-origins, never changes `message_id`.
 
+> Security status: bridge mechanics are testable, but production messaging is
+> blocked by [`../protocol/SECURITY_ERRATA_RVN1_2026-08-13.md`](../protocol/SECURITY_ERRATA_RVN1_2026-08-13.md).
+> The bridge never parses sealed ACK content or declares recipient delivery.
+
 Conceptual credit: MIT DTN store-carry-forward, Spray-and-Wait replication budgets, RFC 9171 lifetime/hop-safety lessons — **not** BPv7 wire format.
 
 ## Topology (A–B–C)
@@ -28,14 +32,14 @@ cargo test -p raven-core --test bridge_v1          # cases 1–9
 
 1. BLE→Internet forward  
 2. Internet→BLE reverse  
-3. Store-carry when Internet down, flush later  
-4. Dup BLE+Internet → one delivery  
-5. Tampered ciphertext → auth fail  
-6. Replay → dedup drop  
-7. Crash after queue → recover  
-8. Expired offline → never forward  
-9. Per-peer rate limit (noisy hop dropped; quiet hop still forwards)  
-10. Recipient ACK reverse (BLE→LAN opaque; `opaque_acked_message_id`); destination `DeliverToEndpoint` when not bridging  
+3. Store-carry when Internet down, flush later
+4. Dup BLE+Internet → one delivery
+5. Tampered ciphertext → auth fail
+6. Replay → dedup drop
+7. Crash after queue → recover
+8. Expired offline → never forward
+9. Per-peer rate limit (noisy hop dropped; quiet hop still forwards)
+10. Recipient ACK reverse (BLE→LAN sealed and opaque, with no acknowledged-ID peek); destination dispatch remains separate from authenticated endpoint acceptance
 
 ## Abuse limits (V1 defaults)
 
@@ -64,16 +68,16 @@ Software path is proven with **mock_ble** (TCP). Real GATT on device uses existi
 
 iOS phone-as-B:
 - Optional LAN listen port → opaque BLE forward (`RavenEnvelopeBridgeService.forwardLanToBle`)
-- Recipient ACK reverse: BLE ACK → write framed ACK on the waiting LAN socket (`ackWaiters`); A sees Delivered only after true endpoint ACK
-- Phone-as-C: set `localIsDestination = true` → `RavenEnvelopeEndpointIngest` posts sealed body (`.ravenEnvelopeV1EndpointIngest`) for chat sealer — BridgeSubsystem never decrypts
-- `RavenEnvelopeChatWire` (flag ON): destination unseal/display via `MessageContentSealer` + emit opaque Delivered ACK; sender applies UI Delivered from real ACK (LAN return or BLE reverse) without bridge keys
+- Recipient ACK reverse: BLE ACK is routed as an opaque envelope toward active LAN paths; the bridge does not read `acked_message_id`. Only the originating endpoint can decrypt and apply it.
+- Phone-as-C: destination classification must come from a recognized local routing tag/session, never a user-forced unconditional boolean. Unknown routes remain relay-only or are dropped.
+- `RavenEnvelopeChatWire` may emit a sealed Delivered ACK only after authenticated decrypt and durable inbox/ratchet commit; sender delivery requires full outer + AEAD + inner ACK verification and exact pending-recipient binding.
 
 ### Hardware GATT smoke (iOS device, flag ON)
 
 1. Two phones (or phone + Mac with iOS Simulator BLE limited): enable **RavenEnvelopeV1**
 2. Phone B: Serverless LAN listen port > 0; BLE peers nearby; `localIsDestination = false`
-3. Phone C: BLE only; `localIsDestination = true`
-4. A (Mac `raven-node run` or phone): send sealed envelope to B LAN; expect C ingest notification + ACK back to A
+3. Phone C: BLE only; install an authenticated session whose routing tag matches the test envelope
+4. A (Mac test harness or phone): send a real session-sealed envelope to B LAN; expect C authenticated commit followed by a sealed ACK back to A
 5. Confirm MeshEnvelope path still works with flag OFF
 
 ## ash terminal controls (does **not** stop bridging)
@@ -107,8 +111,7 @@ Interactive menu → **4 Status** shows the same Bridge / transports / forward_q
 
 ## Safety
 
-- Never print seeds / private keys / plaintext  
-- Logs: `message_id` prefixes, lengths, `BRIDGE forward … (opaque)` only  
-- Capability ads: `ble` / `internet` / `relay` / `store` / `bridge` — never “I know Bob”  
-- No GitHub push of demo data dirs  
-
+- Never print seeds / private keys / plaintext
+- Logs: aggregate state and bounded error classes only; do not write peer addresses, message identifiers, plaintext, ciphertext, keys, or absolute developer paths
+- Capability ads: `ble` / `internet` / `relay` / `store` / `bridge` — never “I know Bob”
+- No GitHub push of demo data dirs

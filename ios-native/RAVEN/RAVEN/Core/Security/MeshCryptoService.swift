@@ -147,13 +147,58 @@ actor MeshCryptoService {
     }
     
     /// Verify signature on a signed payload
+    /// What a signature check actually established.
+    ///
+    /// 🔴 2026-07-24 — THE CHOKEPOINT. This type exists because
+    /// `verifySignature` used to return a bare `Bool`, which made two very
+    /// different facts indistinguishable to every caller:
+    ///
+    ///   "the person named as the sender signed this"      (authorship proven)
+    ///   "SOME authenticated relay vouches for this"        (authorship NOT proven)
+    ///
+    /// The bridge exceptions below legitimately produce the second — they exist
+    /// to fix real, user-reported delivery failures (multi-device bridging, and
+    /// group messages relayed by an online member). But collapsing both to
+    /// `true` meant any nearby peer could set `isBridged`, address an envelope
+    /// to us, and have arbitrary text rendered under a verified contact's name.
+    /// Four separate impersonation paths were all this one conflation.
+    ///
+    /// Callers must now decide explicitly. The rule enforced downstream:
+    /// content that is only `.relayAttested` may be DELIVERED, but must not be
+    /// ATTRIBUTED to the claimed sender unless the content itself is
+    /// cryptographically bound to them (i.e. it opens under a key only they
+    /// could have sealed with). Sealed content is self-authenticating; plaintext
+    /// is not.
+    enum AuthVerdict: Equatable {
+        /// The signing key is bound to the claimed `senderId` (or is our own).
+        /// Authorship is proven; safe to attribute and to write to the trust store.
+        case authorAuthenticated
+        /// An authenticated relay vouches for the envelope, but the named sender
+        /// is unproven. NEVER sufficient to attribute plaintext or to mutate
+        /// trust state.
+        case relayAttested
+        /// Refuse.
+        case rejected
+
+        var isAcceptable: Bool { self != .rejected }
+        var isAuthorProven: Bool { self == .authorAuthenticated }
+    }
+
+    /// Legacy Bool shim. Returns true for BOTH author-authenticated and
+    /// relay-attested envelopes, so it must only be used where a subsequent
+    /// check establishes authorship (or where the payload is self-authenticating).
+    /// Prefer `authenticate(_:)` and branch on the verdict.
+    func verifySignature(_ payload: SignedMeshPayload) async -> Bool {
+        await authenticate(payload).isAcceptable
+    }
+
     /// SECURITY: Also verifies identity binding — signerPublicKey must match
     /// a known trusted key for the claimed senderId
-    func verifySignature(_ payload: SignedMeshPayload) async -> Bool {
+    func authenticate(_ payload: SignedMeshPayload) async -> AuthVerdict {
         guard let signature = Data(base64Encoded: payload.signature),
               let publicKey = Data(base64Encoded: payload.signerPublicKey) else {
             logger.debug("Invalid signature data")
-            return false
+            return .rejected
         }
         
         let signingData = payload.envelope.signingData()
@@ -167,7 +212,7 @@ actor MeshCryptoService {
         
         if !isValid {
             logger.debug("SIGNATURE VERIFICATION FAILED - Message may be spoofed!")
-            return false
+            return .rejected
         }
         
         // Step 2: Identity binding — verify signerPublicKey belongs to claimed senderId
@@ -176,7 +221,7 @@ actor MeshCryptoService {
         
         // Check if it's our OWN message (e.g. echo from relay)
         if signerKey == DeviceIdentityService.shared.publicKeyBase64 {
-            return true
+            return .authorAuthenticated
         }
         
         // Check if signer's key matches any trusted device for this sender
@@ -186,7 +231,7 @@ actor MeshCryptoService {
         }
         
         if keyMatches {
-            return true
+            return .authorAuthenticated
         }
         
         // Bug 5 fix: For relayed/bridged messages, verify the ORIGINAL sender's signature
@@ -206,7 +251,7 @@ actor MeshCryptoService {
                 )
                 if !origValid {
                     logger.debug("ORIGINAL signature FAILED for relayed message from \(senderId, privacy: .private) — possible spoofing!")
-                    return false
+                    return .rejected
                 }
                 // 🔐 BUG FIX (2026-05-10): TOFU for FIRST contact must
                 // not silently elevate a stranger's relay-supplied key
@@ -250,7 +295,7 @@ actor MeshCryptoService {
                         if let pinnedIdentity = await PeerKeyDirectory.shared.identityKey(for: senderId),
                            pinnedIdentity != pubKeyData {
                             logger.debug("REJECTED relayed TOFU: pinned identityKey mismatch for \(senderId, privacy: .private) — possible sender spoof")
-                            return false
+                            return .rejected
                         }
                         let fingerprint = String(origPubKey.prefix(16))
                         let existing = await FriendDeviceRepository.shared.getAnyDevice(forUser: senderId, fingerprint: fingerprint)
@@ -274,11 +319,14 @@ actor MeshCryptoService {
                         || origPubKey == DeviceIdentityService.shared.publicKeyBase64
                     guard origKeyMatches else {
                         logger.debug("Relay IMPERSONATION: origPubKey not trusted for \(senderId, privacy: .private)")
-                        return false
+                        return .rejected
                     }
                 }
                 logger.debug("Relayed message (hop=\(hopCount, privacy: .public)) — original sender signature VERIFIED")
-                return true
+                    // Authorship IS proven: the ORIGINAL signature verified and its
+                    // key was checked against the trusted set for the claimed sender
+                    // just above. This is the honest multi-hop relay path.
+                    return .authorAuthenticated
             }
             
             // 🔐 BUG FIX (2026-05-10): the previous version accepted
@@ -298,6 +346,23 @@ actor MeshCryptoService {
             // bound to the original ciphertext — or be rejected.
             // Until that attestation flow is wired, refuse the bypass
             // and force the sender path to include the original sig.
+            // ⚠️ `isBridged` is NOT covered by `signingData()`, so any relay can
+            // flip it on a forwarded frame. That used to be critical: the
+            // exceptions below returned a bare `true`, so one attacker-set byte
+            // bought full sender impersonation.
+            //
+            // It is now contained rather than exploitable: every branch here
+            // yields `.relayAttested`, which downstream refuses to attribute to
+            // the named sender for unsealed content and refuses to let mutate
+            // any trust state. An attacker who sets the flag can therefore
+            // deliver a frame, but cannot author one — and cannot produce the
+            // sealed content that would authenticate itself.
+            //
+            // Binding `isBridged` into the signature would be proper
+            // defence-in-depth, but it changes the signed byte layout, which
+            // breaks the shipped app, the Android/Windows ports, and the pinned
+            // shared-vectors contract. It belongs in a coordinated wire-version
+            // bump, not here.
             if payload.envelope.isBridged == true {
                 // 🟥 ROUND 44 (2026-05-17) — multi-device bridge exception.
                 //
@@ -332,8 +397,8 @@ actor MeshCryptoService {
                 //     device of our user (the bridge's own pubkey check)
                 let myUserIdSync = await KeychainService.shared.getUserId() ?? ""
                 if !myUserIdSync.isEmpty, payload.envelope.recipientId == myUserIdSync {
-                    logger.debug("[bridge-exception] Accepting bridged message addressed to own userId (multi-device, no origSig required).")
-                    return true
+                    logger.debug("[bridge-exception] Accepting bridged message addressed to own userId (multi-device, no origSig required) — RELAY-ATTESTED ONLY, authorship unproven.")
+                    return .relayAttested
                 }
                 // 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — group
                 // bridge exception.
@@ -395,8 +460,8 @@ actor MeshCryptoService {
                     let localGroup = try? await groupRepo.get(groupId: gid)
                     let isMember = (localGroup?.members ?? []).contains { $0.userId == myUserIdSync }
                     if isMember {
-                        logger.debug("[bridge-exception-group] Accepting bridged group message for member-of group \(gid, privacy: .private).")
-                        return true
+                        logger.debug("[bridge-exception-group] Accepting bridged group message for member-of group \(gid, privacy: .private) — RELAY-ATTESTED ONLY.")
+                        return .relayAttested
                     }
                     // 🟢 ROUND 73 (2026-05-24) — accept bridged group msgs for
                     // UNKNOWN groups too (was rejecting).
@@ -429,19 +494,19 @@ actor MeshCryptoService {
                     // envelope — same trust posture as 1:1 bridge exception
                     // above.
                     if localGroup == nil {
-                        logger.debug("[bridge-exception-group] Accepting bridged group message for unsynced group \(gid, privacy: .private) → will route to limbo.")
-                        return true
+                        logger.debug("[bridge-exception-group] Accepting bridged group message for unsynced group \(gid, privacy: .private) → limbo — RELAY-ATTESTED ONLY.")
+                        return .relayAttested
                     }
                     logger.debug("REJECTED: bridged group message for group we are not a member of: \(gid, privacy: .private)")
-                    return false
+                    return .rejected
                 }
                 logger.debug("REJECTED: bridged message arrived without an original sender signature — bridge attestation required (see TODO server-bridge-attestation).")
-                return false
+                return .rejected
             }
 
             // SECURITY: Reject relayed messages without original signature - prevents spoofing
             logger.debug("REJECTED: Relayed message (hop=\(hopCount, privacy: .public)) without original signature - possible spoofing!")
-            return false
+            return .rejected
         }
         
         // SECURITY: User already has trusted devices registered.
@@ -450,7 +515,7 @@ actor MeshCryptoService {
         // Key rotation must be done via explicit re-verification (e.g. QR scan).
         if !trustedDevices.isEmpty {
             logger.debug("IMPERSONATION ATTEMPT! Unknown key for verified user \(senderId, privacy: .private)")
-            return false
+            return .rejected
         }
         
         // 🔐 RE-AUDIT FIX (2026-05-10): the relay-path TOFU was
@@ -475,7 +540,7 @@ actor MeshCryptoService {
         if let pinnedIdentity = await PeerKeyDirectory.shared.identityKey(for: senderId),
            pinnedIdentity != publicKey {
             logger.debug("REJECTED direct TOFU: pinned identityKey mismatch for \(senderId, privacy: .private) — possible sender spoof")
-            return false
+            return .rejected
         }
 
         logger.debug("TOFU: first-seen direct sender \(senderId, privacy: .private) — recording UNVERIFIED")
@@ -484,7 +549,10 @@ actor MeshCryptoService {
         // Dedup: skip the upsert if we already have any device row
         // for this (sender, fingerprint) — see relay-path note.
         if let _ = await FriendDeviceRepository.shared.getAnyDevice(forUser: senderId, fingerprint: fingerprint) {
-            return true
+                // Hop-0, self-signed: this key authored this envelope. The
+                // key->userId binding is TOFU and stays `.unverified` until a
+                // safety-number check, but authorship of THIS frame is proven.
+                return .authorAuthenticated
         }
         let device = FriendDevice(
             friendUserId: senderId,
@@ -502,7 +570,7 @@ actor MeshCryptoService {
             logger.debug("TOFU: Failed to persist key: \(error.localizedDescription, privacy: .public) — still accepting message")
         }
 
-        return true
+            return .authorAuthenticated
     }
     
     // MARK: - Public API: Rate Limiting (C5)
@@ -537,7 +605,9 @@ actor MeshCryptoService {
     
     /// Validate hop count and spray counter bounds (C5)
     func validateDTNBounds(hopCount: Int, hopLimit: Int, sprayCounter: Int) -> Bool {
-        guard hopLimit >= 0 && hopLimit <= Self.protocolMaxHopLimit else {
+        // hopLimit==0 would be deliverable-but-never-forwardable; honest senders
+        // always default to PremiumLimits.meshHopLimit (>= 1), so reject 0 locally.
+        guard hopLimit >= 1 && hopLimit <= Self.protocolMaxHopLimit else {
             logger.debug("Invalid hopLimit: \(hopLimit, privacy: .public), protocol max: \(Self.protocolMaxHopLimit, privacy: .public)")
             return false
         }
@@ -929,11 +999,24 @@ enum MeshCryptoError: Error, LocalizedError {
 extension MeshEnvelope {
     /// Convert to secure envelope with nonce and public key
     func toSecureEnvelope() -> SecureMeshEnvelope {
-        // Generate random nonce
-        var nonceBytes = [UInt8](repeating: 0, count: 16)
-        _ = SecRandomCopyBytes(kSecRandomDefault, 16, &nonceBytes)
-        let nonce = Data(nonceBytes).base64EncodedString()
-        
+        // 🔴 2026-07-24 — use the ORIGIN's nonce and key, never freshly-minted
+        // ones.
+        //
+        // This used to generate a random nonce and stamp the local device key
+        // on EVERY call. Since `signingData()` binds both, re-wrapping an
+        // envelope produced different signing bytes than the origin signed —
+        // so `originalSignature` failed at hop >= 1 and every multi-hop
+        // delivery was dropped. It was not even stable for the same envelope
+        // twice on one device.
+        //
+        // `meshNonce` / `originSenderPublicKey` are stamped once at origination
+        // and preserved across hops and the wire (see MeshEnvelope). The
+        // fallbacks only fire for envelopes from a pre-fix sender, whose relay
+        // path was already broken.
+        let nonce = meshNonce ?? MeshEnvelope.freshNonce()
+        let signerKey = originSenderPublicKey ?? DeviceIdentityService.shared.publicKeyBase64 ?? ""
+
+
         return SecureMeshEnvelope(
             clientMessageId: clientMessageId,
             roomId: roomId,
@@ -951,7 +1034,7 @@ extension MeshEnvelope {
             needsForwarding: needsForwarding,
             ttlSeconds: ttlSeconds,
             nonce: nonce,
-            senderPublicKey: DeviceIdentityService.shared.publicKeyBase64 ?? "",
+            senderPublicKey: signerKey,
             mediaUrl: mediaUrl,
             thumbnailUrl: thumbnailUrl,
             fileName: fileName,

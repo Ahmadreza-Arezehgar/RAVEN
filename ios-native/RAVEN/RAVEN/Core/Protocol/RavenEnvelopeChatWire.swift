@@ -4,10 +4,9 @@
 //
 //  Lives OUTSIDE BridgeSubsystem. Bridge stays key-free; this type owns:
 //    • UUID ↔ RavenEnvelopeV1 message_id (16B) mapping
-//    • Outbound registry so sender can resolve ACK → clientMessageId
+//    • Outbound registry reserved for a future session-authenticated ACK validator
 //    • Observer for `.ravenEnvelopeV1EndpointIngest` → MessageContentSealer
-//      decrypt/display + opaque Delivered ACK emit
-//    • applyDeliveredFromAck → MessageRepository + MeshACKReceived UI ticks
+//      authenticated decrypt/display
 //
 //  FeatureFlag.ravenEnvelopeV1 OFF → no-op.
 //
@@ -37,6 +36,66 @@ public enum RavenEnvelopeMessageId {
     /// Sealed body as base64 for `MessageContentSealer.unseal`.
     public static func sealerEncodedBody(_ sealedBody: Data) -> String {
         sealedBody.base64EncodedString()
+    }
+}
+
+/// Canonical RavenAckV1 body codec shared with `raven_core::ack::Ack`.
+///
+/// Body layout:
+/// `acked_message_id(16) || status(1) || ack_nonce(12) || created_at_ms(8 BE) || signature(64)`
+/// where the Ed25519 signature covers:
+/// `"rvn1/ack" || acked_message_id || status || ack_nonce || created_at_ms`.
+enum RavenAckV1 {
+    static let deliveredStatus: UInt8 = 1
+    private static let domain = Data("rvn1/ack".utf8)
+
+    enum AckError: Error {
+        case invalidMessageId
+        case invalidNonce
+        case invalidSignature
+    }
+
+    static func signingBytes(
+        ackedMessageId: Data,
+        status: UInt8,
+        ackNonce: Data,
+        createdAtMs: UInt64
+    ) throws -> Data {
+        guard ackedMessageId.count == 16 else { throw AckError.invalidMessageId }
+        guard ackNonce.count == 12 else { throw AckError.invalidNonce }
+
+        var out = Data(capacity: domain.count + 16 + 1 + 12 + 8)
+        out.append(domain)
+        out.append(ackedMessageId)
+        out.append(status)
+        out.append(ackNonce)
+        out.appendUInt64BE(createdAtMs)
+        return out
+    }
+
+    static func signedBody(
+        ackedMessageId: Data,
+        status: UInt8 = deliveredStatus,
+        ackNonce: Data,
+        createdAtMs: UInt64,
+        signingKey: Curve25519.Signing.PrivateKey
+    ) throws -> Data {
+        let signingBytes = try signingBytes(
+            ackedMessageId: ackedMessageId,
+            status: status,
+            ackNonce: ackNonce,
+            createdAtMs: createdAtMs
+        )
+        let signature = try signingKey.signature(for: signingBytes)
+        guard signature.count == 64 else { throw AckError.invalidSignature }
+
+        var body = Data(capacity: 16 + 1 + 12 + 8 + 64)
+        body.append(ackedMessageId)
+        body.append(status)
+        body.append(ackNonce)
+        body.appendUInt64BE(createdAtMs)
+        body.append(signature)
+        return body
     }
 }
 
@@ -80,10 +139,7 @@ public final class RavenEnvelopeChatWire {
     }
 
     public func resolveClientMessageId(ackedEnvelopeId: Data) -> String? {
-        if let mid = outboundByEnvelopeId[Data(ackedEnvelopeId)] {
-            return mid
-        }
-        return Self.clientMessageId(fromEnvelopeMessageId: ackedEnvelopeId)
+        outboundByEnvelopeId[Data(ackedEnvelopeId)]
     }
 
     public func hasPendingOutbound(envelopeMessageId: Data) -> Bool {
@@ -119,68 +175,12 @@ public final class RavenEnvelopeChatWire {
         }
     }
 
-    // MARK: - Delivered ticks (sender)
-
-    /// Apply real endpoint ACK → UI Delivered without bridge keys.
-    @discardableResult
-    public func applyDeliveredFromAck(ackedEnvelopeId: Data) async -> String? {
-        guard FeatureFlag.isRavenEnvelopeV1Enabled else { return nil }
-        guard let clientMid = resolveClientMessageId(ackedEnvelopeId: ackedEnvelopeId) else {
-            #if DEBUG
-            print("🕊️ [ChatWire] ACK mid unresolved — skip Delivered")
-            #endif
-            return nil
-        }
-        await Self.applyDelivered(clientMessageId: clientMid)
-        outboundByEnvelopeId.removeValue(forKey: Data(ackedEnvelopeId))
-        return clientMid
-    }
-
-    public static func applyDelivered(clientMessageId: String) async {
-        let rows = try? await DatabaseService.shared.query(
-            "SELECT status FROM messages WHERE client_message_id = ? LIMIT 1",
-            params: [clientMessageId]
-        )
-        if let current = rows?.first?["status"] as? String, current == "read" {
-            return
-        }
-        try? await MessageRepository.shared.markDelivered(clientMessageId: clientMessageId, at: Date())
-        try? await MessageRepository.shared.updateDeliveryAuthority(
-            clientMessageId: clientMessageId,
-            authority: .mesh
-        )
-        try? await OutboxRepository.shared.markDelivered(clientMessageId: clientMessageId, via: .mesh)
-        await BLEMeshEngine.shared.broadcastStop(clientMessageId)
-        try? await DeliveryJobRepository.shared.markStopped(messageId: clientMessageId)
-
-        await MainActor.run {
-            NotificationCenter.default.post(
-                name: Notification.Name("MeshACKReceived"),
-                object: nil,
-                userInfo: [
-                    "messageId": clientMessageId,
-                    "status": MessageStatus.delivered.rawValue
-                ]
-            )
-        }
-        #if DEBUG
-        print("🕊️ [ChatWire] Delivered tick mid=\(clientMessageId.prefix(8))…")
-        #endif
-    }
-
     // MARK: - Ingest observer
 
     private func onEndpointIngest(_ note: Notification) async {
         guard FeatureFlag.isRavenEnvelopeV1Enabled else { return }
-        let kind = (note.userInfo?["kind"] as? String) ?? "message"
-
-        if kind == "ack",
-           let acked = note.userInfo?["ackedMessageId"] as? Data {
-            _ = await applyDeliveredFromAck(ackedEnvelopeId: acked)
-            return
-        }
-
-        guard let messageId = note.userInfo?["messageId"] as? Data,
+        guard (note.userInfo?["kind"] as? String) == "message",
+              let messageId = note.userInfo?["messageId"] as? Data,
               let sealedBody = note.userInfo?["sealedBody"] as? Data else {
             return
         }
@@ -213,145 +213,152 @@ public final class RavenEnvelopeChatWire {
             ?? BLEMeshEngine.shared.connectedPeers.first(where: { $0.deviceId == peerKey })?.userId
             ?? ""
 
-        // Last resort: if hint missing but we have sealed body only, keep empty → no fake plaintext.
-        // (Full env verify needs packed envelope — Bridge publishes senderUserId when resolvable.)
-
-        let encoded = Self.sealerEncodedBody(sealedBody)
-        var plaintext: String?
-        var attributionProven = false
-
-        if !senderId.isEmpty, !myId.isEmpty {
-            let unsealed = await MessageContentSealer.unseal(
-                encoded: encoded,
-                senderUserId: senderId,
-                recipientUserId: myId,
-                senderAgreementPubKey: await PeerKeyDirectory.shared.agreementKey(for: senderId),
-                msgId: clientMid
-            )
-            if let u = unsealed {
-                switch u.reason {
-                case .noiseTransport, .atsamHybrid:
-                    attributionProven = true
-                    plaintext = u.plaintext.isEmpty ? nil : u.plaintext
-                default:
-                    if !u.plaintext.isEmpty { plaintext = u.plaintext }
-                }
+        // LAN Mac→phone: Peer pub may be missing until Save — still show inbox row.
+        if senderId.isEmpty,
+           peerKey.hasPrefix("lan") || peerKey == "lan-mac-pull" {
+            if let lan = RavenServerlessLanConfig.stored,
+               let pub = RavenEnvelopeSenderResolver.pubFromHex(lan.peerPubHex) {
+                senderId = DeviceIdentityService.deriveFingerprint(from: pub)
+            } else {
+                senderId = "mac-lan-unverified"
             }
         }
 
-        // Persist when sender is attributed (resolved fingerprint / directory / BLE).
-        if !senderId.isEmpty, !myId.isEmpty {
-            let exists = await MessageRepository.shared.exists(clientMessageId: clientMid)
-            if !exists {
-                let display = plaintext
-                    ?? (attributionProven
-                        ? "🔒 [Encrypted message — could not decrypt]"
-                        : "🔒 Sealed Raven envelope — awaiting keys")
-                let roomId = [senderId, myId].sorted().joined(separator: "_")
-                let msg = ChatMessage(
-                    id: clientMid,
-                    serverId: nil,
-                    roomId: roomId,
-                    senderId: senderId,
-                    senderName: "",
-                    recipientId: myId,
-                    text: display,
-                    timestamp: Date(),
-                    type: .text,
-                    status: .delivered,
-                    deliveryAuthority: .mesh,
-                    createdAt: Date(),
-                    deliveredAt: Date(),
-                    readAt: nil,
-                    hopCount: 0,
-                    routePath: [],
-                    sprayCounter: 0,
-                    hopLimit: 0,
-                    originDeviceId: peerKey,
-                    needsForwarding: false,
-                    attachmentUrl: nil,
-                    thumbnailUrl: nil,
-                    fileName: nil,
-                    mimeType: nil,
-                    fileSize: nil,
-                    audioDurationSeconds: nil,
-                    syncState: .localOnly,
-                    localPath: nil,
-                    uploadProgress: nil,
-                    lastError: nil,
-                    replyToMessageId: nil,
-                    replyToTextPreview: nil,
-                    replyToSenderName: nil,
-                    replyToType: nil,
-                    sendMode: nil,
-                    scheduledAtUtc: nil
-                )
-                try? await MessageRepository.shared.upsert(msg)
-                NotificationCenter.default.post(
-                    name: MessageStore.meshMessageReceivedNotification,
-                    object: nil,
-                    userInfo: ["roomId": roomId, "messageId": clientMid]
-                )
-            }
-        }
-
-        // True recipient ACK — opaque; BridgeSubsystem never decrypts.
-        await emitDeliveredAck(ackedMessageId: messageId, routingPeerKey: peerKey)
-    }
-
-    /// Pack Delivered ACK (raven-node layout) and enqueue on BLE for reverse relay.
-    public func emitDeliveredAck(ackedMessageId: Data, routingPeerKey: String) async {
-        guard FeatureFlag.isRavenEnvelopeV1Enabled else { return }
-        guard ackedMessageId.count == 16 else { return }
-        guard let seed = DeviceIdentityService.shared.deviceSigningSeed,
-              let signingKey = try? Curve25519.Signing.PrivateKey(rawRepresentation: seed) else {
+        // A destination ACK is cryptographic evidence of acceptance, not merely
+        // evidence that an opaque frame reached this device. Unknown attribution,
+        // plaintext/degraded frames, missing keys, and AEAD failures all stop here.
+        guard !senderId.isEmpty,
+              senderId != "mac-lan-unverified",
+              !myId.isEmpty else {
             return
         }
 
-        var body = Data()
-        body.append(ackedMessageId)
-        body.append(1) // STATUS_DELIVERED
-        var nonce = Data(count: 12)
-        nonce.withUnsafeMutableBytes { buf in
-            _ = SecRandomCopyBytes(kSecRandomDefault, 12, buf.baseAddress!)
+        let senderAgreementKey = await PeerKeyDirectory.shared.agreementKey(for: senderId)
+        let isNoiseBody = sealedBody.prefix(MessageContentSealer.sealedMagic.count)
+                == MessageContentSealer.sealedMagic
+            || sealedBody.prefix(MessageContentSealer.handshakeMagic.count)
+                == MessageContentSealer.handshakeMagic
+        guard !isNoiseBody || senderAgreementKey?.count == 32 else {
+            // Stateless IK authenticates a static key, but without the pinned
+            // expected key it cannot authenticate the claimed sender identity.
+            return
         }
-        body.append(nonce)
-        let created = UInt64(Date().timeIntervalSince1970 * 1000).bigEndian
-        withUnsafeBytes(of: created) { body.append(contentsOf: $0) }
-        // Placeholder 64B — envelope Ed25519 covers authenticity; body sig is opaque to relays.
-        body.append(Data(repeating: 0, count: 64))
 
-        var ackMid = Data(count: 16)
-        ackMid.withUnsafeMutableBytes { buf in
-            _ = SecRandomCopyBytes(kSecRandomDefault, 16, buf.baseAddress!)
+        let encoded = Self.sealerEncodedBody(sealedBody)
+        guard let unsealed = await MessageContentSealer.unseal(
+            encoded: encoded,
+            senderUserId: senderId,
+            recipientUserId: myId,
+            senderAgreementPubKey: senderAgreementKey,
+            msgId: clientMid
+        ) else {
+            return
         }
-        var routingTag = Data(count: 16)
-        routingTag.withUnsafeMutableBytes { buf in
-            _ = SecRandomCopyBytes(kSecRandomDefault, 16, buf.baseAddress!)
+        switch unsealed.reason {
+        case .noiseTransport, .atsamHybrid:
+            break
+        default:
+            return
         }
-        var antiReplay = Data(count: 12)
-        antiReplay.withUnsafeMutableBytes { buf in
-            _ = SecRandomCopyBytes(kSecRandomDefault, 12, buf.baseAddress!)
-        }
-        let nowMs = UInt64(Date().timeIntervalSince1970 * 1000)
-        var env = RavenEnvelopeV1(
-            envType: RavenEnvelopeV1.EnvType.ack.rawValue,
-            messageId: ackMid,
-            routingTag: routingTag,
-            createdAtMs: nowMs,
-            expiresAtMs: nowMs &+ 86_400_000,
-            hopLimit: 8,
-            replicationBudget: 1,
-            antiReplayNonce: antiReplay,
-            messageCiphertext: body
+
+        let alreadyCommitted = await committedMessageMatches(
+            clientMessageId: clientMid,
+            senderId: senderId,
+            recipientId: myId,
+            plaintext: unsealed.plaintext
         )
-        env.sign(with: signingKey)
-        let packed = env.pack()
-        await BLEMeshEngine.shared.enqueueRawRavenEnvelopeV1(packed)
-        #if DEBUG
-        let midHex = ackedMessageId.prefix(4).map { String(format: "%02x", $0) }.joined()
-        print("🕊️ [ChatWire] emitted Delivered ACK acked=\(midHex)… peer=\(routingPeerKey)")
-        #endif
-        _ = routingPeerKey
+        let roomId = [senderId, myId].sorted().joined(separator: "_")
+        if !alreadyCommitted {
+            let now = Date()
+            let msg = ChatMessage(
+                id: clientMid,
+                serverId: nil,
+                roomId: roomId,
+                senderId: senderId,
+                senderName: "",
+                recipientId: myId,
+                text: unsealed.plaintext,
+                timestamp: now,
+                type: .text,
+                status: .delivered,
+                deliveryAuthority: .mesh,
+                createdAt: now,
+                deliveredAt: now,
+                readAt: nil,
+                hopCount: 0,
+                routePath: [],
+                sprayCounter: 0,
+                hopLimit: 0,
+                originDeviceId: peerKey,
+                needsForwarding: false,
+                attachmentUrl: nil,
+                thumbnailUrl: nil,
+                fileName: nil,
+                mimeType: nil,
+                fileSize: nil,
+                audioDurationSeconds: nil,
+                syncState: .localOnly,
+                localPath: nil,
+                uploadProgress: nil,
+                lastError: nil,
+                replyToMessageId: nil,
+                replyToTextPreview: nil,
+                replyToSenderName: nil,
+                replyToType: nil,
+                sendMode: nil,
+                scheduledAtUtc: nil
+            )
+            do {
+                try await MessageRepository.shared.upsert(msg)
+            } catch {
+                // No durable repository acceptance means no Delivered ACK.
+                return
+            }
+        }
+
+        // Confirm the durable row contains this authenticated plaintext and
+        // attribution. Mere ID existence is insufficient: an old placeholder
+        // or a colliding row must never authorize an ACK.
+        guard await committedMessageMatches(
+            clientMessageId: clientMid,
+            senderId: senderId,
+            recipientId: myId,
+            plaintext: unsealed.plaintext
+        ) else {
+            return
+        }
+
+        if !alreadyCommitted {
+            NotificationCenter.default.post(
+                name: MessageStore.meshMessageReceivedNotification,
+                object: nil,
+                userInfo: ["roomId": roomId, "messageId": clientMid]
+            )
+        }
+
+        // Production hold: a Delivered ACK must itself be session-sealed and
+        // atomically correlated by the originator. The old signed-but-plaintext
+        // body leaked receipt metadata, so no ACK is emitted until that endpoint
+        // protocol exists.
     }
+
+    private func committedMessageMatches(
+        clientMessageId: String,
+        senderId: String,
+        recipientId: String,
+        plaintext: String
+    ) async -> Bool {
+        guard let rows = try? await MessageRepository.shared.getMessageByClientId(clientMessageId),
+              let row = rows.first,
+              row["sender_id"] as? String == senderId,
+              row["recipient_id"] as? String == recipientId,
+              row["text"] as? String == plaintext,
+              row["type"] as? String == MessageType.text.rawValue,
+              let status = row["status"] as? String,
+              status == MessageStatus.delivered.rawValue || status == MessageStatus.read.rawValue else {
+            return false
+        }
+        return true
+    }
+
 }

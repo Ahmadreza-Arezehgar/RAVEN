@@ -31,6 +31,7 @@ shared-vectors/
     ├── envelope/, ack/       (RavenEnvelopeV1, ACK)
     ├── alias/, device_cert/  (alias records, device certs)
     ├── capabilities/, routing/
+    ├── atsam/                (known-root KATs + disabled indexed-session profile)
     └── negative/             (malformed-input / rejection cases)
 ```
 
@@ -66,7 +67,12 @@ Until iOS catches up, these vectors document what the wire **should** look like 
 
 `rvn1/` is the vector tree for the **serverless V1 protocol contract** — the wire format RAVEN moves to once it no longer depends on a central server (addresses, routing tags, envelopes, ACKs, aliases, device certs, capabilities). It is a distinct contract from `v1/` above (the original server-relayed / BLE-mesh protocol); the two are generated, versioned, and frozen independently.
 
-- **Generator**: `protocol/reference/generate_rvn1.py`. Source of truth is the `raven_protocol` reference package (`protocol/reference/raven_protocol/`) — the same Python implementation exercised by the 22 tests under `protocol/reference/tests/` (`cd protocol/reference && python3 -m pytest`).
+- **Generator**: `protocol/reference/generate_rvn1.py`. Source of truth is the `raven_protocol` reference package (`protocol/reference/raven_protocol/`) — the same Python implementation exercised by the tests under `protocol/reference/tests/` (`cd protocol/reference && python3 -m pytest`).
+- **Indexed-session profile**: `atsam/indexed_session_v1_*.json` is a separately
+  identified, additive byte contract under the RVN1 outer-envelope tree. It
+  freezes KDF/allocator/ACK interop but remains production-disabled pending a
+  signed PairInit that negotiates and transcript-binds
+  `ATSAM/indexed-session/v1`.
 - **Consumers**: none yet in this repo. The Rust node (Phase B) is the first real consumer; the Swift, C#, and Kotlin ports vendor their own copies once each platform migrates off its legacy protocol onto `rvn1`.
 - **Freeze rules**: `rvn1/` is frozen under the exact same rules as `v1/` in `VERSIONING.md` — once a vector lands it never changes; new edge cases get a new `_NNN` file; breaking changes require a new tree (`rvn2/`), not an edit in place.
 - **Regeneration / drift check**: `tools/sync-vectors.sh` regenerates `rvn1/` from `generate_rvn1.py` on every run and fails (non-zero exit) if the regenerated tree differs from what's committed, so drift is caught automatically rather than relying on a manual `git diff`.

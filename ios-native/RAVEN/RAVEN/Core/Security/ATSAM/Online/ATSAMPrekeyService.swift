@@ -161,6 +161,7 @@ enum ATSAMPrekeyService {
     /// flow can't be blocked by a publish hiccup.
     @discardableResult
     static func autoPublishIfNeeded() async -> Bool {
+        guard RavenRuntimePolicy.allowsExternalSideEffects else { return false }
         if autoPublishSucceededThisLaunch { return true }
 
         NSLog("🔑 [ATSAMAutoPublish] starting…")

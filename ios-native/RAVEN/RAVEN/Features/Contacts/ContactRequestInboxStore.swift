@@ -132,17 +132,11 @@ enum ContactRequestInboxStore {
         recipientAddr: String,
         nowMs: UInt64
     ) -> ContactRequestInbox {
-        var inbox = ContactRequestInbox()
-        for wire in loadWires() {
-            guard let outer = try? RavenContactRequestV1.decodeWire(wire) else { continue }
-            _ = try? inbox.ingest(
-                outer: outer,
-                recipientSigningKey: recipientKey,
-                recipientAddr: recipientAddr,
-                nowMs: nowMs
-            )
-        }
-        return inbox
+        _ = (recipientKey, recipientAddr, nowMs)
+        // Stored rootless/demo ciphertext must never be reopened. A future
+        // session-aware store will require an authenticated root and durable
+        // receive-chain state before calling `ingestWithATSAMRoot`.
+        return ContactRequestInbox()
     }
 }
 

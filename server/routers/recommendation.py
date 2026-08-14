@@ -454,11 +454,29 @@ def get_local_for_you_feed(
     neighbor_hashes = get_neighbors(user_geohash)
     all_hashes = [user_geohash] + neighbor_hashes
     
+    # 🔴 PB-M3-4-5: /local/foryou was missing the moderation/hide/block
+    # filter trio that /recommended (and the main feed) already apply.
+    # Without it, admin/user-hidden posts, per-user HiddenContent, and
+    # posts from blocked/blocking users all resurfaced via the location
+    # feed. Mirror the same filters used at get_recommended_feed().
+    from models import HiddenContent, Block
+    from routers.blocks import get_blocked_user_ids
+    hidden_ids_subq = db.query(HiddenContent.object_id).filter(
+        HiddenContent.user_id == current_user.id,
+        HiddenContent.object_type == "post",
+    ).subquery()
+    blocked_user_ids = get_blocked_user_ids(db, current_user.id)
+
     # Query nearby posts (no time cutoff — algorithm scoring handles recency)
-    candidate_posts = db.query(Post).filter(
+    nearby_query = db.query(Post).filter(
         or_(*[Post.geohash.like(f"{h[:5]}%") for h in all_hashes]),
-        or_(Post.visibility == 'public', Post.visibility == None)
-    ).order_by(Post.timestamp.desc()).limit(200).all()
+        or_(Post.visibility == 'public', Post.visibility == None),
+        Post.is_hidden != True,
+        ~Post.id.in_(hidden_ids_subq),
+    )
+    if blocked_user_ids:
+        nearby_query = nearby_query.filter(~Post.author_id.in_(blocked_user_ids))
+    candidate_posts = nearby_query.order_by(Post.timestamp.desc()).limit(200).all()
     
     # Filter by distance and score
     session_state = {'user_lang': 'en', 'author_counts': {}}

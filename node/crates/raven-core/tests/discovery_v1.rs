@@ -7,16 +7,16 @@ use raven_core::bootstrap::BootstrapConfig;
 use raven_core::chat_history::BlockList;
 use raven_core::contact_request::{
     ContactAcceptV1, ContactRequestInbox, ContactRequestInner, RavenContactRequestV1,
-    CONTACT_REQ_MAX_PER_SENDER,
+    CONTACT_REQ_MAX_PER_SENDER, CONTACT_REQ_SESSION_REQUIRED,
 };
 use raven_core::discovery_resolver::{
-    result_model_schema_keys, DiscoveryContext, DiscoveryResolver, DiscoveryScope,
-    DiscoverySource, LocalContactRow, VerificationState,
+    result_model_schema_keys, DiscoveryContext, DiscoveryResolver, DiscoveryScope, DiscoverySource,
+    LocalContactRow, VerificationState,
 };
-use raven_core::envelope::{Envelope, EnvType};
+use raven_core::envelope::{EnvType, Envelope};
 use raven_core::forward_queue::ForwardQueue;
 use raven_core::identity::Identity;
-use raven_core::introduction::{IntroductionInbox, RavenIntroductionV1};
+use raven_core::introduction::{IntroductionInbox, RavenIntroductionV1, INTRO_SESSION_REQUIRED};
 use raven_core::message_router::{InboundEnvelope, MessageRouter, RouterOutcome};
 use raven_core::messaging_path::{assert_no_silent_fastapi, resolve_terminal_messaging_path};
 use raven_core::nearby::{NearbyAdvertisement, NearbyRegistry};
@@ -25,11 +25,165 @@ use raven_core::seal::{classify_sealed_body, SealClass};
 use raven_core::transport::TransportKind;
 use tempfile::tempdir;
 
+/// Authenticated session root supplied by the test harness. Tests exercise
+/// shipping RVNA1 v2 AEAD; public identity keys are never treated as secrets.
+const DISCOVERY_TEST_ROOT: [u8; 32] = [0x5D; 32];
+
 fn now() -> u64 {
     1_700_000_000_000
 }
 
-fn make_profile(id: &Identity, display: &str, aliases: &[&str], seq: u64, exp: u64) -> RavenProfileRecordV1 {
+fn make_contact_request(
+    sender: &Identity,
+    recipient: &Identity,
+    inner: ContactRequestInner,
+) -> RavenContactRequestV1 {
+    let mut nonce = [0u8; 12];
+    nonce.copy_from_slice(&inner.request_id[..12]);
+    RavenContactRequestV1::create_with_atsam_root(
+        sender,
+        &recipient.public_key_bytes(),
+        &recipient.address(),
+        inner,
+        &DISCOVERY_TEST_ROOT,
+        0,
+        &nonce,
+    )
+    .unwrap()
+}
+
+/// Product-level contact and introduction APIs never fall back to the
+/// publicly-derivable demo cipher, even in a debug build or when the low-level
+/// compatibility feature is explicitly enabled.
+#[test]
+fn rootless_contact_and_introduction_apis_fail_closed() {
+    let sender = Identity::from_seed(&[0x21; 32]);
+    let recipient = Identity::from_seed(&[0x42; 32]);
+    let inner = ContactRequestInner {
+        request_id: [0xA5; 16],
+        sender_raven_id: sender.address(),
+        sender_display_name: "Ada".into(),
+        sender_aliases: vec!["ada".into()],
+        sender_profile_digest: [0u8; 32],
+        optional_message: "private".into(),
+        created_at: now(),
+        expires_at: now() + 60_000,
+    };
+    let err = RavenContactRequestV1::create(
+        &sender,
+        &recipient.public_key_bytes(),
+        &recipient.address(),
+        inner,
+    )
+    .unwrap_err();
+    assert_eq!(err, CONTACT_REQ_SESSION_REQUIRED);
+
+    let err = RavenIntroductionV1::seal_note(
+        &sender,
+        &recipient.public_key_bytes(),
+        &recipient.address(),
+        b"private introduction",
+        &[0xC3; 16],
+    )
+    .unwrap_err();
+    assert_eq!(err, INTRO_SESSION_REQUIRED);
+
+    let mut spoofed_intro = RavenIntroductionV1 {
+        intro_id: [0xC4; 16],
+        introducer_raven_id: recipient.address(),
+        subject_raven_id: "subject".into(),
+        recipient_raven_id: recipient.address(),
+        subject_display_name: "Subject".into(),
+        subject_aliases: vec![],
+        created_at: now(),
+        expires_at: now() + 60_000,
+        note_ciphertext: vec![1],
+        signature: [0u8; 64],
+        introducer_pub: sender.public_key_bytes(),
+    };
+    spoofed_intro.signature = sender.sign(&spoofed_intro.signing_bytes().unwrap());
+    assert_eq!(
+        spoofed_intro.verify(now()).unwrap_err(),
+        "INTRO_IDENTITY_OR_TIME_MISMATCH"
+    );
+}
+
+#[test]
+fn contact_root_codec_rejects_unbound_or_oversized_inner_fields() {
+    let sender = Identity::from_seed(&[0x31; 32]);
+    let recipient = Identity::from_seed(&[0x32; 32]);
+    let base = ContactRequestInner {
+        request_id: [0xB5; 16],
+        sender_raven_id: recipient.address(),
+        sender_display_name: "Ada".into(),
+        sender_aliases: vec![],
+        sender_profile_digest: [0u8; 32],
+        optional_message: "private".into(),
+        created_at: now(),
+        expires_at: now() + 60_000,
+    };
+    let err = RavenContactRequestV1::create_with_atsam_root(
+        &sender,
+        &recipient.public_key_bytes(),
+        &recipient.address(),
+        base.clone(),
+        &DISCOVERY_TEST_ROOT,
+        0,
+        &[0x55; 12],
+    )
+    .unwrap_err();
+    assert_eq!(err, "CONTACT_REQ_SENDER_ID_MISMATCH");
+
+    let mut oversized = base;
+    oversized.sender_raven_id = sender.address();
+    oversized.sender_aliases = vec![String::new(); usize::from(u16::MAX) + 1];
+    let err = oversized.encode().unwrap_err();
+    assert!(err.contains("too many contact request aliases"));
+}
+
+/// Fixed Rust/Swift RVNA1-v2 contact-request ciphertext vector. This covers
+/// address encoding, contact-inner canonical bytes, chain KDF, AAD, nonce,
+/// ciphertext, and tag without activating product session state.
+#[test]
+fn contact_request_atsam_root_fixed_vector() {
+    let sender = Identity::from_seed(&[0x11; 32]);
+    let recipient = Identity::from_seed(&[0x22; 32]);
+    let mut request_id = [0u8; 16];
+    for (i, byte) in request_id.iter_mut().enumerate() {
+        *byte = (i + 1) as u8;
+    }
+    let req = RavenContactRequestV1::create_with_atsam_root(
+        &sender,
+        &recipient.public_key_bytes(),
+        &recipient.address(),
+        ContactRequestInner {
+            request_id,
+            sender_raven_id: sender.address(),
+            sender_display_name: "Ada".into(),
+            sender_aliases: vec!["ada".into()],
+            sender_profile_digest: [0u8; 32],
+            optional_message: "hello".into(),
+            created_at: now(),
+            expires_at: now() + 86_400_000,
+        },
+        &DISCOVERY_TEST_ROOT,
+        7,
+        &[0xA7; 12],
+    )
+    .unwrap();
+    assert_eq!(
+        hex::encode(req.ciphertext),
+        "52564e4131000000020100000007a7a7a7a7a7a7a7a7a7a7a7a7280fecc70f23af7bcdb9ec51dab82dc364a5b2bf6d8a59daf128f9336594e7710ac2ab955cbeffe1ac435960df222d290fab8eccd38d30b6a162de4f1dbf9edbd49844423e00485180c9e58261cff86a85a015c6b8bf0bd10262c7f3e0e997368e6ed855aacc299921837baa83db0347e53dae544dd8c21488fa0cd46bb9cd213ec759fe36ee5b6219647ddfaf5710f6def129b810464833034274f7c4f5dba7f76cded7f8b215"
+    );
+}
+
+fn make_profile(
+    id: &Identity,
+    display: &str,
+    aliases: &[&str],
+    seq: u64,
+    exp: u64,
+) -> RavenProfileRecordV1 {
     RavenProfileRecordV1 {
         version: 1,
         raven_id: String::new(),
@@ -97,7 +251,10 @@ fn a01_exact_raven_id_no_fastapi() {
         ..Default::default()
     };
     ctx.profiles
-        .put(make_profile(&id, "Poline", &["poline"], 1, now() + 60_000), now())
+        .put(
+            make_profile(&id, "Poline", &["poline"], 1, now() + 60_000),
+            now(),
+        )
         .unwrap();
 
     let resolver = DiscoveryResolver::v1();
@@ -120,9 +277,14 @@ fn a02_exact_alias_signed_records() {
         now_ms: now(),
         ..Default::default()
     };
-    ctx.aliases.put(make_alias(&id, "poline", 1, now() + 60_000), now()).unwrap();
+    ctx.aliases
+        .put(make_alias(&id, "poline", 1, now() + 60_000), now())
+        .unwrap();
     ctx.profiles
-        .put(make_profile(&id, "Poline", &["poline"], 1, now() + 60_000), now())
+        .put(
+            make_profile(&id, "Poline", &["poline"], 1, now() + 60_000),
+            now(),
+        )
         .unwrap();
 
     let hits = DiscoveryResolver::v1().search("@poline", DiscoveryScope::ExactAlias, &ctx);
@@ -140,12 +302,18 @@ fn a03_alias_partition_conflict_both() {
         now_ms: now(),
         ..Default::default()
     };
-    ctx.aliases.put(make_alias(&a, "alex", 1, now() + 60_000), now()).unwrap();
-    ctx.aliases.put(make_alias(&b, "alex", 1, now() + 60_000), now()).unwrap();
+    ctx.aliases
+        .put(make_alias(&a, "alex", 1, now() + 60_000), now())
+        .unwrap();
+    ctx.aliases
+        .put(make_alias(&b, "alex", 1, now() + 60_000), now())
+        .unwrap();
 
     let hits = DiscoveryResolver::v1().search("@alex", DiscoveryScope::ExactAlias, &ctx);
     assert_eq!(hits.len(), 2);
-    assert!(hits.iter().all(|h| h.verification_state == VerificationState::AliasConflict));
+    assert!(hits
+        .iter()
+        .all(|h| h.verification_state == VerificationState::AliasConflict));
     assert!(hits.iter().all(|h| h.conflict_count >= 2));
     let ids: std::collections::HashSet<_> = hits.iter().map(|h| h.raven_id.clone()).collect();
     assert_eq!(ids.len(), 2);
@@ -186,7 +354,7 @@ fn a06_expired_profile_not_current() {
     assert!(store.get(&id.address(), now() + 5).is_some());
     assert!(store.get(&id.address(), now() + 11).is_none());
 
-    let mut ctx = DiscoveryContext {
+    let ctx = DiscoveryContext {
         now_ms: now() + 11,
         profiles: store,
         ..Default::default()
@@ -228,7 +396,7 @@ fn a07_alias_change_keeps_raven_id_binding() {
 #[test]
 fn a08_qr_add_without_internet() {
     let id = Identity::generate();
-    let mut ctx = DiscoveryContext {
+    let ctx = DiscoveryContext {
         serverless: true,
         now_ms: now(),
         contacts: vec![LocalContactRow {
@@ -245,7 +413,10 @@ fn a08_qr_add_without_internet() {
     // No profiles / aliases / bootstrap needed
     let hits = DiscoveryResolver::v1().search(&id.address(), DiscoveryScope::Local, &ctx);
     assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].verification_state, VerificationState::DirectlyVerified);
+    assert_eq!(
+        hits[0].verification_state,
+        VerificationState::DirectlyVerified
+    );
 }
 
 /// 9 Nearby ephemeral pairing mock (no permanent ID in adv)
@@ -264,14 +435,17 @@ fn a09_nearby_ephemeral_no_permanent_id() {
         peer.public_key_bytes(),
         now(),
     );
-    let mut ctx = DiscoveryContext {
+    let ctx = DiscoveryContext {
         nearby: near,
         now_ms: now(),
         ..Default::default()
     };
     let hits = DiscoveryResolver::v1().search("", DiscoveryScope::Nearby, &ctx);
     assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].verification_state, VerificationState::NearbyVerified);
+    assert_eq!(
+        hits[0].verification_state,
+        VerificationState::NearbyVerified
+    );
 }
 
 /// 10 Contact request while recipient offline (store)
@@ -280,10 +454,9 @@ fn a10_contact_request_offline_store() {
     let dir = tempdir().unwrap();
     let sender = Identity::generate();
     let recipient = Identity::generate();
-    let req = RavenContactRequestV1::create(
+    let req = make_contact_request(
         &sender,
-        &recipient.public_key_bytes(),
-        &recipient.address(),
+        &recipient,
         ContactRequestInner {
             request_id: [10u8; 16],
             sender_raven_id: sender.address(),
@@ -294,8 +467,7 @@ fn a10_contact_request_offline_store() {
             created_at: now(),
             expires_at: now() + 60_000,
         },
-    )
-    .unwrap();
+    );
     let env = pack_contact_req_env(&sender, &req);
     let q = ForwardQueue::open(&dir.path().join("f.sqlite")).unwrap();
     let router = MessageRouter {
@@ -328,10 +500,9 @@ fn a10_contact_request_offline_store() {
 fn a11_ciphertext_only_store() {
     let sender = Identity::generate();
     let recipient = Identity::generate();
-    let req = RavenContactRequestV1::create(
+    let req = make_contact_request(
         &sender,
-        &recipient.public_key_bytes(),
-        &recipient.address(),
+        &recipient,
         ContactRequestInner {
             request_id: [11u8; 16],
             sender_raven_id: sender.address(),
@@ -342,8 +513,7 @@ fn a11_ciphertext_only_store() {
             created_at: now(),
             expires_at: now() + 60_000,
         },
-    )
-    .unwrap();
+    );
     assert!(req.is_ciphertext_only());
     let ct = String::from_utf8_lossy(&req.ciphertext);
     assert!(!ct.contains("secret note"));
@@ -357,10 +527,9 @@ fn a12_ble_bridge_internet_contact_request() {
     let q = ForwardQueue::open(&dir.path().join("f.sqlite")).unwrap();
     let sender = Identity::generate();
     let recipient = Identity::generate();
-    let req = RavenContactRequestV1::create(
+    let req = make_contact_request(
         &sender,
-        &recipient.public_key_bytes(),
-        &recipient.address(),
+        &recipient,
         ContactRequestInner {
             request_id: [12u8; 16],
             sender_raven_id: sender.address(),
@@ -371,8 +540,7 @@ fn a12_ble_bridge_internet_contact_request() {
             created_at: now(),
             expires_at: now() + 60_000,
         },
-    )
-    .unwrap();
+    );
     let env = pack_contact_req_env(&sender, &req);
     let router = MessageRouter {
         bridge_enabled: true,
@@ -414,10 +582,9 @@ fn a12_ble_bridge_internet_contact_request() {
 fn a13_bridge_cannot_decrypt() {
     let sender = Identity::generate();
     let recipient = Identity::generate();
-    let req = RavenContactRequestV1::create(
+    let req = make_contact_request(
         &sender,
-        &recipient.public_key_bytes(),
-        &recipient.address(),
+        &recipient,
         ContactRequestInner {
             request_id: [13u8; 16],
             sender_raven_id: sender.address(),
@@ -428,16 +595,19 @@ fn a13_bridge_cannot_decrypt() {
             created_at: now(),
             expires_at: now() + 60_000,
         },
-    )
-    .unwrap();
+    );
     // Bridge only classifies seal class — never opens.
     match classify_sealed_body(&req.ciphertext) {
         SealClass::InterimStub | SealClass::OpaqueAtsam { .. } | SealClass::Other => {}
     }
     // Opening requires recipient key — bridge identity cannot.
     let bridge = Identity::generate();
-    assert!(req.open(&bridge).is_err());
-    let inner = req.open(&recipient).unwrap();
+    assert!(req
+        .open_with_atsam_root(&bridge, &DISCOVERY_TEST_ROOT)
+        .is_err());
+    let inner = req
+        .open_with_atsam_root(&recipient, &DISCOVERY_TEST_ROOT)
+        .unwrap();
     assert_eq!(inner.optional_message, "bridge opaque");
 }
 
@@ -448,10 +618,9 @@ fn a14_multi_transport_dedup() {
     let q = ForwardQueue::open(&dir.path().join("f.sqlite")).unwrap();
     let sender = Identity::generate();
     let recipient = Identity::generate();
-    let req = RavenContactRequestV1::create(
+    let req = make_contact_request(
         &sender,
-        &recipient.public_key_bytes(),
-        &recipient.address(),
+        &recipient,
         ContactRequestInner {
             request_id: [14u8; 16],
             sender_raven_id: sender.address(),
@@ -462,8 +631,7 @@ fn a14_multi_transport_dedup() {
             created_at: now(),
             expires_at: now() + 60_000,
         },
-    )
-    .unwrap();
+    );
     let packed = pack_contact_req_env(&sender, &req).pack();
     let router = MessageRouter {
         bridge_enabled: true,
@@ -519,7 +687,9 @@ fn a15_local_block() {
         ..Default::default()
     };
     let hits = DiscoveryResolver::v1().search("bad", DiscoveryScope::Local, &ctx);
-    assert!(hits.iter().any(|h| h.verification_state == VerificationState::Blocked));
+    assert!(hits
+        .iter()
+        .any(|h| h.verification_state == VerificationState::Blocked));
 }
 
 /// 16 Sybil quota / rate limit on alias publish
@@ -550,7 +720,10 @@ fn a17_bootstrap_disabled_manual_peer() {
     cfg.remove_raven_defaults();
     cfg.manual_peers.push("/ip4/127.0.0.1/tcp/4001".into());
     assert!(cfg.manual_peer_only_ok());
-    assert!(cfg.effective_peers().iter().any(|p| p.contains("127.0.0.1")));
+    assert!(cfg
+        .effective_peers()
+        .iter()
+        .any(|p| p.contains("127.0.0.1")));
 }
 
 /// 18 No phone/email in DHT fixtures
@@ -602,8 +775,12 @@ fn a20_provenance_and_conflict() {
         serverless: true,
         ..Default::default()
     };
-    ctx.aliases.put(make_alias(&a, "poline", 1, now() + 60_000), now()).unwrap();
-    ctx.aliases.put(make_alias(&b, "poline", 1, now() + 60_000), now()).unwrap();
+    ctx.aliases
+        .put(make_alias(&a, "poline", 1, now() + 60_000), now())
+        .unwrap();
+    ctx.aliases
+        .put(make_alias(&b, "poline", 1, now() + 60_000), now())
+        .unwrap();
     let hits = DiscoveryResolver::v1().search("@poline", DiscoveryScope::All, &ctx);
     assert!(hits.len() >= 2);
     for h in &hits {
@@ -623,16 +800,21 @@ fn contact_accept_and_intro_lane() {
     let intro = Identity::generate();
     let subject = Identity::generate();
     let recipient = Identity::generate();
-    let note = RavenIntroductionV1::seal_note(
+    let intro_id = [9u8; 16];
+    let intro_nonce = [0x19u8; 12];
+    let note = RavenIntroductionV1::seal_note_with_atsam_root(
         &intro,
         &recipient.public_key_bytes(),
         &recipient.address(),
         b"meet poline",
-        &[9u8; 16],
+        &intro_id,
+        &DISCOVERY_TEST_ROOT,
+        0,
+        &intro_nonce,
     )
     .unwrap();
     let intro_rec = RavenIntroductionV1 {
-        intro_id: [9u8; 16],
+        intro_id,
         introducer_raven_id: String::new(),
         subject_raven_id: subject.address(),
         recipient_raven_id: recipient.address(),
@@ -646,9 +828,13 @@ fn contact_accept_and_intro_lane() {
     }
     .sign(&intro)
     .unwrap();
+    let opened_note = intro_rec
+        .open_note_with_atsam_root(&recipient, &intro.public_key_bytes(), &DISCOVERY_TEST_ROOT)
+        .unwrap();
+    assert_eq!(opened_note, b"meet poline");
     let mut inbox = IntroductionInbox::default();
     inbox.add(intro_rec, now()).unwrap();
-    let mut ctx = DiscoveryContext {
+    let ctx = DiscoveryContext {
         intros: inbox,
         now_ms: now(),
         ..Default::default()
@@ -677,10 +863,9 @@ fn contact_inbox_accept_binds() {
 
     let requester = Identity::generate();
     let accepter = Identity::generate();
-    let req = RavenContactRequestV1::create(
+    let req = make_contact_request(
         &requester,
-        &accepter.public_key_bytes(),
-        &accepter.address(),
+        &accepter,
         ContactRequestInner {
             request_id: [0xACu8; 16],
             sender_raven_id: requester.address(),
@@ -691,15 +876,16 @@ fn contact_inbox_accept_binds() {
             created_at: now(),
             expires_at: now() + 60_000,
         },
-    )
-    .unwrap();
+    );
     let wire = req.encode_wire().unwrap();
     assert!(!String::from_utf8_lossy(&wire).contains("hi"));
     let decoded = RavenContactRequestV1::decode_wire(&wire).unwrap();
     assert_eq!(decoded.request_id, req.request_id);
 
     let mut inbox = ContactRequestInbox::default();
-    inbox.ingest(decoded, &accepter, now()).unwrap();
+    inbox
+        .ingest_with_atsam_root(decoded, &accepter, &DISCOVERY_TEST_ROOT, now())
+        .unwrap();
     assert_eq!(inbox.pending().len(), 1);
 
     let outcome = inbox
@@ -713,7 +899,10 @@ fn contact_inbox_accept_binds() {
         outcome.binding.verification_state,
         VerificationState::TrustedContact
     );
-    assert_eq!(outcome.binding.pub_hex, hex::encode(requester.public_key_bytes()));
+    assert_eq!(
+        outcome.binding.pub_hex,
+        hex::encode(requester.public_key_bytes())
+    );
     assert!(inbox.pending().is_empty());
 }
 
@@ -724,10 +913,9 @@ fn contact_inbox_decline() {
 
     let requester = Identity::generate();
     let accepter = Identity::generate();
-    let req = RavenContactRequestV1::create(
+    let req = make_contact_request(
         &requester,
-        &accepter.public_key_bytes(),
-        &accepter.address(),
+        &accepter,
         ContactRequestInner {
             request_id: [0xDEu8; 16],
             sender_raven_id: requester.address(),
@@ -738,10 +926,11 @@ fn contact_inbox_decline() {
             created_at: now(),
             expires_at: now() + 60_000,
         },
-    )
-    .unwrap();
+    );
     let mut inbox = ContactRequestInbox::default();
-    inbox.ingest(req, &accepter, now()).unwrap();
+    inbox
+        .ingest_with_atsam_root(req, &accepter, &DISCOVERY_TEST_ROOT, now())
+        .unwrap();
     inbox.decline(&[0xDEu8; 16]).unwrap();
     assert!(inbox.pending().is_empty());
 }
@@ -753,10 +942,9 @@ fn contact_inbox_block() {
 
     let requester = Identity::generate();
     let accepter = Identity::generate();
-    let req = RavenContactRequestV1::create(
+    let req = make_contact_request(
         &requester,
-        &accepter.public_key_bytes(),
-        &accepter.address(),
+        &accepter,
         ContactRequestInner {
             request_id: [0xBBu8; 16],
             sender_raven_id: requester.address(),
@@ -767,10 +955,11 @@ fn contact_inbox_block() {
             created_at: now(),
             expires_at: now() + 60_000,
         },
-    )
-    .unwrap();
+    );
     let mut inbox = ContactRequestInbox::default();
-    inbox.ingest(req, &accepter, now()).unwrap();
+    inbox
+        .ingest_with_atsam_root(req, &accepter, &DISCOVERY_TEST_ROOT, now())
+        .unwrap();
     let mut blocks = BlockList::default();
     inbox.block(&[0xBBu8; 16], &mut blocks).unwrap();
     assert!(inbox.pending().is_empty());
@@ -787,10 +976,9 @@ fn contact_inbox_sender_cap_antispam() {
     for i in 0..CONTACT_REQ_MAX_PER_SENDER {
         let mut rid = [0u8; 16];
         rid[0] = 0xA0 + i as u8;
-        let req = RavenContactRequestV1::create(
+        let req = make_contact_request(
             &requester,
-            &accepter.public_key_bytes(),
-            &accepter.address(),
+            &accepter,
             ContactRequestInner {
                 request_id: rid,
                 sender_raven_id: requester.address(),
@@ -801,17 +989,17 @@ fn contact_inbox_sender_cap_antispam() {
                 created_at: t0,
                 expires_at: t0 + 60_000,
             },
-        )
-        .unwrap();
-        inbox.ingest(req, &accepter, t0).unwrap();
+        );
+        inbox
+            .ingest_with_atsam_root(req, &accepter, &DISCOVERY_TEST_ROOT, t0)
+            .unwrap();
     }
     assert_eq!(inbox.pending().len(), CONTACT_REQ_MAX_PER_SENDER);
     let mut rid = [0u8; 16];
     rid[0] = 0xFF;
-    let extra = RavenContactRequestV1::create(
+    let extra = make_contact_request(
         &requester,
-        &accepter.public_key_bytes(),
-        &accepter.address(),
+        &accepter,
         ContactRequestInner {
             request_id: rid,
             sender_raven_id: requester.address(),
@@ -822,13 +1010,11 @@ fn contact_inbox_sender_cap_antispam() {
             created_at: t0,
             expires_at: t0 + 60_000,
         },
-    )
-    .unwrap();
-    let err = inbox.ingest(extra, &accepter, t0).unwrap_err();
-    assert!(
-        err.contains("CONTACT_REQ_SENDER_CAP"),
-        "got {err}"
     );
+    let err = inbox
+        .ingest_with_atsam_root(extra, &accepter, &DISCOVERY_TEST_ROOT, t0)
+        .unwrap_err();
+    assert!(err.contains("CONTACT_REQ_SENDER_CAP"), "got {err}");
 }
 
 /// Nearby safety phrase required before confirm-to-bind

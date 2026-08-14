@@ -55,9 +55,9 @@ struct SelectMembersView: View {
                     }
                 } else if friends.isEmpty {
                     ContentUnavailableView {
-                        Label("No Friends", systemImage: "person.2.slash")
+                        Label("No Contacts Yet", systemImage: "person.2.slash")
                     } description: {
-                        Text("Add friends first to create a group.")
+                        Text("Scan a QR code to add someone, then come back to start a group.")
                     }
                 } else if filteredFriends.isEmpty && !searchText.isEmpty {
                     ContentUnavailableView.search(text: searchText)
@@ -229,44 +229,82 @@ struct SelectMembersView: View {
     // MARK: - Actions
     
     private func loadFriends() async {
+        // 🔑 SERVERLESS-FIRST contacts (mirrors NewChatView). The primary source
+        // is the local contact store (FriendDeviceRepository) — peers added
+        // out-of-band via QR scan / mesh, with their keys pinned. These ALWAYS
+        // show, with or without a server, so a scanned contact is immediately
+        // selectable for a group. The legacy server friends list + cache are
+        // merged in only when available, and a server failure never surfaces an
+        // error while local contacts exist.
+        let local = await localContacts()
+
+        var combined = local
         if let cached = GroupService.shared.getCachedFriends(), !cached.isEmpty {
-            self.friends = cached
-            self.isLoading = false
-        } else {
-            self.isLoading = true
+            combined = Self.mergeFriends(local, cached)
         }
-        
+        self.friends = combined
+        self.isLoading = combined.isEmpty
         self.errorMessage = nil
-        
-        // Skip network call entirely if offline and we already have cached data
-        guard NetworkMonitor.shared.isOnline || self.friends.isEmpty else {
+
+        // Try the (legacy) server friends list only if online. In the
+        // serverless build this fast-fails with .unauthorized — that's fine,
+        // we keep the local contacts and don't surface a scary error.
+        guard NetworkMonitor.shared.isOnline else {
             self.isLoading = false
+            if self.friends.isEmpty {
+                self.errorMessage = "No contacts yet. Scan a QR code to add someone."
+            }
             return
         }
-        
+
         do {
             let fetched = try await GroupService.shared.fetchFriends()
-            withAnimation {
-                self.friends = fetched
-            }
+            withAnimation { self.friends = Self.mergeFriends(local, fetched) }
         } catch {
+            // Keep local + cached; only message when there's truly nothing.
             if self.friends.isEmpty {
-                if (error as? URLError)?.code == .notConnectedToInternet {
-                    self.errorMessage = "You're offline. Connect to the internet to load your friends list."
-                } else {
-                    self.errorMessage = "Couldn't load friends. Please try again."
-                }
+                self.errorMessage = "No contacts yet. Scan a QR code to add someone."
             }
         }
-        
+
         self.isLoading = false
+    }
+
+    /// Locally-known contacts: every distinct peer we hold a trusted device
+    /// for, surfaced as a pickable friend keyed by userId. The display name
+    /// comes from the device label captured at QR-scan / mesh time.
+    private func localContacts() async -> [GroupFriendInfo] {
+        let devices = await FriendDeviceRepository.shared.getAllTrustedDevices()
+        let myId = AuthService.shared.currentUser?.id
+        var byUser: [String: GroupFriendInfo] = [:]
+        for d in devices where d.friendUserId != myId && !d.friendUserId.isEmpty {
+            if byUser[d.friendUserId] == nil {
+                let name = d.deviceName ?? ""
+                byUser[d.friendUserId] = GroupFriendInfo(
+                    id: d.friendUserId,
+                    username: name,
+                    displayName: name.isEmpty ? nil : name,
+                    avatarUrl: nil
+                )
+            }
+        }
+        return Array(byUser.values).sorted { $0.safeDisplayName < $1.safeDisplayName }
+    }
+
+    private static func mergeFriends(_ a: [GroupFriendInfo], _ b: [GroupFriendInfo]) -> [GroupFriendInfo] {
+        var byId: [String: GroupFriendInfo] = [:]
+        for f in a + b where byId[f.id] == nil { byId[f.id] = f }
+        return Array(byId.values).sorted { $0.safeDisplayName < $1.safeDisplayName }
     }
     
     private func selectFriend(_ friend: GroupFriendInfo) {
         withAnimation(.spring(response: 0.3)) {
             selectedMembers.append(friend)
+            // Clear the query so the picker doesn't appear to "lose" it; the
+            // filtered list resets to all remaining contacts after selection.
+            searchText = ""
         }
-        
+
         // Haptic feedback
         let impact = UIImpactFeedbackGenerator(style: .light)
         impact.impactOccurred()

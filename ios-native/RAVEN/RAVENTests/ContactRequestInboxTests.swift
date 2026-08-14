@@ -9,6 +9,8 @@ import CryptoKit
 
 final class ContactRequestInboxTests: XCTestCase {
 
+    private let root = ATSAMRootKey(rootBytes: Data(repeating: 0x5D, count: 32))
+
     override func setUp() {
         super.setUp()
         UserDefaults.standard.removeObject(forKey: "raven.discovery.contact_inbox.wires.v1")
@@ -34,10 +36,9 @@ final class ContactRequestInboxTests: XCTestCase {
             createdAt: now,
             expiresAt: now &+ 86_400_000
         )
-        let req = try RavenContactRequestV1.create(
+        let req = try makeRequest(
             senderSigningKey: sender,
-            recipientPub: recipient.publicKey.rawRepresentation,
-            recipientAddr: recipientAddr,
+            recipientSigningKey: recipient,
             inner: inner
         )
         let wire = req.encodeWire()
@@ -57,10 +58,9 @@ final class ContactRequestInboxTests: XCTestCase {
         var requestId = Data(count: 16)
         for i in 0..<16 { requestId[i] = UInt8(0xAC) }
         let now: UInt64 = 1_700_000_000_000
-        let req = try RavenContactRequestV1.create(
+        let req = try makeRequest(
             senderSigningKey: requester,
-            recipientPub: accepter.publicKey.rawRepresentation,
-            recipientAddr: accepterAddr,
+            recipientSigningKey: accepter,
             inner: ContactRequestInner(
                 requestId: requestId,
                 senderRavenId: requesterAddr,
@@ -73,10 +73,11 @@ final class ContactRequestInboxTests: XCTestCase {
             )
         )
         var inbox = ContactRequestInbox()
-        _ = try inbox.ingest(
+        _ = try inbox.ingestWithATSAMRoot(
             outer: req,
             recipientSigningKey: accepter,
             recipientAddr: accepterAddr,
+            root: root,
             nowMs: now
         )
         XCTAssertEqual(inbox.pending.count, 1)
@@ -114,10 +115,9 @@ final class ContactRequestInboxTests: XCTestCase {
         let accepterAddr = RavenAddressV1.encode(ed25519PublicKey: accepter.publicKey.rawRepresentation)!
         let requestId = Data(repeating: 0xDE, count: 16)
         let now: UInt64 = 1_700_000_000_000
-        let req = try RavenContactRequestV1.create(
+        let req = try makeRequest(
             senderSigningKey: requester,
-            recipientPub: accepter.publicKey.rawRepresentation,
-            recipientAddr: accepterAddr,
+            recipientSigningKey: accepter,
             inner: ContactRequestInner(
                 requestId: requestId,
                 senderRavenId: requesterAddr,
@@ -130,10 +130,11 @@ final class ContactRequestInboxTests: XCTestCase {
             )
         )
         var inbox = ContactRequestInbox()
-        _ = try inbox.ingest(
+        _ = try inbox.ingestWithATSAMRoot(
             outer: req,
             recipientSigningKey: accepter,
             recipientAddr: accepterAddr,
+            root: root,
             nowMs: now
         )
         try inbox.decline(requestId: requestId)
@@ -147,10 +148,9 @@ final class ContactRequestInboxTests: XCTestCase {
         let accepterAddr = RavenAddressV1.encode(ed25519PublicKey: accepter.publicKey.rawRepresentation)!
         let requestId = Data(repeating: 0xBB, count: 16)
         let now: UInt64 = 1_700_000_000_000
-        let req = try RavenContactRequestV1.create(
+        let req = try makeRequest(
             senderSigningKey: requester,
-            recipientPub: accepter.publicKey.rawRepresentation,
-            recipientAddr: accepterAddr,
+            recipientSigningKey: accepter,
             inner: ContactRequestInner(
                 requestId: requestId,
                 senderRavenId: requesterAddr,
@@ -163,10 +163,11 @@ final class ContactRequestInboxTests: XCTestCase {
             )
         )
         var inbox = ContactRequestInbox()
-        _ = try inbox.ingest(
+        _ = try inbox.ingestWithATSAMRoot(
             outer: req,
             recipientSigningKey: accepter,
             recipientAddr: accepterAddr,
+            root: root,
             nowMs: now
         )
         let pubHex = try inbox.block(requestId: requestId)
@@ -185,10 +186,9 @@ final class ContactRequestInboxTests: XCTestCase {
         for i in 0..<ContactRequestInbox.maxPerSender {
             var requestId = Data(count: 16)
             requestId[0] = UInt8(0xA0 + i)
-            let req = try RavenContactRequestV1.create(
+            let req = try makeRequest(
                 senderSigningKey: requester,
-                recipientPub: accepter.publicKey.rawRepresentation,
-                recipientAddr: accepterAddr,
+                recipientSigningKey: accepter,
                 inner: ContactRequestInner(
                     requestId: requestId,
                     senderRavenId: requesterAddr,
@@ -200,20 +200,20 @@ final class ContactRequestInboxTests: XCTestCase {
                     expiresAt: now &+ 60_000
                 )
             )
-            _ = try inbox.ingest(
+            _ = try inbox.ingestWithATSAMRoot(
                 outer: req,
                 recipientSigningKey: accepter,
                 recipientAddr: accepterAddr,
+                root: root,
                 nowMs: now
             )
         }
         XCTAssertEqual(inbox.pending.count, ContactRequestInbox.maxPerSender)
         var requestId = Data(count: 16)
         requestId[0] = 0xFF
-        let extra = try RavenContactRequestV1.create(
+        let extra = try makeRequest(
             senderSigningKey: requester,
-            recipientPub: accepter.publicKey.rawRepresentation,
-            recipientAddr: accepterAddr,
+            recipientSigningKey: accepter,
             inner: ContactRequestInner(
                 requestId: requestId,
                 senderRavenId: requesterAddr,
@@ -226,10 +226,11 @@ final class ContactRequestInboxTests: XCTestCase {
             )
         )
         XCTAssertThrowsError(
-            try inbox.ingest(
+            try inbox.ingestWithATSAMRoot(
                 outer: extra,
                 recipientSigningKey: accepter,
                 recipientAddr: accepterAddr,
+                root: root,
                 nowMs: now
             )
         ) { err in
@@ -244,5 +245,25 @@ final class ContactRequestInboxTests: XCTestCase {
         XCTAssertTrue(phrase.contains("-"))
         XCTAssertTrue(NearbySafetyPhrase.matches(expected: phrase, entered: phrase))
         XCTAssertFalse(NearbySafetyPhrase.matches(expected: phrase, entered: "wrong-phrase"))
+    }
+
+    private func makeRequest(
+        senderSigningKey: Curve25519.Signing.PrivateKey,
+        recipientSigningKey: Curve25519.Signing.PrivateKey,
+        inner: ContactRequestInner
+    ) throws -> RavenContactRequestV1 {
+        let recipientPub = recipientSigningKey.publicKey.rawRepresentation
+        let recipientAddr = RavenAddressV1.encode(ed25519PublicKey: recipientPub)!
+        var nonce = Data(inner.requestId.prefix(12))
+        while nonce.count < 12 { nonce.append(0) }
+        return try RavenContactRequestV1.createWithATSAMRoot(
+            senderSigningKey: senderSigningKey,
+            recipientPub: recipientPub,
+            recipientAddr: recipientAddr,
+            inner: inner,
+            root: root,
+            chainIndex: UInt32(inner.requestId.first ?? 0),
+            nonce: nonce
+        )
     }
 }

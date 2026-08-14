@@ -20,10 +20,7 @@ mod tests {
 
     #[test]
     fn roundtrip_bytes() {
-        let payload = [0x01u8]
-            .into_iter()
-            .chain([0xABu8; 20])
-            .collect::<Vec<_>>();
+        let payload = [0x01u8].into_iter().chain([0xABu8; 20]).collect::<Vec<_>>();
         let enc = encode("rvn", &payload).unwrap();
         assert!(enc.starts_with("rvn1"));
         let (hrp, data) = decode(&enc).unwrap();

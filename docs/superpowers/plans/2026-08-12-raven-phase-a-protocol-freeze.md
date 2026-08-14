@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development
 > (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps
-> use checkbox (`- [ ]`) syntax for tracking.
+> use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Freeze RAVEN's serverless V1 identity, address, envelope, ACK, and supporting
 records as versioned specifications backed by deterministic cross-platform test vectors —
@@ -24,6 +24,16 @@ Markdown specs, JSON vectors. No Rust yet. No network code yet.
 `shared-vectors/`, `raven-security/`.
 
 ---
+
+> **CLOSEOUT STATUS (2026-08-12):** Phase A wire freeze is **complete on disk**.
+> Implementation/reference/spec/vector steps below are marked `[x]`. Process-only
+> **commit** steps and the Libp2pBridge hygiene commit remain `[ ]` (operator did
+> not request commits). Honest open binding items: ATSAM crypto KATs still
+> placeholders; `userId`→address migration (Identity §4); MeshEnvelope shipping
+> until Phase G. See
+> [`../specs/2026-08-12-phase-a-closeout-design.md`](../specs/2026-08-12-phase-a-closeout-design.md)
+> and [`protocol/ATSAM_PRIMITIVE_MAPPING_V1.md`](../../../protocol/ATSAM_PRIMITIVE_MAPPING_V1.md).
+
 
 ## Scope check
 
@@ -116,7 +126,7 @@ git add ios-native/RAVEN/Libp2pBridge/
 git commit -m "chore(bridge): commit working-tree rendezvous + bridge modifications before protocol freeze"
 ```
 
-- [ ] **Step 2: Create the Python package skeleton**
+- [x] **Step 2: Create the Python package skeleton**
 
 ```python
 # protocol/reference/raven_protocol/__init__.py
@@ -145,7 +155,7 @@ testpaths = tests
 python_files = test_*.py
 ```
 
-- [ ] **Step 3: Verify the toolchain runs**
+- [x] **Step 3: Verify the toolchain runs**
 
 Run: `cd protocol/reference && python3 -m pip install -r requirements.txt && python3 -m pytest -q`
 Expected: `no tests ran` (exit 5) — package imports, no tests yet.
@@ -165,7 +175,7 @@ git commit -m "chore(protocol): scaffold rvn1 reference-implementation package"
 - Create: `protocol/reference/raven_protocol/bech32m.py`
 - Test: `protocol/reference/tests/test_bech32m.py`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 # tests/test_bech32m.py
@@ -192,12 +202,12 @@ def test_wrong_hrp_is_reported():
     assert hrp != "btc"
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `cd protocol/reference && python3 -m pytest tests/test_bech32m.py -q`
 Expected: FAIL — `ModuleNotFoundError` / `AttributeError: encode`.
 
-- [ ] **Step 3: Implement Bech32m (reference algorithm from BIP-350)**
+- [x] **Step 3: Implement Bech32m (reference algorithm from BIP-350)**
 
 ```python
 # raven_protocol/bech32m.py
@@ -272,7 +282,7 @@ def decode(s: str):
     return hrp, bytes(payload)
 ```
 
-- [ ] **Step 4: Run to verify it passes**
+- [x] **Step 4: Run to verify it passes**
 
 Run: `cd protocol/reference && python3 -m pytest tests/test_bech32m.py -q`
 Expected: PASS (3 passed).
@@ -309,7 +319,7 @@ git commit -m "feat(protocol): Bech32m codec (BIP-350) reference"
   is documented as deprecated. The *machine identity* is the RavenAddress, not either
   fingerprint; fingerprints are human cross-check strings only.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_fingerprint.py
@@ -357,12 +367,12 @@ def test_display_grouping_is_reversible():
     assert address.from_display(disp) == a
 ```
 
-- [ ] **Step 2: Run to verify they fail**
+- [x] **Step 2: Run to verify they fail**
 
 Run: `cd protocol/reference && python3 -m pytest tests/test_address.py tests/test_fingerprint.py -q`
 Expected: FAIL — modules missing.
 
-- [ ] **Step 3: Implement fingerprint.py and address.py**
+- [x] **Step 3: Implement fingerprint.py and address.py**
 
 ```python
 # raven_protocol/fingerprint.py
@@ -415,7 +425,7 @@ def from_display(disp: str) -> str:
     return "rvn1" + body
 ```
 
-- [ ] **Step 4: Run to verify pass**
+- [x] **Step 4: Run to verify pass**
 
 Run: `cd protocol/reference && python3 -m pytest tests/test_address.py tests/test_fingerprint.py -q`
 Expected: PASS (6 passed).
@@ -441,7 +451,7 @@ git commit -m "feat(protocol): RavenAddressV1 (bech32m) + fingerprint reconcilia
 today). The tag rotates every message (counter) and every epoch; a store node without
 `K_route` cannot derive or link tags.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 # tests/test_routing_tag.py
@@ -464,12 +474,12 @@ def test_wrong_key_gives_different_tag():
     assert routing_tag.derive(bytes(32), 1700000000, 0) != base
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `cd protocol/reference && python3 -m pytest tests/test_routing_tag.py -q`
 Expected: FAIL — module missing.
 
-- [ ] **Step 3: Implement routing_tag.py**
+- [x] **Step 3: Implement routing_tag.py**
 
 ```python
 # raven_protocol/routing_tag.py
@@ -482,7 +492,7 @@ def derive(k_route: bytes, epoch: int, counter: int) -> bytes:
     return hmac.new(k_route, msg, hashlib.sha256).digest()[:16]
 ```
 
-- [ ] **Step 4: Run to verify pass**
+- [x] **Step 4: Run to verify pass**
 
 Run: `cd protocol/reference && python3 -m pytest tests/test_routing_tag.py -q`
 Expected: PASS (3 passed).
@@ -533,7 +543,7 @@ ambiguity): the fixed prefix with the three mutable fields (`dest_device_hint`, 
 `SHA-256(message_ciphertext)`. Everything immutable is bound; nothing relay-mutable is.
 `sender_authentication` = `Ed25519_sign(device_signing_key, signing_bytes)`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 # tests/test_envelope.py
@@ -584,12 +594,12 @@ def test_unpack_rejects_bad_magic():
     assert envelope.unpack(bytes(raw)) is None
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `cd protocol/reference && python3 -m pytest tests/test_envelope.py -q`
 Expected: FAIL — module missing.
 
-- [ ] **Step 3: Implement envelope.py**
+- [x] **Step 3: Implement envelope.py**
 
 ```python
 # raven_protocol/envelope.py
@@ -659,7 +669,7 @@ def verify(e: Envelope, signer_ed_pub: bytes) -> bool:
         return False
 ```
 
-- [ ] **Step 4: Run to verify pass**
+- [x] **Step 4: Run to verify pass**
 
 Run: `cd protocol/reference && python3 -m pytest tests/test_envelope.py -q`
 Expected: PASS (5 passed).
@@ -699,7 +709,7 @@ audit risk #3):** a helper `lp(x)` = `len(x).to_bytes(2,'big') ‖ x` for byte s
   lp(device_x_pub) ‖ lp(device_id_utf8) ‖ u64(not_before_ms) ‖ u64(not_after_ms) ‖
   u64(capabilities)`; signed by the **user identity** key (authorizes a device — §21, §71).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_ack.py
@@ -754,12 +764,12 @@ def test_device_cert_signed_by_user_identity():
     assert device_cert.verify(c, user_identity_ed_pub=ALICE_ED_PUB)
 ```
 
-- [ ] **Step 2: Run to verify they fail**
+- [x] **Step 2: Run to verify they fail**
 
 Run: `cd protocol/reference && python3 -m pytest tests/test_ack.py tests/test_alias.py tests/test_device_cert.py -q`
 Expected: FAIL — modules missing.
 
-- [ ] **Step 3: Implement the three modules**
+- [x] **Step 3: Implement the three modules**
 
 ```python
 # raven_protocol/_canon.py
@@ -840,7 +850,7 @@ def verify(c: DeviceCert, user_identity_ed_pub: bytes) -> bool:
         return False
 ```
 
-- [ ] **Step 4: Run to verify pass**
+- [x] **Step 4: Run to verify pass**
 
 Run: `cd protocol/reference && python3 -m pytest tests/test_ack.py tests/test_alias.py tests/test_device_cert.py -q`
 Expected: PASS (4 passed).
@@ -861,7 +871,7 @@ git commit -m "feat(protocol): RavenAckV1 + RavenAliasRecordV1 + RavenDeviceCert
 - Create (generated): `shared-vectors/rvn1/**`
 - Test: `protocol/reference/tests/test_determinism.py`
 
-- [ ] **Step 1: Write the determinism test first**
+- [x] **Step 1: Write the determinism test first**
 
 ```python
 # tests/test_determinism.py
@@ -881,12 +891,12 @@ def test_regeneration_is_byte_identical():
             assert filecmp.cmp(f, pathlib.Path(tmp)/rel, shallow=False), f"drift in {rel}"
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `cd protocol/reference && python3 -m pytest tests/test_determinism.py -q`
 Expected: FAIL — `generate_rvn1.py` and `shared-vectors/rvn1` do not exist.
 
-- [ ] **Step 3: Implement generate_rvn1.py**
+- [x] **Step 3: Implement generate_rvn1.py**
 
 Produce one JSON file per case, each following the existing `shared-vectors` schema
 (`name`, `description`, `protocol_version:"rvn1"`, `deterministic:true`, `inputs`,
@@ -1066,7 +1076,7 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 4: Generate the tree, then run the determinism test**
+- [x] **Step 4: Generate the tree, then run the determinism test**
 
 Run:
 ```bash
@@ -1074,7 +1084,7 @@ cd protocol/reference && python3 generate_rvn1.py && python3 -m pytest tests/tes
 ```
 Expected: tree written under `shared-vectors/rvn1/`; PASS (1 passed).
 
-- [ ] **Step 5: Run the whole reference suite green**
+- [x] **Step 5: Run the whole reference suite green**
 
 Run: `cd protocol/reference && python3 -m pytest -q`
 Expected: PASS (all tasks 2–7 tests, ~20+ passed).
@@ -1094,14 +1104,14 @@ Each spec is a reviewable artifact; the reference implementation and vectors are
 executable proof. No code steps — but every doc has a required section list and MUST cite
 the concrete vector files that prove its claims (no unproven normative statement).
 
-- [ ] **Step 1: `protocol/SPEC.md`** — index. Required sections: the seven V1 invariants
+- [x] **Step 1: `protocol/SPEC.md`** — index. Required sections: the seven V1 invariants
   (identity, text, delivery, offline delivery, internet, bluetooth, security); the four
   security/interop/UX invariants from the mission's final section; a table linking each
   sub-spec to its `shared-vectors/rvn1/` proof directory; the versioning policy (every wire
   format carries an explicit version; higher-than-supported ⇒ drop; capabilities negotiated
   and signed).
 
-- [ ] **Step 2: `protocol/RAVEN_IDENTITY_V1.md`** — Required sections: User Identity key
+- [x] **Step 2: `protocol/RAVEN_IDENTITY_V1.md`** — Required sections: User Identity key
   (Ed25519, local-only), Device Identity keys (Ed25519 + X25519 per device),
   `RavenDeviceCertificateV1` (user-signs-device, capabilities, validity window, revocation
   via signed record + what partitions can/can't guarantee — §72), the fingerprint
@@ -1110,13 +1120,13 @@ the concrete vector files that prove its claims (no unproven normative statement
   roots/chains/AADs are keyed by server userIds). Cite `identities/fingerprint_alice.json`,
   `device_cert/bob_device1.json`.
 
-- [ ] **Step 3: `protocol/RAVEN_ADDRESS_V1.md`** — Required sections: the three concepts
+- [x] **Step 3: `protocol/RAVEN_ADDRESS_V1.md`** — Required sections: the three concepts
   (Identity, Address, Alias) and how they differ (§6); canonical Bech32m encoding
   (`version||SHA256(idPub)[:20]`, HRP `rvn`); display grouping; parsing/validation rules
   (reject bad checksum, wrong HRP, wrong length); why alias lookup is discovery not
   verification. Cite `address/encode_alice.json`, `negative/address_bad_checksum.json`.
 
-- [ ] **Step 4: `protocol/RAVEN_ENVELOPE_V1.md`** — Required sections: the full byte table
+- [x] **Step 4: `protocol/RAVEN_ENVELOPE_V1.md`** — Required sections: the full byte table
   (from Task 5), the mutable-field/signing-bytes rule, `env_type` registry, size limits
   (max envelope size, header caps — the Go bridge's 24 MiB pre-validation allocation is a
   DoS to fix in Phase B), the "no plaintext identities/usernames/conversation-IDs on the
@@ -1125,30 +1135,30 @@ the concrete vector files that prove its claims (no unproven normative statement
   → decrypt → commit → ACK). Cite `envelope/message_alice_to_bob.json` and all
   `negative/envelope_*.json`.
 
-- [ ] **Step 5: `protocol/RAVEN_ACK_V1.md`** — Required sections: ACK as sealed
+- [x] **Step 5: `protocol/RAVEN_ACK_V1.md`** — Required sections: ACK as sealed
   `env_type=2` body, signing bytes, the delivery-state machine (§26: CREATED → ENCRYPTED →
   QUEUED → ROUTE_DISCOVERING → FORWARDED → DELIVERED_TO_DEVICE → READ / EXPIRED / FAILED)
   and the rule that only a valid recipient ACK moves FORWARDED→DELIVERED (never relay
   acceptance — the Go bridge's write-means-delivered bug is called out as a Phase B fix),
   ACK replay/dedup. Cite `ack/delivered_bob_to_alice.json`, `negative/ack_wrong_signer.json`.
 
-- [ ] **Step 6: `protocol/RAVEN_ALIAS_V1.md`** — Required sections: record schema, identity
+- [x] **Step 6: `protocol/RAVEN_ALIAS_V1.md`** — Required sections: record schema, identity
   signature, monotonic `sequence` freshness, the ambiguity rule (never silently pick among
   multiple identities claiming one alias — §6, §69 key-change warning), DHT publication
   constraints (signed, versioned, expiry-bound, size-limited — §44). Cite
   `alias/ahmad_seq42.json`, `negative/alias_stale_sequence.json`.
 
-- [ ] **Step 7: `protocol/RAVEN_ROUTING_TAG_V1.md`** — Required sections: derivation from
+- [x] **Step 7: `protocol/RAVEN_ROUTING_TAG_V1.md`** — Required sections: derivation from
   ATSAM `K_route`, rotation (epoch + counter), the store-node-cannot-derive property, and
   the explicit non-goal (tags resist linkage but not global traffic analysis — §53–54).
   Cite `routing/tag_alice_bob_000.json`, `routing/tag_unlinkable_001.json`.
 
-- [ ] **Step 8: `protocol/RAVEN_CAPABILITIES_V1.md`** — Required sections: signed capability
+- [x] **Step 8: `protocol/RAVEN_CAPABILITIES_V1.md`** — Required sections: signed capability
   set, authenticated negotiation, downgrade protection (§43), and the mapping to existing
   RUM v2 capability bits (note the iOS/Windows drift: `doubleRatchet` bit 1<<13 present on
   iOS, absent on Windows). Cite `capabilities/alice_v1.json`.
 
-- [ ] **Step 9: Verify every normative claim has a vector**
+- [x] **Step 9: Verify every normative claim has a vector**
 
 Run:
 ```bash
@@ -1173,7 +1183,7 @@ git commit -m "docs(protocol): freeze RAVEN V1 identity/address/envelope/ack/ali
 - Create: `docs/THREAT_MODEL.md`
 - Modify: `raven-security/THREAT_MODEL.md` (add a header marking it a pre-pivot snapshot)
 
-- [ ] **Step 1: Write `docs/THREAT_MODEL.md`**
+- [x] **Step 1: Write `docs/THREAT_MODEL.md`**
 
 Required structure: assets protected; then a row per adversary from mission §73 with a
 verdict of **protected / partially protected / out of scope** and a *why*, covering:
@@ -1187,7 +1197,7 @@ introduces (two encryption layers §18; store nodes see only opaque objects + ro
 §53; no single store node is authoritative, replication ×3 §29) and the ones it cannot yet
 promise (global traffic analysis, active relay/distance-fraud, endpoint compromise).
 
-- [ ] **Step 2: Mark the old model as a snapshot**
+- [x] **Step 2: Mark the old model as a snapshot**
 
 Prepend to `raven-security/THREAT_MODEL.md`:
 ```markdown
@@ -1195,7 +1205,7 @@ Prepend to `raven-security/THREAT_MODEL.md`:
 > `docs/THREAT_MODEL.md`. Retained for provenance; do not update in place.
 ```
 
-- [ ] **Step 3: Verify adversary coverage is complete**
+- [x] **Step 3: Verify adversary coverage is complete**
 
 Run:
 ```bash
@@ -1222,14 +1232,14 @@ git commit -m "docs(security): serverless-P2P threat model (step 03); mark pre-p
 - Modify: `shared-vectors/README.md`
 - Modify: `tools/sync-vectors.sh`
 
-- [ ] **Step 1: Document the new tree**
+- [x] **Step 1: Document the new tree**
 
 Add an `rvn1/` section to `shared-vectors/README.md`: it is the serverless V1 protocol
 contract; generated by `protocol/reference/generate_rvn1.py`; consumed by the Rust node
 (Phase B), and later the Swift/C#/Kotlin ports; frozen under the same VERSIONING rules as
 `v1/`. Fix the stale consumer list (audit: it cites files that don't exist).
 
-- [ ] **Step 2: Extend `tools/sync-vectors.sh`** to also verify `rvn1/` regenerates clean
+- [x] **Step 2: Extend `tools/sync-vectors.sh`** to also verify `rvn1/` regenerates clean
 
 Add, after the existing v1 check:
 ```bash
@@ -1243,7 +1253,7 @@ fi
 echo "rvn1 vectors OK."
 ```
 
-- [ ] **Step 3: Run the full gate**
+- [x] **Step 3: Run the full gate**
 
 Run:
 ```bash

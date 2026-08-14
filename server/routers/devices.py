@@ -12,6 +12,32 @@ from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
 import uuid
+import hashlib
+import base64
+
+
+def _derive_fingerprint(public_key_b64: str) -> Optional[str]:
+    """Recompute the device fingerprint from a raw-base64 Ed25519 public key.
+
+    Mirrors iOS DeviceIdentityService.deriveFingerprint (and the bridge
+    fp-binding in routers/messages.py) EXACTLY:
+        sha256(raw_pubkey) -> first 9 bytes -> standard base64
+        -> strip '+' '/' '=' -> first 12 chars -> dash every 4.
+
+    Returns None if the public key is not decodable to a 32-byte Ed25519 key,
+    so the caller can reject a malformed submission rather than fail open.
+    """
+    try:
+        pub_raw = base64.b64decode(public_key_b64, validate=True)
+    except Exception:
+        return None
+    if len(pub_raw) != 32:
+        return None
+    digest = hashlib.sha256(pub_raw).digest()
+    b64 = base64.b64encode(digest[:9]).decode("ascii")
+    stripped = b64.replace("+", "").replace("/", "").rstrip("=")[:12]
+    return "-".join(stripped[i:i + 4] for i in range(0, len(stripped), 4))
+
 
 from database import get_db
 from models import Device, User, FriendRequest
@@ -66,6 +92,30 @@ async def register_device(
     for this user, updates last_seen_at. If registered for different user,
     returns error (key reuse attempt).
     """
+    # 🔐 PB-H2: proof-of-possession — the submitted fingerprint MUST be the
+    # one derived from the submitted public key. Without this, (fingerprint,
+    # public_key) is fully attacker-controlled: an attacker could squat a
+    # victim's real fingerprint (blocking the victim via the unique
+    # constraint), or register a mismatched pair that pollutes the
+    # friend-fingerprint / lookup responses that mesh peers trust. The
+    # message-attribution binding in routers/messages.py relies on this row
+    # being an authentically-owned (fingerprint, pubkey) pair.
+    expected_fp = _derive_fingerprint(request.public_key)
+    if expected_fp is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="public_key must be a base64-encoded 32-byte Ed25519 key",
+        )
+    # Accept both the canonical dashed form and the undashed 12-char form,
+    # matching the tolerance already applied to bridge uploads
+    # (routers/messages.py). base64 is case-significant — compare exactly.
+    _expected_undashed = expected_fp.replace("-", "")
+    if request.device_fingerprint not in (expected_fp, _expected_undashed):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="device_fingerprint does not match public_key",
+        )
+
     # Check if fingerprint already exists
     existing = db.query(Device).filter(
         Device.fingerprint == request.device_fingerprint

@@ -1,6 +1,6 @@
 //
 //  ContactRequestInboxView.swift
-//  RAVEN — inbox UI for inbound RavenContactRequestV1 (behind ravenEnvelopeV1).
+//  RAVEN — PairInit friend-request inbox (behind ravenEnvelopeV1 + lab gate).
 //
 
 import SwiftUI
@@ -21,11 +21,11 @@ struct ContactRequestInboxView: View {
                     ContentUnavailableView(
                         "Contact Requests",
                         systemImage: "person.crop.circle.badge.questionmark",
-                        description: Text("Enable RavenEnvelopeV1 for serverless contact-request inbox.")
+                        description: Text("Enable RavenEnvelopeV1 for serverless PairInit inbox.")
                     )
                 }
             }
-            .navigationTitle("Contact Requests")
+            .navigationTitle("Friend Requests")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -40,9 +40,13 @@ struct ContactRequestInboxView: View {
                 }
             }
             .task { model.reload() }
-            .onReceive(NotificationCenter.default.publisher(for: .ravenEnvelopeV1BleReceived)) { note in
-                guard let body = note.userInfo?["sealedBody"] as? Data else { return }
-                _ = model.ingestWire(body)
+            .onReceive(NotificationCenter.default.publisher(for: .ravenPairInitReceived)) { note in
+                guard let wire = note.userInfo?["wire"] as? Data else { return }
+                _ = model.ingestPairInitWire(wire)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .ravenEnvelopeV1EndpointIngest)) { note in
+                // Sealed chat bodies are not friend requests.
+                _ = note
             }
         }
     }
@@ -65,14 +69,14 @@ struct ContactRequestInboxView: View {
             }
             if model.pending.isEmpty {
                 Section {
-                    Text("Incoming RavenContactRequestV1 messages appear here after LAN/BLE delivery. Bridge never decrypts.")
+                    Text("PairInit friend requests appear here after a LAN pull while the app is open. Legacy rootless contact ciphertext is never opened.")
                         .font(.caption)
                         .foregroundStyle(.tertiary)
                 }
             } else {
                 ForEach(model.pending) { item in
                     Section {
-                        requestRow(item)
+                        pairInitRow(item)
                     }
                 }
             }
@@ -81,44 +85,19 @@ struct ContactRequestInboxView: View {
     }
 
     @ViewBuilder
-    private func requestRow(_ item: PendingContactRequest) -> some View {
-        let hex = item.outer.requestId.ravenHex
+    private func pairInitRow(_ item: PendingPairInitRequest) -> some View {
         VStack(alignment: .leading, spacing: 10) {
+            Text(item.initiatorAddress)
+                .font(.system(.caption, design: .monospaced))
+                .foregroundStyle(.primary)
+            Text("PairInit · \(item.initID.prefix(4).map { String(format: "%02x", $0) }.joined())…")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
             HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(item.inner.senderDisplayName.isEmpty
-                         ? shortId(item.inner.senderRavenId)
-                         : item.inner.senderDisplayName)
-                        .font(.headline)
-                    if !item.inner.senderAliases.isEmpty {
-                        Text(item.inner.senderAliases.map { "@\($0)" }.joined(separator: " "))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Text(item.inner.senderRavenId)
-                        .font(.system(.caption2, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                Spacer()
-            }
-            if !item.inner.optionalMessage.isEmpty {
-                Text(item.inner.optionalMessage)
-                    .font(.subheadline)
-                    .foregroundStyle(.primary)
-            }
-            TextField("Petname (required to Accept)", text: bindingPetname(hex))
-                .textFieldStyle(.roundedBorder)
-            HStack(spacing: 10) {
                 Button("Accept") {
                     Task {
-                        actionError = nil
-                        model.isBusy = true
-                        defer { model.isBusy = false }
                         do {
-                            try await model.accept(requestId: item.outer.requestId)
-                        } catch RavenContactRequestError.petnameRequired {
-                            actionError = "Enter a petname before Accept"
+                            try await model.accept(requestId: item.initID)
                         } catch {
                             actionError = error.localizedDescription
                         }
@@ -126,46 +105,16 @@ struct ContactRequestInboxView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(model.isBusy)
-
-                Button("Decline") {
-                    actionError = nil
+                Button("Decline", role: .destructive) {
                     do {
-                        try model.decline(requestId: item.outer.requestId)
+                        try model.decline(requestId: item.initID)
                     } catch {
                         actionError = error.localizedDescription
                     }
                 }
                 .buttonStyle(.bordered)
-                .disabled(model.isBusy)
-
-                Button("Block", role: .destructive) {
-                    actionError = nil
-                    do {
-                        try model.block(requestId: item.outer.requestId)
-                    } catch {
-                        actionError = error.localizedDescription
-                    }
-                }
-                .buttonStyle(.bordered)
-                .disabled(model.isBusy)
             }
         }
         .padding(.vertical, 4)
     }
-
-    private func bindingPetname(_ hex: String) -> Binding<String> {
-        Binding(
-            get: { model.petnameDraft[hex] ?? "" },
-            set: { model.petnameDraft[hex] = $0 }
-        )
-    }
-
-    private func shortId(_ id: String) -> String {
-        if id.count <= 16 { return id }
-        return String(id.prefix(10)) + "…" + String(id.suffix(4))
-    }
-}
-
-#Preview {
-    ContactRequestInboxView()
 }

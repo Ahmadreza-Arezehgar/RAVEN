@@ -39,7 +39,27 @@ See [SECURITY.md](SECURITY.md) for responsible disclosure guidelines.
 
 ## Development Setup
 
-### Server (Python)
+### Serverless node and terminal (Rust)
+
+```bash
+cd node
+cargo test -p raven-core -p raven-node -p ash -p raven-swarm
+cargo test -p raven-core --test network_sim_1000
+cargo run -p ash -- --help
+```
+
+Platform installation notes live in [`node/INSTALL_Linux.md`](node/INSTALL_Linux.md),
+[`node/INSTALL_macOS.md`](node/INSTALL_macOS.md), and
+[`node/INSTALL_Windows.md`](node/INSTALL_Windows.md). Protocol changes must update
+the deterministic vectors under `shared-vectors/rvn1/` and pass the Python,
+Rust, and Swift parity tests. Security-sensitive experimental features must
+remain disabled by default until their documented activation gate is complete.
+
+### Legacy application server (security maintenance only)
+
+The FastAPI application is not part of the new serverless text-message path.
+Do not add a mandatory message, identity, lookup, or routing dependency to it.
+Use this setup only for scoped maintenance of legacy application features:
 
 ```bash
 cd server
@@ -58,3 +78,5 @@ uvicorn main:app --reload
 ## License
 
 By contributing, you agree that your contributions will be licensed under the AGPL-3.0 License.
+Brand names and visual assets are governed separately by
+[`TRADEMARK.md`](TRADEMARK.md) and [`ASSET_LICENSE.md`](ASSET_LICENSE.md).

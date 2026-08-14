@@ -401,6 +401,8 @@ struct FindContactsView: View {
                         sendError = "Pick a candidate first — never silent select on conflicts"
                     } catch RavenContactRequestError.missingKeys {
                         sendError = "Need a pubkey (local contact or signed alias claim) to seal"
+                    } catch RavenContactRequestError.sessionRequired {
+                        sendError = "Security hold: establish an authenticated ATSAM session before sending contact requests"
                     } catch RavenContactRequestError.blocked {
                         sendError = "Target is blocked locally"
                     } catch {

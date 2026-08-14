@@ -39,7 +39,7 @@ final class RavenEnvelopeEndpointIngestTests: XCTestCase {
         }
     }
 
-    func testClassifyAckAcceptsOpaqueAckedId() {
+    func testClassifyAckFailsClosedWithoutSessionValidator() {
         let sk = Curve25519.Signing.PrivateKey()
         let acked = Data(repeating: 0xDD, count: 16)
         var body = Data()
@@ -60,12 +60,10 @@ final class RavenEnvelopeEndpointIngestTests: XCTestCase {
             messageCiphertext: body
         )
         env.sign(with: sk)
-        switch RavenEnvelopeEndpointIngest.classify(packed: env.pack(), flagOn: true) {
-        case let .acceptAck(ackedMessageId, _):
-            XCTAssertEqual(ackedMessageId, acked)
-        default:
-            XCTFail("expected acceptAck")
-        }
+        XCTAssertEqual(
+            RavenEnvelopeEndpointIngest.classify(packed: env.pack(), flagOn: true),
+            .dropUnverifiedAck
+        )
     }
 
     func testFlagOff() {
@@ -106,6 +104,14 @@ final class RavenEnvelopeEndpointIngestTests: XCTestCase {
                 bridgeEnabled: true
             ),
             .ackRelay
+        )
+        XCTAssertEqual(
+            RavenEnvelopeEndpointIngest.classifyRole(
+                envType: 2,
+                localIsDestination: true,
+                bridgeEnabled: false
+            ),
+            .drop
         )
     }
 

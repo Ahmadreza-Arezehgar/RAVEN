@@ -40,6 +40,7 @@ actor E2EEBootstrap {
     /// Other code checks `E2EEMessageGateway.isEnabled` before
     /// relying on E2EE being available.
     func runIfNeeded() async {
+        guard RavenRuntimePolicy.allowsExternalSideEffects else { return }
         // 1. Always wire the provider — cheap, no network.
         await E2EEService.shared.configure(bundleProvider: E2EENetworkProvider.shared)
 

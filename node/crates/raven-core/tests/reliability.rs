@@ -47,7 +47,7 @@ fn malformed_and_truncated_do_not_panic() {
         &[0xff, 0xff],
         b"RVN1",
         &[0x52, 0x56, 0x4E, 0x31, 0x01],
-        &vec![0u8; 86],
+        &[0u8; 86],
     ];
     for c in cases {
         let _ = Envelope::unpack(c);

@@ -4,6 +4,7 @@ Presence Router - Track user online/offline status for hybrid messaging
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 from datetime import datetime, timedelta
 from typing import Optional
 from pydantic import BaseModel
@@ -78,9 +79,25 @@ def get_presence(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found"
         )
-    
+
+    # 🔒 SECURITY (audit PB-H1): presence is an activity-timeline /
+    # sleep-pattern oracle. Previously it was gated ONLY by the target's
+    # global show_online_status flag — a blocked user or any stranger
+    # who knew the UUID could poll online + exact last-seen every ~30s.
+    # If either side has blocked the other, return the offline shape.
+    if user_id != current_user.id:
+        from models import Block
+        blocked = db.query(Block).filter(
+            or_(
+                (Block.blocker_id == user_id) & (Block.blocked_id == current_user.id),
+                (Block.blocker_id == current_user.id) & (Block.blocked_id == user_id),
+            )
+        ).first()
+        if blocked is not None:
+            return PresenceResponse(online=False, hasInternet=False, lastSeenAt=None)
+
     online, has_internet, last_seen = _is_online(user_id)
-    
+
     # ✅ Privacy: hide online status if user disabled it
     if not getattr(target_user, 'show_online_status', True):
         return PresenceResponse(

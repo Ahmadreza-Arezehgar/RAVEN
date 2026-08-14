@@ -18,7 +18,7 @@ use sha2::{Digest, Sha256};
 pub const INTERNET_PROTO_ID: &[u8] = b"raven/internet/v1";
 
 /// Max framed payload (matches practical bridge ceilings; below DoS extremes).
-pub const MAX_FRAME_BYTES: usize = 1 * 1024 * 1024;
+pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
 
 /// Hello magic.
 pub const HELLO_MAGIC: &[u8; 4] = b"RIH1";
@@ -135,11 +135,13 @@ pub fn deframe_prefix(buf: &[u8]) -> Option<(Vec<u8>, usize)> {
     Some((buf[4..4 + n].to_vec(), 4 + n))
 }
 
-/// Opaque relay hint: SHA-256("raven/relay-tag/v1" || routing_tag)[:16] — not a username.
-pub fn opaque_store_tag(routing_tag: &[u8; 16]) -> [u8; 16] {
+/// Opaque store index: SHA-256("raven/relay-tag/v1" || mailbox_tag)[:16].
+/// The input is the separately derived rotating mailbox capability, never an
+/// envelope routing tag or username.
+pub fn opaque_store_tag(mailbox_tag: &[u8; 16]) -> [u8; 16] {
     let mut h = Sha256::new();
     h.update(b"raven/relay-tag/v1");
-    h.update(routing_tag);
+    h.update(mailbox_tag);
     let d = h.finalize();
     let mut out = [0u8; 16];
     out.copy_from_slice(&d[..16]);

@@ -216,8 +216,9 @@ actor MessageRepository {
                         created_at, local_path, remote_url, thumbnail_url, file_name, mime_type,
                         file_size, audio_duration_seconds, upload_progress, last_error,
                         reply_to_message_id, reply_to_text_preview, reply_to_sender_name, reply_to_type,
-                        entities_json, forwarded_from_channel, forwarded_from_channel_name, expires_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        entities_json, forwarded_from_channel, forwarded_from_channel_name,
+                        media_group_key, media_group_index, media_group_total, expires_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """
                 
                 try db.execute(insertSQL, params: [
@@ -250,9 +251,12 @@ actor MessageRepository {
                     entitiesJson ?? NSNull(),
                     message.forwardedFromChannelId ?? NSNull(),
                     message.forwardedFromChannelName ?? NSNull(),
+                    message.albumGroupKey ?? NSNull(),
+                    message.albumIndex ?? NSNull(),
+                    message.albumTotal ?? NSNull(),
                     message.expiresAt.map { SharedDateFormatters.formatISO8601($0) } ?? NSNull()
                 ])
-                
+
                 // Update columns that might have new data
                 let updateSQL = """
                     UPDATE messages SET
@@ -268,6 +272,7 @@ actor MessageRepository {
                         entities_json = COALESCE(?, entities_json),
                         forwarded_from_channel = COALESCE(?, forwarded_from_channel),
                         forwarded_from_channel_name = COALESCE(?, forwarded_from_channel_name),
+                        expires_at = COALESCE(?, expires_at),
                         updated_at = CURRENT_TIMESTAMP
                     WHERE client_message_id = ?
                 """
@@ -285,6 +290,7 @@ actor MessageRepository {
                     entitiesJson ?? NSNull(),
                     message.forwardedFromChannelId ?? NSNull(),
                     message.forwardedFromChannelName ?? NSNull(),
+                    message.expiresAt.map { SharedDateFormatters.formatISO8601($0) } ?? NSNull(),
                     message.id
                 ])
             }
@@ -459,12 +465,18 @@ actor MessageRepository {
         // 1. room_id matches roomId (normalized case)
         // 2. OR sender/recipient pair matches this conversation (legacy/nil roomId case)
         // 3. NOT deleted for current user
+        // 4. NOT deleted for everyone (global tombstone). deleteForEveryone /
+        //    handleGlobalDeletion null the text and set is_deleted_globally = 1;
+        //    without this predicate the text-less row would re-hydrate and render
+        //    as an empty/blank bubble. Hiding it matches the nulled-text intent.
+        //    The IS NULL branch keeps legacy / pre-migration rows visible.
         var sql = """
-            SELECT * FROM messages WHERE 
-            (room_id = ? OR 
-             (sender_id = ? AND recipient_id = ?) OR 
+            SELECT * FROM messages WHERE
+            (room_id = ? OR
+             (sender_id = ? AND recipient_id = ?) OR
              (sender_id = ? AND recipient_id = ?))
             AND (is_deleted_for_me IS NULL OR is_deleted_for_me = 0)
+            AND (is_deleted_globally IS NULL OR is_deleted_globally = 0)
         """
         var params: [Any] = [roomId, roomId, myId, myId, roomId]
         

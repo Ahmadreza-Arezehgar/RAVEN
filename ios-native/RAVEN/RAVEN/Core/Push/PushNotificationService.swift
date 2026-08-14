@@ -20,6 +20,7 @@ actor PushNotificationService {
     
     @MainActor
     func requestAuthorization() async -> Bool {
+        guard RavenRuntimePolicy.allowsExternalSideEffects else { return false }
         let center = UNUserNotificationCenter.current()
         
         do {
@@ -111,62 +112,11 @@ actor PushNotificationService {
             options: []
         )
         
-        // ── LIKE: View Post ──
-        let viewAction = UNNotificationAction(
-            identifier: "VIEW",
-            title: "View",
-            options: [.foreground]
-        )
-        let likeCategory = UNNotificationCategory(
-            identifier: "LIKE",
-            actions: [viewAction],
-            intentIdentifiers: [],
-            options: []
-        )
-        
-        // ── COMMENT: Reply + View ──
-        let commentReplyAction = UNTextInputNotificationAction(
-            identifier: "REPLY",
-            title: "Reply",
-            options: [],
-            textInputButtonTitle: "Send",
-            textInputPlaceholder: "Reply to comment..."
-        )
-        let commentCategory = UNNotificationCategory(
-            identifier: "COMMENT",
-            actions: [commentReplyAction, viewAction],
-            intentIdentifiers: [],
-            options: []
-        )
-        
-        // ── MENTION: View Post ──
-        let mentionCategory = UNNotificationCategory(
-            identifier: "MENTION",
-            actions: [viewAction],
-            intentIdentifiers: [],
-            options: []
-        )
-        
-        // ── NEW_POST: View Post ──
-        let newPostCategory = UNNotificationCategory(
-            identifier: "NEW_POST",
-            actions: [viewAction],
-            intentIdentifiers: [],
-            options: []
-        )
-        
-        // ── AUDIO_ROOM: Join ──
-        let joinAction = UNNotificationAction(
-            identifier: "JOIN",
-            title: "Join",
-            options: [.foreground]
-        )
-        let audioRoomCategory = UNNotificationCategory(
-            identifier: "AUDIO_ROOM",
-            actions: [joinAction],
-            intentIdentifiers: [],
-            options: []
-        )
+        // ── (messenger pivot) Removed dead social-feed / audio-room
+        // categories: LIKE, COMMENT, MENTION, NEW_POST, AUDIO_ROOM.
+        // These backed the stripped social features and had no live
+        // payload path. Their action definitions (VIEW / comment REPLY
+        // / JOIN) went with them. Message/DM/mesh categories stay below.
 
         // ── SECURITY_ALERT: Review (foreground, auth required) ──
         // New-device login, password change, biometric disabled, etc.
@@ -369,32 +319,14 @@ actor PushNotificationService {
             options: []
         )
 
-        // AUDIO_ROOM_MENTION — your name appeared in a live transcript.
-        let replayMentionAction = UNNotificationAction(
-            identifier: "REPLAY_MENTION",
-            title: "Replay",
-            options: [.foreground]
-        )
-        let joinRoomAction = UNNotificationAction(
-            identifier: "JOIN_ROOM",
-            title: "Join now",
-            options: [.foreground]
-        )
-        let audioRoomMentionCategory = UNNotificationCategory(
-            identifier: "AUDIO_ROOM_MENTION",
-            actions: [replayMentionAction, joinRoomAction],
-            intentIdentifiers: [],
-            options: []
-        )
+        // ── (messenger pivot) Removed dead AUDIO_ROOM_MENTION category
+        // (live-transcript mention) along with the other audio-room /
+        // social-feed features. Its REPLAY_MENTION / JOIN_ROOM actions
+        // went with it.
 
         center.setNotificationCategories([
             messageCategory,
             friendRequestCategory,
-            likeCategory,
-            commentCategory,
-            mentionCategory,
-            newPostCategory,
-            audioRoomCategory,
             securityAlertCategory,
             liveLocationCategory,
             reactionCategory,
@@ -407,20 +339,21 @@ actor PushNotificationService {
             meshPeerNearbyCategory,
             backupDoneCategory,
             twoFaRequestCategory,
-            disasterModeCategory,
-            audioRoomMentionCategory
+            disasterModeCategory
         ])
 
         #if DEBUG
-        print("[Push] Registered 20 notification categories (14 baseline + 6 round-8: VAULT_ACCESS, MESH_PEER_NEARBY, BACKUP_DONE, TWO_FA_REQUEST, DISASTER_MODE, AUDIO_ROOM_MENTION)")
+        print("[Push] Registered 14 notification categories (message/DM/mesh + security/safety; social-feed & audio-room categories removed in messenger pivot)")
         #endif
     }
     
     @MainActor
     private func registerForRemoteNotifications() {
+        guard RavenRuntimePolicy.allowsExternalSideEffects else { return }
         #if DEBUG
         print("[Push] 📲 Calling UIApplication.registerForRemoteNotifications()...")
         #endif
+        RavenTestExternalSideEffectAudit.recordActual(.apnsRegistration)
         UIApplication.shared.registerForRemoteNotifications()
     }
     
@@ -428,6 +361,7 @@ actor PushNotificationService {
     /// Re-sends the stored push token to the server on each app launch.
     /// Covers the case where a previous server call failed silently.
     func retryTokenRegistration() async {
+        guard RavenRuntimePolicy.allowsExternalSideEffects else { return }
         guard let storedToken = await KeychainService.shared.getPushToken() else {
             #if DEBUG
             print("[Push] ⚠️ No stored push token to retry")
@@ -445,6 +379,7 @@ actor PushNotificationService {
     // MARK: - Handle Device Token
     
     func handleDeviceToken(_ deviceToken: Data) async {
+        guard RavenRuntimePolicy.allowsExternalSideEffects else { return }
         let token = deviceToken.map { String(format: "%02.2hhx", $0) }.joined()
         
         #if DEBUG
@@ -483,6 +418,7 @@ actor PushNotificationService {
     // MARK: - Send Token to Server
     
     private func sendTokenToServer(_ token: String, attempt: Int = 1) async {
+        guard RavenRuntimePolicy.allowsExternalSideEffects else { return }
         // Guard: skip if user isn't authenticated yet (fresh install race condition)
         guard await KeychainService.shared.getToken() != nil else {
             #if DEBUG
@@ -527,6 +463,7 @@ actor PushNotificationService {
         _ userInfo: [AnyHashable: Any],
         appState: UIApplication.State
     ) async {
+        guard RavenRuntimePolicy.allowsExternalSideEffects else { return }
         guard let payload = parsePushPayload(userInfo) else {
             #if DEBUG
             print("[Push] Invalid payload")
@@ -559,6 +496,7 @@ actor PushNotificationService {
     // ONLY called when user taps notification
     
     func handlePushTap(_ userInfo: [AnyHashable: Any]) async {
+        guard RavenRuntimePolicy.allowsExternalSideEffects else { return }
         guard let payload = parsePushPayload(userInfo) else { return }
         
         // 1. Trigger sync first (debounced)
@@ -571,6 +509,7 @@ actor PushNotificationService {
     // MARK: - Debounced Sync (Prevents duplicate sync from multiple pushes)
     
     private func debouncedSync() async {
+        guard RavenRuntimePolicy.allowsExternalSideEffects else { return }
         // Check if already syncing or recently synced
         if isSyncing {
             #if DEBUG
@@ -1023,20 +962,16 @@ actor PushNotificationService {
         content.body = content.body.sanitizedForPush(maxLength: 256)
 
         // FIX: Set categoryIdentifier so iOS shows lock screen actions
-        // (Reply, Accept/Decline, View, Join) on locally-scheduled notifications.
+        // (Reply, Accept/Decline) on locally-scheduled notifications.
+        // The social-feed / audio-room categories (LIKE, COMMENT,
+        // MENTION, AUDIO_ROOM) were removed in the messenger pivot, so
+        // those payload types now fall through to `default` with no
+        // category — iOS just shows a plain banner with no actions.
         switch payload.type {
         case .message, .groupMessage, .dmMessage:
             content.categoryIdentifier = "MESSAGE"
         case .friendRequest:
             content.categoryIdentifier = "FRIEND_REQUEST"
-        case .like, .postLike:
-            content.categoryIdentifier = "LIKE"
-        case .comment, .postComment:
-            content.categoryIdentifier = "COMMENT"
-        case .mention:
-            content.categoryIdentifier = "MENTION"
-        case .audioRoom, .audioRoomJoin:
-            content.categoryIdentifier = "AUDIO_ROOM"
         default:
             break
         }

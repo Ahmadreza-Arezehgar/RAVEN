@@ -2,13 +2,13 @@ import SwiftUI
 
 // MARK: - Close Account Confirmation Sheet
 /// Professional confirmation sheet for irreversible account deletion.
-/// Calls DELETE /api/users/me, then logs the user out locally.
+/// Best-effort DELETE /api/users/me, then always performs the authoritative
+/// local wipe (AuthService.logout) so the action works in the serverless build.
 struct CloseAccountConfirmSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var authService = AuthService.shared
     @State private var isDeleting = false
-    @State private var errorMessage: String?
-    
+
     var body: some View {
         VStack(spacing: 0) {
             // Drag handle
@@ -41,29 +41,14 @@ struct CloseAccountConfirmSheet: View {
                         .font(.system(size: 22, weight: .bold))
                         .multilineTextAlignment(.center)
                     
-                    Text("This will permanently delete your account and all associated data — posts, messages, friends, and media. This action cannot be undone.")
+                    Text("This will permanently delete your on-device identity, messages, contacts, and media. This action cannot be undone.")
                         .font(.system(size: 15))
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(.horizontal, 8)
-                
-                // Error message
-                if let errorMessage {
-                    HStack(spacing: 8) {
-                        Image(systemName: "exclamationmark.circle.fill")
-                            .foregroundStyle(.red)
-                        Text(errorMessage)
-                            .font(.system(size: 14))
-                            .foregroundStyle(.red)
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
-                    .background(Color.red.opacity(0.08))
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-                }
-                
+
                 // Buttons
                 VStack(spacing: 12) {
                     // Delete button (destructive)
@@ -124,38 +109,35 @@ struct CloseAccountConfirmSheet: View {
     // MARK: - Deletion Logic
     
     private func performDeletion() async {
-        errorMessage = nil
         isDeleting = true
-        
+
+        // Best-effort server delete. The serverless build has no server, so this
+        // throws .unauthorized immediately — that must NOT block the local wipe,
+        // otherwise the user can never close their account. Mirrors the
+        // quick-action path in MainShellView.swift:163-170.
         do {
-            // Call DELETE /api/users/me (server hard-deletes everything)
             try await NetworkService.shared.delete(path: "/api/users/me")
-            
-            // Heavy haptic on successful deletion
-            await MainActor.run { Haptics.heavy() }
-            
-            // Brief pause so haptic registers
-            try? await Task.sleep(nanoseconds: 300_000_000)
-            
-            // Dismiss sheet first to avoid dangling presentation crash
-            await MainActor.run { dismiss() }
-            
-            // Wait for dismiss animation to complete
-            try? await Task.sleep(nanoseconds: 300_000_000)
-            
-            // Logout locally (clears keychain, DB, caches)
-            // Use try? — server already deleted the account, local cleanup failure must not block
-            try? await authService.logout()
-            
         } catch {
-            await MainActor.run {
-                isDeleting = false
-                Haptics.error()
-                errorMessage = "Failed to delete account. Please check your connection and try again."
-            }
             #if DEBUG
-            print("❌ Failed to close account: \(error)")
+            print("⚠️ Account closure server DELETE failed (serverless/no-server) — wiping locally anyway: \(error)")
             #endif
         }
+
+        // Heavy haptic to register the destructive action.
+        await MainActor.run { Haptics.heavy() }
+
+        // Brief pause so haptic registers.
+        try? await Task.sleep(nanoseconds: 300_000_000)
+
+        // Dismiss sheet first to avoid dangling presentation crash.
+        await MainActor.run { dismiss() }
+
+        // Wait for dismiss animation to complete.
+        try? await Task.sleep(nanoseconds: 300_000_000)
+
+        // Authoritative local wipe (keychain deleteAll, MeshIdentityResolver.reset,
+        // ATSAMRootStorage.purgeAll, GroupKeyService.reset, DatabaseService.clearAllData,
+        // mesh stop) — runs unconditionally so Close Account is reachable serverless.
+        try? await authService.logout()
     }
 }

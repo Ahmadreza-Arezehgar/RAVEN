@@ -9,6 +9,32 @@ description = "RAVEN rust-libp2p TCP/QUIC swarm + Kad discovery (no FastAPI)"
 name = "raven-swarm"
 path = "src/main.rs"
 
+[[bin]]
+name = "raven-swarm-mailbox-experimental"
+path = "src/bin/raven-swarm-mailbox-experimental.rs"
+required-features = ["experimental-offline-mailbox"]
+
+[[bin]]
+name = "raven-swarm-connectivity-experimental"
+path = "src/bin/raven-swarm-connectivity-experimental.rs"
+required-features = ["experimental-nat-connectivity"]
+
+[features]
+default = []
+# Security hold: this makes the real mailbox transport available to explicit
+# integration tests and operators, but it is absent from production/default
+# builds until the authenticated session actor is enabled end to end.
+experimental-offline-mailbox = ["dep:async-trait", "libp2p/request-response"]
+# Security hold: NAT traversal is available only in a separate operator-facing
+# experiment. Default Raven binaries do not compile or advertise these
+# protocols, and the experimental binary requires an additional runtime opt-in.
+experimental-nat-connectivity = [
+    "dep:rand",
+    "libp2p/autonat",
+    "libp2p/dcutr",
+    "libp2p/relay",
+]
+
 [dependencies]
 raven-core = { workspace = true }
 tokio = { workspace = true }
@@ -16,6 +42,8 @@ clap = { workspace = true }
 hex = { workspace = true }
 sha2 = { workspace = true }
 futures = "0.3"
+async-trait = { version = "0.1", optional = true }
+rand = { workspace = true, optional = true }
 libp2p = { version = "0.56", features = [
     "tokio",
     "tcp",

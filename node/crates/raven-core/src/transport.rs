@@ -110,7 +110,11 @@ pub enum TransportPreference {
     BleMesh,
 }
 
-pub fn prefer_transport(wifi_up: bool, peer_on_lan: bool, ble_peers_nearby: bool) -> TransportPreference {
+pub fn prefer_transport(
+    wifi_up: bool,
+    peer_on_lan: bool,
+    ble_peers_nearby: bool,
+) -> TransportPreference {
     if wifi_up && peer_on_lan {
         TransportPreference::DirectLan
     } else if wifi_up {

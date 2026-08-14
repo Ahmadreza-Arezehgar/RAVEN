@@ -20,7 +20,7 @@ thiserror = { workspace = true }
 rand = { workspace = true }
 rusqlite = { workspace = true }
 base64 = { workspace = true }
-ml-kem = { workspace = true }
+ml-kem = { workspace = true, features = ["zeroize"] }
 rand_core = { workspace = true }
 zeroize = { workspace = true }
 
@@ -31,6 +31,7 @@ security-framework = "2"
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Security_Cryptography",
+    "Win32_Storage_FileSystem",
 ] }
 
 # Secret Service needs libdbus — glibc desktop only (not musl static releases).
@@ -43,3 +44,7 @@ tempfile = { workspace = true }
 [features]
 default = []
 test-helpers = []
+# Lab-only compatibility for the pre-ATSAM demo cipher.  This construction
+# derives its key from public identity material and therefore provides no
+# confidentiality.  Production/default builds must never enable it.
+unsafe-demo-crypto = []

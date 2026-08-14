@@ -1,0 +1,59 @@
+{
+  "description": "Separately versioned ATSAM indexed-session subkeys and transcript-role directions",
+  "deterministic": true,
+  "expected": {
+    "ack_base_key_hex": "3b4eca0ab49789a14aec21feac5b2099148ede2765edb50a7fa0c47f3c552601",
+    "directions": [
+      {
+        "ack_ck0_hex": "ef9a5ea3767e14405d04268a866c270cb65faa42249fed15c387fc1a78a57528",
+        "ack_key_index0_hex": "71b0d4ab97d32ad515921b5c368e3987e1c745e6373560e3db2f957f597ab27e",
+        "direction": 0,
+        "mailbox_day_epoch": 19675,
+        "mailbox_slot": 0,
+        "mailbox_tag_hex": "3b8308106ce7e44f2c4bac65e11eeb59",
+        "message_ck0_hex": "588585713cbee168311c4254aee55283e485f84287a5f8aa25819401d3506cd6",
+        "message_key_index0_hex": "168a5b44a6aa254253f5c66726ed322ffb87026fe011c6c0f42a11aa462a5ff4",
+        "recipient_address": "rvn1qyulwy7s5ezz20cy222zrw04rwds39uapqakqskn",
+        "route_direction_key_hex": "0a8e7feeb7a3bf2ef6e81d91c13e2ef0c099f3563fb73f400353d9665cb77bfc",
+        "sender_address": "rvn1qysluvwl5922yctzd0u9gpr06gn3k7ldfvecule0",
+        "store_tag_hex": "425d4264ad5015d9bcdf3203b913ecfc"
+      },
+      {
+        "ack_ck0_hex": "5cb2672840a4d4032393e0d0251f778d3f709c93a1bc7ed00b498f79828e7009",
+        "ack_key_index0_hex": "bdeb827eb0aeb82a80b575fb6dad0e9d40022aab680a82edb5df82c60a03548b",
+        "direction": 1,
+        "mailbox_day_epoch": 19675,
+        "mailbox_slot": 1,
+        "mailbox_tag_hex": "9ff736d0d8e293ca86b61af141935315",
+        "message_ck0_hex": "3a0f6a28e8b8ed1c82d74ab6c67760eb42bc573ac5183a2882c73a34db0f189f",
+        "message_key_index0_hex": "84b011ad12c7d29a6e5d40f3b770380d78ff3be212cb027eaa0b3a1602156514",
+        "recipient_address": "rvn1qysluvwl5922yctzd0u9gpr06gn3k7ldfvecule0",
+        "route_direction_key_hex": "37e027c65ef14924cd0a320968b13883d584476f271c4337bf8f2f5c27aa1522",
+        "sender_address": "rvn1qyulwy7s5ezz20cy222zrw04rwds39uapqakqskn",
+        "store_tag_hex": "a25cafa77d37e0ab77360c80b2ff3c1c"
+      }
+    ],
+    "route_master_key_hex": "196791fcd0920024e326094f260c292e9b1d7985d02b4a1921c0ab51b06d782f",
+    "session_context_hex": "415453414d2f696e64657865642d73657373696f6e2f76310072766e317179736c7576776c353932327963747a643075396770723036676e336b376c6466766563756c65300072766e317179756c7779377335657a7a323063793232327a7277303472776473333975617071616b71736b6e"
+  },
+  "id": "atsam_indexed_session_v1_subkeys_001",
+  "input": {
+    "initiator_address": "rvn1qysluvwl5922yctzd0u9gpr06gn3k7ldfvecule0",
+    "k_root_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+    "k_root_note": "public deterministic fixture material; never a live session root",
+    "mailbox_time_ms": 1700000000000,
+    "responder_address": "rvn1qyulwy7s5ezz20cy222zrw04rwds39uapqakqskn"
+  },
+  "labels": {
+    "ack_base": "ATSAM/v1/ack-seal",
+    "chain_advance": "ATSAM/v2/chain-advance",
+    "chain_init": "ATSAM/v2/chain-init",
+    "lane_message_key": "ATSAM/v2/msg-key",
+    "lane_message_salt": "ATSAM/v2/msg-seal/salt",
+    "route_direction": "ATSAM/v1/GhostRoute/rvn1-direction",
+    "route_master": "ATSAM/v1/GhostRoute/recipient-tag"
+  },
+  "production_activation": "disabled_pending_signed_pairinit_negotiation",
+  "production_enabled": false,
+  "profile_version": "ATSAM/indexed-session/v1"
+}

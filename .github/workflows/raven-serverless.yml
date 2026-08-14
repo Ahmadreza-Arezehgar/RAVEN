@@ -8,6 +8,20 @@ on:
       - "node/**"
       - "protocol/**"
       - "shared-vectors/**"
+      - "ios-native/RAVEN/Libp2pBridge/**"
+      - "ios-native/RAVEN/RAVEN/Core/Config/FeatureFlags.swift"
+      - "ios-native/RAVEN/RAVEN/Core/Protocol/**"
+      - "ios-native/RAVEN/RAVEN/Core/Mesh/**"
+      - "ios-native/RAVEN/RAVEN/Core/Transport/**"
+      - "ios-native/RAVEN/RAVEN/Core/Messaging/**"
+      - "ios-native/RAVEN/RAVEN/Core/Security/ATSAM/**"
+      - "ios-native/RAVEN/RAVEN/Core/Security/MessageContentSealer.swift"
+      - "ios-native/RAVEN/RAVEN.xcodeproj/**"
+      - "ios-native/RAVEN/RAVEN/App/**"
+      - "ios-native/RAVEN/RAVEN/Features/Contacts/**"
+      - "ios-native/RAVEN/RAVEN/Features/QRCode/**"
+      - "ios-native/RAVEN/RAVEN/Features/Settings/RavenServerlessLanSettingsView.swift"
+      - "ios-native/RAVEN/RAVENTests/**"
       - "scripts/secret_history_scan.sh"
       - "docs/MIGRATION_SERVERLESS_V1.md"
       - ".github/workflows/raven-serverless.yml"
@@ -16,6 +30,20 @@ on:
       - "node/**"
       - "protocol/**"
       - "shared-vectors/**"
+      - "ios-native/RAVEN/Libp2pBridge/**"
+      - "ios-native/RAVEN/RAVEN/Core/Config/FeatureFlags.swift"
+      - "ios-native/RAVEN/RAVEN/Core/Protocol/**"
+      - "ios-native/RAVEN/RAVEN/Core/Mesh/**"
+      - "ios-native/RAVEN/RAVEN/Core/Transport/**"
+      - "ios-native/RAVEN/RAVEN/Core/Messaging/**"
+      - "ios-native/RAVEN/RAVEN/Core/Security/ATSAM/**"
+      - "ios-native/RAVEN/RAVEN/Core/Security/MessageContentSealer.swift"
+      - "ios-native/RAVEN/RAVEN.xcodeproj/**"
+      - "ios-native/RAVEN/RAVEN/App/**"
+      - "ios-native/RAVEN/RAVEN/Features/Contacts/**"
+      - "ios-native/RAVEN/RAVEN/Features/QRCode/**"
+      - "ios-native/RAVEN/RAVEN/Features/Settings/RavenServerlessLanSettingsView.swift"
+      - "ios-native/RAVEN/RAVENTests/**"
       - "scripts/secret_history_scan.sh"
       - "docs/MIGRATION_SERVERLESS_V1.md"
       - ".github/workflows/raven-serverless.yml"
@@ -53,26 +81,99 @@ jobs:
       - name: fmt
         run: cargo fmt --all -- --check
       - name: clippy
-        run: cargo clippy -p raven-core -p ash -p raven-node -p raven-swarm -- -W clippy::all
+        run: |
+          cargo clippy -p raven-core -p ash -p raven-node -p raven-swarm --all-targets -- -D warnings
+          cargo clippy -p raven-swarm --all-features --all-targets -- -D warnings
+      - name: RustSec active dependency audit
+        run: |
+          set -euo pipefail
+          cargo install cargo-audit --locked --version 0.22.2
+          python3 -m unittest scripts/test_audit_active_dependencies.py
+          python3 scripts/audit_active_dependencies.py
       - name: test raven-core + ash
-        run: cargo test -p raven-core -p ash
+        run: cargo test -p raven-core -p ash -p raven-node
       - name: bridge + fuzz smoke
         run: cargo test -p raven-core --test bridge_v1 --test fuzz_smoke
+      - name: 10,000-message queue reliability gate
+        run: cargo test -p raven-core --test reliability_10k -- --ignored
+      - name: Deterministic 1,000-node adversarial DTN simulation
+        run: |
+          cargo test -p raven-core --test network_sim_1000
+          cargo test --release -p raven-core --test network_sim_1000
       - name: build swarm
         run: cargo build -p raven-swarm -p raven-node
+      - name: experimental mailbox/NAT tests (still production-disabled)
+        run: |
+          set -euo pipefail
+          expect_failure_with_message() {
+            expected="$1"
+            shift
+            log="$(mktemp)"
+            if "$@" >"$log" 2>&1; then
+              echo "security hold unexpectedly allowed command: $*" >&2
+              rm -f "$log"
+              exit 1
+            fi
+            if ! grep -Fq -- "$expected" "$log"; then
+              echo "command failed without the expected security-hold diagnostic: $*" >&2
+              tail -n 80 "$log" >&2
+              rm -f "$log"
+              exit 1
+            fi
+            rm -f "$log"
+          }
+          cargo test -p raven-swarm --all-features --all-targets
+          cargo build --release -p raven-swarm \
+            --features experimental-offline-mailbox \
+            --bin raven-swarm-mailbox-experimental
+          cargo build --release -p raven-swarm \
+            --features experimental-nat-connectivity \
+            --bin raven-swarm-connectivity-experimental
+          expect_failure_with_message \
+            "security hold: pass --allow-experimental-mailbox explicitly" \
+            target/release/raven-swarm-mailbox-experimental \
+            serve --data-dir target/ci-mailbox-security-hold --timeout-secs 1
+          expect_failure_with_message \
+            "experimental NAT connectivity requires explicit runtime opt-in" \
+            target/release/raven-swarm-connectivity-experimental --run-seconds 1
+      - name: release crypto feature gate
+        run: |
+          set -euo pipefail
+          cargo build --release -p raven-core -p raven-node -p ash
+          for package in raven-core raven-node ash; do
+            log="$(mktemp)"
+            if cargo build --release -p "$package" --features unsafe-demo-crypto >"$log" 2>&1; then
+              echo "unsafe-demo-crypto unexpectedly linked into $package release" >&2
+              rm -f "$log"
+              exit 1
+            fi
+            if ! grep -Fq -- \
+              "unsafe-demo-crypto is forbidden in release builds" "$log"; then
+              echo "unsafe-demo-crypto gate for $package failed for an unrelated reason" >&2
+              tail -n 80 "$log" >&2
+              rm -f "$log"
+              exit 1
+            fi
+            rm -f "$log"
+          done
       - name: libp2p swarm smoke
         run: ./scripts/libp2p_swarm_smoke.sh
       - name: bootstrap manual-peer smoke
         run: ./scripts/bootstrap_manual_peer_smoke.sh
       - name: mailbox opaque put/get smoke
         run: ./scripts/mailbox_opaque_smoke.sh
+      - name: libp2p offline mailbox restart smoke
+        run: ./scripts/swarm_mailbox_smoke.sh
       - name: internet dial smoke
         run: ./scripts/internet_dial_smoke.sh
       - name: protocol vectors (python)
         working-directory: protocol/reference
         run: |
-          python3 -m pip install -q pytest
+          python3 -m pip install -q -r requirements.txt
           python3 -m pytest -q
+          python3 generate_rvn1.py
+          git diff --exit-code -- ../../shared-vectors/rvn1
+          test -z "$(git ls-files --others --exclude-standard -- ../../shared-vectors/rvn1)"
       - name: SBOM (cargo tree + cyclonedx if available)
         run: |
           set -euo pipefail
@@ -109,8 +210,9 @@ jobs:
           workspaces: node
       - name: test raven-core + ash + swarm build
         run: |
-          cargo test -p raven-core -p ash
+          cargo test -p raven-core -p ash -p raven-node
           cargo build -p raven-swarm -p raven-node
+          cargo build --release -p raven-core -p raven-node -p ash
       - name: libp2p swarm smoke
         run: ./scripts/libp2p_swarm_smoke.sh
       - name: bootstrap manual-peer smoke
@@ -130,8 +232,9 @@ jobs:
           workspaces: node
       - name: test raven-core + ash (no bash smoke scripts)
         run: |
-          cargo test -p raven-core -p ash
-          cargo build -p raven-node
+          cargo test -p raven-core -p ash -p raven-node
+          cargo build -p raven-node -p raven-swarm
+          cargo build --release -p raven-core -p raven-node -p ash
       - name: PowerShell install script syntax check
         shell: pwsh
         run: |
@@ -145,16 +248,124 @@ jobs:
           Write-Host "windows_service.ps1 OK"
       # bash libp2p/bootstrap smokes are Linux/macOS-only on this workflow.
 
-  # iOS RavenEnvelope* XCTest: optional / manual — requires macOS + Xcode +
-  # ios-native/RAVEN scheme. Not run on free GHA by default (long + signing).
-  # Local: open ios-native/RAVEN and run RavenEnvelope* tests, or:
-  #   xcodebuild test -scheme RAVEN -destination 'platform=iOS Simulator,name=iPhone 16' \
-  #     -only-testing:RAVENTests/RavenEnvelopeBridgeServiceTests
-  ios-xctest-note:
-    name: iOS XCTest (manual note)
+  go-bridge:
+    name: Go libp2p bridge security
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ios-native/RAVEN/Libp2pBridge
     steps:
-      - run: |
-          echo "iOS RavenEnvelope* XCTest is OPTIONAL/MANUAL for serverless CI."
-          echo "Run locally under ios-native/RAVEN when hardware/simulator available."
-          echo "Not failing the workflow — software gate lives in rust-* jobs."
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ios-native/RAVEN/Libp2pBridge/go.mod
+          cache-dependency-path: ios-native/RAVEN/Libp2pBridge/go.sum
+      - name: Unit, adversarial, and race tests
+        run: go test -count=1 -race ./...
+      - name: Vet
+        run: go vet ./...
+
+  ios-security:
+    name: iOS protocol security tests
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: ios-native/RAVEN
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select an available iOS simulator
+        id: simulator
+        run: |
+          DEVICE_ID=$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          data = json.load(sys.stdin)["devices"]
+          candidates = [
+              (runtime, d)
+              for runtime, devices in data.items()
+              for d in devices
+              if d.get("isAvailable") and "iPhone" in d.get("name", "")
+          ]
+          if not candidates:
+              raise SystemExit("no available iPhone simulator")
+          # Runtime identifiers end in a dotted version with dashes. Prefer
+          # the newest available runtime instead of relying on JSON order.
+          def version(item):
+              raw = item[0].rsplit("iOS-", 1)[-1]
+              return tuple(int(part) for part in raw.split("-") if part.isdigit())
+          print(max(candidates, key=version)[1]["udid"])
+          ')
+          echo "device_id=$DEVICE_ID" >> "$GITHUB_OUTPUT"
+          xcrun simctl boot "$DEVICE_ID" 2>/dev/null || true
+          xcrun simctl bootstatus "$DEVICE_ID" -b
+      - name: Build and run protocol security tests
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project RAVEN.xcodeproj \
+            -scheme RAVEN \
+            -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.device_id }}" \
+            -parallel-testing-enabled NO \
+            -only-testing:RAVENTests/RavenEnvelopeV1VectorsTests \
+            -only-testing:RAVENTests/RavenServerlessLanPathTests \
+            -only-testing:RAVENTests/RavenEnvelopeEndpointIngestTests \
+            -only-testing:RAVENTests/RavenBleRvn1CarrierTests \
+            -only-testing:RAVENTests/RavenEnvelopeChatWireTests \
+            -only-testing:RAVENTests/ATSAMChainRatchetTests \
+            -only-testing:RAVENTests/ATSAMIndexedSessionProfileTests \
+            -only-testing:RAVENTests/ATSAMPairInitV1Tests \
+            -only-testing:RAVENTests/ATSAMEndpointTransactionV1Tests \
+            -only-testing:RAVENTests/ATSAMPairingRootAgreementTests \
+            -only-testing:RAVENTests/RavenEnvelopeBridgeServiceTests \
+            -only-testing:RAVENTests/MeshInteropVectorsTests \
+            -only-testing:RAVENTests/RavenContactRequestV1Tests \
+            -only-testing:RAVENTests/ContactRequestInboxTests \
+            -only-testing:RAVENTests/RavenServerlessLanSettingsTests
+      - name: Prove XCTest host stayed offline
+        run: |
+          set -euo pipefail
+          RESULT=$(find "$HOME/Library/Developer/Xcode/DerivedData" \
+            -path '*/Logs/Test/*.xcresult' -type d -print0 \
+            | xargs -0 stat -f '%m %N' \
+            | sort -nr \
+            | head -1 \
+            | cut -d' ' -f2-)
+          test -n "$RESULT"
+          xcrun xcresulttool get test-results tests --path "$RESULT" \
+            | python3 -c '
+          import json, sys
+          data = json.load(sys.stdin)
+          names = set()
+          failures = []
+          def walk(value):
+              if isinstance(value, dict):
+                  name = value.get("name")
+                  if isinstance(name, str):
+                      names.add(name)
+                  status = value.get("testStatus") or value.get("status")
+                  if isinstance(status, str) and status.lower() in {"failed", "failure"}:
+                      failures.append(name or "unnamed test")
+                  for child in value.values():
+                      walk(child)
+              elif isinstance(value, list):
+                  for child in value:
+                      walk(child)
+          walk(data)
+          required = {
+              "testAppHostRecognizesXCTestAndSuppressesExternalSideEffects()",
+              "testAppStartupNeverReachedAnExternalSideEffectBoundary()",
+              "testRuntimeDetectorDoesNotDisableProductionShapedLaunch()",
+          }
+          missing = required - names
+          if failures or missing:
+              raise SystemExit(f"offline XCTest proof missing={sorted(missing)} failures={failures}")
+          print("offline XCTest proof present")
+          '
+      - name: Release build (unsafe demo crypto must stay unavailable)
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project RAVEN.xcodeproj \
+            -scheme RAVEN \
+            -configuration Release \
+            -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.device_id }}" \
+            CODE_SIGNING_ALLOWED=NO

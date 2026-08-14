@@ -1,10 +1,8 @@
 //
 //  RavenEnvelopeEndpointIngest.swift
-//  RAVEN — flagged destination handoff: BLE/LAN RVN1 → chat sealer boundary.
+//  RAVEN — flagged destination handoff: BLE/LAN RVN1 → chat / PairInit / endpoint.
 //
-//  BridgeSubsystem never decrypts. This type only classifies + extracts the
-//  opaque sealed body for MessageContentSealer / ATSAM (conversation keys stay
-//  outside the bridge). FeatureFlag.ravenEnvelopeV1 OFF → no-op.
+//  BridgeSubsystem never decrypts. FeatureFlag.ravenEnvelopeV1 OFF → no-op.
 //
 
 import Foundation
@@ -16,9 +14,13 @@ public enum RavenEnvelopeEndpointIngest {
         case flagOff
         case dropMalformed
         case dropNotMessage
+        /// ACKs are endpoint ciphertext. Structural parsing alone can never
+        /// authorize a delivery transition.
+        case dropUnverifiedAck
         case deliverSealedBody(messageId: Data, sealedBody: Data, hybridPQ: Bool)
-        /// ACK arrived at true originator endpoint (after bridge reverse).
-        case acceptAck(ackedMessageId: Data, packed: Data)
+        case deliverPairInit(wire: Data)
+        case deliverPairResponse(wire: Data)
+        case deliverEndpointAck(packed: Data)
     }
 
     /// Pure classification — no crypto, no I/O.
@@ -33,17 +35,27 @@ public enum RavenEnvelopeEndpointIngest {
         }
         switch env.envType {
         case RavenEnvelopeV1.EnvType.message.rawValue:
-            let hybrid = (env.flags & 1) != 0
-            return .deliverSealedBody(
-                messageId: env.messageId,
-                sealedBody: env.messageCiphertext,
-                hybridPQ: hybrid
-            )
-        case RavenEnvelopeV1.EnvType.ack.rawValue:
-            guard let acked = opaqueAckedMessageId(from: env) else {
-                return .dropMalformed
+            switch RavenPairInitLanOob.classifyMessageCiphertext(env.messageCiphertext) {
+            case .pairInit(let wire):
+                return .deliverPairInit(wire: wire)
+            case .pairResponse(let wire):
+                return .deliverPairResponse(wire: wire)
+            case .notPairInitOob:
+                let hybrid = (env.flags & 1) != 0
+                return .deliverSealedBody(
+                    messageId: env.messageId,
+                    sealedBody: env.messageCiphertext,
+                    hybridPQ: hybrid
+                )
             }
-            return .acceptAck(ackedMessageId: acked, packed: packed)
+        case RavenEnvelopeV1.EnvType.ack.rawValue:
+            if ATSAMEndpointTransactionV1.productionEnabled {
+                return .deliverEndpointAck(packed: packed)
+            }
+            #if DEBUG
+            print("TRACE_ACK_DROPPED status=WAITING_FOR_ENDPOINT_ACTOR endpointProduction=\(ATSAMEndpointTransactionV1.productionEnabled)")
+            #endif
+            return .dropUnverifiedAck
         default:
             return .dropNotMessage
         }
@@ -64,7 +76,7 @@ public enum RavenEnvelopeEndpointIngest {
     ) -> RoleDisposition {
         switch envType {
         case RavenEnvelopeV1.EnvType.ack.rawValue:
-            return bridgeEnabled ? .ackRelay : .deliverToEndpoint
+            return bridgeEnabled ? .ackRelay : .drop
         case RavenEnvelopeV1.EnvType.message.rawValue:
             if localIsDestination { return .deliverToEndpoint }
             if bridgeEnabled { return .bridgeForward }
@@ -74,14 +86,6 @@ public enum RavenEnvelopeEndpointIngest {
         }
     }
 
-    /// Peek acked_message_id from opaque ACK body (no conversation decrypt).
-    /// Layout: acked_id(16) || status(1) || nonce(12) || created_at(8) || …
-    public static func opaqueAckedMessageId(from env: RavenEnvelopeV1) -> Data? {
-        guard env.envType == RavenEnvelopeV1.EnvType.ack.rawValue,
-              env.messageCiphertext.count >= 16 else { return nil }
-        return env.messageCiphertext.prefix(16)
-    }
-
     /// Post sealed body for chat sealer / app ingest. Never decrypts here.
     @MainActor
     public static func publishSealedBody(
@@ -89,7 +93,8 @@ public enum RavenEnvelopeEndpointIngest {
         sealedBody: Data,
         hybridPQ: Bool,
         peerKey: String,
-        senderUserId: String? = nil
+        senderUserId: String? = nil,
+        packed: Data? = nil
     ) {
         guard FeatureFlag.isRavenEnvelopeV1Enabled else { return }
         var info: [AnyHashable: Any] = [
@@ -102,6 +107,9 @@ public enum RavenEnvelopeEndpointIngest {
         if let senderUserId, !senderUserId.isEmpty {
             info["senderUserId"] = senderUserId
         }
+        if let packed {
+            info["packed"] = packed
+        }
         NotificationCenter.default.post(
             name: .ravenEnvelopeV1EndpointIngest,
             object: nil,
@@ -113,29 +121,60 @@ public enum RavenEnvelopeEndpointIngest {
         #endif
     }
 
-    /// Originator endpoint: opaque ACK after bridge reverse — drives Delivered ticks.
+    /// PairInit / PairResponse / sealed ACK dispatch from a packed RVN1 frame.
     @MainActor
-    public static func publishAck(ackedMessageId: Data, packed: Data) {
+    public static func publishPacked(
+        packed: Data,
+        peerKey: String
+    ) {
         guard FeatureFlag.isRavenEnvelopeV1Enabled else { return }
-        NotificationCenter.default.post(
-            name: .ravenEnvelopeV1EndpointIngest,
-            object: nil,
-            userInfo: [
-                "kind": "ack",
-                "ackedMessageId": ackedMessageId,
-                "packed": packed
-            ]
-        )
-        #if DEBUG
-        let midHex = ackedMessageId.prefix(4).map { String(format: "%02x", $0) }.joined()
-        print("🕊️ [Endpoint] ACK ingest acked=\(midHex)…")
-        #endif
+        switch classify(packed: packed, flagOn: true) {
+        case .deliverPairInit(let wire):
+            NotificationCenter.default.post(
+                name: .ravenPairInitReceived,
+                object: nil,
+                userInfo: ["wire": wire, "peerKey": peerKey, "packed": packed]
+            )
+            #if DEBUG
+            print("🕊️ [Endpoint] PairInit OOB bytes=\(wire.count) pairInit=\(ATSAMPairInitV1.productionEnabled)")
+            #endif
+        case .deliverPairResponse(let wire):
+            NotificationCenter.default.post(
+                name: .ravenPairResponseReceived,
+                object: nil,
+                userInfo: ["wire": wire, "peerKey": peerKey, "packed": packed]
+            )
+            #if DEBUG
+            print("🕊️ [Endpoint] PairResponse OOB bytes=\(wire.count)")
+            #endif
+        case .deliverSealedBody(let messageId, let sealedBody, let hybridPQ):
+            publishSealedBody(
+                messageId: messageId,
+                sealedBody: sealedBody,
+                hybridPQ: hybridPQ,
+                peerKey: peerKey,
+                packed: packed
+            )
+        case .deliverEndpointAck(let ackPacked):
+            NotificationCenter.default.post(
+                name: .ravenEndpointAckReceived,
+                object: nil,
+                userInfo: ["packed": ackPacked, "peerKey": peerKey]
+            )
+        case .dropUnverifiedAck:
+            break
+        default:
+            break
+        }
     }
 }
 
 extension Notification.Name {
-    /// Destination sealed body OR originator ACK (not bridge).
+    /// Destination sealed body (not bridge).
     /// userInfo kind="message": messageId, sealedBody, hybridPQ, peerKey, senderUserId?
-    /// userInfo kind="ack": ackedMessageId, packed
     static let ravenEnvelopeV1EndpointIngest = Notification.Name("ravenEnvelopeV1EndpointIngest")
+    /// PairInit wire (RVPI1) for friend-request UI.
+    static let ravenPairInitReceived = Notification.Name("ravenPairInitReceived")
+    static let ravenPairResponseReceived = Notification.Name("ravenPairResponseReceived")
+    static let ravenEndpointAckReceived = Notification.Name("ravenEndpointAckReceived")
 }

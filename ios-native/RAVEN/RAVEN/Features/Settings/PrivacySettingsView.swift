@@ -17,7 +17,6 @@ struct PrivacySettingsView: View {
     
     @State private var isSyncing = false
     @State private var syncTask: Task<Void, Never>?
-    @State private var showPaywall = false
     @State private var showSyncError = false
     
     var body: some View {
@@ -39,19 +38,15 @@ struct PrivacySettingsView: View {
                     
                     SettingsToggleRow(
                         title: "Read Receipts",
-                        subtitle: SubscriptionService.shared.isPremium ? "Show when you've read messages" : "Unlock Ghost Mode with RAVEN+",
-                        icon: SubscriptionService.shared.isPremium ? "checkmark.circle.fill" : "eye.slash.fill",
-                        iconColor: SubscriptionService.shared.isPremium ? .blue : .purple,
+                        subtitle: "Show when you've read messages",
+                        icon: "checkmark.circle.fill",
+                        iconColor: .blue,
                         isOn: Binding(
-                            get: { SubscriptionService.shared.isPremium ? readReceipts : true },
+                            get: { readReceipts },
                             set: { newValue in
-                                if !SubscriptionService.shared.isPremium {
-                                    showPaywall = true
-                                } else {
-                                    let oldReadReceipts = readReceipts
-                                    readReceipts = newValue
-                                    syncToServer(oldReadReceipts: oldReadReceipts)
-                                }
+                                let oldReadReceipts = readReceipts
+                                readReceipts = newValue
+                                syncToServer(oldReadReceipts: oldReadReceipts)
                             }
                         )
                     )
@@ -159,9 +154,6 @@ struct PrivacySettingsView: View {
         .background(Color(.systemBackground))
         .navigationTitle("Privacy")
         .navigationBarTitleDisplayMode(.inline)
-        .sheet(isPresented: $showPaywall) {
-            RavenPlusPaywallView()
-        }
         .alert("Sync Failed", isPresented: $showSyncError) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -210,8 +202,7 @@ struct PrivacySettingsView: View {
 
             let payload = PrivacySettingsPayload(
                 showOnlineStatus: showOnlineStatus,
-                // Prevent Ghost Mode smuggling: force true if subscription expired
-                readReceipts: SubscriptionService.shared.isPremium ? readReceipts : true,
+                readReceipts: readReceipts,
                 whoCanMessage: whoCanMessage,
                 whoCanSeeProfile: whoCanSeeProfile,
                 showLikedPosts: showLikedPosts,

@@ -73,9 +73,6 @@ mod tests {
             "d74716298bd6d3a7211ace359f053f6417f9ad6d6b485257a0846d14da9cd5a0"
         );
         // Directions must diverge.
-        assert_ne!(
-            message_key(&ck0, "bob", "alice"),
-            kmsg
-        );
+        assert_ne!(message_key(&ck0, "bob", "alice"), kmsg);
     }
 }

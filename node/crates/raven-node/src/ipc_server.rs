@@ -9,6 +9,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use raven_core::bridge::authenticated_object_digest;
 use raven_core::envelope::Envelope;
 use raven_core::forward_queue::{ForwardItem, ForwardQueue, ForwardState};
 use raven_core::ipc::{
@@ -33,7 +34,14 @@ fn peer_uid_matches_self(stream: &UnixStream) -> bool {
     let fd = stream.as_raw_fd();
     let self_uid = unsafe { libc::geteuid() };
 
-    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "dragonfly"))]
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    ))]
     {
         let mut euid: libc::uid_t = 0;
         let mut egid: libc::gid_t = 0;
@@ -104,22 +112,19 @@ fn handle_req(req: IpcRequest, data_dir: &Path, forward: &Option<ForwardQueue>) 
         IpcRequest::Status { v } => {
             let policy = load_policy(data_dir);
             let (pending, caps) = match forward {
-                Some(q) => (
-                    q.count_pending().unwrap_or(0) as u64,
-                    {
-                        let mut c = vec!["ipc".into()];
-                        if policy.bridge {
-                            c.push("bridge".into());
-                        }
-                        if policy.store {
-                            c.push("store".into());
-                        }
-                        if policy.relay {
-                            c.push("relay".into());
-                        }
-                        c
-                    },
-                ),
+                Some(q) => (q.count_pending().unwrap_or(0) as u64, {
+                    let mut c = vec!["ipc".into()];
+                    if policy.bridge {
+                        c.push("bridge".into());
+                    }
+                    if policy.store {
+                        c.push("store".into());
+                    }
+                    if policy.relay {
+                        c.push("relay".into());
+                    }
+                    c
+                }),
                 None => (0u64, vec!["ipc".into()]),
             };
             IpcResponse::Status {
@@ -203,6 +208,7 @@ fn handle_req(req: IpcRequest, data_dir: &Path, forward: &Option<ForwardQueue>) 
             // Prefer forward queue when available (always-on bridge); also mirror outbox.
             if let Some(q) = forward {
                 let item = ForwardItem {
+                    object_digest: authenticated_object_digest(&env),
                     message_id: env.message_id,
                     packed_envelope: packed.clone(),
                     ingress: TransportKind::Internet,
@@ -259,7 +265,11 @@ fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
         .map_err(|e| e.to_string())
 }
 
-async fn serve_one(mut stream: UnixStream, data_dir: Arc<PathBuf>, forward: Arc<Mutex<Option<ForwardQueue>>>) {
+async fn serve_one(
+    mut stream: UnixStream,
+    data_dir: Arc<PathBuf>,
+    forward: Arc<Mutex<Option<ForwardQueue>>>,
+) {
     #[cfg(unix)]
     if !peer_uid_matches_self(&stream) {
         eprintln!("raven-node ipc: reject peer (uid mismatch)");
@@ -304,7 +314,8 @@ pub async fn run_ipc_server(
     if sock.exists() {
         let _ = std::fs::remove_file(&sock);
     }
-    let listener = UnixListener::bind(&sock).map_err(|e| format!("bind {}: {e}", sock.display()))?;
+    let listener =
+        UnixListener::bind(&sock).map_err(|e| format!("bind {}: {e}", sock.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

@@ -9,6 +9,10 @@ VERSION = 1
 PREFIX_FMT = ">4sBBH16s16sQQQBB12sHIH"   # 86 bytes
 PREFIX_LEN = struct.calcsize(PREFIX_FMT)
 assert PREFIX_LEN == 86
+MAX_WIRE_ENVELOPE_BYTES = 1_048_576
+REGISTERED_ENV_TYPES = frozenset((1, 2, 3, 4))
+ALLOWED_FLAGS = 0x0003
+AUTHENTICATION_LEN = 64
 
 @dataclass
 class Envelope:
@@ -30,17 +34,25 @@ def pack(e: Envelope) -> bytes:
     return prefix + e.ratchet_header_ciphertext + e.message_ciphertext + e.sender_authentication
 
 def unpack(raw: bytes):
-    if len(raw) < PREFIX_LEN or raw[:4] != MAGIC or raw[4] != VERSION:
+    if (len(raw) < PREFIX_LEN or len(raw) > MAX_WIRE_ENVELOPE_BYTES
+            or raw[:4] != MAGIC or raw[4] != VERSION):
         return None
     (_, _, env_type, flags, message_id, routing_tag, dest_hint, created_at,
      expires_at, hop_limit, repl, nonce, hdr_len, body_len, auth_len) = struct.unpack(
         PREFIX_FMT, raw[:PREFIX_LEN])
-    o = PREFIX_LEN
-    if len(raw) != o + hdr_len + body_len + auth_len:
+    if (env_type not in REGISTERED_ENV_TYPES or flags & ~ALLOWED_FLAGS
+            or expires_at <= created_at or auth_len != AUTHENTICATION_LEN):
         return None
-    hdr = raw[o:o+hdr_len]; o += hdr_len
-    body = raw[o:o+body_len]; o += body_len
-    auth = raw[o:o+auth_len]
+    # Python integers do not overflow, but explicit bounded endpoints model the
+    # checked arithmetic required by fixed-width Rust/Swift decoders.
+    header_end = PREFIX_LEN + hdr_len
+    body_end = header_end + body_len
+    authentication_end = body_end + auth_len
+    if authentication_end > MAX_WIRE_ENVELOPE_BYTES or len(raw) != authentication_end:
+        return None
+    hdr = raw[PREFIX_LEN:header_end]
+    body = raw[header_end:body_end]
+    auth = raw[body_end:authentication_end]
     return Envelope(env_type, flags, message_id, routing_tag, dest_hint, created_at,
                     expires_at, hop_limit, repl, nonce, hdr, body, auth)
 

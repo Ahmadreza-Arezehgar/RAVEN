@@ -278,6 +278,43 @@ final class LibP2PBridgeTransport: NSObject, BridgeTransport, RavenbridgeDelegat
     /// callback and go straight to MeshBridgeReceiver — nothing to poll.
     func drainPending(since: Date?) async throws -> [BridgeEnvelopeItem] { [] }
 
+    // MARK: - Remote contact add (rendezvous)
+    //
+    // Thin passthrough to the Go rendezvous layer. Everything that matters for
+    // trust — building the signed card and verifying the peer's — happens in
+    // `RemoteInviteService`; these carry opaque strings.
+
+    /// Set by `RemoteInviteService` to receive the redeemer's card on the
+    /// INVITER's device. Fires on a background thread.
+    var onInviteRedeemedHandler: ((String, String) -> Void)?
+
+    /// Note the gomobile import shape: a Go `(string, error)` return becomes an
+    /// `NSErrorPointer` out-param, NOT a Swift `throws` — same quirk as
+    /// `RavenbridgeNewNode` above. Only `(error)`-only returns (cancelInvite)
+    /// import as throwing.
+    func createInvite(cardJSON: String, ttlSeconds: Int) throws -> String {
+        guard let node else { throw BridgeTransportError.notConnected }
+        var err: NSError?
+        let token = node.createInvite(cardJSON, ttlSeconds: ttlSeconds, error: &err)
+        if let err { throw err }
+        guard !token.isEmpty else { throw BridgeTransportError.notConnected }
+        return token
+    }
+
+    func redeemInvite(token: String, myCardJSON: String) throws -> String {
+        guard let node else { throw BridgeTransportError.notConnected }
+        var err: NSError?
+        let card = node.redeemInvite(token, myCardJSON: myCardJSON, error: &err)
+        if let err { throw err }
+        guard !card.isEmpty else { throw BridgeTransportError.notConnected }
+        return card
+    }
+
+    func cancelInvite(_ token: String) throws {
+        guard let node else { return }
+        try node.cancelInvite(token)
+    }
+
     // MARK: RavenbridgeDelegateProtocol (callbacks arrive on a background thread;
     // the gomobile protocol is `@objc`, so the methods must be too).
     @objc func onEnvelope(_ envelopeB64: String?, idempotencyKey: String?) {
@@ -287,6 +324,13 @@ final class LibP2PBridgeTransport: NSObject, BridgeTransport, RavenbridgeDelegat
     @objc func onStatus(_ connected: Bool, peerID: String?) {
         isConnected = connected
         if let peerID { localPeerID = peerID }
+    }
+    /// Someone redeemed one of our live invites. The card is UNVERIFIED here —
+    /// `RemoteInviteService` runs `FriendQRPayload.parseAndVerify` before any of
+    /// it is trusted.
+    @objc func onInviteRedeemed(_ token: String?, peerCardJSON: String?) {
+        guard let token, let card = peerCardJSON else { return }
+        onInviteRedeemedHandler?(token, card)
     }
 }
 #else
@@ -300,6 +344,21 @@ final class LibP2PBridgeTransport: BridgeTransport {
         throw BridgeTransportError.notImplemented
     }
     func drainPending(since: Date?) async throws -> [BridgeEnvelopeItem] {
+        throw BridgeTransportError.notImplemented
+    }
+    // Remote contact add — same surface as the real transport so call sites
+    // compile without the xcframework embedded.
+    var onInviteRedeemedHandler: ((String, String) -> Void)? {
+        get { nil }
+        set { _ = newValue }
+    }
+    func createInvite(cardJSON: String, ttlSeconds: Int) throws -> String {
+        throw BridgeTransportError.notImplemented
+    }
+    func redeemInvite(token: String, myCardJSON: String) throws -> String {
+        throw BridgeTransportError.notImplemented
+    }
+    func cancelInvite(_ token: String) throws {
         throw BridgeTransportError.notImplemented
     }
 }

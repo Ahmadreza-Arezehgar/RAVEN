@@ -31,6 +31,7 @@ class DeliveryJobRunner {
     
     /// Start the job runner (event-driven + safety-net timer)
     func start() {
+        guard RavenRuntimePolicy.allowsExternalSideEffects else { return }
         guard timer == nil else { return }
         
         #if DEBUG
@@ -89,6 +90,7 @@ class DeliveryJobRunner {
     
     /// Event-driven trigger: process jobs immediately
     func trigger(ignoreBackoff: Bool = false) async {
+        guard RavenRuntimePolicy.allowsExternalSideEffects else { return }
         await processReadyJobs(ignoreBackoff: ignoreBackoff)
     }
     
@@ -96,6 +98,7 @@ class DeliveryJobRunner {
     
     /// Process all ready jobs
     private func processReadyJobs(ignoreBackoff: Bool = false) async {
+        guard RavenRuntimePolicy.allowsExternalSideEffects else { return }
         guard !isRunning else { return }
         isRunning = true
         defer { isRunning = false }
@@ -445,10 +448,36 @@ class DeliveryJobRunner {
                                 msgId: message.id
                             )
                             guard sealed.isEncrypted, !sealed.base64.isEmpty else {
+                                // STRUCTURAL vs TRANSIENT split.
+                                //
+                                // `seal()` only ever returns an EMPTY base64 for a
+                                // structural problem the row will never recover from
+                                // on retry: an empty body (.noRecipientKey) or an
+                                // over-cap wire (.noSession, e.g. a multi-MB blob
+                                // mistakenly stored as `text`). A transient
+                                // no-key/no-session miss instead returns a NON-empty
+                                // RVNP1 plaintext-fallback wire (isEncrypted == false,
+                                // base64 non-empty) — that one we keep pending so a
+                                // later retry seals it once ATSAM/Noise is available.
+                                //
+                                // Old behaviour: both cases hit `continue`, so the
+                                // structural row re-built the same empty seal every
+                                // cycle and pended FOREVER. Take the structural row
+                                // out of rotation for THIS channel only via
+                                // markDelivered(.mesh) — NOT markStopped, which would
+                                // kill the server/bridge jobs for the same message too.
+                                if sealed.base64.isEmpty {
+                                    #if DEBUG
+                                    print("🔒 [JobRunner] structural seal failure (reason=\(sealed.reason)) for mid=\(message.id.prefix(8)) — taking mesh job out of rotation")
+                                    #endif
+                                    try await DeliveryJobRepository.shared.markDelivered(messageId: job.messageId, channel: .mesh)
+                                    continue
+                                }
                                 #if DEBUG
                                 print("🔒 [JobRunner] REFUSING to mesh-retry 1:1 plaintext fallback (reason=\(sealed.reason)) for mid=\(message.id.prefix(8))")
                                 #endif
-                                // Keep job pending — back-off + retry later.
+                                // Transient no-key/no-session — keep job pending,
+                                // back-off + retry later.
                                 continue
                             }
                             envelope.text = sealed.base64

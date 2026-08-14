@@ -576,7 +576,32 @@ def get_current_user(authorization: str = Header(None), db: Session = Depends(ge
             detail="User not found",
             headers={"WWW-Authenticate": "Bearer"}
         )
-    
+
+    # 🔒 SECURITY (audit H4 — cross-instance access-token revocation):
+    # This is the SECOND get_current_user implementation; blocks,
+    # contacts, discovery, knowledge, mesh, presence, reports and
+    # data_export all import it and previously honored a stolen token
+    # after the victim's logout / password-reset (which stamp
+    # user.tokens_invalidated_at). Mirror routers/users.py: reject any
+    # JWT whose `iat` predates the stamp, even on a cold replica whose
+    # in-process jti set is empty. 2s clock-skew buffer (iat is
+    # whole-second; the stamp is microsecond DateTime).
+    if user.tokens_invalidated_at is not None:
+        iat = payload.get("iat")
+        if iat is not None:
+            try:
+                invalidated_ts = user.tokens_invalidated_at.timestamp()
+                if float(iat) < invalidated_ts - 2.0:
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Token was invalidated by explicit logout",
+                        headers={"WWW-Authenticate": "Bearer"}
+                    )
+            except HTTPException:
+                raise
+            except Exception as _e:
+                print(f"⚠️ tokens_invalidated_at compare failed for {getattr(user, 'username', user_id)}: {_e}")
+
     # ==================== MODERATION ENFORCEMENT ====================
     # Check if user is permanently banned
     if getattr(user, 'is_banned', False) and user.is_banned:

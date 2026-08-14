@@ -11,24 +11,59 @@ mod ipc_server;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use clap::{Parser, Subcommand};
 use rand::RngCore;
+#[cfg(feature = "unsafe-demo-crypto")]
 use raven_core::ack::{Ack, STATUS_DELIVERED};
-use raven_core::envelope::{Envelope, EnvType};
+use raven_core::envelope::{EnvType, Envelope};
 use raven_core::forward_queue::ForwardQueue;
 use raven_core::identity::Identity;
 use raven_core::node_policy::{load_policy, BridgeStatusSnapshot};
 use raven_core::queue::{DeliveryState, OutgoingQueue, QueueItem};
+#[cfg(feature = "unsafe-demo-crypto")]
 use raven_core::routing_tag;
-use raven_core::seal::{
-    classify_sealed_body, derive_pairwise_key, parse_rvna1_header, rvna1_wire_plausible,
-    seal_message, unseal_message, SealClass, ATSAM_PROTO_V2, SEAL_MAGIC_RVNA1, STUB_SUITE,
-};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+#[cfg(not(feature = "unsafe-demo-crypto"))]
+use raven_core::seal::UNSAFE_INTERIM_DISABLED;
+use raven_core::seal::{classify_sealed_body, rvna1_wire_plausible, SealClass};
+#[cfg(feature = "unsafe-demo-crypto")]
+use raven_core::seal::{derive_pairwise_key, seal_message, unseal_message};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
+use tokio::task::JoinHandle;
+
+const MAX_FRAME_BYTES: usize = 1024 * 1024;
+const MAX_CONCURRENT_CONNECTION_HANDLERS: usize = 64;
+
+#[derive(Clone, Copy, Debug)]
+struct ConnectionLimits {
+    /// Maximum wait for the next frame header. This also bounds idle peers.
+    idle_timeout: Duration,
+    /// Hard wall-clock budget from the start of a frame through its payload.
+    frame_timeout: Duration,
+    /// A peer that stops reading cannot retain a handler indefinitely.
+    write_timeout: Duration,
+    /// Hard lifetime for one TCP handler, including all frames and replies.
+    lifetime: Duration,
+}
+
+const DEFAULT_CONNECTION_LIMITS: ConnectionLimits = ConnectionLimits {
+    idle_timeout: Duration::from_secs(10),
+    frame_timeout: Duration::from_secs(30),
+    write_timeout: Duration::from_secs(30),
+    lifetime: Duration::from_secs(120),
+};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FrameReadError {
+    Closed,
+    Truncated,
+    InvalidLength,
+    IdleDeadline,
+    FrameDeadline,
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "raven-node", about = "RAVEN serverless local node")]
@@ -67,9 +102,10 @@ enum Commands {
         /// Read one plaintext line from stdin (secure). Never puts body on argv/`ps`.
         #[arg(long, default_value_t = false)]
         send_stdin: bool,
-        /// Body mode for --send: `interim` (default, decryptable stub) or
-        /// `opaque-atsam` (RVNA1 proto=0x02 placeholder — node ACKs without decrypt).
-        #[arg(long, default_value = "interim")]
+        /// Secure ATSAM session mode. The current daemon refuses origination
+        /// until a persisted authenticated session is available. Lab builds
+        /// may explicitly request `unsafe-interim`.
+        #[arg(long, default_value = "atsam")]
         body_mode: String,
         /// Write bound listen address to this file (for demo scripts).
         #[arg(long)]
@@ -175,33 +211,58 @@ fn init_identity(data_dir: &Path) -> Result<Identity, String> {
         .map_err(|e| e.to_string())
 }
 
-async fn write_frame(stream: &mut TcpStream, bytes: &[u8]) -> Result<(), String> {
-    if bytes.len() > 24 * 1024 * 1024 {
+async fn write_frame_with_timeout(
+    stream: &mut TcpStream,
+    bytes: &[u8],
+    write_timeout: Duration,
+) -> Result<(), String> {
+    if bytes.len() > MAX_FRAME_BYTES {
         return Err("frame too large".into());
     }
-    let len = (bytes.len() as u32).to_be_bytes();
-    stream.write_all(&len).await.map_err(|e| e.to_string())?;
-    stream.write_all(bytes).await.map_err(|e| e.to_string())?;
-    stream.flush().await.map_err(|e| e.to_string())?;
-    Ok(())
+    let write = async {
+        let len = (bytes.len() as u32).to_be_bytes();
+        stream.write_all(&len).await.map_err(|e| e.to_string())?;
+        stream.write_all(bytes).await.map_err(|e| e.to_string())?;
+        stream.flush().await.map_err(|e| e.to_string())?;
+        Ok(())
+    };
+    tokio::time::timeout(write_timeout, write)
+        .await
+        .map_err(|_| "frame write deadline exceeded".to_string())?
 }
 
-async fn read_frame(stream: &mut TcpStream) -> Result<Vec<u8>, String> {
+async fn write_frame(stream: &mut TcpStream, bytes: &[u8]) -> Result<(), String> {
+    write_frame_with_timeout(stream, bytes, DEFAULT_CONNECTION_LIMITS.write_timeout).await
+}
+
+async fn read_frame_with_limits<R: AsyncRead + Unpin>(
+    stream: &mut R,
+    limits: ConnectionLimits,
+) -> Result<Vec<u8>, FrameReadError> {
+    let started = tokio::time::Instant::now();
+    let frame_deadline = started + limits.frame_timeout;
+    let idle_deadline = started + limits.idle_timeout;
+    let header_deadline = if idle_deadline < frame_deadline {
+        idle_deadline
+    } else {
+        frame_deadline
+    };
+
     let mut len_buf = [0u8; 4];
-    stream
-        .read_exact(&mut len_buf)
+    tokio::time::timeout_at(header_deadline, stream.read_exact(&mut len_buf))
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|_| FrameReadError::IdleDeadline)?
+        .map_err(|_| FrameReadError::Closed)?;
     let len = u32::from_be_bytes(len_buf) as usize;
     // Incremental: reject absurd sizes before alloc (DoS note from envelope spec).
-    if len == 0 || len > 1 * 1024 * 1024 {
-        return Err("invalid frame length".into());
+    if len == 0 || len > MAX_FRAME_BYTES {
+        return Err(FrameReadError::InvalidLength);
     }
     let mut buf = vec![0u8; len];
-    stream
-        .read_exact(&mut buf)
+    tokio::time::timeout_at(frame_deadline, stream.read_exact(&mut buf))
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|_| FrameReadError::FrameDeadline)?
+        .map_err(|_| FrameReadError::Truncated)?;
     Ok(buf)
 }
 
@@ -215,24 +276,6 @@ fn parse_pub_hex(s: &str) -> Result<[u8; 32], String> {
     Ok(a)
 }
 
-/// Synthetic opaque ATSAM v2-shaped body for LAN smoke (not real ciphertext).
-/// iOS may send real ATSAM frames; raven-node treats both as opaque.
-fn opaque_atsam_placeholder(plaintext_len_hint: usize) -> Vec<u8> {
-    let mut body = Vec::with_capacity(8 + 2 + 4 + 12 + 16 + plaintext_len_hint.min(32));
-    body.extend_from_slice(&SEAL_MAGIC_RVNA1);
-    body.push(ATSAM_PROTO_V2);
-    body.push(STUB_SUITE);
-    body.extend_from_slice(&0u32.to_be_bytes()); // index
-    let mut nonce = [0u8; 12];
-    rand::thread_rng().fill_bytes(&mut nonce);
-    body.extend_from_slice(&nonce);
-    // Fake ct+tag — length only matters for DELIVERED opaque metrics.
-    let mut ct = vec![0u8; 16 + plaintext_len_hint.min(64)];
-    rand::thread_rng().fill_bytes(&mut ct);
-    body.extend_from_slice(&ct);
-    body
-}
-
 fn build_message_envelope(
     identity: &Identity,
     peer_pub: &[u8; 32],
@@ -240,41 +283,60 @@ fn build_message_envelope(
     message_id: [u8; 16],
     body_mode: &str,
 ) -> Result<Envelope, String> {
-    let my_pub = identity.public_key_bytes();
-    let my_addr = identity.address();
-    let peer_addr = raven_core::encode_address(peer_pub);
-    let sealed = match body_mode {
-        "interim" | "" => {
-            let key = derive_pairwise_key(&my_pub, peer_pub);
-            seal_message(&key, plaintext, &my_addr, &peer_addr, &message_id)?
-        }
-        "opaque-atsam" => opaque_atsam_placeholder(plaintext.len()),
-        other => return Err(format!("unknown body_mode={other} (use interim|opaque-atsam)")),
-    };
-    let k_route = derive_pairwise_key(&my_pub, peer_pub); // demo: reuse pairwise as K_route material
-    let tag = routing_tag::derive(&k_route, now_ms() / 1000, 0);
-    let mut nonce = [0u8; 12];
-    rand::thread_rng().fill_bytes(&mut nonce);
-    let flags = if body_mode == "opaque-atsam" { 1u16 } else { 0 }; // hybridPQ hint bit0
-    let mut env = Envelope {
-        env_type: EnvType::Message as u8,
-        flags,
-        message_id,
-        routing_tag: tag,
-        dest_device_hint: 0,
-        created_at: now_ms(),
-        expires_at: now_ms() + 86_400_000,
-        hop_limit: 8,
-        replication_budget: 3,
-        anti_replay_nonce: nonce,
-        ratchet_header_ciphertext: vec![],
-        message_ciphertext: sealed,
-        sender_authentication: vec![],
-    };
-    env.sign_with(identity);
-    Ok(env)
+    #[cfg(not(feature = "unsafe-demo-crypto"))]
+    {
+        let _ = (identity, peer_pub, plaintext, message_id, body_mode);
+        Err("ATSAM_SESSION_REQUIRED: no authenticated persisted ATSAM session is available".into())
+    }
+
+    #[cfg(feature = "unsafe-demo-crypto")]
+    {
+        let my_pub = identity.public_key_bytes();
+        let my_addr = identity.address();
+        let peer_addr = raven_core::encode_address(peer_pub);
+        let sealed =
+            match body_mode {
+                "unsafe-interim" => {
+                    let key = derive_pairwise_key(&my_pub, peer_pub);
+                    seal_message(&key, plaintext, &my_addr, &peer_addr, &message_id)?
+                }
+                "atsam" | "" => return Err(
+                    "ATSAM_SESSION_REQUIRED: no authenticated persisted ATSAM session is available"
+                        .into(),
+                ),
+                other => {
+                    return Err(format!(
+                        "unknown body_mode={other} (production: atsam; lab only: unsafe-interim)"
+                    ))
+                }
+            };
+        // Lab-only routing material. Production routing tags must be derived from
+        // an authenticated session root, never public identity material.
+        let k_route = derive_pairwise_key(&my_pub, peer_pub);
+        let tag = routing_tag::derive(&k_route, now_ms() / 1000, 0);
+        let mut nonce = [0u8; 12];
+        rand::thread_rng().fill_bytes(&mut nonce);
+        let mut env = Envelope {
+            env_type: EnvType::Message as u8,
+            flags: 0,
+            message_id,
+            routing_tag: tag,
+            dest_device_hint: 0,
+            created_at: now_ms(),
+            expires_at: now_ms() + 86_400_000,
+            hop_limit: 8,
+            replication_budget: 3,
+            anti_replay_nonce: nonce,
+            ratchet_header_ciphertext: vec![],
+            message_ciphertext: sealed,
+            sender_authentication: vec![],
+        };
+        env.sign_with(identity);
+        Ok(env)
+    }
 }
 
+#[cfg(feature = "unsafe-demo-crypto")]
 fn build_ack_envelope(
     identity: &Identity,
     acked_message_id: [u8; 16],
@@ -331,6 +393,7 @@ struct NodeState {
     /// Verify Message env signatures (origin A when C is recipient).
     origin_pub: Option<[u8; 32]>,
     /// Verify ACK signatures (C when A is sender).
+    #[cfg_attr(not(feature = "unsafe-demo-crypto"), allow(dead_code))]
     ack_pub: Option<[u8; 32]>,
     recv_count: u32,
     got_ack: bool,
@@ -341,6 +404,7 @@ impl NodeState {
         self.origin_pub.or(self.peer_pub)
     }
 
+    #[cfg(feature = "unsafe-demo-crypto")]
     fn ack_verify_pub(&self) -> Option<[u8; 32]> {
         self.ack_pub.or(self.peer_pub)
     }
@@ -348,14 +412,6 @@ impl NodeState {
     fn handle_inbound(&mut self, raw: &[u8]) -> Result<Option<Vec<u8>>, String> {
         let env = Envelope::unpack(raw).ok_or_else(|| "malformed envelope".to_string())?;
         if now_ms() > env.expires_at {
-            return Ok(None);
-        }
-        let dup = self
-            .queue
-            .dedup_check_and_insert(&env.message_id, now_ms())
-            .map_err(|e| e.to_string())?;
-        if dup {
-            eprintln!("raven-node: dedup drop message_id={}", hex::encode(env.message_id));
             return Ok(None);
         }
 
@@ -367,24 +423,37 @@ impl NodeState {
                 if !env.verify(&peer_pub) {
                     return Err("envelope auth failed".into());
                 }
-                let my_addr = self.identity.address();
-                let peer_addr = raven_core::encode_address(&peer_pub);
                 match classify_sealed_body(&env.message_ciphertext) {
                     SealClass::InterimStub => {
-                        let key =
-                            derive_pairwise_key(&self.identity.public_key_bytes(), &peer_pub);
-                        let pt = unseal_message(
-                            &key,
-                            &env.message_ciphertext,
-                            &peer_addr,
-                            &my_addr,
-                            &env.message_id,
-                        )?;
-                        eprintln!(
-                            "raven-node: DELIVERED bytes={} from={}",
-                            pt.len(),
-                            peer_addr
-                        );
+                        #[cfg(not(feature = "unsafe-demo-crypto"))]
+                        {
+                            return Err(UNSAFE_INTERIM_DISABLED.into());
+                        }
+
+                        #[cfg(feature = "unsafe-demo-crypto")]
+                        {
+                            let my_addr = self.identity.address();
+                            let peer_addr = raven_core::encode_address(&peer_pub);
+                            let key =
+                                derive_pairwise_key(&self.identity.public_key_bytes(), &peer_pub);
+                            let _plaintext = unseal_message(
+                                &key,
+                                &env.message_ciphertext,
+                                &peer_addr,
+                                &my_addr,
+                                &env.message_id,
+                            )?;
+                            let dup = self
+                                .queue
+                                .dedup_check_and_insert(&env.message_id, now_ms())
+                                .map_err(|e| e.to_string())?;
+                            if dup {
+                                return Ok(None);
+                            }
+                            self.recv_count += 1;
+                            let ack = build_ack_envelope(&self.identity, env.message_id, &peer_pub);
+                            return Ok(Some(ack.pack()));
+                        }
                     }
                     SealClass::OpaqueAtsam { proto } => {
                         if !rvna1_wire_plausible(&env.message_ciphertext) {
@@ -392,97 +461,492 @@ impl NodeState {
                                 "opaque ATSAM proto={proto:#x} truncated or bad suite"
                             ));
                         }
-                        let hdr = parse_rvna1_header(&env.message_ciphertext);
-                        let idx = hdr.and_then(|h| h.index);
-                        eprintln!(
-                            "raven-node: DELIVERED opaque_atsam proto={:#x}{} bytes={} from={}",
-                            proto,
-                            idx.map(|i| format!(" index={i}")).unwrap_or_default(),
-                            env.message_ciphertext.len(),
-                            peer_addr
-                        );
+                        return Err(format!(
+                            "ATSAM_SESSION_REQUIRED: cannot authenticate/decrypt proto={proto:#x}; no delivery ACK emitted"
+                        ));
                     }
                     SealClass::Other => {
                         return Err("unsupported message_ciphertext seal class".into());
                     }
                 }
-                self.recv_count += 1;
-                let ack = build_ack_envelope(&self.identity, env.message_id, &peer_pub);
-                Ok(Some(ack.pack()))
+                #[allow(unreachable_code)]
+                Ok(None)
             }
             x if x == EnvType::Ack as u8 => {
-                let peer_pub = self
-                    .ack_verify_pub()
-                    .ok_or_else(|| "ack/peer pub required to verify".to_string())?;
-                if !env.verify(&peer_pub) {
-                    return Err("ack envelope auth failed".into());
+                #[cfg(not(feature = "unsafe-demo-crypto"))]
+                {
+                    let _ = env;
+                    Err("ATSAM_SESSION_REQUIRED: plaintext legacy ACK bodies are disabled".into())
                 }
-                if env.message_ciphertext.len() < 16 + 1 + 12 + 8 + 64 {
-                    return Err("short ack body".into());
-                }
-                let mut acked = [0u8; 16];
-                acked.copy_from_slice(&env.message_ciphertext[0..16]);
-                let status = env.message_ciphertext[16];
-                let mut ack_nonce = [0u8; 12];
-                ack_nonce.copy_from_slice(&env.message_ciphertext[17..29]);
-                let created_at = u64::from_be_bytes(
-                    env.message_ciphertext[29..37]
-                        .try_into()
-                        .map_err(|_| "ack ts")?,
-                );
-                let mut sig = [0u8; 64];
-                sig.copy_from_slice(&env.message_ciphertext[37..101]);
-                let ack = Ack {
-                    acked_message_id: acked,
-                    status,
-                    ack_nonce,
-                    created_at,
-                };
-                if !ack.verify(&sig, &peer_pub) {
-                    return Err("ack signature failed".into());
-                }
-                if status == STATUS_DELIVERED {
+
+                #[cfg(feature = "unsafe-demo-crypto")]
+                {
+                    let peer_pub = self
+                        .ack_verify_pub()
+                        .ok_or_else(|| "ack/peer pub required to verify".to_string())?;
+                    if !env.verify(&peer_pub) {
+                        return Err("ack envelope auth failed".into());
+                    }
+                    if env.message_ciphertext.len() != 16 + 1 + 12 + 8 + 64 {
+                        return Err("invalid ack body length".into());
+                    }
+                    let mut acked = [0u8; 16];
+                    acked.copy_from_slice(&env.message_ciphertext[0..16]);
+                    let status = env.message_ciphertext[16];
+                    let mut ack_nonce = [0u8; 12];
+                    ack_nonce.copy_from_slice(&env.message_ciphertext[17..29]);
+                    let created_at = u64::from_be_bytes(
+                        env.message_ciphertext[29..37]
+                            .try_into()
+                            .map_err(|_| "ack ts")?,
+                    );
+                    let mut sig = [0u8; 64];
+                    sig.copy_from_slice(&env.message_ciphertext[37..101]);
+                    let ack = Ack {
+                        acked_message_id: acked,
+                        status,
+                        ack_nonce,
+                        created_at,
+                    };
+                    if !ack.verify(&sig, &peer_pub) {
+                        return Err("ack signature failed".into());
+                    }
+                    if status != STATUS_DELIVERED {
+                        return Err("unsupported ack status for delivery queue".into());
+                    }
+                    if created_at > now_ms().saturating_add(5 * 60 * 1000)
+                        || created_at > env.expires_at
+                    {
+                        return Err("ack timestamp outside accepted bounds".into());
+                    }
+                    let queued = self
+                        .queue
+                        .get(&acked)
+                        .map_err(|e| e.to_string())?
+                        .ok_or_else(|| {
+                            "ack does not match a pending outbound message".to_string()
+                        })?;
+                    if queued.peer_addr != raven_core::encode_address(&peer_pub) {
+                        return Err("ack signer is not the queued recipient".into());
+                    }
+                    if queued.state == DeliveryState::Delivered {
+                        return Ok(None);
+                    }
+                    let dup = self
+                        .queue
+                        .dedup_check_and_insert(&env.message_id, now_ms())
+                        .map_err(|e| e.to_string())?;
+                    if dup {
+                        return Ok(None);
+                    }
                     self.queue
                         .mark_state(&acked, DeliveryState::Delivered)
                         .map_err(|e| e.to_string())?;
                     self.got_ack = true;
-                    eprintln!("raven-node: ACK delivered for {}", hex::encode(acked));
+                    Ok(None)
                 }
-                Ok(None)
             }
             _ => Ok(None),
         }
     }
 }
 
-async fn handle_connection(
-    mut stream: TcpStream,
-    state: Arc<Mutex<NodeState>>,
-) -> Result<(), String> {
-    loop {
-        let frame = match read_frame(&mut stream).await {
-            Ok(f) => f,
-            Err(e) => {
-                // Peer closed or truncated — not a panic.
-                eprintln!("raven-node: connection end ({e})");
-                break;
-            }
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+mod security_tests {
+    use super::*;
+    #[cfg(not(feature = "unsafe-demo-crypto"))]
+    use raven_core::seal::{ATSAM_PROTO_V2, SEAL_MAGIC_RVNA1, STUB_PROTO, STUB_SUITE};
+    use tempfile::tempdir;
+
+    fn signed_envelope(sender: &Identity, message_id: [u8; 16], body: Vec<u8>) -> Envelope {
+        let mut env = Envelope {
+            env_type: EnvType::Message as u8,
+            flags: 0,
+            message_id,
+            routing_tag: [0x44; 16],
+            dest_device_hint: 0,
+            created_at: now_ms(),
+            expires_at: now_ms() + 60_000,
+            hop_limit: 4,
+            replication_budget: 1,
+            anti_replay_nonce: [0x55; 12],
+            ratchet_header_ciphertext: vec![],
+            message_ciphertext: body,
+            sender_authentication: vec![],
         };
-        let reply = {
-            let mut st = state.lock().await;
-            match st.handle_inbound(&frame) {
-                Ok(r) => r,
-                Err(e) => {
-                    eprintln!("raven-node: drop inbound ({e})");
-                    None
-                }
-            }
-        };
-        if let Some(ack_bytes) = reply {
-            write_frame(&mut stream, &ack_bytes).await?;
+        env.sign_with(sender);
+        env
+    }
+
+    fn node_state(path: &Path, recipient: Identity, sender: &Identity) -> NodeState {
+        NodeState {
+            identity: recipient,
+            queue: OutgoingQueue::open(path).unwrap(),
+            peer_pub: Some(sender.public_key_bytes()),
+            origin_pub: None,
+            ack_pub: None,
+            recv_count: 0,
+            got_ack: false,
         }
     }
-    Ok(())
+
+    fn short_test_limits() -> ConnectionLimits {
+        ConnectionLimits {
+            idle_timeout: Duration::from_secs(2),
+            frame_timeout: Duration::from_secs(5),
+            write_timeout: Duration::from_secs(2),
+            lifetime: Duration::from_secs(20),
+        }
+    }
+
+    async fn tcp_pair() -> (TcpStream, TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (client, accepted) = tokio::join!(TcpStream::connect(address), listener.accept());
+        (accepted.unwrap().0, client.unwrap())
+    }
+
+    #[cfg(not(feature = "unsafe-demo-crypto"))]
+    fn stub_shaped_body() -> Vec<u8> {
+        let mut body = SEAL_MAGIC_RVNA1.to_vec();
+        body.extend_from_slice(&[STUB_PROTO, STUB_SUITE]);
+        body.extend_from_slice(&[0u8; 28]);
+        body
+    }
+
+    #[cfg(not(feature = "unsafe-demo-crypto"))]
+    fn opaque_atsam_shaped_body() -> Vec<u8> {
+        let mut body = SEAL_MAGIC_RVNA1.to_vec();
+        body.extend_from_slice(&[ATSAM_PROTO_V2, STUB_SUITE]);
+        body.extend_from_slice(&0u32.to_be_bytes());
+        body.extend_from_slice(&[0u8; 28]);
+        body
+    }
+
+    #[cfg(not(feature = "unsafe-demo-crypto"))]
+    #[test]
+    fn production_origination_requires_authenticated_session() {
+        let sender = Identity::from_seed(&[1u8; 32]);
+        let recipient = Identity::from_seed(&[2u8; 32]);
+        let err = build_message_envelope(
+            &sender,
+            &recipient.public_key_bytes(),
+            b"never queued",
+            [3u8; 16],
+            "atsam",
+        )
+        .unwrap_err();
+        assert!(err.contains("ATSAM_SESSION_REQUIRED"));
+    }
+
+    #[cfg(not(feature = "unsafe-demo-crypto"))]
+    #[test]
+    fn signed_stub_and_opaque_atsam_get_no_ack_or_dedup_poison() {
+        let dir = tempdir().unwrap();
+        let sender = Identity::from_seed(&[4u8; 32]);
+        let recipient = Identity::from_seed(&[5u8; 32]);
+        let mut state = node_state(&dir.path().join("q.sqlite"), recipient, &sender);
+
+        let stub = signed_envelope(&sender, [6u8; 16], stub_shaped_body()).pack();
+        for _ in 0..2 {
+            let err = state.handle_inbound(&stub).unwrap_err();
+            assert!(err.contains("UNSAFE_INTERIM_DISABLED"));
+        }
+
+        let opaque = signed_envelope(&sender, [7u8; 16], opaque_atsam_shaped_body()).pack();
+        for _ in 0..2 {
+            let err = state.handle_inbound(&opaque).unwrap_err();
+            assert!(err.contains("ATSAM_SESSION_REQUIRED"));
+            assert!(err.contains("no delivery ACK"));
+        }
+        assert_eq!(state.recv_count, 0);
+        assert!(!state.got_ack);
+    }
+
+    #[cfg(not(feature = "unsafe-demo-crypto"))]
+    #[test]
+    fn plaintext_ack_cannot_advance_queue() {
+        let dir = tempdir().unwrap();
+        let sender = Identity::from_seed(&[8u8; 32]);
+        let recipient = Identity::from_seed(&[9u8; 32]);
+        let acked = [0xAA; 16];
+        let mut state = node_state(&dir.path().join("q.sqlite"), recipient, &sender);
+        state
+            .queue
+            .enqueue(&QueueItem {
+                message_id: acked,
+                packed_envelope: vec![1],
+                peer_addr: sender.address(),
+                state: DeliveryState::Sent,
+                created_at_ms: now_ms(),
+            })
+            .unwrap();
+
+        let mut body = Vec::new();
+        body.extend_from_slice(&acked);
+        body.push(raven_core::ack::STATUS_DELIVERED);
+        body.extend_from_slice(&[0x11; 12]);
+        body.extend_from_slice(&now_ms().to_be_bytes());
+        body.extend_from_slice(&[0u8; 64]);
+        let mut ack_env = signed_envelope(&sender, [0xAB; 16], body);
+        ack_env.env_type = EnvType::Ack as u8;
+        ack_env.sign_with(&sender);
+
+        let err = state.handle_inbound(&ack_env.pack()).unwrap_err();
+        assert!(err.contains("plaintext legacy ACK bodies are disabled"));
+        assert_eq!(
+            state.queue.get(&acked).unwrap().unwrap().state,
+            DeliveryState::Sent
+        );
+        assert!(!state.got_ack);
+    }
+
+    #[cfg(feature = "unsafe-demo-crypto")]
+    #[test]
+    fn lab_invalid_signature_cannot_poison_valid_message_id() {
+        let dir = tempdir().unwrap();
+        let sender = Identity::from_seed(&[10u8; 32]);
+        let recipient = Identity::from_seed(&[11u8; 32]);
+        let mid = [12u8; 16];
+        let key = derive_pairwise_key(&sender.public_key_bytes(), &recipient.public_key_bytes());
+        let wire = seal_message(
+            &key,
+            b"authenticated",
+            &sender.address(),
+            &recipient.address(),
+            &mid,
+        )
+        .unwrap();
+        let mut forged = signed_envelope(&sender, mid, wire.clone());
+        forged.sender_authentication[0] ^= 0x80;
+
+        let mut state = node_state(&dir.path().join("q.sqlite"), recipient, &sender);
+        assert!(state
+            .handle_inbound(&forged.pack())
+            .unwrap_err()
+            .contains("auth failed"));
+
+        let valid = signed_envelope(&sender, mid, wire);
+        assert!(state.handle_inbound(&valid.pack()).unwrap().is_some());
+        assert_eq!(state.recv_count, 1);
+    }
+
+    #[tokio::test]
+    async fn frame_reader_rejects_zero_and_oversized_lengths_before_payload() {
+        let (mut writer, mut reader) = tokio::io::duplex(32);
+        writer.write_all(&0u32.to_be_bytes()).await.unwrap();
+        assert_eq!(
+            read_frame_with_limits(&mut reader, short_test_limits()).await,
+            Err(FrameReadError::InvalidLength)
+        );
+
+        let oversized = (MAX_FRAME_BYTES as u32) + 1;
+        writer.write_all(&oversized.to_be_bytes()).await.unwrap();
+        assert_eq!(
+            read_frame_with_limits(&mut reader, short_test_limits()).await,
+            Err(FrameReadError::InvalidLength)
+        );
+    }
+
+    #[tokio::test]
+    async fn frame_reader_is_exact_and_rejects_truncation() {
+        let (mut writer, mut reader) = tokio::io::duplex(64);
+        writer.write_all(&3u32.to_be_bytes()).await.unwrap();
+        writer.write_all(b"one").await.unwrap();
+        writer.write_all(&3u32.to_be_bytes()).await.unwrap();
+        writer.write_all(b"two").await.unwrap();
+
+        assert_eq!(
+            read_frame_with_limits(&mut reader, short_test_limits())
+                .await
+                .unwrap(),
+            b"one"
+        );
+        assert_eq!(
+            read_frame_with_limits(&mut reader, short_test_limits())
+                .await
+                .unwrap(),
+            b"two"
+        );
+
+        let (mut truncated_writer, mut truncated_reader) = tokio::io::duplex(32);
+        truncated_writer
+            .write_all(&4u32.to_be_bytes())
+            .await
+            .unwrap();
+        truncated_writer.write_all(b"abc").await.unwrap();
+        truncated_writer.shutdown().await.unwrap();
+        assert_eq!(
+            read_frame_with_limits(&mut truncated_reader, short_test_limits()).await,
+            Err(FrameReadError::Truncated)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stalled_frame_hits_hard_frame_deadline() {
+        let (mut writer, mut reader) = tokio::io::duplex(32);
+        writer.write_all(&8u32.to_be_bytes()).await.unwrap();
+        writer.write_all(b"x").await.unwrap();
+
+        let limits = ConnectionLimits {
+            idle_timeout: Duration::from_secs(4),
+            frame_timeout: Duration::from_secs(5),
+            write_timeout: Duration::from_secs(2),
+            lifetime: Duration::from_secs(20),
+        };
+        let read_task =
+            tokio::spawn(async move { read_frame_with_limits(&mut reader, limits).await });
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(6)).await;
+        assert_eq!(read_task.await.unwrap(), Err(FrameReadError::FrameDeadline));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn idle_connection_hits_header_deadline() {
+        let (_writer, mut reader) = tokio::io::duplex(32);
+        let limits = short_test_limits();
+        let read_task =
+            tokio::spawn(async move { read_frame_with_limits(&mut reader, limits).await });
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(3)).await;
+        assert_eq!(read_task.await.unwrap(), Err(FrameReadError::IdleDeadline));
+    }
+
+    #[tokio::test]
+    async fn connection_permit_is_reused_after_error_and_cancellation() {
+        let dir = tempdir().unwrap();
+        let sender = Identity::from_seed(&[0x31; 32]);
+        let recipient = Identity::from_seed(&[0x32; 32]);
+        let state = Arc::new(Mutex::new(node_state(
+            &dir.path().join("permits.sqlite"),
+            recipient,
+            &sender,
+        )));
+        let limiter = Arc::new(Semaphore::new(1));
+
+        let (server, mut client) = tcp_pair().await;
+        let handle =
+            spawn_connection_handler(server, state.clone(), limiter.clone(), short_test_limits())
+                .unwrap();
+        assert_eq!(limiter.available_permits(), 0);
+        assert!(limiter.clone().try_acquire_owned().is_err());
+        client.write_all(&0u32.to_be_bytes()).await.unwrap();
+        client.shutdown().await.unwrap();
+        assert!(handle.await.unwrap().unwrap_err().contains("invalid frame"));
+        assert_eq!(limiter.available_permits(), 1);
+
+        let (server, _client) = tcp_pair().await;
+        let handle =
+            spawn_connection_handler(server, state, limiter.clone(), short_test_limits()).unwrap();
+        assert_eq!(limiter.available_permits(), 0);
+        abort_handler(&handle);
+        assert!(handle.await.unwrap_err().is_cancelled());
+        assert_eq!(limiter.available_permits(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn connection_lifetime_timeout_releases_permit() {
+        let dir = tempdir().unwrap();
+        let sender = Identity::from_seed(&[0x41; 32]);
+        let recipient = Identity::from_seed(&[0x42; 32]);
+        let state = Arc::new(Mutex::new(node_state(
+            &dir.path().join("lifetime.sqlite"),
+            recipient,
+            &sender,
+        )));
+        let limiter = Arc::new(Semaphore::new(1));
+        let limits = ConnectionLimits {
+            idle_timeout: Duration::from_secs(60),
+            frame_timeout: Duration::from_secs(60),
+            write_timeout: Duration::from_secs(2),
+            lifetime: Duration::from_secs(5),
+        };
+
+        let (server, _client) = tcp_pair().await;
+        let handle = spawn_connection_handler(server, state, limiter.clone(), limits).unwrap();
+        assert_eq!(limiter.available_permits(), 0);
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(6)).await;
+        assert!(handle
+            .await
+            .unwrap()
+            .unwrap_err()
+            .contains("connection lifetime"));
+        assert_eq!(limiter.available_permits(), 1);
+    }
+}
+
+async fn handle_connection_until(
+    mut stream: TcpStream,
+    state: Arc<Mutex<NodeState>>,
+    limits: ConnectionLimits,
+    lifetime_deadline: tokio::time::Instant,
+) -> Result<(), String> {
+    let connection = async {
+        loop {
+            let frame = match read_frame_with_limits(&mut stream, limits).await {
+                Ok(f) => f,
+                Err(FrameReadError::Closed) => break,
+                Err(FrameReadError::Truncated) => return Err("truncated frame".to_string()),
+                Err(FrameReadError::InvalidLength) => {
+                    return Err("invalid frame length".to_string())
+                }
+                Err(FrameReadError::IdleDeadline) => {
+                    return Err("connection idle deadline exceeded".to_string())
+                }
+                Err(FrameReadError::FrameDeadline) => {
+                    return Err("frame read deadline exceeded".to_string())
+                }
+            };
+            let reply = {
+                let mut st = state.lock().await;
+                // Detailed parser/authentication failures are deliberately not logged:
+                // untrusted peers must not create a log-amplification channel.
+                st.handle_inbound(&frame).ok().flatten()
+            };
+            if let Some(ack_bytes) = reply {
+                write_frame_with_timeout(&mut stream, &ack_bytes, limits.write_timeout).await?;
+            }
+        }
+        Ok(())
+    };
+
+    tokio::time::timeout_at(lifetime_deadline, connection)
+        .await
+        .map_err(|_| "connection lifetime exceeded".to_string())?
+}
+
+fn spawn_connection_handler(
+    stream: TcpStream,
+    state: Arc<Mutex<NodeState>>,
+    limiter: Arc<Semaphore>,
+    limits: ConnectionLimits,
+) -> Result<JoinHandle<Result<(), String>>, ()> {
+    let permit = limiter.try_acquire_owned().map_err(|_| ())?;
+    // Measure lifetime from admission, not from whenever the executor first
+    // polls the spawned task.
+    let lifetime_deadline = tokio::time::Instant::now() + limits.lifetime;
+    Ok(tokio::spawn(async move {
+        // The owned permit is released by RAII on normal return, timeout,
+        // cancellation, or panic unwinding.
+        let _permit = permit;
+        handle_connection_until(stream, state, limits, lifetime_deadline).await
+    }))
+}
+
+fn spawn_default_connection_handler(
+    stream: TcpStream,
+    state: Arc<Mutex<NodeState>>,
+    limiter: Arc<Semaphore>,
+) -> Result<JoinHandle<Result<(), String>>, ()> {
+    spawn_connection_handler(stream, state, limiter, DEFAULT_CONNECTION_LIMITS)
+}
+
+fn abort_handler(handle: &JoinHandle<Result<(), String>>) {
+    if !handle.is_finished() {
+        handle.abort();
+    }
 }
 
 #[tokio::main]
@@ -554,6 +1018,7 @@ async fn main() {
                 recv_count: 0,
                 got_ack: false,
             }));
+            let connection_limiter = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTION_HANDLERS));
 
             let listener = TcpListener::bind(&listen).await.unwrap_or_else(|e| {
                 eprintln!("bind: {e}");
@@ -566,15 +1031,19 @@ async fn main() {
             }
 
             let state_accept = state.clone();
+            let limiter_accept = connection_limiter.clone();
             tokio::spawn(async move {
                 loop {
                     match listener.accept().await {
-                        Ok((stream, addr)) => {
-                            eprintln!("raven-node: accept {addr}");
+                        Ok((stream, _)) => {
                             let st = state_accept.clone();
-                            tokio::spawn(async move {
-                                let _ = handle_connection(stream, st).await;
-                            });
+                            // Admission is intentionally non-blocking. When full, the
+                            // just-accepted socket is dropped without spawning work.
+                            let _ = spawn_default_connection_handler(
+                                stream,
+                                st,
+                                limiter_accept.clone(),
+                            );
                         }
                         Err(e) => {
                             eprintln!("accept err: {e}");
@@ -606,7 +1075,8 @@ async fn main() {
                 None
             };
 
-            if let (Some(peer_s), Some(text), Some(pp)) = (peer.as_ref(), send_body.as_ref(), seal_to)
+            if let (Some(peer_s), Some(text), Some(pp)) =
+                (peer.as_ref(), send_body.as_ref(), seal_to)
             {
                 let mut mid = [0u8; 16];
                 rand::thread_rng().fill_bytes(&mut mid);
@@ -619,14 +1089,6 @@ async fn main() {
                         })
                 };
                 let packed = env.pack();
-                {
-                    let id = raven_core::EnvelopeIdentity::from_envelope(&env);
-                    eprintln!(
-                        "raven-node: ENVELOPE_FP mid={} body_sha256={}",
-                        hex::encode(id.message_id),
-                        hex::encode(id.body_sha256)
-                    );
-                }
                 {
                     let st = state.lock().await;
                     st.queue
@@ -652,11 +1114,11 @@ async fn main() {
                     let st = state.lock().await;
                     st.queue.mark_state(&mid, DeliveryState::Sent).unwrap();
                 }
-                eprintln!("raven-node: SENT message_id={}", hex::encode(mid));
                 let st = state.clone();
-                tokio::spawn(async move {
-                    let _ = handle_connection(stream, st).await;
-                });
+                if spawn_default_connection_handler(stream, st, connection_limiter.clone()).is_err()
+                {
+                    eprintln!("raven-node: connection handler capacity reached");
+                }
             } else if let Some(peer_s) = peer.as_ref() {
                 // Dial-only (e.g. C connects to B mock-BLE to receive).
                 let addr: SocketAddr = peer_s.parse().unwrap_or_else(|e| {
@@ -667,14 +1129,15 @@ async fn main() {
                     eprintln!("connect: {e}");
                     std::process::exit(1);
                 });
-                eprintln!("raven-node: dialed {addr} (recv mode)");
                 let st = state.clone();
-                tokio::spawn(async move {
-                    let _ = handle_connection(stream, st).await;
-                });
+                if spawn_default_connection_handler(stream, st, connection_limiter.clone()).is_err()
+                {
+                    eprintln!("raven-node: connection handler capacity reached");
+                }
             }
 
-            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+            let deadline =
+                tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
             loop {
                 if tokio::time::Instant::now() > deadline {
                     eprintln!("raven-node: timeout");
@@ -720,20 +1183,13 @@ async fn main() {
         }
         Commands::Status { data_dir } => {
             let policy = load_policy(&data_dir);
-            let (pending, total) = match ForwardQueue::open(&bridge_run::forward_queue_path(&data_dir))
-            {
-                Ok(q) => (
-                    q.count_pending().unwrap_or(0),
-                    q.count_all().unwrap_or(0),
-                ),
-                Err(_) => (0, 0),
-            };
-            let snap = BridgeStatusSnapshot::from_policy(
-                &policy,
-                &["lan", "mock_ble"],
-                pending,
-                total,
-            );
+            let (pending, total) =
+                match ForwardQueue::open(&bridge_run::forward_queue_path(&data_dir)) {
+                    Ok(q) => (q.count_pending().unwrap_or(0), q.count_all().unwrap_or(0)),
+                    Err(_) => (0, 0),
+                };
+            let snap =
+                BridgeStatusSnapshot::from_policy(&policy, &["lan", "mock_ble"], pending, total);
             println!("bridge={}", snap.bridge);
             println!("store={}", snap.store);
             println!("relay={}", snap.relay);
@@ -768,9 +1224,12 @@ async fn main() {
                 recv_count: 0,
                 got_ack: false,
             }));
+            let connection_limiter = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTION_HANDLERS));
             for item in pending {
                 let mut stream = TcpStream::connect(addr).await.unwrap();
-                write_frame(&mut stream, &item.packed_envelope).await.unwrap();
+                write_frame(&mut stream, &item.packed_envelope)
+                    .await
+                    .unwrap();
                 {
                     let st = state.lock().await;
                     st.queue
@@ -778,14 +1237,21 @@ async fn main() {
                         .unwrap();
                 }
                 let st = state.clone();
-                let handle = tokio::spawn(async move {
-                    let _ = handle_connection(stream, st).await;
-                });
-                let _ = tokio::time::timeout(
-                    std::time::Duration::from_secs(timeout_secs),
-                    handle,
-                )
-                .await;
+                let Ok(mut handle) =
+                    spawn_default_connection_handler(stream, st, connection_limiter.clone())
+                else {
+                    eprintln!("raven-node: connection handler capacity reached");
+                    continue;
+                };
+                if tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), &mut handle)
+                    .await
+                    .is_err()
+                {
+                    // Dropping a JoinHandle detaches it. Explicit cancellation is
+                    // required so a stalled peer cannot accumulate flush handlers.
+                    abort_handler(&handle);
+                    let _ = handle.await;
+                }
             }
             let st = state.lock().await;
             if st.got_ack {
@@ -871,9 +1337,7 @@ async fn main() {
             #[cfg(not(feature = "corebluetooth"))]
             {
                 println!("corebluetooth_feature=off");
-                println!(
-                    "corebluetooth_build=cargo build -p raven-node --features corebluetooth"
-                );
+                println!("corebluetooth_build=cargo build -p raven-node --features corebluetooth");
             }
         }
     }

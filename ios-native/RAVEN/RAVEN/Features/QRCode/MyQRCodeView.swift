@@ -41,12 +41,23 @@ struct MyQRCodeView: View {
                     
                     // Username
                     VStack(spacing: 4) {
-                        Text(authService.currentUser?.displayName ?? "User")
+                        let user = authService.currentUser
+                        let name = user?.displayName ?? "User"
+                        Text(name)
                             .font(.system(size: 20, weight: .semibold))
-                        
-                        Text("@\(authService.currentUser?.username ?? "username")")
-                            .font(.system(size: 14))
-                            .foregroundStyle(.secondary)
+
+                        // Only show the "@username" line when a *distinct*
+                        // username exists. `User.displayName` already falls back
+                        // to `username` when there's no first/last name, so
+                        // rendering both unconditionally would print the same
+                        // string twice (serverless local identity case).
+                        if let username = user?.username,
+                           !username.isEmpty,
+                           username != name {
+                            Text("@\(username)")
+                                .font(.system(size: 14))
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     
                     // Hint — explicit "for adding friends" so the

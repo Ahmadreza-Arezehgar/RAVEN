@@ -254,6 +254,78 @@ final class MeshInteropVectorsTests: XCTestCase {
         XCTAssertEqual(signingString, "msg-1|alice|bob|delivered|1700000000000")
     }
 
+    func testAckAuthorizationRequiresExactStoredRecipientBinding() {
+        XCTAssertTrue(
+            MeshACKHandler.hasExactOutboundBinding(
+                localUserId: "alice",
+                ackSenderId: "bob",
+                rowSenderId: "alice",
+                rowRecipientId: "bob"
+            )
+        )
+        XCTAssertFalse(
+            MeshACKHandler.hasExactOutboundBinding(
+                localUserId: "alice",
+                ackSenderId: "mallory",
+                rowSenderId: "alice",
+                rowRecipientId: "bob"
+            ),
+            "A valid signature from another user must not acknowledge Bob's message"
+        )
+        XCTAssertFalse(
+            MeshACKHandler.hasExactOutboundBinding(
+                localUserId: "alice",
+                ackSenderId: "bob",
+                rowSenderId: "carol",
+                rowRecipientId: "bob"
+            ),
+            "The ACK must not mutate a row not authored by the local account"
+        )
+        XCTAssertFalse(
+            MeshACKHandler.hasExactOutboundBinding(
+                localUserId: "alice",
+                ackSenderId: "bob",
+                rowSenderId: "alice",
+                rowRecipientId: "group-123"
+            ),
+            "A legacy group row names no exact member recipient and must fail closed"
+        )
+    }
+
+    func testAckAuthorizationRequiresAnAlreadyPinnedRecipientDeviceKey() {
+        let pinnedOne = Data(repeating: 0x11, count: 32)
+        let pinnedTwo = Data(repeating: 0x22, count: 32)
+        let attacker = Data(repeating: 0x33, count: 32)
+
+        XCTAssertTrue(
+            MeshACKHandler.signerKeyIsPinned(
+                pinnedTwo,
+                expectedRecipientKeys: [pinnedOne, pinnedTwo]
+            )
+        )
+        XCTAssertFalse(
+            MeshACKHandler.signerKeyIsPinned(
+                attacker,
+                expectedRecipientKeys: [pinnedOne, pinnedTwo]
+            )
+        )
+        XCTAssertFalse(
+            MeshACKHandler.signerKeyIsPinned(
+                Data(repeating: 0x11, count: 31),
+                expectedRecipientKeys: [Data(repeating: 0x11, count: 31)]
+            ),
+            "Malformed Ed25519 keys must fail closed even if byte-equal"
+        )
+    }
+
+    func testAckStatusOnlyAdvancesMonotonically() {
+        XCTAssertTrue(MeshACKHandler.statusAdvances(from: .sent, to: .delivered))
+        XCTAssertTrue(MeshACKHandler.statusAdvances(from: .delivered, to: .read))
+        XCTAssertFalse(MeshACKHandler.statusAdvances(from: .read, to: .delivered))
+        XCTAssertFalse(MeshACKHandler.statusAdvances(from: .delivered, to: .delivered))
+        XCTAssertFalse(MeshACKHandler.statusAdvances(from: .read, to: .read))
+    }
+
     // ─── Stop-command signing ────────────────────────────────────────
 
     /// Twin: `StopCommand_SigningData_MatchesPipeFormat` (C#).

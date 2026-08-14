@@ -8,9 +8,17 @@
 //! Migration: replace seal/unseal bodies with full ATSAM hybrid root + chain ratchet
 //! per `protocol/ATSAM_PRIMITIVE_MAPPING_V1.md` without changing RavenEnvelopeV1.
 
+#[cfg(all(feature = "unsafe-demo-crypto", not(debug_assertions)))]
+compile_error!(
+    "unsafe-demo-crypto is forbidden in release builds; establish an authenticated ATSAM session"
+);
+
+#[cfg(feature = "unsafe-demo-crypto")]
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
+#[cfg(feature = "unsafe-demo-crypto")]
 use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 use hkdf::Hkdf;
+#[cfg(feature = "unsafe-demo-crypto")]
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 
@@ -26,6 +34,11 @@ pub const ATSAM_PROTO_V2: u8 = 0x02;
 pub const STUB_SUITE: u8 = 0x01; // ChaCha20-Poly1305
 
 const INFO: &[u8] = b"raven/rvn1/interim-seal/v0";
+
+/// Stable error returned when a production build encounters the lab-only
+/// public-key-derived cipher.
+pub const UNSAFE_INTERIM_DISABLED: &str =
+    "UNSAFE_INTERIM_DISABLED: establish an authenticated ATSAM session";
 
 /// How a `message_ciphertext` body should be handled by a terminal node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,10 +124,13 @@ pub fn rvna1_wire_plausible(wire: &[u8]) -> bool {
     }
 }
 
-/// Derive a 32-byte pairwise key from shared secret material + address pair.
-/// Phase B bootstrap: nodes exchange Ed25519 pubs out-of-band; shared secret is
-/// SHA-256("raven/rvn1/interim-psk" || sort(pub_a, pub_b)) for localhost demo only.
-/// Clear migration point: replace with ATSAM K_root / chain K_msg.
+/// Derive the lab-only pre-ATSAM key from two public identity keys.
+///
+/// # Security
+///
+/// This is intentionally available only to compatibility code.  **It is not a
+/// shared secret**: every observer that knows the public keys can derive it.
+/// [`seal_message`] refuses to use it in default/production builds.
 pub fn derive_pairwise_key(local_pub: &[u8; 32], peer_pub: &[u8; 32]) -> [u8; 32] {
     let (a, b) = if local_pub.as_slice() <= peer_pub.as_slice() {
         (local_pub, peer_pub)
@@ -140,28 +156,37 @@ pub fn seal_message(
     recipient_addr: &str,
     msg_id: &[u8; 16],
 ) -> Result<Vec<u8>, String> {
-    let aad = build_aad(sender_addr, recipient_addr, msg_id);
-    let cipher = ChaCha20Poly1305::new(key.into());
-    let mut nonce_bytes = [0u8; 12];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
-    let ct = cipher
-        .encrypt(
-            nonce,
-            Payload {
-                msg: plaintext,
-                aad: &aad,
-            },
-        )
-        .map_err(|_| "seal failed".to_string())?;
+    #[cfg(not(feature = "unsafe-demo-crypto"))]
+    {
+        let _ = (key, plaintext, sender_addr, recipient_addr, msg_id);
+        Err(UNSAFE_INTERIM_DISABLED.into())
+    }
 
-    let mut wire = Vec::with_capacity(8 + 2 + 12 + ct.len());
-    wire.extend_from_slice(&SEAL_MAGIC_RVNA1);
-    wire.push(STUB_PROTO);
-    wire.push(STUB_SUITE);
-    wire.extend_from_slice(&nonce_bytes);
-    wire.extend_from_slice(&ct);
-    Ok(wire)
+    #[cfg(feature = "unsafe-demo-crypto")]
+    {
+        let aad = build_aad(sender_addr, recipient_addr, msg_id);
+        let cipher = ChaCha20Poly1305::new(key.into());
+        let mut nonce_bytes = [0u8; 12];
+        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+        let nonce = Nonce::from_slice(&nonce_bytes);
+        let ct = cipher
+            .encrypt(
+                nonce,
+                Payload {
+                    msg: plaintext,
+                    aad: &aad,
+                },
+            )
+            .map_err(|_| "seal failed".to_string())?;
+
+        let mut wire = Vec::with_capacity(8 + 2 + 12 + ct.len());
+        wire.extend_from_slice(&SEAL_MAGIC_RVNA1);
+        wire.push(STUB_PROTO);
+        wire.push(STUB_SUITE);
+        wire.extend_from_slice(&nonce_bytes);
+        wire.extend_from_slice(&ct);
+        Ok(wire)
+    }
 }
 
 pub fn unseal_message(
@@ -191,21 +216,26 @@ pub fn unseal_message(
     if wire[9] != STUB_SUITE {
         return Err("unsupported seal suite".into());
     }
-    let nonce = Nonce::from_slice(&wire[10..22]);
-    let ct = &wire[22..];
-    let aad = build_aad(sender_addr, recipient_addr, msg_id);
-    let cipher = ChaCha20Poly1305::new(key.into());
-    cipher
-        .decrypt(
-            nonce,
-            Payload {
-                msg: ct,
-                aad: &aad,
-            },
-        )
-        .map_err(|_| "unseal failed".to_string())
+
+    #[cfg(not(feature = "unsafe-demo-crypto"))]
+    {
+        let _ = (key, sender_addr, recipient_addr, msg_id);
+        Err(UNSAFE_INTERIM_DISABLED.into())
+    }
+
+    #[cfg(feature = "unsafe-demo-crypto")]
+    {
+        let nonce = Nonce::from_slice(&wire[10..22]);
+        let ct = &wire[22..];
+        let aad = build_aad(sender_addr, recipient_addr, msg_id);
+        let cipher = ChaCha20Poly1305::new(key.into());
+        cipher
+            .decrypt(nonce, Payload { msg: ct, aad: &aad })
+            .map_err(|_| "unseal failed".to_string())
+    }
 }
 
+#[cfg(feature = "unsafe-demo-crypto")]
 fn build_aad(sender: &str, recipient: &str, msg_id: &[u8; 16]) -> [u8; 32] {
     let mut h = Sha256::new();
     h.update(b"raven/rvn1/interim-seal/aad");
@@ -222,6 +252,7 @@ fn build_aad(sender: &str, recipient: &str, msg_id: &[u8; 16]) -> [u8; 32] {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "unsafe-demo-crypto")]
     #[test]
     fn roundtrip() {
         let a = [1u8; 32];
@@ -239,6 +270,7 @@ mod tests {
         assert!(unseal_message(&key, &[0u8; 5], "a", "b", &[0u8; 16]).is_err());
     }
 
+    #[cfg(feature = "unsafe-demo-crypto")]
     #[test]
     fn pairwise_key_fixed_vector() {
         let a = [1u8; 32];
@@ -278,6 +310,21 @@ mod tests {
         v2.extend_from_slice(&[0u8; 40]);
         let err = unseal_message(&key, &v2, "a", "b", &[0u8; 16]).unwrap_err();
         assert!(err.contains("opaque ATSAM"));
+    }
+
+    #[cfg(not(feature = "unsafe-demo-crypto"))]
+    #[test]
+    fn production_build_refuses_public_key_demo_cipher() {
+        let key = derive_pairwise_key(&[1u8; 32], &[2u8; 32]);
+        let mid = [9u8; 16];
+        let err = seal_message(&key, b"secret", "rvn1aaa", "rvn1bbb", &mid).unwrap_err();
+        assert_eq!(err, UNSAFE_INTERIM_DISABLED);
+
+        let mut wire = SEAL_MAGIC_RVNA1.to_vec();
+        wire.extend_from_slice(&[STUB_PROTO, STUB_SUITE]);
+        wire.extend_from_slice(&[0u8; 28]);
+        let err = unseal_message(&key, &wire, "rvn1aaa", "rvn1bbb", &mid).unwrap_err();
+        assert_eq!(err, UNSAFE_INTERIM_DISABLED);
     }
 
     #[test]

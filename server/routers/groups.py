@@ -753,8 +753,17 @@ async def send_group_message(
         )
     
     # Check for duplicate (idempotency)
+    # 🔒 SECURITY (audit H5 — cross-group disclosure): the lookup MUST
+    # be scoped to the current group. GroupMessage.id is a global PK and
+    # req.message_id is attacker-controlled; without the group_id filter,
+    # a member of group A could POST a message_id belonging to group B
+    # and receive B's decrypted content + metadata (sender, mentions,
+    # reply preview) for a group they aren't in.
     if req.message_id:
-        existing = db.query(GroupMessage).filter(GroupMessage.id == req.message_id).first()
+        existing = db.query(GroupMessage).filter(
+            GroupMessage.id == req.message_id,
+            GroupMessage.group_id == group_id,
+        ).first()
         if existing:
             print(f"⚠️ [Groups] Duplicate message {req.message_id}, returning existing")
             return GroupMessageResponse(

@@ -12,11 +12,12 @@
 //! (`ATSAMMlKemHybridKatTests`). Public Internet Kad / CGNAT remain BLOCKED_HARDWARE.
 
 use ml_kem::kem::{Decapsulate, Key, KeyExport};
-use ml_kem::{B32, DecapsulationKey, EncapsulationKey, MlKem768, Seed};
+use ml_kem::{DecapsulationKey, EncapsulationKey, MlKem768, Seed, B32};
 use rand_core::RngCore;
 use x25519_dalek::{PublicKey, StaticSecret};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
-use crate::atsam_root::{derive_root, x25519_shared};
+use crate::atsam_root::{derive_root, x25519_shared_checked};
 
 /// ML-KEM-768 encapsulation key size (FIPS 203).
 pub const EK_LEN: usize = 1184;
@@ -25,6 +26,7 @@ pub const CT_LEN: usize = 1088;
 /// Preferred private seed size for ML-KEM DK.
 pub const DK_SEED_LEN: usize = 64;
 
+#[derive(Zeroize, ZeroizeOnDrop)]
 pub struct HybridKeypair {
     pub x25519_secret: [u8; 32],
     pub x25519_public: [u8; 32],
@@ -58,6 +60,33 @@ impl HybridKeypair {
     }
 }
 
+/// Zeroizing initiator-side shares retained only until the complete signed
+/// PairInit transcript (which includes the ML-KEM ciphertext) is available.
+/// This closes the transcript/ciphertext dependency without deriving a root
+/// from an incomplete or unsigned transcript.
+#[derive(Zeroize, ZeroizeOnDrop)]
+pub struct PendingHybridInitiation {
+    ciphertext: Vec<u8>,
+    z_x: [u8; 32],
+    z_pq: [u8; 32],
+}
+
+impl PendingHybridInitiation {
+    /// Public ML-KEM ciphertext to place in the PairInit before it is signed.
+    pub fn ciphertext(&self) -> &[u8] {
+        &self.ciphertext
+    }
+
+    /// Bind both shares to the hash of the complete signed PairInit. Consuming
+    /// `self` zeroizes the retained shares; the returned root becomes the
+    /// caller's protected-session-storage responsibility.
+    pub fn finalize(mut self, transcript_hash: &[u8; 32]) -> (Vec<u8>, [u8; 32]) {
+        let root = derive_root(&self.z_x, &self.z_pq, transcript_hash);
+        let ciphertext = std::mem::take(&mut self.ciphertext);
+        (ciphertext, root)
+    }
+}
+
 fn parse_ek(bytes: &[u8]) -> Result<EncapsulationKey<MlKem768>, String> {
     if bytes.len() != EK_LEN {
         return Err("mlkem ek length".into());
@@ -65,6 +94,54 @@ fn parse_ek(bytes: &[u8]) -> Result<EncapsulationKey<MlKem768>, String> {
     let key: Key<EncapsulationKey<MlKem768>> =
         bytes.try_into().map_err(|_| "ek array".to_string())?;
     EncapsulationKey::<MlKem768>::new(&key).map_err(|_| "ek decode".into())
+}
+
+/// Begin an offline hybrid PairInit without prematurely deriving `K_root`.
+/// The caller signs a PairInit containing `pending.ciphertext()`, computes the
+/// full transcript hash, and only then consumes the pending value via
+/// [`PendingHybridInitiation::finalize`].
+pub fn begin_hybrid_initiation<R: RngCore + ?Sized>(
+    rng: &mut R,
+    our_x_secret: &[u8; 32],
+    peer_x_public: &[u8; 32],
+    peer_mlkem_ek: &[u8],
+) -> Result<PendingHybridInitiation, String> {
+    let ek = parse_ek(peer_mlkem_ek)?;
+    let mut m = [0u8; 32];
+    rng.fill_bytes(&mut m);
+    let (ciphertext, mut z_pq) = {
+        let m_arr = match B32::try_from(m.as_slice()) {
+            Ok(value) => value,
+            Err(_) => {
+                m.zeroize();
+                return Err("m".into());
+            }
+        };
+        let (ct, ss) = ek.encapsulate_deterministic(&m_arr);
+        m.zeroize();
+        let ciphertext = ct.as_slice().to_vec();
+        if ciphertext.len() != CT_LEN {
+            return Err("ct length".into());
+        }
+        let mut z_pq = [0u8; 32];
+        z_pq.copy_from_slice(ss.as_slice());
+        (ciphertext, z_pq)
+    };
+    let mut z_x = match x25519_shared_checked(our_x_secret, peer_x_public) {
+        Ok(shared) => shared,
+        Err(error) => {
+            z_pq.zeroize();
+            return Err(error);
+        }
+    };
+    let pending = PendingHybridInitiation {
+        ciphertext,
+        z_x,
+        z_pq,
+    };
+    z_x.zeroize();
+    z_pq.zeroize();
+    Ok(pending)
 }
 
 /// Initiator: ECDH + ML-KEM.Encap(peer_ek) → (ct_pq, K_root).
@@ -75,19 +152,35 @@ pub fn initiate_hybrid_root<R: RngCore + ?Sized>(
     peer_mlkem_ek: &[u8],
     transcript_hash: &[u8; 32],
 ) -> Result<(Vec<u8>, [u8; 32]), String> {
-    let z_x = x25519_shared(our_x_secret, peer_x_public);
     let ek = parse_ek(peer_mlkem_ek)?;
     let mut m = [0u8; 32];
     rng.fill_bytes(&mut m);
-    let m_arr = B32::try_from(m.as_slice()).map_err(|_| "m")?;
+    let m_arr = match B32::try_from(m.as_slice()) {
+        Ok(value) => value,
+        Err(_) => {
+            m.zeroize();
+            return Err("m".into());
+        }
+    };
     let (ct, ss) = ek.encapsulate_deterministic(&m_arr);
+    m.zeroize();
     let ct_bytes = ct.as_slice().to_vec();
     if ct_bytes.len() != CT_LEN {
         return Err("ct length".into());
     }
     let mut z_pq = [0u8; 32];
     z_pq.copy_from_slice(ss.as_slice());
-    Ok((ct_bytes, derive_root(&z_x, &z_pq, transcript_hash)))
+    let mut z_x = match x25519_shared_checked(our_x_secret, peer_x_public) {
+        Ok(shared) => shared,
+        Err(error) => {
+            z_pq.zeroize();
+            return Err(error);
+        }
+    };
+    let root = derive_root(&z_x, &z_pq, transcript_hash);
+    z_x.zeroize();
+    z_pq.zeroize();
+    Ok((ct_bytes, root))
 }
 
 /// Responder: ECDH + ML-KEM.Decap(ct) → K_root.
@@ -101,14 +194,23 @@ pub fn respond_hybrid_root(
     if ct_pq.len() != CT_LEN {
         return Err("mlkem ct length".into());
     }
-    let z_x = x25519_shared(our_x_secret, peer_x_public);
     let seed = Seed::try_from(our_mlkem_seed.as_slice()).map_err(|_| "seed")?;
     let dk = DecapsulationKey::<MlKem768>::from_seed(seed);
     let ct = ct_pq.try_into().map_err(|_| "ct array")?;
     let ss = dk.decapsulate(&ct);
     let mut z_pq = [0u8; 32];
     z_pq.copy_from_slice(ss.as_slice());
-    Ok(derive_root(&z_x, &z_pq, transcript_hash))
+    let mut z_x = match x25519_shared_checked(our_x_secret, peer_x_public) {
+        Ok(shared) => shared,
+        Err(error) => {
+            z_pq.zeroize();
+            return Err(error);
+        }
+    };
+    let root = derive_root(&z_x, &z_pq, transcript_hash);
+    z_x.zeroize();
+    z_pq.zeroize();
+    Ok(root)
 }
 
 /// Deterministic encap for KATs (`hazmat` feature).
@@ -172,7 +274,8 @@ mod tests {
 
     fn load_kat() -> Value {
         let path = vectors_root().join("atsam/mlkem768_hybrid_kat_001.json");
-        let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{e} {}", path.display()));
+        let raw =
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{e} {}", path.display()));
         serde_json::from_str(&raw).expect("json")
     }
 

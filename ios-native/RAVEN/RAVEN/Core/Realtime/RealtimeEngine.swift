@@ -48,7 +48,11 @@ class RealtimeEngine: @unchecked Sendable {
         config.allowsExpensiveNetworkAccess = true
         config.allowsConstrainedNetworkAccess = true
         config.waitsForConnectivity = true
-        return URLSession(configuration: config, delegate: nil, delegateQueue: nil)
+        return URLSession(
+            configuration: RavenRuntimePolicy.protectForXCTest(config),
+            delegate: nil,
+            delegateQueue: nil
+        )
     }()
     private var webSocketTask: URLSessionWebSocketTask?
     private var wsReconnectAttempts = 0
@@ -62,6 +66,7 @@ class RealtimeEngine: @unchecked Sendable {
     private let backgroundInterval: TimeInterval = 60  // 60 seconds in background
     
     private init() {
+        guard RavenRuntimePolicy.allowsExternalSideEffects else { return }
         setupLifecycleObservers()
     }
     
@@ -122,6 +127,7 @@ class RealtimeEngine: @unchecked Sendable {
     /// (NWPath transition OR backend-probe success/failure flip).
     /// Fires `syncNow()` only on the actual offline→online edge.
     private func onNetworkStatusChanged() {
+        guard RavenRuntimePolicy.allowsExternalSideEffects else { return }
         let nowOnline = NetworkMonitor.shared.isOnline
         let prevOnline = wasOnline
         wasOnline = nowOnline
@@ -180,6 +186,7 @@ class RealtimeEngine: @unchecked Sendable {
     }
     
     private func onEnterForeground() {
+        guard RavenRuntimePolicy.allowsExternalSideEffects else { return }
         #if DEBUG
         print("[RealtimeEngine] Entering foreground")
         #endif
@@ -231,6 +238,7 @@ class RealtimeEngine: @unchecked Sendable {
     // MARK: - Start/Stop
     
     func start() {
+        guard RavenRuntimePolicy.allowsExternalSideEffects else { return }
         guard connectionState == .disconnected else { return }
 
         let auth = AuthService.shared
@@ -295,6 +303,7 @@ class RealtimeEngine: @unchecked Sendable {
     }
     
     private func connectWebSocket() {
+        guard RavenRuntimePolicy.allowsExternalSideEffects else { return }
         disconnectWebSocket()
         
         Task {
@@ -327,7 +336,9 @@ class RealtimeEngine: @unchecked Sendable {
             CrashGuard.shared.log(.network, "WS connecting", metadata: ["host": wsURL.host ?? "unknown"])
             
             // 🟢 Use dedicated session with cellular flags (NOT URLSession.shared which fails on cellular)
+            guard RavenRuntimePolicy.allowsExternalSideEffects else { return }
             self.webSocketTask = Self.wsSession.webSocketTask(with: wsURL)
+            RavenTestExternalSideEffectAudit.recordActual(.webSocket)
             self.webSocketTask?.resume()
 
             // BUG FIX (2026-05-14, supersedes 2026-05-10): the previous
@@ -865,6 +876,7 @@ class RealtimeEngine: @unchecked Sendable {
     }
     
     private func poll() async {
+        guard RavenRuntimePolicy.allowsExternalSideEffects else { return }
         guard connectionState == .polling || connectionState == .websocket else { return }
         
         // Skip polling when WebSocket is live
@@ -885,6 +897,7 @@ class RealtimeEngine: @unchecked Sendable {
     // MARK: - Sync Now (Force refresh)
     
     func syncNow() async {
+        guard RavenRuntimePolicy.allowsExternalSideEffects else { return }
         #if DEBUG
         print("[RealtimeEngine] Syncing now...")
         #endif
@@ -974,7 +987,16 @@ class RealtimeEngine: @unchecked Sendable {
                             await MessageEncryptionStatusStore.shared
                                 .record(.sealed, for: m.id)
                         } else {
-                            m.text = ""
+                            // 🔒 Decrypt failed — substitute the SAME
+                            // placeholder every other receive path uses
+                            // (ConversationStore.handleIncomingMessages,
+                            // MessageStore, RAVENApp group path) instead
+                            // of an empty body that renders a blank
+                            // bubble. handleIncomingMessages' own
+                            // placeholder logic is gated behind a
+                            // `!wire.isEmpty` check, so an empty string
+                            // here would slip through unsubstituted.
+                            m.text = "🔒 [Encrypted message — could not decrypt]"
                             await MessageEncryptionStatusStore.shared
                                 .record(.sealedButFailed, for: m.id)
                         }
@@ -996,15 +1018,24 @@ class RealtimeEngine: @unchecked Sendable {
                             await MessageEncryptionStatusStore.shared
                                 .record(.plaintextLegacy, for: m.id)
                         case .decryptFailed:
+                            // `result.plaintext` is "" on a decrypt
+                            // failure — substitute the canonical
+                            // placeholder so the bubble isn't blank.
+                            m.text = "🔒 [Encrypted message — could not decrypt]"
                             await MessageEncryptionStatusStore.shared
                                 .record(.sealedButFailed, for: m.id)
                         case .noSenderKey:
-                            break
+                            // Sealed body but no key resolvable — also
+                            // "" plaintext. Same placeholder so we never
+                            // render an empty bubble.
+                            m.text = "🔒 [Encrypted message — could not decrypt]"
                         }
                     } else {
                         // Server returned garbage / non-Base64.
-                        // Don't render attacker bytes.
-                        m.text = ""
+                        // Don't render attacker bytes — show the same
+                        // placeholder the rest of the receive paths use
+                        // rather than an empty body.
+                        m.text = "🔒 [Encrypted message — could not decrypt]"
                         await MessageEncryptionStatusStore.shared
                             .record(.sealedButFailed, for: m.id)
                     }

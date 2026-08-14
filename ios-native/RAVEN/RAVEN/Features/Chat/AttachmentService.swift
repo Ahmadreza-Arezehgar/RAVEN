@@ -39,7 +39,7 @@ actor AttachmentService {
         // induced `cannotParseResponse` / `networkConnectionLost`
         // and re-try on the connection that gets re-established
         // after the QUIC stack is reset.
-        return URLSession(configuration: config)
+        return URLSession(configuration: RavenRuntimePolicy.protectForXCTest(config))
     }()
 
     // Local storage directory
@@ -1138,7 +1138,11 @@ actor AttachmentService {
         // induced `cannotParseResponse` / `networkConnectionLost`
         // and re-try on the connection that gets re-established
         // after the QUIC stack is reset.
-        let session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
+        let session = URLSession(
+            configuration: RavenRuntimePolicy.protectForXCTest(config),
+            delegate: delegate,
+            delegateQueue: nil
+        )
         defer { session.finishTasksAndInvalidate() }
 
         // 🔴 ROUND 22 — inline QUIC retry + body-dump on decode fail.
@@ -1338,7 +1342,11 @@ actor AttachmentService {
         dconfig.waitsForConnectivity = true
         // No public API to disable HTTP/3; retry-on-cannot-parse
         // below handles QUIC-induced truncation.
-        let session = URLSession(configuration: dconfig, delegate: delegate, delegateQueue: nil)
+        let session = URLSession(
+            configuration: RavenRuntimePolicy.protectForXCTest(dconfig),
+            delegate: delegate,
+            delegateQueue: nil
+        )
         defer { session.finishTasksAndInvalidate() }
 
         // 🔴 ROUND 22 — same QUIC retry as uploadImageWithProgress.

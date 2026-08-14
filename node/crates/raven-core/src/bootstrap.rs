@@ -153,7 +153,10 @@ mod tests {
         assert!(!cfg.manual_peer_only_ok());
         cfg.remove_raven_defaults();
         assert!(cfg.manual_peer_only_ok());
-        assert_eq!(cfg.effective_peers(), vec!["/ip4/10.0.0.1/tcp/9".to_string()]);
+        assert_eq!(
+            cfg.effective_peers(),
+            vec!["/ip4/10.0.0.1/tcp/9".to_string()]
+        );
     }
 
     #[test]

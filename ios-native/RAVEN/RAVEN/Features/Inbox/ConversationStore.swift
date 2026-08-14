@@ -557,8 +557,9 @@ class ConversationStore {
                 // gate.
                 //
                 // PROBLEM (pre-fix): the `looksSealed` heuristic only
-                // recognised the 1:1 sealer's magic prefixes
-                // ("UlZT"=RVNS1, "UlZO"=RVNP1). Group AES-GCM
+                // recognised the 1:1 sealer's shared base64 magic
+                // prefix "UlZO" (b64 of "RVN", common to RVNS1/RVNP1/
+                // RVNA1/RVNH1). Group AES-GCM
                 // ciphertext from `GroupKeyService.encrypt` has NO
                 // such magic — it's just base64(nonce(12) || ct ||
                 // tag(16)). So a group message arriving via WS
@@ -592,11 +593,13 @@ class ConversationStore {
                         await MessageEncryptionStatusStore.shared
                             .record(.sealedButFailed, for: normalizedMessage.id)
                     }
-                } else if wire.hasPrefix("UlZT") || wire.hasPrefix("UlZO") {
-                    // 1:1 sealed message — heuristic: a base64 wire
-                    // from the sealer starts with RVNS1 → "UlZT" or
-                    // RVNP1 → "UlZO" (b64 of the magic bytes). Plain
-                    // text obviously doesn't.
+                } else if wire.hasPrefix("UlZO") {
+                    // 1:1 sealed message — heuristic: every RAVEN seal
+                    // magic (RVNS1 / RVNP1 / RVNA1 / RVNH1) shares the
+                    // first 3 bytes "RVN", which base64-encode to the
+                    // shared 4-char prefix "UlZO". Plain text doesn't.
+                    // MessageContentSealer.unseal does the authoritative
+                    // 8-byte magic dispatch; this is just a cheap gate.
                     let unsealResult = await MessageContentSealer.unseal(
                         encoded: wire,
                         senderUserId: normalizedMessage.senderId,

@@ -110,15 +110,21 @@ final class GroupService {
         )
 
         // ⚡ AUDIT FIX (#6): Offline-first group creation.
+        // 🔴 SERVERLESS PIVOT (2026-06-20): Group creation must work with NO
+        // server and NO auth token. Previously this only fell back to a local
+        // pending group on `.networkError`; every other APIError (notably
+        // `.unauthorized`, which is what `NetworkService` throws when there is
+        // no token — the normal serverless state) was rethrown, surfacing a
+        // raw "Invalid credentials" alert and never creating the group.
         //
-        // Previously the path here was `try await network.post(...)` which
-        // throws immediately when offline → no local group, no conversation,
-        // user can't even see the group exists. Now we attempt the server
-        // call first, and on a CONNECTION error fall back to a locally-created
-        // group with `syncStatus: .pending`. The conversation is created so
-        // the user can open the chat and queue messages immediately. The
-        // group is reconciled with the server on the next successful
-        // `fetchMyGroups()` call.
+        // Now ANY non-client APIError (.unauthorized / .forbidden / .notFound /
+        // .serverError / .networkError / etc.) — and any non-APIError — falls
+        // through to the local synthesized group with `syncStatus: .pending`.
+        // The conversation is created so the user can open the chat and queue
+        // messages immediately, and the group is broadcast over mesh below so
+        // BLE-only peers materialize it. Only GENUINE client/programming
+        // errors (`.badRequest` / `.decodingError`) still surface, since those
+        // indicate a malformed request rather than an absent backend.
         var group: ChatGroup
         do {
             group = try await network.post(
@@ -127,14 +133,17 @@ final class GroupService {
             )
         } catch let error as APIError {
             switch error {
-            case .networkError:
-                // Offline / cloud unreachable → synthesize a local group.
+            case .badRequest, .decodingError:
+                // Genuine client/programming error — let it surface.
+                throw error
+            default:
+                // .unauthorized / .forbidden / .notFound / .serverError /
+                // .networkError / … → no reachable backend. Synthesize a local
+                // pending group so the serverless flow works end-to-end.
                 group = await Self.makeLocalPendingGroup(request: request, memberIds: memberIds)
                 #if DEBUG
-                print("📵 [GroupService] Server unreachable — created local pending group \(group.id.prefix(8))")
+                print("📵 [GroupService] Server unreachable (\(error)) — created local pending group \(group.id.prefix(8))")
                 #endif
-            default:
-                throw error
             }
         } catch {
             // Treat any unrecognized error as transient → fall back to local

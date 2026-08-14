@@ -85,8 +85,10 @@ struct MainShellView: View {
         .onAppear {
             // Realtime + mesh delivery startup. With a local key identity there
             // is no email gate; start once we have an identity.
-            if AuthService.shared.isAuthenticated {
+            if RavenRuntimePolicy.allowsExternalSideEffects,
+               AuthService.shared.isAuthenticated {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                    guard RavenRuntimePolicy.allowsExternalSideEffects else { return }
                     RealtimeEngine.shared.start()
                     PresenceService.shared.startHeartbeat()
                     DeliveryJobRunner.shared.start()

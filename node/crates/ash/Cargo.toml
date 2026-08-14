@@ -13,6 +13,11 @@ path = "src/bin/ash.rs"
 name = "raven"
 path = "src/bin/raven.rs"
 
+[features]
+default = []
+# Explicit lab opt-in for the publicly-derivable pre-ATSAM demo cipher.
+unsafe-demo-crypto = ["raven-core/unsafe-demo-crypto"]
+
 [dependencies]
 raven-core = { workspace = true }
 clap = { workspace = true }
@@ -22,3 +27,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 rand = { workspace = true }
+zeroize = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

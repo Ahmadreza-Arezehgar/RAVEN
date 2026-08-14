@@ -15,6 +15,12 @@ public struct RavenEnvelopeV1: Equatable, Sendable {
     public static let magic = Data([0x52, 0x56, 0x4E, 0x31]) // RVN1
     public static let version: UInt8 = 1
     public static let prefixLength = 86
+    /// Canonical RVN1 object ceiling. Text ciphertext is capped at 256 KiB;
+    /// media requires a separately versioned chunk transport.
+    public static let maximumWireLength = 1_048_576
+
+    private static let allowedFlags: UInt16 = 0b0000_0011
+    private static let authenticationLength = 64
 
     public var envType: UInt8
     public var flags: UInt16
@@ -92,26 +98,36 @@ public struct RavenEnvelopeV1: Equatable, Sendable {
     }
 
     public static func unpack(_ raw: Data) -> RavenEnvelopeV1? {
-        guard raw.count >= prefixLength else { return nil }
+        // Network-strict entry point used by the LAN, BLE, bridge, and endpoint
+        // ingress paths. Bound the frame before reading declared lengths.
+        guard raw.count >= prefixLength, raw.count <= maximumWireLength else { return nil }
         guard raw.prefix(4).elementsEqual(magic), raw[4] == version else { return nil }
         let envType = raw[5]
+        guard EnvType(rawValue: envType) != nil else { return nil }
         let flags = raw.readUInt16BE(at: 6)
+        guard flags & ~allowedFlags == 0 else { return nil }
         let messageId = raw.subdata(in: 8..<24)
         let routingTag = raw.subdata(in: 24..<40)
         let destHint = raw.readUInt64BE(at: 40)
         let created = raw.readUInt64BE(at: 48)
         let expires = raw.readUInt64BE(at: 56)
+        guard expires > created else { return nil }
         let hop = raw[64]
         let repl = raw[65]
         let nonce = raw.subdata(in: 66..<78)
         let hdrLen = Int(raw.readUInt16BE(at: 78))
         let bodyLen = Int(raw.readUInt32BE(at: 80))
         let authLen = Int(raw.readUInt16BE(at: 84))
-        var o = prefixLength
-        guard raw.count == o + hdrLen + bodyLen + authLen else { return nil }
-        let hdr = raw.subdata(in: o..<(o + hdrLen)); o += hdrLen
-        let body = raw.subdata(in: o..<(o + bodyLen)); o += bodyLen
-        let auth = raw.subdata(in: o..<(o + authLen))
+        guard authLen == authenticationLength else { return nil }
+
+        let (headerEnd, headerOverflow) = prefixLength.addingReportingOverflow(hdrLen)
+        let (bodyEnd, bodyOverflow) = headerEnd.addingReportingOverflow(bodyLen)
+        let (authenticationEnd, authenticationOverflow) = bodyEnd.addingReportingOverflow(authLen)
+        guard !headerOverflow, !bodyOverflow, !authenticationOverflow,
+              raw.count == authenticationEnd else { return nil }
+        let hdr = raw.subdata(in: prefixLength..<headerEnd)
+        let body = raw.subdata(in: headerEnd..<bodyEnd)
+        let auth = raw.subdata(in: bodyEnd..<authenticationEnd)
         return RavenEnvelopeV1(
             envType: envType,
             flags: flags,
@@ -162,6 +178,55 @@ public struct RavenEnvelopeV1: Equatable, Sendable {
     public func verify(publicKey: Curve25519.Signing.PublicKey) -> Bool {
         guard senderAuthentication.count == 64 else { return false }
         return publicKey.isValidSignature(senderAuthentication, for: signingBytes())
+    }
+
+    /// Stable relay-cache key for the immutable envelope object.
+    ///
+    /// This is not proof that an unknown sender is authentic. It deliberately
+    /// includes the purported signature and the canonical signing bytes so an
+    /// attacker cannot poison relay dedup merely by copying a public message ID.
+    /// Mutable hop fields are already normalized by `signingBytes()`.
+    public func relayObjectDigest() -> Data {
+        var digest = SHA256()
+        digest.update(data: Data("rvn1/relay-object-digest/v1".utf8))
+        digest.update(data: signingBytes())
+        digest.update(data: senderAuthentication)
+        return Data(digest.finalize())
+    }
+}
+
+// MARK: - Routing tag
+
+/// Frozen RavenRoutingTagV1 primitive:
+/// `HMAC-SHA256(K_route, "rvn1/route" || epoch_be8 || counter_be8)[:16]`.
+///
+/// This type intentionally implements only the interoperable primitive. How a
+/// session allocates and persists `(epoch, counter)` is a protocol decision and
+/// must not be guessed from mutable transport state.
+enum RavenRoutingTagV1 {
+    private static let domain = Data("rvn1/route".utf8)
+
+    static func derive(kRoute: Data, epoch: UInt64, counter: UInt64) -> Data? {
+        guard kRoute.count == 32 else { return nil }
+        var input = Data(capacity: domain.count + 16)
+        input.append(domain)
+        input.appendUInt64BE(epoch)
+        input.appendUInt64BE(counter)
+        let code = HMAC<SHA256>.authenticationCode(
+            for: input,
+            using: SymmetricKey(data: kRoute)
+        )
+        return Data(code.prefix(16))
+    }
+
+    /// Length-checked comparison that performs the same work for every byte.
+    static func matches(_ lhs: Data, _ rhs: Data) -> Bool {
+        guard lhs.count == 16, rhs.count == 16 else { return false }
+        var difference: UInt8 = 0
+        for index in 0..<16 {
+            difference |= lhs[index] ^ rhs[index]
+        }
+        return difference == 0
     }
 }
 

@@ -32,15 +32,27 @@ class AuthService {
     }
     
     var isAuthenticated: Bool { currentUser != nil }
-    
-    /// OAuth user who completed username but hasn't added phone
+
+    /// OAuth user who completed username but hasn't added phone.
+    /// Serverless model: there is no OAuth (Google/Apple) path anymore, so
+    /// this is always `false` for the local key-based identity. Kept as a
+    /// stable accessor for any view still reading it.
     var needsPhoneNumber: Bool {
         guard let user = currentUser else { return false }
         let isOAuth = user.authMethod == .google || user.authMethod == .apple
         return isOAuth && (user.phone == nil || user.phone?.isEmpty == true)
     }
-    var isEmailVerified: Bool { currentUser?.emailVerified ?? false }
-    var needsEmailVerification: Bool { isAuthenticated && !isEmailVerified }
+
+    /// Serverless (no-account) model: there is no email to verify — the
+    /// on-device keypair IS the account. This MUST report `true` whenever an
+    /// identity exists so the email-verification gate never blocks realtime
+    /// connect / sync (see `RealtimeEngine`'s readiness checks, which guard on
+    /// `auth.isEmailVerified`). Returns `false` only when there is no identity
+    /// at all, in which case `isAuthenticated` is already `false`.
+    var isEmailVerified: Bool { isAuthenticated }
+
+    /// Serverless model: never require email verification. Always `false`.
+    var needsEmailVerification: Bool { false }
 
     private init() {}
 
@@ -56,6 +68,11 @@ class AuthService {
 
     /// UserDefaults key for the locally-chosen display name.
     private static let localDisplayNameKey = "raven.local.displayName"
+
+    /// UserDefaults key for the locally-chosen avatar file path (serverless —
+    /// the avatar lives on-device only, so it must be re-applied to currentUser
+    /// on every launch by bootstrapLocalIdentity).
+    private static let localAvatarPathKey = "raven.local.avatarPath"
 
     /// Whether the user has explicitly chosen a display name yet. (A keypair
     /// always exists after first launch; this tracks the one-time name step.)
@@ -92,6 +109,8 @@ class AuthService {
             displayName: name,
             publicKey: DeviceIdentityService.shared.publicKeyBase64
         )
+        // Re-apply the locally-stored avatar (serverless: not in any server record).
+        currentUser?.avatarPath = UserDefaults.standard.string(forKey: Self.localAvatarPathKey)
         requiresUsernameSetup = false
         bootState = .authenticated
         #if DEBUG
@@ -111,110 +130,50 @@ class AuthService {
         UserDefaults.standard.set(trimmed.isEmpty ? "Raven User" : trimmed, forKey: Self.localDisplayNameKey)
         return await bootstrapLocalIdentity()
     }
-    
-    // MARK: - Register
-    
-    struct RegisterRequest: Encodable {
-        let username: String
-        let password: String
-        let firstName: String
-        let lastName: String
-        let birthYear: Int
-        let email: String
-        let phone: String?
-    }
-    
-    func register(
-        username: String,
-        password: String,
-        firstName: String,
-        lastName: String,
-        birthYear: Int,
-        email: String,
-        phone: String? = nil
-    ) async throws {
-        // ⚠️ Phase 2A client-side password stretching is DISABLED.
-        // It must stay in lockstep with login() — the deployed server
-        // hashes whatever it receives, so register + login must send
-        // the password the same way. Re-enable both together only
-        // once the server-side counterpart + migration have shipped.
-        let request = RegisterRequest(
-            username: username,
-            password: password,
-            firstName: firstName,
-            lastName: lastName,
-            birthYear: birthYear,
-            email: email,
-            phone: phone
-        )
 
-        let response: TokenResponse = try await NetworkService.shared.post(
-            path: "/api/auth/register",
-            body: request
+    /// Serverless display-name edit: persist the new name to the local key and
+    /// rebuild `currentUser` in place so the change is visible immediately AND
+    /// survives relaunch (bootstrapLocalIdentity reads the same key). There is
+    /// no server record for the device-fingerprint account, so this — not a
+    /// `/api/users/me` PATCH — is the canonical way to change the display name.
+    /// Returns `false` only if the device keypair has no fingerprint yet.
+    @discardableResult
+    func setLocalDisplayName(_ name: String) -> Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let final = trimmed.isEmpty ? "Raven User" : trimmed
+        UserDefaults.standard.set(final, forKey: Self.localDisplayNameKey)
+        guard let fingerprint = DeviceIdentityService.shared.fingerprint else { return false }
+        // Same initializer used by bootstrapLocalIdentity — keeps id/publicKey consistent.
+        currentUser = User(
+            localId: fingerprint,
+            displayName: final,
+            publicKey: DeviceIdentityService.shared.publicKeyBase64
         )
-        
-        // Save restricted token with refresh token
-        let scope: TokenScope = response.tokenScope == "full" ? .full : .restricted
-        try await KeychainService.shared.saveToken(
-            response.token,
-            scope: scope,
-            userId: response.userId,
-            refreshToken: response.refreshToken
-        )
-        
-        // Fetch user profile
-        try await fetchCurrentUser()
-        
-        // Associate user with RevenueCat for subscription management
-        if let userId = currentUser?.id {
-            await SubscriptionService.shared.login(appUserID: userId)
-        }
-        
-        // Register push token now that we're authenticated
-        await PushNotificationService.shared.retryTokenRegistration()
+        // Editing the name rebuilds currentUser, so re-apply the stored avatar.
+        currentUser?.avatarPath = UserDefaults.standard.string(forKey: Self.localAvatarPathKey)
+        return true
     }
-    
-    // MARK: - Login
-    
-    struct LoginRequest: Encodable {
-        let username: String
-        let password: String
-    }
-    
-    func login(username: String, password: String) async throws {
-        // ⚠️ Phase 2A client-side password stretching is DISABLED.
-        // The deployed server has no matching `RVNS1$` handling, and
-        // every existing account's hash is of the RAW password — so
-        // sending a stretched value would lock out every current
-        // user. Re-enable only once the server-side counterpart and
-        // an account-hash migration have shipped. See
-        // PasswordStretcher.swift (kept for that future work).
-        let request = LoginRequest(username: username, password: password)
 
-        let response: TokenResponse = try await NetworkService.shared.post(
-            path: "/api/auth/login",
-            body: request
-        )
-        
-        // Login only allowed for verified users
-        try await KeychainService.shared.saveToken(
-            response.token,
-            scope: .full,
-            userId: response.userId,
-            refreshToken: response.refreshToken
-        )
-        
-        try await fetchCurrentUser()
-        
-        // Register push token now that we're authenticated
-        await PushNotificationService.shared.retryTokenRegistration()
-        
-        // Associate user with RevenueCat for subscription management
-        if let userId = currentUser?.id {
-            await SubscriptionService.shared.login(appUserID: userId)
+    /// Serverless avatar persistence: store the local avatar file path (or clear
+    /// it) so it survives relaunch + name edits. No server round-trip.
+    func setLocalAvatarPath(_ path: String?) {
+        if let path, !path.isEmpty {
+            UserDefaults.standard.set(path, forKey: Self.localAvatarPathKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: Self.localAvatarPathKey)
         }
+        currentUser?.avatarPath = path
     }
-    
+
+    // MARK: - Register / Login (REMOVED — serverless)
+    //
+    // The server-era `register(...)` and `login(...)` methods (POST
+    // /api/auth/register, /api/auth/login) plus their `RegisterRequest` /
+    // `LoginRequest` bodies were deleted in the serverless pivot. The local
+    // key-based identity (registerLocalIdentity / bootstrapLocalIdentity) is
+    // now the only account path — there is no username/password, token, or
+    // server. Grep-confirmed zero call sites before removal.
+
     // MARK: - Send OTP
     
     struct SendCodeRequest: Encodable {
@@ -337,122 +296,17 @@ class AuthService {
         )
     }
     
-    // MARK: - Google OAuth
-    
-    struct GoogleOAuthRequest: Encodable {
-        let idToken: String
-    }
-    
-    func googleSignIn(idToken: String) async throws -> Bool {
-        let request = GoogleOAuthRequest(idToken: idToken)
-        
-        let response: TokenResponse = try await NetworkService.shared.post(
-            path: "/api/auth/oauth/google",
-            body: request
-        )
-        
-        // OAuth users always get full scope - Google already verified email
-        try await KeychainService.shared.saveToken(
-            response.token,
-            scope: .full,
-            userId: response.userId,
-            refreshToken: response.refreshToken
-        )
-        
-        // Check if user needs to set username - either explicit flag or null username
-        let needsUsername = response.requiresUsername == true || response.username == nil
-        
-        if needsUsername {
-            requiresUsernameSetup = true
-        } else {
-            try await fetchCurrentUser()
-            // Associate user with RevenueCat for subscription management
-            if let userId = currentUser?.id {
-                await SubscriptionService.shared.login(appUserID: userId)
-            }
-            // Register push token now that we're authenticated
-            await PushNotificationService.shared.retryTokenRegistration()
-        }
-        
-        return needsUsername
-    }
-    
-    // MARK: - Apple OAuth
-    
-    struct AppleOAuthRequest: Encodable {
-        let identityToken: String
-        let authorizationCode: String
-        let fullName: String?
-        let email: String?
-    }
-    
-    func appleSignIn(
-        identityToken: String,
-        authorizationCode: String,
-        fullName: String? = nil,
-        email: String? = nil
-    ) async throws -> Bool {
-        let request = AppleOAuthRequest(
-            identityToken: identityToken,
-            authorizationCode: authorizationCode,
-            fullName: fullName,
-            email: email
-        )
-        
-        let response: TokenResponse = try await NetworkService.shared.post(
-            path: "/api/auth/oauth/apple",
-            body: request
-        )
-        
-        // OAuth users always get full scope - Apple already verified email
-        try await KeychainService.shared.saveToken(
-            response.token,
-            scope: .full,
-            userId: response.userId,
-            refreshToken: response.refreshToken
-        )
-        
-        // Check if user needs to set username - either explicit flag or null username
-        let needsUsername = response.requiresUsername == true || response.username == nil
-        
-        if needsUsername {
-            requiresUsernameSetup = true
-        } else {
-            try await fetchCurrentUser()
-            // Associate user with RevenueCat for subscription management
-            if let userId = currentUser?.id {
-                await SubscriptionService.shared.login(appUserID: userId)
-            }
-            // Register push token now that we're authenticated
-            await PushNotificationService.shared.retryTokenRegistration()
-        }
-        
-        return needsUsername
-    }
-    
-    // MARK: - Set Username (OAuth flow)
-    
-    struct SetUsernameRequest: Encodable {
-        let username: String
-        let tempToken: String
-    }
-    
-    func setUsername(_ username: String) async throws {
-        guard let (token, _) = await KeychainService.shared.getToken() else {
-            throw APIError.unauthorized
-        }
-        
-        let request = SetUsernameRequest(username: username, tempToken: token)
-        
-        let _: EmptyResponse = try await NetworkService.shared.post(
-            path: "/api/auth/set-username",
-            body: request
-        )
-        
-        requiresUsernameSetup = false
-        try await fetchCurrentUser()
-    }
-    
+    // MARK: - OAuth + Set Username (REMOVED — serverless)
+    //
+    // `googleSignIn(...)` / `appleSignIn(...)` (POST /api/auth/oauth/google,
+    // /api/auth/oauth/apple) and `setUsername(...)` (POST
+    // /api/auth/set-username), plus their request structs, were deleted in the
+    // serverless pivot. There is no OAuth provider, no server username
+    // namespace, and no `requiresUsernameSetup` server step — the local
+    // key-based identity replaces all of it. Grep-confirmed zero call sites
+    // before removal.
+
+    /// Empty server response shape, retained for any in-file decode use.
     struct EmptyResponse: Decodable {}
     
     // MARK: - Check Username Availability
@@ -792,70 +646,10 @@ class AuthService {
     func checkExistingSession() async {
         // 🔑 SERVERLESS IDENTITY (messenger pivot): the on-device Ed25519
         // keypair IS the account. No server token is required — the app
-        // always boots into a local key-based identity. The server-based
-        // bootstrap below is dead while serverless mode is active, but kept
-        // (unreferenced) until the legacy auth methods are removed.
+        // always boots into a local key-based identity. (The legacy
+        // token/cache server bootstrap, `checkExistingSessionServerLegacy`,
+        // was removed in the serverless cleanup — it had zero call sites.)
         await bootstrapLocalIdentity()
-    }
-
-    func checkExistingSessionServerLegacy() async {
-        guard await KeychainService.shared.getToken() != nil else {
-            bootState = .unauthenticated
-            return
-        }
-
-        // 🚀 FAST PATH: لاگین آنی از روی کَش (بدون انتظار برای اینترنت)
-        if let cached = loadCachedUserProfile() {
-            currentUser = cached
-            bootState = .authenticated // خروج فوری از صفحه اسپلش
-            
-            Task { @MainActor in
-                SubscriptionService.shared.setServerPremiumStatus(cached.isPremium)
-            }
-            
-            // گرفتن اطلاعات آپدیت‌شده در پس‌زمینه، بدون اینکه کاربر متوجه شود
-            // Was `Task.detached(priority: .utility)` which wrote
-            // currentUser / requiresUsernameSetup off-main. The class is
-            // now `@MainActor`-isolated, so a regular `Task { ... }`
-            // inherits MainActor and the inner `await` writes are safe.
-            // The 500ms sleep keeps the original "let UI fully load
-            // first" intent.
-            Task {
-                try? await Task.sleep(nanoseconds: 500_000_000)
-                do {
-                    try await self.fetchCurrentUser()
-                } catch APIError.usernameRequired {
-                    self.requiresUsernameSetup = true
-                } catch let error as APIError where error.isAuthError {
-                    try? await self.logout()
-                    self.bootState = .unauthenticated
-                } catch {
-                    // در صورت قطعی اینترنت، اپلیکیشن با همان کش به کار خود ادامه می‌دهد
-                }
-            }
-            return
-        }
-        
-        // اگر کَش خالی بود (مثل نصب اولیه اپلیکیشن)
-        do {
-            try await fetchCurrentUser()
-            bootState = .authenticated
-        } catch APIError.usernameRequired {
-            requiresUsernameSetup = true
-            bootState = .authenticated
-        } catch let error as APIError where error.isAuthError {
-            #if DEBUG
-            print("🔒 [Auth] Auth error — logging out: \(error)")
-            #endif
-            try? await logout()
-            bootState = .unauthenticated
-        } catch {
-            // Network/timeout error — no cache available
-            bootState = .unauthenticated
-            #if DEBUG
-            print("⚠️ [Auth] No cache + network error — showing login")
-            #endif
-        }
     }
 }
 

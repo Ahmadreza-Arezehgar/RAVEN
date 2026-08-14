@@ -78,8 +78,14 @@ def search_posts(
          predicate /feed already enforces (posts.py:627 etc.).
     """
     from sqlalchemy import or_ as _or_
+    from routers.blocks import get_blocked_user_ids
 
     search_term = f"%{_escape_like(q)}%"
+
+    # 🔴 PB-M3-4-5: exclude blocked / blocking authors (bidirectional),
+    # matching the hashtag feed and main feed. Search previously gated on
+    # is_hidden + visibility but let blocked users' public posts surface.
+    blocked_user_ids = get_blocked_user_ids(db, current_user.id)
 
     query = db.query(Post).filter(
         Post.content.ilike(search_term, escape="\\"),
@@ -90,6 +96,8 @@ def search_posts(
             Post.author_id == current_user.id,
         ),
     )
+    if blocked_user_ids:
+        query = query.filter(~Post.author_id.in_(blocked_user_ids))
 
     # Apply sorting
     if sort == "top":
@@ -152,11 +160,15 @@ def search_by_hashtag(
     on {public OR author=self}.
     """
     from sqlalchemy import or_ as _or_
+    from routers.blocks import get_blocked_user_ids
 
     if len(tag) > 64:
         return []
 
     hashtag_pattern = f"%#{_escape_like(tag)}%"
+
+    # 🔴 PB-M3-4-5: exclude blocked / blocking authors (bidirectional).
+    blocked_user_ids = get_blocked_user_ids(db, current_user.id)
 
     query = db.query(Post).filter(
         Post.content.ilike(hashtag_pattern, escape="\\"),
@@ -167,6 +179,8 @@ def search_by_hashtag(
             Post.author_id == current_user.id,
         ),
     )
+    if blocked_user_ids:
+        query = query.filter(~Post.author_id.in_(blocked_user_ids))
 
     if sort == "top":
         query = query.order_by(Post.likes.desc(), Post.timestamp.desc())

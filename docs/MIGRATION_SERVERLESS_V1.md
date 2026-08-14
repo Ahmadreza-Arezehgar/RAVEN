@@ -13,7 +13,7 @@ If FastAPI appears in a process that also carries serverless code, it must be a 
 
 | Surface | Flag | Default | Effect |
 |---------|------|---------|--------|
-| iOS | `FeatureFlag.ravenEnvelopeV1` (`raven_envelope_v1`) | **OFF** | ON → parallel RavenEnvelopeV1 LAN/BLE/node path. OFF → MeshEnvelope only. |
+| iOS | `FeatureFlag.ravenEnvelopeV1` (`raven_envelope_v1`) | **OFF; forced OFF in Release** | Debug-only integration switch. Release ignores stale persisted values until the indexed ATSAM session and endpoint transaction gates pass. |
 | Terminal (`ash` / `raven-node`) | always serverless | n/a | Binaries speak RVN1 only; no FastAPI client for DMs. |
 | Env (diagnostics) | `RAVEN_SERVERLESS_RVN1` | implied ON for node | Documented for dual-stack hosts. |
 | Env (diagnostics only) | `RAVEN_DIAG_FORCE_LEGACY_LABEL=1` | unset | Forces `legacy_mesh_envelope` **label** in doctor/status — does **not** enable FastAPI. |
@@ -49,3 +49,9 @@ Rust helper: `raven_core::messaging_path` (`MessagingPath::{ServerlessRvn1, Lega
 ## Release gate
 
 Do **not** make serverless the product default (iOS flag ON, website claims) until §59/§60 gates pass or the user explicitly waives hardware/human review.
+
+Security gates cannot be waived by a feature toggle. In particular, the
+public-key-derived interim sealer, plaintext/ID-only ACK handling, and
+synthetic ATSAM bodies are forbidden in every production artifact. Current
+normative status is in
+[`protocol/SECURITY_ERRATA_RVN1_2026-08-13.md`](../protocol/SECURITY_ERRATA_RVN1_2026-08-13.md).

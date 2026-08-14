@@ -31,12 +31,11 @@ public final class RavenEnvelopeBridgeService {
 
     private var listener: NWListener?
     private var listenPort: UInt16 = 0
+    private var pullTask: Task<Void, Never>?
 
-    /// message_id (16B) → LAN connection waiting for recipient ACK (phone as B).
-    private var ackWaiters: [Data: NWConnection] = [:]
-
-    /// When true, Message ingress is treated as local destination (phone as C).
-    /// App / tests set this; default false = bridge/relay preference when egress ready.
+    /// Legacy role preference retained for source compatibility. It is not a
+    /// per-envelope destination proof and is intentionally ignored until RVN1
+    /// routing-tag/session matching is implemented.
     public var localIsDestination: Bool = false
 
     private init() {}
@@ -68,16 +67,19 @@ public final class RavenEnvelopeBridgeService {
                 }
             }
         }
-        // Optional thin LAN listen (phone as B). Port 0 / unset → no listener.
-        if let port = RavenServerlessLanConfig.stored?.listenPort, port > 0 {
-            startLanListener(port: port)
-        }
+        // Phone listens so Mac can dial (fallback when Pull never connects).
+        let listen = RavenServerlessLanConfig.stored?.listenPort ?? 0
+        let port = listen > 0 ? listen : 7421
+        startLanListener(port: port)
+        startMacQueuePullLoop()
         #if DEBUG
-        print("🕊️ [Bridge] RavenEnvelopeBridgeService listening (flag ON)")
+        print("🕊️ [Bridge] RavenEnvelopeBridgeService listening :\(port) (flag ON; unmatched envelopes relay/drop)")
         #endif
     }
 
     public func stop() {
+        pullTask?.cancel()
+        pullTask = nil
         if let bleObserver {
             NotificationCenter.default.removeObserver(bleObserver)
             self.bleObserver = nil
@@ -86,9 +88,49 @@ public final class RavenEnvelopeBridgeService {
             NotificationCenter.default.removeObserver(lanObserver)
             self.lanObserver = nil
         }
-        for (_, conn) in ackWaiters { conn.cancel() }
-        ackWaiters.removeAll()
         stopLanListener()
+    }
+
+    /// Mac-listens path: periodically connect so raven-node can flush queued Mac→phone envelopes.
+    private func startMacQueuePullLoop() {
+        pullTask?.cancel()
+        pullTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.pullOnceFromMac()
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+            }
+        }
+    }
+
+    /// Manual / settings-triggered pull of Mac local-listen queue.
+    @discardableResult
+    public func pullMacQueueNow() async -> Int {
+        await pullOnceFromMac()
+    }
+
+    @discardableResult
+    private func pullOnceFromMac() async -> Int {
+        guard FeatureFlag.isRavenEnvelopeV1Enabled,
+              let lan = RavenServerlessLanConfig.stored else { return 0 }
+        let packs = await RavenServerlessLanPath.pullEnvelopes(
+            host: lan.host,
+            port: lan.port,
+            durationSeconds: 3
+        )
+        var n = 0
+        for packed in packs {
+            guard RavenEnvelopeV1.unpack(packed) != nil else { continue }
+            // Mac local-listen queue is addressed to this phone — deliver to
+            // endpoint (PairInit OOB / sealed message / ACK), never steal as bridge.
+            await MainActor.run {
+                RavenEnvelopeEndpointIngest.publishPacked(
+                    packed: packed,
+                    peerKey: "lan-mac-pull"
+                )
+            }
+            n += 1
+        }
+        return n
     }
 
     // MARK: - Pure decision (unit-testable)
@@ -132,6 +174,18 @@ public final class RavenEnvelopeBridgeService {
         return .forward
     }
 
+    /// Destination is a per-envelope cryptographic fact, not a global device
+    /// role. An unmatched envelope may be relayed when an egress exists; without
+    /// an egress it must be dropped rather than handed to the endpoint.
+    nonisolated static func classifyMessageRoute(
+        localRouteMatched: Bool,
+        bridgeEnabled: Bool
+    ) -> RavenEnvelopeEndpointIngest.RoleDisposition {
+        if localRouteMatched { return .deliverToEndpoint }
+        if bridgeEnabled { return .bridgeForward }
+        return .drop
+    }
+
     // MARK: - BLE inbound (Message / ACK)
 
     private func onBleRvn1(_ note: Notification) async {
@@ -152,33 +206,29 @@ public final class RavenEnvelopeBridgeService {
         }
         guard env.envType == RavenEnvelopeV1.EnvType.message.rawValue else { return }
 
-        let role = RavenEnvelopeEndpointIngest.classifyRole(
-            envType: env.envType,
-            localIsDestination: localIsDestination,
+        // No production RVN1 routing-tag/session matcher exists yet. A global
+        // `localIsDestination` preference, sender signature, or pair key alone
+        // does not prove this envelope targets this device, so fail closed.
+        let role = Self.classifyMessageRoute(
+            localRouteMatched: false,
             bridgeEnabled: RavenServerlessLanConfig.stored != nil
         )
         if role == .deliverToEndpoint {
-            let sender = await resolveSenderUserId(env: env)
-            RavenEnvelopeEndpointIngest.publishSealedBody(
-                messageId: env.messageId,
-                sealedBody: env.messageCiphertext,
-                hybridPQ: (env.flags & 1) != 0,
-                peerKey: peerKey,
-                senderUserId: sender
-            )
+            RavenEnvelopeEndpointIngest.publishPacked(packed: packed, peerKey: peerKey)
             return
         }
 
         let nowMs = UInt64(Date().timeIntervalSince1970 * 1000)
         let hits = peerHits(peerKey: peerKey, nowMs: nowMs)
         let mid = env.messageId
+        let objectDigest = env.relayObjectDigest()
         let decision = Self.decideForward(
             packed: packed,
             messageId: mid,
             expiresAtMs: env.expiresAtMs,
             hopLimit: env.hopLimit,
             replicationBudget: env.replicationBudget,
-            alreadySeen: seen.contains(mid),
+            alreadySeen: seen.contains(objectDigest),
             egressReady: RavenServerlessLanConfig.stored != nil,
             peerKey: peerKey,
             peerHitsInWindow: hits,
@@ -192,7 +242,7 @@ public final class RavenEnvelopeBridgeService {
             #endif
             return
         }
-        recordSeen(mid)
+        recordSeen(objectDigest)
         recordPeerHit(peerKey: peerKey, nowMs: nowMs)
 
         var fwd = env
@@ -201,8 +251,8 @@ public final class RavenEnvelopeBridgeService {
 
         guard let lan = RavenServerlessLanConfig.stored else { return }
         do {
-            _ = try await RavenServerlessLanPath.sendEnvelope(
-                fwd,
+            try await RavenServerlessLanPath.sendPackedFireAndForget(
+                fwd.pack(),
                 host: lan.host,
                 port: lan.port
             )
@@ -216,49 +266,54 @@ public final class RavenEnvelopeBridgeService {
         }
     }
 
-    /// Recipient ACK on BLE → wake LAN waiter (phone as B) and/or forward to LAN.
-    /// If this device has a pending outbound for the acked id, also publish to
-    /// ChatWire (Delivered) without decrypting — BridgeSubsystem stays key-free.
+    /// Recipient ACK on BLE → opaque LAN relay. The bridge never opens the ACK
+    /// body, correlates it with an outbound message, or marks delivery.
     @discardableResult
     public func relayAckFromBle(packed: Data, env: RavenEnvelopeV1? = nil) async -> BridgeForwardDecision {
         guard FeatureFlag.isRavenEnvelopeV1Enabled else { return .flagOff }
         let env = env ?? RavenEnvelopeV1.unpack(packed)
-        guard let env, env.envType == RavenEnvelopeV1.EnvType.ack.rawValue,
-              let acked = RavenEnvelopeEndpointIngest.opaqueAckedMessageId(from: env) else {
+        guard let env, env.envType == RavenEnvelopeV1.EnvType.ack.rawValue else {
             return .dropMalformed
         }
-        let ackedKey = Data(acked)
-
-        // Originator on this device: Delivered ticks via ChatWire (not bridge keys).
-        let localOriginator = RavenEnvelopeChatWire.shared.hasPendingOutbound(envelopeMessageId: ackedKey)
-        if localOriginator {
-            RavenEnvelopeEndpointIngest.publishAck(ackedMessageId: ackedKey, packed: packed)
+        let nowMs = UInt64(Date().timeIntervalSince1970 * 1000)
+        let peerKey = "ble-ack"
+        let objectDigest = env.relayObjectDigest()
+        let decision = Self.decideForward(
+            packed: packed,
+            messageId: env.messageId,
+            expiresAtMs: env.expiresAtMs,
+            hopLimit: env.hopLimit,
+            replicationBudget: env.replicationBudget,
+            alreadySeen: seen.contains(objectDigest),
+            egressReady: RavenServerlessLanConfig.stored != nil,
+            peerKey: peerKey,
+            peerHitsInWindow: peerHits(peerKey: peerKey, nowMs: nowMs),
+            maxPerPeer: maxPerPeerPerWindow,
+            nowMs: nowMs,
+            flagOn: true
+        )
+        guard decision == .forward, let lan = RavenServerlessLanConfig.stored else {
+            return decision
         }
 
-        if let conn = ackWaiters.removeValue(forKey: ackedKey) {
-            writeFramed(packed, to: conn)
-            #if DEBUG
-            print("🕊️ [Bridge] ACK relay BLE→LAN waiter mid=\(acked.prefix(4).map { String(format: "%02x", $0) }.joined())")
-            #endif
+        recordSeen(objectDigest)
+        recordPeerHit(peerKey: peerKey, nowMs: nowMs)
+        var forwarded = env
+        forwarded.hopLimit &-= 1
+        forwarded.replicationBudget &-= 1
+        do {
+            try await RavenServerlessLanPath.sendPackedFireAndForget(
+                forwarded.pack(),
+                host: lan.host,
+                port: lan.port
+            )
             return .ackRelayed
+        } catch {
+            #if DEBUG
+            print("🕊️ [Bridge] opaque ACK LAN uplink failed: \(error)")
+            #endif
+            return .dropNoEgress
         }
-        // No waiter: best-effort LAN uplink if configured (opaque, no ACK-wait).
-        if let lan = RavenServerlessLanConfig.stored {
-            do {
-                try await RavenServerlessLanPath.sendPackedFireAndForget(
-                    packed,
-                    host: lan.host,
-                    port: lan.port
-                )
-                return .ackRelayed
-            } catch {
-                #if DEBUG
-                print("🕊️ [Bridge] ACK LAN uplink failed: \(error)")
-                #endif
-                return localOriginator ? .ackRelayed : .dropNoEgress
-            }
-        }
-        return localOriginator ? .ackRelayed : .dropNoEgress
     }
 
     // MARK: - LAN → BLE (reverse)
@@ -267,20 +322,16 @@ public final class RavenEnvelopeBridgeService {
         guard FeatureFlag.isRavenEnvelopeV1Enabled else { return }
         guard let packed = note.userInfo?["packed"] as? Data else { return }
         let peerKey = (note.userInfo?["peerKey"] as? String) ?? "lan-unknown"
-        if let conn = note.userInfo?["connection"] as? NWConnection {
-            await handleLanIngress(packed: packed, peerKey: peerKey, replyConn: conn)
-        } else {
-            _ = await forwardLanToBle(packed: packed, peerKey: peerKey)
-        }
+        let conn = note.userInfo?["connection"] as? NWConnection
+        _ = await forwardLanToBle(packed: packed, peerKey: peerKey)
+        conn?.cancel()
     }
 
     /// Public entry for tests / LAN listener: opaque LAN→BLE when peers reachable.
-    /// Registers ACK waiter when `replyConn` is provided (Message only).
     @discardableResult
     public func forwardLanToBle(
         packed: Data,
-        peerKey: String,
-        replyConn: NWConnection? = nil
+        peerKey: String
     ) async -> BridgeForwardDecision {
         guard FeatureFlag.isRavenEnvelopeV1Enabled else { return .flagOff }
         guard let env = RavenEnvelopeV1.unpack(packed) else { return .dropMalformed }
@@ -292,20 +343,12 @@ public final class RavenEnvelopeBridgeService {
             return .dropMalformed
         }
 
-        let role = RavenEnvelopeEndpointIngest.classifyRole(
-            envType: env.envType,
-            localIsDestination: localIsDestination,
+        let role = Self.classifyMessageRoute(
+            localRouteMatched: false,
             bridgeEnabled: true
         )
         if role == .deliverToEndpoint {
-            let sender = await resolveSenderUserId(env: env)
-            RavenEnvelopeEndpointIngest.publishSealedBody(
-                messageId: env.messageId,
-                sealedBody: env.messageCiphertext,
-                hybridPQ: (env.flags & 1) != 0,
-                peerKey: peerKey,
-                senderUserId: sender
-            )
+            RavenEnvelopeEndpointIngest.publishPacked(packed: packed, peerKey: peerKey)
             return .deliverToEndpoint
         }
 
@@ -313,13 +356,14 @@ public final class RavenEnvelopeBridgeService {
         let nowMs = UInt64(Date().timeIntervalSince1970 * 1000)
         let hits = peerHits(peerKey: peerKey, nowMs: nowMs)
         let mid = env.messageId
+        let objectDigest = env.relayObjectDigest()
         let decision = Self.decideForward(
             packed: packed,
             messageId: mid,
             expiresAtMs: env.expiresAtMs,
             hopLimit: env.hopLimit,
             replicationBudget: env.replicationBudget,
-            alreadySeen: seen.contains(mid),
+            alreadySeen: seen.contains(objectDigest),
             egressReady: bleReady,
             peerKey: peerKey,
             peerHitsInWindow: hits,
@@ -333,12 +377,8 @@ public final class RavenEnvelopeBridgeService {
             #endif
             return decision
         }
-        recordSeen(mid)
+        recordSeen(objectDigest)
         recordPeerHit(peerKey: peerKey, nowMs: nowMs)
-
-        if let replyConn {
-            ackWaiters[mid] = replyConn
-        }
 
         var fwd = env
         fwd.hopLimit &-= 1
@@ -351,40 +391,39 @@ public final class RavenEnvelopeBridgeService {
         return .forward
     }
 
-    private func handleLanIngress(
-        packed: Data,
-        peerKey: String,
-        replyConn: NWConnection
-    ) async {
-        _ = await forwardLanToBle(packed: packed, peerKey: peerKey, replyConn: replyConn)
-    }
-
     private func forwardAckLanToBle(
         packed: Data,
         env: RavenEnvelopeV1,
         peerKey: String
     ) async -> BridgeForwardDecision {
         let bleReady = BLEMeshEngine.shared.hasActiveConnections
-        guard bleReady else { return .dropNoEgress }
+        let nowMs = UInt64(Date().timeIntervalSince1970 * 1000)
+        let objectDigest = env.relayObjectDigest()
+        let decision = Self.decideForward(
+            packed: packed,
+            messageId: env.messageId,
+            expiresAtMs: env.expiresAtMs,
+            hopLimit: env.hopLimit,
+            replicationBudget: env.replicationBudget,
+            alreadySeen: seen.contains(objectDigest),
+            egressReady: bleReady,
+            peerKey: peerKey,
+            peerHitsInWindow: peerHits(peerKey: peerKey, nowMs: nowMs),
+            maxPerPeer: maxPerPeerPerWindow,
+            nowMs: nowMs,
+            flagOn: true
+        )
+        guard decision == .forward else { return decision }
+        recordSeen(objectDigest)
+        recordPeerHit(peerKey: peerKey, nowMs: nowMs)
         var fwd = env
-        if fwd.hopLimit > 0 { fwd.hopLimit &-= 1 }
-        if fwd.replicationBudget > 0 { fwd.replicationBudget &-= 1 }
+        fwd.hopLimit &-= 1
+        fwd.replicationBudget &-= 1
         await BLEMeshEngine.shared.enqueueRawRavenEnvelopeV1(fwd.pack())
         #if DEBUG
-        let acked = RavenEnvelopeEndpointIngest.opaqueAckedMessageId(from: env)
-        print("🕊️ [Bridge] ACK LAN→BLE peer=\(peerKey) acked=\(acked?.prefix(4).map { String(format: "%02x", $0) }.joined() ?? "?")")
+        print("🕊️ [Bridge] opaque ACK LAN→BLE peer=\(peerKey)")
         #endif
         return .ackRelayed
-    }
-
-    /// Test hook: register a synthetic ACK waiter (messageId → connection).
-    public func registerAckWaiterForTests(messageId: Data, connection: NWConnection) {
-        ackWaiters[messageId] = connection
-    }
-
-    /// Test hook: clear waiters.
-    public func clearAckWaitersForTests() {
-        ackWaiters.removeAll()
     }
 
     // MARK: - Thin LAN listener (optional)
@@ -464,18 +503,6 @@ public final class RavenEnvelopeBridgeService {
         receiveMore()
     }
 
-    private func writeFramed(_ packed: Data, to conn: NWConnection) {
-        let framed = RavenServerlessLanPath.frame(packed)
-        conn.send(content: framed, completion: .contentProcessed { err in
-            #if DEBUG
-            if let err {
-                print("🕊️ [Bridge] ACK write failed: \(err)")
-            }
-            #endif
-            conn.cancel()
-        })
-    }
-
     // MARK: - Sender attribution (endpoint only)
 
     /// Resolve senderUserId for ChatWire / MessageContentSealer (not used by opaque forward).
@@ -497,9 +524,9 @@ public final class RavenEnvelopeBridgeService {
 
     // MARK: - Dedup / rate helpers
 
-    private func recordSeen(_ mid: Data) {
+    private func recordSeen(_ objectDigest: Data) {
         if seen.count >= maxSeen { seen.removeAll(keepingCapacity: true) }
-        seen.insert(mid)
+        seen.insert(objectDigest)
     }
 
     private func peerHits(peerKey: String, nowMs: UInt64) -> Int {

@@ -62,9 +62,10 @@ grep -q 'lan_dial' "$WORKDIR/contact.out"
 grep -q 'Me' "$WORKDIR/clist.out"
 grep -q '127.0.0.1:17999' "$WORKDIR/clist.out"
 
-# Interactive: 1 messages → 3 list → Enter → 2 pick #1 keep dial → n (no chat) → empty msg (no network) → q
+# Interactive: 1 messages → 3 list → Enter → 2 pick #1 → n (no chat) → empty msg → q
 # Empty message exits send without spawning raven-node (avoids hang when nothing listens).
-printf '1\n3\n\n2\n1\n\nn\n\nq\n' | "$ASH" --data-dir "$DATA2" >"$WORKDIR/ready.log" 2>&1 || true
+# Do NOT send a blank line before `n` — blank answers open-chat as default Yes.
+printf '1\n3\n\n2\n1\nn\n\nq\n' | "$ASH" --data-dir "$DATA2" >"$WORKDIR/ready.log" 2>&1 || true
 grep -q 'Using saved LAN dial\|Saved LAN dial\|Send / Chat' "$WORKDIR/ready.log"
 grep -q 'empty message\|fly safe' "$WORKDIR/ready.log"
 grep -q 'fly safe' "$WORKDIR/ready.log"

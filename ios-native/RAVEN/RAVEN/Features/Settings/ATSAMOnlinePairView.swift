@@ -12,7 +12,7 @@
 //   5. Submit the resulting pair-init packet (X25519 pub +
 //      ML-KEM pub + ML-KEM ciphertext + nonce) to the server's
 //      pair-init queue.
-//   6. Display a 60-digit Safety Number derived from the root +
+//   6. Display a 30-digit Safety Number derived from the root +
 //      sorted user-ids so the user can compare it with the peer
 //      over an out-of-band channel.
 //
@@ -102,7 +102,7 @@ struct ATSAMOnlinePairView: View {
                                         RoundedRectangle(cornerRadius: 8, style: .continuous)
                                             .fill(Color.primary.opacity(0.05))
                                     )
-                                Text("Compare these 60 digits with the peer over an out-of-band channel (phone, video, in person). If they match on both sides, no man-in-the-middle is possible — even if Raven's server tried to substitute keys.")
+                                Text("Compare these 30 digits with the peer over an out-of-band channel (phone, video, in person). If they match on both sides, no man-in-the-middle is possible — even if Raven's server tried to substitute keys.")
                                     .font(.system(size: 11))
                                     .foregroundStyle(.secondary)
                                     .padding(.top, 6)
@@ -221,10 +221,33 @@ final class ATSAMOnlinePairModel: ObservableObject {
         return fresh
     }
 
-    /// Local user id, fetched from auth state. For the scaffold
-    /// we use a stub if no auth identity is loaded.
-    private var localUserId: String {
-        UserDefaults.standard.string(forKey: "currentUserId") ?? "me"
+    /// Local user id, bound into the pairing transcript.
+    ///
+    /// 🔴 2026-07-18 — this previously read `UserDefaults` key
+    /// `"currentUserId"`, which NOTHING in the app ever writes, so it
+    /// always evaluated to the literal `"me"`. Because
+    /// `ATSAMTranscript` binds both user ids (round 26) and each side
+    /// supplies them swapped, both peers hashed a transcript
+    /// containing `"me"` in *their own* slot:
+    ///
+    ///   initiator → (userIdInitiator: "me",    userIdResponder: bob)
+    ///   responder → (userIdInitiator: alice,   userIdResponder: "me")
+    ///
+    /// Different transcripts → different roots → every ATSAM message
+    /// failed to decrypt. The manual pair path was dead on arrival.
+    ///
+    /// The bound id MUST be the same identity the messaging layer
+    /// stamps as `senderId`, because `seal`/`unseal` look the root up
+    /// by that id (`ATSAMMessageSealer.seal(senderUserId:…)`).
+    /// `MessageService.currentUserId()` resolves it via
+    /// `KeychainService`, so we read exactly that source and no other
+    /// — a second fallback source could silently reintroduce the same
+    /// divergence. Returns nil rather than a placeholder so callers
+    /// fail closed.
+    private func localUserId() async -> String? {
+        guard let id = await KeychainService.shared.getUserId(),
+              !id.isEmpty else { return nil }
+        return id
     }
 
     var canPair: Bool {
@@ -256,6 +279,7 @@ final class ATSAMOnlinePairModel: ObservableObject {
         case malformedBundle
         case signatureInvalid
         case pairInitKeyMismatch
+        case identityKeyMismatch
     }
 
     /// Fetch a peer bundle AND verify its Ed25519 signature over the
@@ -273,6 +297,26 @@ final class ATSAMOnlinePairModel: ObservableObject {
         guard let signingPub = try? Curve25519.Signing.PublicKey(
             rawRepresentation: bundle.signedBy
         ) else { throw OnlinePairError.malformedBundle }
+        // 🔴 2026-07-18 — pin `signedBy` to the identity we ALREADY
+        // trust for this peer.
+        //
+        // Without this the round-66 verification below is
+        // self-referential: `signingPub` is built from `bundle.signedBy`
+        // — a value the SERVER supplied in the same response — so a
+        // malicious server simply mints its own Ed25519 key, signs a
+        // payload binding the correct userId to ITS x25519/ML-KEM keys,
+        // and every existing guard passes. The safety number is the
+        // only backstop, and round 66's stated goal was precisely not
+        // to depend on users comparing it.
+        //
+        // `PeerKeyDirectory` already persists a per-peer identity pin
+        // and rejects rotation (`applyFetchedBundle`); this path just
+        // never consulted it. No pin (genuine first contact) still
+        // falls back to TOFU + safety number.
+        if let pinned = await PeerKeyDirectory.shared.identityKey(for: userId),
+           pinned != bundle.signedBy {
+            throw OnlinePairError.identityKeyMismatch
+        }
         // Rebuild the signed payload with the REQUESTED userId (never
         // the server echo) so a swapped bundle fails verification.
         let payload = PeerKeyDirectory.strongSignedPayload(
@@ -289,9 +333,19 @@ final class ATSAMOnlinePairModel: ObservableObject {
     func publishLocalBundle() async {
         busy = true
         defer { busy = false }
+        // Resolve the identity BEFORE generating keys. `self.localKeys`
+        // is what `runOnlinePair` / `acceptPairInit` subsequently pair
+        // with, so rotating it and then bailing out would leave an
+        // UNPUBLISHED keypair armed: we would pair with keys the peer
+        // cannot fetch, while the peer binds our previously-published
+        // public keys into the transcript — divergent roots, i.e. the
+        // exact failure this fix exists to remove.
+        guard let myId = await localUserId() else {
+            publishStatus = "Publish failed: no local identity yet — finish sign-in first."
+            return
+        }
         do {
             let keys = try ATSAMPairingKeys.generate()
-            self.localKeys = keys
 
             // 🔴 ROUND 67 (2026-05-20) — hacker-audit ATSAM C11
             // (MEDIUM: ephemeral signing key corrupts the published
@@ -317,8 +371,23 @@ final class ATSAMOnlinePairModel: ObservableObject {
             // Round 16 (audit C7): the canonical signed payload binds
             // `userId` so a server-side substitution can't swap one
             // user's bundle for another.
+            //
+            // 🔴 2026-07-18 — this bound the `"me"` placeholder (see
+            // `localUserId()`), which made the manual publish path
+            // actively destructive, not merely broken: a peer
+            // verifying our bundle rebuilds this payload with our
+            // REAL id (`fetchVerifiedBundle` above deliberately uses
+            // the requested id, never the server echo), so the
+            // signature could never verify — and because the server
+            // returns the most-recently-updated row, publishing here
+            // SHADOWED the correct bundle that
+            // `ATSAMPrekeyService.autoPublishIfNeeded` had already
+            // published under the real id. Resolve from the same
+            // source auto-publish uses (see the guard at the top of
+            // this function), and skip rather than publish an
+            // unverifiable bundle.
             let toSign = PeerKeyDirectory.strongSignedPayload(
-                userId: localUserId,
+                userId: myId,
                 xPub: keys.xPub,
                 pqPub: keys.pqPub
             )
@@ -334,6 +403,10 @@ final class ATSAMOnlinePairModel: ObservableObject {
                 identityKey: identityPub,
                 signature: signature
             )
+            // Arm the keypair for pairing ONLY once its public half is
+            // actually published, so `runOnlinePair` / `acceptPairInit`
+            // can never pair with keys the peer is unable to fetch.
+            self.localKeys = keys
             publishStatus = "Bundle published as device \(deviceId)"
         } catch {
             publishStatus = "Publish failed: \(error)"
@@ -352,6 +425,16 @@ final class ATSAMOnlinePairModel: ObservableObject {
         let peerId = peerUserId.trimmingCharacters(in: .whitespaces)
         busy = true
         defer { busy = false }
+        // Fail closed: pairing under a placeholder identity derives a
+        // root the peer can never reproduce. See `localUserId()`.
+        guard let myId = await localUserId() else {
+            lastPairOutcome = PairOutcome(
+                succeeded: false,
+                statusText: "No local identity yet — finish sign-in before pairing.",
+                safetyNumber: nil
+            )
+            return
+        }
         do {
             // 🔴 ROUND 66 — fetch the peer's bundle THROUGH the
             // signature-verifying path. A raw fetch would let a
@@ -365,7 +448,7 @@ final class ATSAMOnlinePairModel: ObservableObject {
                 peerPQPub: bundle.pqPub,
                 context: Data("raven-online-v1".utf8),
                 pairingNonce: nil,
-                selfUserId: localUserId,
+                selfUserId: myId,
                 peerUserId: peerId
             )
 
@@ -388,12 +471,21 @@ final class ATSAMOnlinePairModel: ObservableObject {
             try await ATSAMRootStorage.shared.setRoot(
                 result.root, transcript: result.transcript, for: peerId
             )
+            // Register the peer for mesh identity resolution. Round-70+
+            // senders ship `senderIdHash` with `senderId = ""`, and the
+            // receiver recovers the id via `MeshIdentityResolver`. Its
+            // map is otherwise populated only from our own sends, the
+            // friends list, and self — so a peer paired here that we
+            // have not yet messaged would resolve to "" and every
+            // inbound ATSAM mesh message would fail with `.noSenderKey`
+            // despite a perfectly correct root.
+            await MeshIdentityResolver.shared.register(userId: peerId)
 
             // Derive the safety number from the root + sorted
             // user-id pair. Both sides compute the same value.
             let safetyNumber = computeSafetyNumber(
                 root: result.root,
-                userA: localUserId,
+                userA: myId,
                 userB: peerId
             )
 
@@ -433,6 +525,17 @@ final class ATSAMOnlinePairModel: ObservableObject {
         guard let local = localKeys else { return }
         busy = true
         defer { busy = false }
+        // Fail closed: see `localUserId()`. The initiator binds our
+        // real id in their transcript, so binding a placeholder here
+        // guarantees a root mismatch.
+        guard let myId = await localUserId() else {
+            lastPairOutcome = PairOutcome(
+                succeeded: false,
+                statusText: "No local identity yet — finish sign-in before accepting a pair.",
+                safetyNumber: nil
+            )
+            return
+        }
         do {
             guard let peerXPub = Data(base64Encoded: init_.x25519Pub),
                   let peerPQPub = Data(base64Encoded: init_.mlKemPub),
@@ -453,6 +556,20 @@ final class ATSAMOnlinePairModel: ObservableObject {
             guard peerXPub == initiatorBundle.xPub else {
                 throw OnlinePairError.pairInitKeyMismatch
             }
+            // 🔴 2026-07-18 — the ML-KEM half was NOT checked here.
+            // `strongSignedPayload(userId:xPub:pqPub:)` covers `pqPub`
+            // with the same Ed25519 signature we just verified, so a
+            // server that swaps `ml_kem_pub` inside the relayed
+            // pair-init was previously accepted. The transcript binds
+            // pkAPQ, so a swap already fails closed via root
+            // divergence — but only AFTER we decapsulate toward the
+            // substituted key, which hands the attacker Z_PQ and
+            // voids the harvest-now-decrypt-later guarantee that is
+            // the entire point of the PQ half. Reject up front, and
+            // report a precise error instead of a silent dead pair.
+            guard peerPQPub == initiatorBundle.pqPub else {
+                throw OnlinePairError.pairInitKeyMismatch
+            }
 
             let result = try ATSAMHybridPairing.pairAsResponder(
                 local: local,
@@ -461,12 +578,12 @@ final class ATSAMOnlinePairModel: ObservableObject {
                 incomingCiphertext: incomingCT,
                 context: Data(init_.context.utf8),
                 pairingNonce: nonce,
-                selfUserId: localUserId,
+                selfUserId: myId,
                 peerUserId: init_.fromUser
             )
             let safetyNumber = computeSafetyNumber(
                 root: result.root,
-                userA: localUserId,
+                userA: myId,
                 userB: init_.fromUser
             )
 
@@ -477,6 +594,9 @@ final class ATSAMOnlinePairModel: ObservableObject {
             try await ATSAMRootStorage.shared.setRoot(
                 result.root, transcript: result.transcript, for: init_.fromUser
             )
+            // See the initiator path: without this the peer's
+            // `senderIdHash` cannot be resolved on inbound mesh frames.
+            await MeshIdentityResolver.shared.register(userId: init_.fromUser)
 
             try await ATSAMPrekeyService.ackPairInit(id: init_.id)
             pendingInits.removeAll { $0.id == init_.id }
@@ -496,14 +616,24 @@ final class ATSAMOnlinePairModel: ObservableObject {
 
     // MARK: - Safety number
 
-    /// 60-digit decimal fingerprint derived from `K_root` and the
-    /// sorted pair of user-ids. Symmetric: both sides compute the
-    /// same string. Format: 12 groups of 5 digits, space-separated.
+    /// 30-digit decimal fingerprint: SIX groups of five, space-separated.
+    ///
+    /// 🔴 2026-07-19 — this comment said "60-digit / 12 groups" and was WRONG.
+    /// The loop below is `stride(from: 0, to: 30, by: 5)`, i.e. six iterations
+    /// consuming five bytes each. The stale figure had already propagated to
+    /// the Settings row subtitle and to the public protocol page; both are now
+    /// corrected to 30. Note this is a DIFFERENT fingerprint from
+    /// `Core/Security/E2EE/SafetyNumbers` (groupCount = 12), which really is
+    /// 60 digits — do not "unify" the two comments without changing the code.
+    ///
+    /// Derived from `K_root` (via the key tree, so the root bytes never enter
+    /// the hash) and the sorted pair of user-ids. Symmetric: both sides
+    /// compute the same string. Roughly 100 bits against second-preimage.
     private func computeSafetyNumber(root: ATSAMRootKey,
                                      userA: String,
                                      userB: String) -> String {
-        // Use SHA-512 over (root || sorted user-ids) and convert
-        // the first 30 bytes into 60 decimal digits in groups of 5.
+        // SHA-512 over (rootProbe || sorted user-ids); the first 30 bytes
+        // become SIX groups of five decimal digits (30 digits total).
         // Sorting ensures symmetry: same number on both ends.
         let sorted = [userA, userB].sorted().joined(separator: "\n")
         var input = Data()

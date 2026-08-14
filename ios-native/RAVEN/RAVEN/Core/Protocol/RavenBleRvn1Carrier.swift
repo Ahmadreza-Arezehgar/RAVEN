@@ -64,8 +64,8 @@ public enum RavenBleRvn1Carrier {
         case verified(messageId: Data, sealedBody: Data, hybridPQ: Bool)
         /// Structurally valid but signature not checked (no pubkey supplied).
         case structural(messageId: Data, sealedBody: Data, hybridPQ: Bool)
-        /// Opaque ACK envelope (env_type=2) — body is ack record, not chat ciphertext.
-        case ack(messageId: Data, ackedMessageId: Data, packed: Data)
+        /// Opaque ACK envelope (env_type=2). No endpoint fields are exposed.
+        case opaqueAck(packed: Data)
         case badSignature
     }
 
@@ -80,17 +80,10 @@ public enum RavenBleRvn1Carrier {
         guard looksLikeRavenEnvelopeV1(data) else { return .notRvn1 }
         guard let env = RavenEnvelopeV1.unpack(data) else { return .malformed }
         if env.envType == RavenEnvelopeV1.EnvType.ack.rawValue {
-            guard let acked = RavenEnvelopeEndpointIngest.opaqueAckedMessageId(from: env) else {
-                return .malformed
-            }
             if let pk = senderPublicKey {
                 guard env.verify(publicKey: pk) else { return .badSignature }
             }
-            return .ack(
-                messageId: env.messageId,
-                ackedMessageId: Data(acked),
-                packed: data
-            )
+            return .opaqueAck(packed: data)
         }
         guard env.envType == RavenEnvelopeV1.EnvType.message.rawValue else {
             return .malformed
@@ -115,7 +108,6 @@ public enum RavenBleRvn1Carrier {
 extension Notification.Name {
     /// Posted when a flagged BLE path accepts a RavenEnvelopeV1 (opaque body).
     /// userInfo: messageId (Data), sealedBody (Data), hybridPQ (Bool), verified (Bool),
-    ///           packed (Data), peerDeviceId (String), envType (UInt8),
-    ///           ackedMessageId (Data)? for ACK
+    ///           packed (Data), peerDeviceId (String), envType (UInt8)
     static let ravenEnvelopeV1BleReceived = Notification.Name("ravenEnvelopeV1BleReceived")
 }

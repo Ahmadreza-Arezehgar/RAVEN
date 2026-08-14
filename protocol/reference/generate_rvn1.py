@@ -4,9 +4,24 @@
 Source of truth: raven_protocol.*  ·  Fixed keys: shared-vectors identities  ·  Epoch 1700000000."""
 import argparse, json, hashlib, hmac, pathlib, sys
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from raven_protocol import address, fingerprint, routing_tag, envelope, ack, alias, device_cert, capabilities
+from raven_protocol import (
+    ack,
+    address,
+    alias,
+    capabilities,
+    device_cert,
+    envelope,
+    fingerprint,
+    indexed_session,
+    pair_init,
+    prekey,
+    routing_tag,
+    store_tags,
+)
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 EPOCH_S = 1700000000
 EPOCH_MS = EPOCH_S * 1000
@@ -19,6 +34,9 @@ BOB_X_PUB     = bytes.fromhex("de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674da
 # strip-shortens-to-11-chars branch — the ~31% path no clean-key vector exercises.
 DAVE_ED_PUB   = bytes.fromhex("e61a185bcef2613a6c7cb79763ce945d3b245d76114dd440bcf5f2dc1aa57057")
 K_ROUTE       = bytes(range(32))
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+MLKEM_INTEROP_VECTOR = pathlib.Path("atsam/mlkem768_hybrid_kat_001.json")
+MLKEM_INTEROP_SHA256 = "7c9b4cc0c46c81fe55541021fbe114341c88601691a3a79ded2567a833105931"
 
 def hkdf_sha256(ikm, salt, info, length=32):
     """RFC 5869 HKDF-SHA256 (salt None → HashLen zeros). Matches CryptoKit / Rust hkdf."""
@@ -39,9 +57,40 @@ def write(out, rel, obj):
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(obj, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
+def write_frozen_order(out, rel, obj):
+    """Preserve the byte order of post-freeze vectors added before this generator.
+
+    Their object-member order is not semantically significant, but keeping the
+    committed bytes stable avoids needless churn for downstream consumers that
+    integrity-pin the complete fixture file.
+    """
+    p = pathlib.Path(out) / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(obj, indent=2) + "\n", encoding="utf-8")
+
 def vec(name, desc, inputs, expected, **extra):
     return {"name": name, "description": desc, "protocol_version": "rvn1",
             "deterministic": True, "inputs": inputs, "expected": expected, **extra}
+
+def copy_integrity_pinned_vector(out, relative_path, expected_sha256):
+    """Copy a deterministic external KAT after verifying its exact reviewed bytes.
+
+    The ML-KEM fixture is produced by the Rust `ml-kem` implementation and Apple
+    CryptoKit, because Python's `cryptography` package does not expose ML-KEM.
+    Keeping its reviewed digest here makes it part of the complete generator
+    manifest without falsely claiming this Python program can derive the KAT.
+    """
+    source = REPO_ROOT / "shared-vectors/rvn1" / relative_path
+    raw = source.read_bytes()
+    actual = hashlib.sha256(raw).hexdigest()
+    if actual != expected_sha256:
+        raise RuntimeError(
+            f"integrity-pinned vector changed: {relative_path} "
+            f"(expected {expected_sha256}, got {actual})"
+        )
+    destination = pathlib.Path(out) / relative_path
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(raw)
 
 def build_message_envelope():
     rt = routing_tag.derive(K_ROUTE, EPOCH_S, 0)
@@ -146,6 +195,58 @@ def main():
          "expires_at_ms": cap.expires_at, "identity_ed_public_hex": ALICE_ED_PUB.hex()},
         {"signing_bytes_hex": capabilities.signing_bytes(cap).hex(), "signature_hex": cap.signature.hex()}))
 
+    # RavenPrekeyBundleV1 — deterministic structural fixture. Keep the frozen
+    # JSON shape stable; canonical signing behavior is exercised by
+    # tests/test_prekey.py. The repeated ML-KEM bytes below are deliberately
+    # non-production material and therefore are not serialized into this vector.
+    pk = prekey.PrekeyBundle(
+        identity_ed25519_pub=ALICE_ED_PUB,
+        device_id="dev1",
+        x25519_pub=bytes([7]) * 32,
+        mlkem768_ek=bytes([3]) * prekey.MLKEM768_EK_LEN,
+        signed_prekey_id=1,
+        one_time_prekey_id=0,
+        one_time_x25519_pub=None,
+        created_at_ms=EPOCH_MS,
+        expires_at_ms=EPOCH_MS + 604800000,
+    )
+    pk.signature = Ed25519PrivateKey.from_private_bytes(ALICE_ED_PRIV).sign(
+        prekey.signing_bytes(pk)
+    )
+    write_frozen_order(out, "prekey/bundle_structure_001.json", {
+        "id": "bundle_structure_001",
+        "description": "Prekey bundle field sizes and domain (EK is test pattern, not a live ML-KEM key)",
+        "input": {
+            "domain_utf8": prekey.DOMAIN.decode(),
+            "version": prekey.VERSION,
+            "device_id": pk.device_id,
+            "mlkem768_ek_len": len(pk.mlkem768_ek),
+            "signed_prekey_id": pk.signed_prekey_id,
+            "one_time_prekey_id": pk.one_time_prekey_id,
+        },
+        "expected": {
+            "mlkem768_ek_len": prekey.MLKEM768_EK_LEN,
+            "signature_len": len(pk.signature),
+        },
+    })
+
+    mailbox = store_tags.mailbox_tag(K_ROUTE, EPOCH_S, 0)
+    write_frozen_order(out, "store/mailbox_tag_001.json", {
+        "id": "mailbox_tag_001",
+        "description": "Opaque rotating mailbox tag + store_tag (not username)",
+        "input": {
+            "k_route_hex": K_ROUTE.hex(),
+            "epoch": EPOCH_S,
+            "slot": 0,
+            "mailbox_label_utf8": store_tags.MAILBOX_LABEL.decode(),
+            "store_domain_utf8": store_tags.STORE_DOMAIN.decode(),
+        },
+        "expected": {
+            "mailbox_tag_hex": mailbox.hex(),
+            "store_tag_hex": store_tags.store_tag(mailbox).hex(),
+        },
+    })
+
     # ---- negative vectors ----
     bad_addr = address.encode(ALICE_ED_PUB)
     bad_addr = bad_addr[:-1] + ("q" if bad_addr[-1] != "q" else "p")
@@ -204,6 +305,12 @@ def main():
          "identity_ed_public_hex": ALICE_ED_PUB.hex()},
         {"verify_result": "reject"}))
 
+    write_frozen_order(out, "negative/prekey_bad_sig.json", {
+        "id": "prekey_bad_sig",
+        "description": "Tampered prekey signature must reject with PREKEY_BAD_SIG",
+        "expected": {"verify_result": "reject", "error": "PREKEY_BAD_SIG"},
+    })
+
     # --- Portable ATSAM / interim KATs (no ML-KEM; label agreement only) ---
     local_pub = bytes([0x01] * 32)
     peer_pub = bytes([0x02] * 32)
@@ -240,6 +347,355 @@ def main():
             "msg_seal_salt": "ATSAM/v2/msg-seal/salt",
         },
         "gap": "ML-KEM hybrid root establishment is NOT covered — this KAT assumes a known K_root. iOS remains canonical for pairing until Rust ports ML-KEM-768.",
+    })
+
+    # ATSAM Indexed Session Profile V1 — additive, production-disabled KATs.
+    # These freeze derivation and codec bytes only.  A future signed PairInit
+    # must negotiate/profile-bind the session context before endpoint use.
+    alice_address = address.encode(ALICE_ED_PUB)
+    bob_address = address.encode(BOB_ED_PUB)
+    profile_root = bytes([0x11] * 32)
+    ack_base = indexed_session.ack_base_key(profile_root)
+    route_master = indexed_session.route_master_key(profile_root)
+    mailbox_day, _ = indexed_session.mailbox_coordinates(EPOCH_MS, 0)
+    direction_vectors = []
+    for direction in (0, 1):
+        sender, recipient = (
+            (alice_address, bob_address) if direction == 0
+            else (bob_address, alice_address)
+        )
+        message_ck0 = indexed_session.chain_key_at_index(
+            profile_root, sender, recipient, 0
+        )
+        ack_ck0 = indexed_session.ack_chain_key_at_index(
+            profile_root, alice_address, bob_address, direction, 0
+        )
+        profile_mailbox_tag, profile_store_tag = indexed_session.derive_mailbox_tags(
+            profile_root, EPOCH_MS, direction
+        )
+        direction_vectors.append({
+            "direction": direction,
+            "sender_address": sender,
+            "recipient_address": recipient,
+            "message_ck0_hex": message_ck0.hex(),
+            "message_key_index0_hex": indexed_session.message_key_at_index(
+                profile_root, alice_address, bob_address, direction, 0
+            ).hex(),
+            "ack_ck0_hex": ack_ck0.hex(),
+            "ack_key_index0_hex": indexed_session.ack_key_at_index(
+                profile_root, alice_address, bob_address, direction, 0
+            ).hex(),
+            "route_direction_key_hex": indexed_session.route_direction_key(
+                profile_root, direction
+            ).hex(),
+            "mailbox_day_epoch": mailbox_day,
+            "mailbox_slot": direction,
+            "mailbox_tag_hex": profile_mailbox_tag.hex(),
+            "store_tag_hex": profile_store_tag.hex(),
+        })
+    write(out, "atsam/indexed_session_v1_subkeys_001.json", {
+        "id": "atsam_indexed_session_v1_subkeys_001",
+        "description": "Separately versioned ATSAM indexed-session subkeys and transcript-role directions",
+        "profile_version": indexed_session.PROFILE_ID.decode(),
+        "deterministic": True,
+        "production_enabled": indexed_session.PRODUCTION_ENABLED,
+        "production_activation": "disabled_pending_signed_pairinit_negotiation",
+        "input": {
+            "k_root_hex": profile_root.hex(),
+            "k_root_note": "public deterministic fixture material; never a live session root",
+            "initiator_address": alice_address,
+            "responder_address": bob_address,
+            "mailbox_time_ms": EPOCH_MS,
+        },
+        "labels": {
+            "ack_base": indexed_session.LABEL_ACK_BASE.decode(),
+            "route_master": indexed_session.LABEL_ROUTE_MASTER.decode(),
+            "route_direction": indexed_session.LABEL_ROUTE_DIRECTION.decode(),
+            "chain_init": indexed_session.LABEL_CHAIN_INIT.decode(),
+            "chain_advance": indexed_session.LABEL_CHAIN_ADVANCE.decode(),
+            "lane_message_key": indexed_session.LABEL_MSG_KEY.decode(),
+            "lane_message_salt": indexed_session.SALT_MSG_SEAL.decode(),
+        },
+        "expected": {
+            "session_context_hex": indexed_session.session_context(
+                alice_address, bob_address
+            ).hex(),
+            "ack_base_key_hex": ack_base.hex(),
+            "route_master_key_hex": route_master.hex(),
+            "directions": direction_vectors,
+        },
+    })
+
+    ack_outer_message_id = bytes.fromhex("00112233445546778899aabbccddeeff")
+    ack_created_at = EPOCH_MS + 1000
+    ack_index = 7
+    ack_direction = indexed_session.DIRECTION_RESPONDER_TO_INITIATOR
+    ack_record = ack.Ack(
+        acked_message_id=e.message_id,
+        status=1,
+        ack_nonce=(2).to_bytes(12, "big"),
+        created_at=ack_created_at,
+    )
+    ack_inner_signature = Ed25519PrivateKey.from_private_bytes(BOB_ED_PRIV).sign(
+        ack.signing_bytes(ack_record)
+    )
+    ack_plaintext = indexed_session.encode_signed_ack(
+        ack_record, ack_inner_signature
+    )
+    ack_seal_nonce = bytes([0xCD] * 12)
+    ack_wire = indexed_session.seal_ack(
+        profile_root,
+        alice_address,
+        bob_address,
+        ack_direction,
+        ack_index,
+        ack_outer_message_id,
+        ack_plaintext,
+        ack_seal_nonce,
+    )
+    ack_epoch, ack_counter = indexed_session.route_coordinates(
+        ack_created_at, ack_index, 2, ack_direction
+    )
+    ack_route_tag = indexed_session.derive_route_tag(
+        profile_root, ack_created_at, ack_index, 2, ack_direction
+    )
+    ack_aad = indexed_session.build_aad(
+        ack_index, bob_address, alice_address, ack_outer_message_id
+    )
+    ack_envelope = envelope.Envelope(
+        env_type=2,
+        # Known-root KAT: do not claim hybrid-PQ establishment in outer flags.
+        flags=0,
+        message_id=ack_outer_message_id,
+        routing_tag=ack_route_tag,
+        dest_device_hint=0,
+        created_at=ack_created_at,
+        expires_at=ack_created_at + 86400000,
+        hop_limit=8,
+        replication_budget=3,
+        anti_replay_nonce=(3).to_bytes(12, "big"),
+        ratchet_header_ciphertext=b"",
+        message_ciphertext=ack_wire,
+        sender_authentication=b"",
+    )
+    ack_envelope.sender_authentication = Ed25519PrivateKey.from_private_bytes(
+        BOB_ED_PRIV
+    ).sign(envelope.signing_bytes(ack_envelope))
+    ack_packed = envelope.pack(ack_envelope)
+    assert len(ack_plaintext) == 101
+    assert len(ack_wire) == 143
+    assert len(ack_packed) == 293
+    write(out, "atsam/indexed_session_v1_sealed_ack_001.json", {
+        "id": "atsam_indexed_session_v1_sealed_ack_001",
+        "description": "Exact 101-byte signed ACK sealed as 143-byte RVNA1 proto 0x03 and packed in a 293-byte RVN1 envelope",
+        "profile_version": indexed_session.PROFILE_ID.decode(),
+        "deterministic": True,
+        "production_enabled": indexed_session.PRODUCTION_ENABLED,
+        "production_activation": "disabled_pending_signed_pairinit_negotiation",
+        "input": {
+            "k_root_hex": profile_root.hex(),
+            "k_root_note": "public deterministic fixture material; never a live session root",
+            "initiator_address": alice_address,
+            "responder_address": bob_address,
+            "direction": ack_direction,
+            "ack_chain_index": ack_index,
+            "acked_message_id_hex": ack_record.acked_message_id.hex(),
+            "status": ack_record.status,
+            "ack_nonce_hex": ack_record.ack_nonce.hex(),
+            "created_at_ms": ack_record.created_at,
+            "expires_at_ms": ack_envelope.expires_at,
+            "inner_signer_ed_public_hex": BOB_ED_PUB.hex(),
+            "outer_message_id_hex": ack_outer_message_id.hex(),
+            "outer_message_id_aad_uuid": indexed_session.uuid_text(
+                ack_outer_message_id
+            ),
+            "seal_nonce_hex": ack_seal_nonce.hex(),
+            "anti_replay_nonce_hex": ack_envelope.anti_replay_nonce.hex(),
+            "hop_limit": ack_envelope.hop_limit,
+            "replication_budget": ack_envelope.replication_budget,
+            "outer_flags": ack_envelope.flags,
+        },
+        "allocator": {
+            "epoch": ack_epoch,
+            "counter": ack_counter,
+            "env_type": 2,
+            "formula": "counter=(index<<3)|((env_type-1)<<1)|direction",
+        },
+        "expected": {
+            "ack_signing_bytes_hex": ack.signing_bytes(ack_record).hex(),
+            "inner_signature_hex": ack_inner_signature.hex(),
+            "ack_plaintext_len": len(ack_plaintext),
+            "ack_plaintext_hex": ack_plaintext.hex(),
+            "ack_key_index7_hex": indexed_session.ack_key_at_index(
+                profile_root, alice_address, bob_address, ack_direction, ack_index
+            ).hex(),
+            "aad_sha256_hex": ack_aad.hex(),
+            "routing_tag_hex": ack_route_tag.hex(),
+            "rvna1_proto": indexed_session.RVNA1_PROTO,
+            "rvna1_suite": indexed_session.RVNA1_SUITE,
+            "sealed_body_len": len(ack_wire),
+            "sealed_body_hex": ack_wire.hex(),
+            "outer_signing_bytes_hex": envelope.signing_bytes(ack_envelope).hex(),
+            "outer_signature_hex": ack_envelope.sender_authentication.hex(),
+            "packed_envelope_len": len(ack_packed),
+            "packed_envelope_hex": ack_packed.hex(),
+        },
+    })
+
+    # Raven PairInit V1 — an additive, production-disabled, offline-capable
+    # session-establishment transcript. The responder's already signed prekey
+    # permits Alice to derive and queue message 0 before the signed response;
+    # the response confirms possession of the exact provisional root later.
+    hybrid_kat = json.loads(
+        (REPO_ROOT / "shared-vectors/rvn1" / MLKEM_INTEROP_VECTOR).read_text()
+    )
+    hybrid_in = hybrid_kat["input"]
+    hybrid_exp = hybrid_kat["expected"]
+    alice_device_seed = bytes(range(32))
+    bob_device_seed = bytes(range(32, 64))
+    alice_device_private = Ed25519PrivateKey.from_private_bytes(alice_device_seed)
+    bob_device_private = Ed25519PrivateKey.from_private_bytes(bob_device_seed)
+    alice_device_ed = alice_device_private.public_key().public_bytes(
+        Encoding.Raw, PublicFormat.Raw
+    )
+    bob_device_ed = bob_device_private.public_key().public_bytes(
+        Encoding.Raw, PublicFormat.Raw
+    )
+    alice_device_x = X25519PrivateKey.from_private_bytes(bytes([0x41]) * 32).public_key().public_bytes(
+        Encoding.Raw, PublicFormat.Raw
+    )
+    bob_signed_x = X25519PrivateKey.from_private_bytes(bytes([0x52]) * 32).public_key().public_bytes(
+        Encoding.Raw, PublicFormat.Raw
+    )
+    alice_ephemeral_x = bytes.fromhex(hybrid_exp["alice_x25519_public_hex"])
+    bob_one_time_x = bytes.fromhex(hybrid_exp["bob_x25519_public_hex"])
+    mlkem_ek = bytes.fromhex(hybrid_exp["mlkem_ek_hex"])
+    mlkem_ct = bytes.fromhex(hybrid_exp["mlkem_ct_hex"])
+
+    alice_cert = device_cert.DeviceCert(
+        device_ed_pub=alice_device_ed,
+        device_x_pub=alice_device_x,
+        device_id="alice-device-1",
+        not_before=EPOCH_MS - 86_400_000,
+        not_after=EPOCH_MS + 31_536_000_000,
+        capabilities=0,
+    )
+    alice_cert.signature = Ed25519PrivateKey.from_private_bytes(ALICE_ED_PRIV).sign(
+        device_cert.signing_bytes(alice_cert)
+    )
+    bob_cert = device_cert.DeviceCert(
+        device_ed_pub=bob_device_ed,
+        device_x_pub=bob_signed_x,
+        device_id="bob-device-1",
+        not_before=EPOCH_MS - 86_400_000,
+        not_after=EPOCH_MS + 31_536_000_000,
+        capabilities=0,
+    )
+    bob_cert.signature = Ed25519PrivateKey.from_private_bytes(BOB_ED_PRIV).sign(
+        device_cert.signing_bytes(bob_cert)
+    )
+    bob_prekey = prekey.PrekeyBundle(
+        identity_ed25519_pub=BOB_ED_PUB,
+        device_id=bob_cert.device_id,
+        x25519_pub=bob_signed_x,
+        mlkem768_ek=mlkem_ek,
+        signed_prekey_id=42,
+        one_time_prekey_id=7,
+        one_time_x25519_pub=bob_one_time_x,
+        created_at_ms=EPOCH_MS - 60_000,
+        expires_at_ms=EPOCH_MS + 604_800_000,
+    )
+    bob_prekey.signature = Ed25519PrivateKey.from_private_bytes(BOB_ED_PRIV).sign(
+        prekey.signing_bytes(bob_prekey)
+    )
+    alice_cert_hash = pair_init.device_certificate_hash(
+        ALICE_ED_PUB, device_cert.signing_bytes(alice_cert), alice_cert.signature
+    )
+    bob_cert_hash = pair_init.device_certificate_hash(
+        BOB_ED_PUB, device_cert.signing_bytes(bob_cert), bob_cert.signature
+    )
+    bob_prekey_hash = pair_init.prekey_bundle_hash(
+        prekey.signing_bytes(bob_prekey), bob_prekey.signature
+    )
+    pair = pair_init.PairInit(
+        initiator_address=alice_address,
+        responder_address=bob_address,
+        init_id=bytes.fromhex("102132435465768798a9bacbdcedfe0f"),
+        pairing_nonce=bytes(
+            (0x91 + index * 7) & 0xFF for index in range(pair_init.NONCE_LEN)
+        ),
+        initiator_device_ed_pub=alice_device_ed,
+        responder_device_ed_pub=bob_device_ed,
+        initiator_ephemeral_x25519_pub=alice_ephemeral_x,
+        responder_signed_x25519_pub=bob_signed_x,
+        responder_one_time_x25519_pub=bob_one_time_x,
+        initiator_device_cert_hash=alice_cert_hash,
+        responder_device_cert_hash=bob_cert_hash,
+        responder_prekey_bundle_hash=bob_prekey_hash,
+        signed_prekey_id=bob_prekey.signed_prekey_id,
+        one_time_prekey_id=bob_prekey.one_time_prekey_id,
+        responder_mlkem768_ek=mlkem_ek,
+        mlkem768_ciphertext=mlkem_ct,
+        created_at_ms=EPOCH_MS,
+        expires_at_ms=EPOCH_MS + 86_400_000,
+    )
+    pair.signature = alice_device_private.sign(pair_init.init_signing_bytes(pair))
+    z_x = bytes.fromhex(hybrid_exp["z_x_hex"])
+    z_pq = bytes.fromhex(hybrid_exp["z_pq_hex"])
+    provisional_root = pair_init.derive_provisional_root(z_x, z_pq, pair)
+    pair_digest = pair_init.init_hash(pair)
+    response = pair_init.PairResponse(
+        init_id=pair.init_id,
+        init_hash=pair_digest,
+        responder_device_ed_pub=bob_device_ed,
+        created_at_ms=EPOCH_MS + 1000,
+        expires_at_ms=EPOCH_MS + 86_400_000,
+        confirmation_tag=pair_init.confirmation_tag(provisional_root, pair_digest),
+    )
+    response.signature = bob_device_private.sign(
+        pair_init.response_signing_bytes(response)
+    )
+    write(out, "atsam/pair_init_v1_001.json", {
+        "id": "atsam_pair_init_v1_001",
+        "description": "Production-disabled offline PairInit: exact signed prekey/cert bindings, provisional hybrid root, and deferred signed confirmation",
+        "profile_version": pair_init.PROFILE_ID.decode(),
+        "deterministic": True,
+        "production_enabled": pair_init.PRODUCTION_ENABLED,
+        "production_activation": "disabled_pending_durable_session_actor_and_external_review",
+        "input": {
+            "initiator_identity_ed_pub_hex": ALICE_ED_PUB.hex(),
+            "responder_identity_ed_pub_hex": BOB_ED_PUB.hex(),
+            "initiator_device_ed_pub_hex": alice_device_ed.hex(),
+            "responder_device_ed_pub_hex": bob_device_ed.hex(),
+            "initiator_device_cert_signing_bytes_hex": device_cert.signing_bytes(alice_cert).hex(),
+            "initiator_device_cert_signature_hex": alice_cert.signature.hex(),
+            "responder_device_cert_signing_bytes_hex": device_cert.signing_bytes(bob_cert).hex(),
+            "responder_device_cert_signature_hex": bob_cert.signature.hex(),
+            "responder_prekey_signing_bytes_hex": prekey.signing_bytes(bob_prekey).hex(),
+            "responder_prekey_signature_hex": bob_prekey.signature.hex(),
+            "z_x_hex": z_x.hex(),
+            "z_pq_hex": z_pq.hex(),
+            "mlkem_source_vector": MLKEM_INTEROP_VECTOR.as_posix(),
+            "mlkem_m_hex": hybrid_in["mlkem_m_hex"],
+        },
+        "expected": {
+            "initiator_device_cert_hash_hex": alice_cert_hash.hex(),
+            "responder_device_cert_hash_hex": bob_cert_hash.hex(),
+            "responder_prekey_bundle_hash_hex": bob_prekey_hash.hex(),
+            "pair_init_signing_bytes_hex": pair_init.init_signing_bytes(pair).hex(),
+            "pair_init_signature_hex": pair.signature.hex(),
+            "pair_init_wire_hex": pair_init.encode_init(pair).hex(),
+            "pair_init_wire_len": pair_init.INIT_WIRE_LEN,
+            "pair_init_hash_hex": pair_digest.hex(),
+            "session_id_hex": pair_init.session_id(pair).hex(),
+            "transcript_hash_hex": pair_init.transcript_hash(pair).hex(),
+            "provisional_k_root_hex": provisional_root.hex(),
+            "confirmation_tag_hex": response.confirmation_tag.hex(),
+            "pair_response_signing_bytes_hex": pair_init.response_signing_bytes(response).hex(),
+            "pair_response_signature_hex": response.signature.hex(),
+            "pair_response_wire_hex": pair_init.encode_response(response).hex(),
+            "pair_response_wire_len": pair_init.RESPONSE_WIRE_LEN,
+        },
     })
     # Root HKDF (Z_X||Z_PQ + transcript) — matches raven-core::atsam_root / ATSAMRootDerivation
     z_x = bytes([0x11] * 32)
@@ -323,6 +779,8 @@ def main():
             },
         ],
     })
+
+    copy_integrity_pinned_vector(out, MLKEM_INTEROP_VECTOR, MLKEM_INTEROP_SHA256)
 
 if __name__ == "__main__":
     main()

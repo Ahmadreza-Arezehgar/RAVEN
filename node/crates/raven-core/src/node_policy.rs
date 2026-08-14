@@ -108,10 +108,7 @@ impl BridgeStatusSnapshot {
         if transports.iter().any(|t| *t == "ble" || *t == "mock_ble") {
             caps.push("ble".into());
         }
-        if transports
-            .iter()
-            .any(|t| *t == "lan" || *t == "internet")
-        {
+        if transports.iter().any(|t| *t == "lan" || *t == "internet") {
             caps.push("internet".into());
         }
         if policy.relay {
@@ -145,9 +142,11 @@ mod tests {
     #[test]
     fn roundtrip_policy() {
         let dir = tempdir().unwrap();
-        let mut p = NodePolicy::default();
-        p.bridge = false;
-        p.auto_policy = false;
+        let p = NodePolicy {
+            bridge: false,
+            auto_policy: false,
+            ..Default::default()
+        };
         save_policy(dir.path(), &p).unwrap();
         let loaded = load_policy(dir.path());
         assert!(!loaded.bridge);

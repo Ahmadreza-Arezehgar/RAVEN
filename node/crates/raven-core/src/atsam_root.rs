@@ -10,6 +10,7 @@
 use hkdf::Hkdf;
 use sha2::{Digest, Sha256};
 use x25519_dalek::{PublicKey, StaticSecret};
+use zeroize::Zeroize;
 
 pub const PAIR_INIT: &[u8] = b"ATSAM/v1/pair-init";
 pub const TRANSCRIPT_DOMAIN: &[u8] = b"ATSAM/v1/transcript";
@@ -33,6 +34,7 @@ pub fn derive_root(z_x: &[u8; 32], z_pq: &[u8; 32], transcript_hash: &[u8; 32]) 
     let hk = Hkdf::<Sha256>::new(Some(transcript_hash.as_slice()), &ikm);
     let mut okm = [0u8; 32];
     hk.expand(&info, &mut okm).expect("hkdf");
+    ikm.zeroize();
     okm
 }
 
@@ -41,6 +43,19 @@ pub fn x25519_shared(secret: &[u8; 32], peer_public: &[u8; 32]) -> [u8; 32] {
     let sk = StaticSecret::from(*secret);
     let pk = PublicKey::from(*peer_public);
     sk.diffie_hellman(&pk).to_bytes()
+}
+
+/// Production pairing variant: rejects non-contributory/low-order peer keys
+/// instead of feeding an all-zero X25519 result into the hybrid root.
+pub fn x25519_shared_checked(
+    secret: &[u8; 32],
+    peer_public: &[u8; 32],
+) -> Result<[u8; 32], String> {
+    let shared = x25519_shared(secret, peer_public);
+    if shared.iter().all(|byte| *byte == 0) {
+        return Err("X25519 non-contributory peer key".into());
+    }
+    Ok(shared)
 }
 
 #[cfg(test)]
@@ -74,5 +89,10 @@ mod tests {
         let zab = x25519_shared(&a, &pb);
         let zba = x25519_shared(&b, &pa);
         assert_eq!(zab, zba);
+    }
+
+    #[test]
+    fn non_contributory_x25519_key_is_rejected() {
+        assert!(x25519_shared_checked(&[7u8; 32], &[0u8; 32]).is_err());
     }
 }

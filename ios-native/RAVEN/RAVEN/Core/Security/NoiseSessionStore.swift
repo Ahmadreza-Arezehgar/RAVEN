@@ -277,7 +277,15 @@ final class NoiseSessionStore {
     }
 
     // MARK: - Self-test
+    //
+    // DEBUG-only. The crypto self-tests below (runRoundTripSelfTest,
+    // runEndToEndSelfTest, and the l1_/l2_/l3_ helpers plus their
+    // SelfTestFailure / mirror-constant support) are wrapped in
+    // `#if DEBUG` so they are stripped from release builds — they
+    // have zero production call sites (the only caller is
+    // RAVENApp's launch path, which is itself `#if DEBUG`).
 
+#if DEBUG
     /// Round-trip a handshake + transport message through TWO stores
     /// (one acting as initiator, one as responder). Useful as a unit
     /// test in `#if DEBUG` builds. Throws on any mismatch.
@@ -520,4 +528,5 @@ final class NoiseSessionStore {
         hasher.update(data: Data(msgId.utf8))
         return Data(hasher.finalize())
     }
+#endif
 }

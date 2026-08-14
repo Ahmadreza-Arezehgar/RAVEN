@@ -234,8 +234,18 @@ actor ConversationRepository {
         var peerAvatarPath: String?
         
         // SANITIZE: If senderName looks encrypted/encoded, treat as empty
-        // so the COALESCE in SQL preserves any existing good name in the DB
-        if peerName.hasPrefix("gAAAA") || peerName.hasPrefix("eyJ") || (!peerName.contains(" ") && peerName.count > 40) {
+        // so the COALESCE in SQL preserves any existing good name in the DB.
+        //
+        // Previously this was a brittle "length + no-space" heuristic
+        // (`!contains(" ") && count > 40`) that mangled legitimate long
+        // single-token display names (e.g. a long handle, an emoji name with
+        // no spaces, a CJK string). Delegate to the canonical, project-wide
+        // `looksEncrypted` check instead: it still flags the unambiguous
+        // ciphertext/JWT prefixes ("gAAAA", "eyJ") and only treats a long
+        // single token as encrypted when it has NO URL/identifier punctuation
+        // — i.e. when it actually has the base64/Fernet shape — so real names
+        // pass through untouched.
+        if peerName.looksEncrypted {
             #if DEBUG
             print("⚠️ [ConvRepo] Encrypted senderName detected, clearing: \(peerName.prefix(20))...")
             #endif
@@ -422,25 +432,38 @@ actor ConversationRepository {
     }
     
     // MARK: - Fetch User Info (for peer details)
-    
+
+    /// LOCAL-ONLY peer-name resolution.
+    ///
+    /// RAVEN is a serverless, no-account app: there is no `/api/users/{id}`
+    /// endpoint, so the old NetworkService round-trip here only ever produced
+    /// 401 spam on every message (hydration + applyMessage). We now resolve the
+    /// display name purely from on-device state — the trusted-device records in
+    /// `FriendDeviceRepository` (`deviceName`). If no usable local name exists we
+    /// throw, which keeps the existing `try?` call sites returning nil so the
+    /// peer columns stay empty and `Conversation.Peer.displayName` falls back to
+    /// the "User <id-prefix>" rendering on its own.
     private func fetchUserInfo(userId: String) async throws -> (username: String, firstName: String?, lastName: String?, avatarPath: String?) {
-        struct UserResponse: Decodable {
-            let id: String
-            let username: String
-            let firstName: String?
-            let lastName: String?
-            let avatarPath: String?
-            
-            enum CodingKeys: String, CodingKey {
-                case id, username
-                case firstName = "first_name"
-                case lastName = "last_name"
-                case avatarPath = "avatar_path"
+        let devices = await FriendDeviceRepository.shared.getTrustedDevices(forUser: userId)
+        // Pick the first human-meaningful device name. Skip empties, the
+        // synthetic TOFU placeholders ("mesh-tofu-…"), and anything that
+        // looks like ciphertext rather than a real name.
+        let localName = devices
+            .compactMap { $0.deviceName }
+            .first { name in
+                !name.isEmpty
+                    && !name.hasPrefix("mesh-tofu")
+                    && !name.looksEncrypted
             }
+
+        guard let localName else {
+            throw FriendDeviceError.failedToPrepare
         }
-        
-        let user: UserResponse = try await NetworkService.shared.get(path: "/api/users/\(userId)")
-        return (user.username, user.firstName, user.lastName, user.avatarPath)
+
+        // We only have a single local label, no structured first/last or
+        // avatar — surface it as the username and let the display-name
+        // fallback handle the rest.
+        return (localName, nil, nil, nil)
     }
     
     // MARK: - Hydrate Missing Peer Info
@@ -815,7 +838,7 @@ actor ConversationRepository {
                 unread_count, is_pinned, is_muted, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(room_id) DO UPDATE SET
-                group_name = excluded.group_name,
+                group_name = COALESCE(NULLIF(excluded.group_name, ''), conversations.group_name),
                 group_avatar_url = COALESCE(excluded.group_avatar_url, conversations.group_avatar_url),
                 updated_at = excluded.updated_at
         """

@@ -61,7 +61,29 @@ def _get_current_user(authorization: str = Header(None), db: Session = Depends(g
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
-    
+
+    # 🔒 SECURITY (audit PB-H6): this is the single highest-value
+    # bulk-exfil endpoint (whole decrypted DM/group history, PII,
+    # posts, contacts). It MUST honor cross-instance token revocation
+    # exactly like routers/users.py, or a stolen token keeps exporting
+    # the victim's entire account after they log out / reset their
+    # password (when the request lands on a replica whose in-process
+    # jti set is empty). Reject any JWT issued before the stamp.
+    if user.tokens_invalidated_at is not None:
+        iat = payload.get("iat")
+        if iat is not None:
+            try:
+                invalidated_ts = user.tokens_invalidated_at.timestamp()
+                if float(iat) < invalidated_ts - 2.0:
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Token was invalidated by explicit logout",
+                    )
+            except HTTPException:
+                raise
+            except Exception:
+                pass
+
     return user
 
 

@@ -153,7 +153,7 @@ struct SecuritySettingsView: View {
                     } label: {
                         SettingsNavigationRow(
                             title: "Pair a device",
-                            subtitle: "60-digit safety number over the internet",
+                            subtitle: "30-digit safety number over the internet",
                             icon: "link.circle.fill",
                             iconColor: .blue
                         )

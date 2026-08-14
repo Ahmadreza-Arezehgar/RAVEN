@@ -7,4 +7,5 @@ no now(), no os.urandom.
 __all__ = [
     "bech32m", "address", "fingerprint", "envelope",
     "ack", "alias", "routing_tag", "device_cert", "capabilities",
+    "prekey", "store_tags", "indexed_session", "pair_init",
 ]

@@ -71,6 +71,20 @@ class SecureStore @Inject constructor(
         prefs.edit().remove(key).apply()
     }
 
+    /** Remove every stored key whose name starts with [prefix].
+     *  Used on sign-out to purge all `e2ee.*` session + prekey
+     *  material in one shot without touching unrelated keys (e.g. the
+     *  SQLCipher DB key). See [app.raven.core.security.TokenStore.signOutLocally]. */
+    fun removeByPrefix(prefix: String) {
+        val editor = prefs.edit()
+        // Copy the key set first — mutating prefs while iterating its
+        // live `.all` view is undefined.
+        for (k in prefs.all.keys.toList()) {
+            if (k.startsWith(prefix)) editor.remove(k)
+        }
+        editor.apply()
+    }
+
     /** Wipe every secret. Called on logout / account-switch. */
     fun clear() {
         prefs.edit().clear().apply()

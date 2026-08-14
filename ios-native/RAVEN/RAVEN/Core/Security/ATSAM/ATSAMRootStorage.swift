@@ -61,6 +61,12 @@ actor ATSAMRootStorage {
     private static func transcriptAccount(for userId: String) -> String {
         "transcript|\(userId)"
     }
+    /// v2 ratchet chain state, one row per direction (see ATSAMChainRatchet).
+    /// Same service and protection class as the root: this is key material, and
+    /// leaking a chain key surrenders forward secrecy from that index onward.
+    private static func chainAccount(for userId: String, sending: Bool) -> String {
+        "chain|\(sending ? "s" : "r")|\(userId)"
+    }
 
     // MARK: - In-memory cache
 
@@ -110,6 +116,22 @@ actor ATSAMRootStorage {
         // 1. Invalidate cache BEFORE the Keychain writes.
         rootCache.removeValue(forKey: userId)
         transcriptCache.removeValue(forKey: userId)
+        // 🔴 A NEW ROOT MUST RESET THE RATCHET.
+        //
+        // v2 chains are seeded from the root, but they are only seeded ONCE and
+        // then persist. Leaving the old rows in place means a re-pair is
+        // silently ignored: the peer that re-paired seeds fresh chains from the
+        // new root while the other side keeps using chains derived from the
+        // old one, so every message fails its AEAD in both directions —
+        // permanently, because re-pairing again would hit the same stale rows.
+        // It would also make a post-compromise Safety-Number rotation useless:
+        // the message keys would still descend from the compromised root.
+        //
+        // Deleting here makes the chains re-seed from whichever root is current.
+        chainCache.removeValue(forKey: chainCacheKey(userId, true))
+        chainCache.removeValue(forKey: chainCacheKey(userId, false))
+        Self.kcDelete(account: Self.chainAccount(for: userId, sending: true))
+        Self.kcDelete(account: Self.chainAccount(for: userId, sending: false))
         // 2. Write transcript first.
         try Self.kcSetData(transcriptBytes, account: Self.transcriptAccount(for: userId))
         // 3. Write root. If this fails, the transcript is orphaned —
@@ -150,6 +172,145 @@ actor ATSAMRootStorage {
         return Self.kcGetData(account: Self.transcriptAccount(for: userId))
     }
 
+    // MARK: - v2 ratchet chain state
+
+    /// In-memory chain cache. Canonical copy is the Keychain; this exists so a
+    /// burst of sends does not serialise on Keychain I/O.
+    private var chainCache: [String: ATSAMChainState] = [:]
+
+    private func chainCacheKey(_ userId: String, _ sending: Bool) -> String {
+        (sending ? "s|" : "r|") + userId
+    }
+
+    // NOTE: the earlier `chainState(for:sending:)` / `commitChainState(...)`
+    // pair was removed. They were superseded by the two atomic methods below,
+    // and keeping them was a live hazard: `chainState` seeded the send chain
+    // from `KeychainService.getUserId()` while `reserveSendStep` seeds from the
+    // `selfUserId` its caller passes in. Those agree today, but two independent
+    // ways to seed the same chain is precisely how they stop agreeing later —
+    // and a disagreement silently produces a chain the peer cannot follow.
+
+    /// Atomically reserve the next SENDING index and return its message key.
+    ///
+    /// 🔴 CONCURRENCY. This must be one indivisible step. The obvious spelling —
+    /// `chainState()` → `sendKey()` → `commitChainState()` — is three separate
+    /// actor calls, and `chainState()` itself suspends on `await` while it
+    /// resolves the root and the local id. Actors are reentrant, so two
+    /// concurrent sends to the same peer (DeliveryJobRunner fans out, and the
+    /// outbox drains in parallel) could both observe index N and both seal
+    /// there. The nonces differ, so there is no keystream reuse — but the
+    /// receiver consumes the key at N for whichever arrives first and then
+    /// rejects the other as already-used. The user would see a message silently
+    /// vanish.
+    ///
+    /// This method is deliberately NON-async: with no suspension point between
+    /// read, advance and commit, no other call can interleave. Callers resolve
+    /// `selfUserId` and `root` beforehand and hand them in.
+    func reserveSendStep(peerUserId: String,
+                         selfUserId: String,
+                         root: ATSAMRootKey) throws -> (index: UInt32, key: SymmetricKey) {
+        guard !peerUserId.isEmpty, !peerUserId.contains("\0"),
+              !selfUserId.isEmpty else {
+            throw ATSAMRootStorageError.invalidUserId
+        }
+        let ck = chainCacheKey(peerUserId, true)
+
+        // Resolve current state: cache → Keychain → seed from the root.
+        let current: ATSAMChainState
+        if let cached = chainCache[ck] {
+            current = cached
+        } else if let raw = Self.kcGetData(account: Self.chainAccount(for: peerUserId, sending: true)),
+                  let decoded = ATSAMChainState.decode(raw) {
+            current = decoded
+        } else {
+            current = ATSAMChainState(
+                chainKey: ATSAMChainRatchet.initialChainKey(root: root,
+                                                            senderUserId: selfUserId,
+                                                            recipientUserId: peerUserId)
+            )
+        }
+
+        let step = ATSAMChainRatchet.sendKey(state: current,
+                                             senderUserId: selfUserId,
+                                             recipientUserId: peerUserId)
+
+        // Persist BEFORE returning the key. If this throws, the index is not
+        // consumed and the caller falls back — no ciphertext can exist under a
+        // key the chain will hand out again.
+        try Self.kcSetData(step.next.encode(),
+                           account: Self.chainAccount(for: peerUserId, sending: true))
+        chainCache[ck] = step.next
+
+        return (step.index, step.key)
+    }
+
+    /// Atomically consume a RECEIVING index: derive the key, hand it to
+    /// `verify`, and commit the advanced chain only if verification succeeds.
+    ///
+    /// 🔴 CONCURRENCY + ORDERING, both of which matter here.
+    ///
+    /// Ordering: the chain must NOT advance for a frame that fails its AEAD.
+    /// Otherwise any peer could ship garbage at a high index and ratchet the
+    /// victim forward, destroying the keys for genuine messages still in
+    /// flight — remote denial of communication needing no key material.
+    ///
+    /// Atomicity: doing read → verify → commit as separate actor calls lets two
+    /// inbound frames from the same peer both start from one snapshot, so the
+    /// last commit wins and silently re-persists a key the other call already
+    /// consumed — reopening a replay window in exactly the out-of-order case
+    /// the skipped-key cache exists to serve. Keeping the whole sequence inside
+    /// one non-async actor method removes the interleaving.
+    ///
+    /// `verify` must be a pure, synchronous AEAD check — it runs while the
+    /// actor is held.
+    func consumeReceiveStep(peerUserId: String,
+                            selfUserId: String,
+                            root: ATSAMRootKey,
+                            index: UInt32,
+                            verify: (SymmetricKey) -> String?) -> String? {
+        guard !peerUserId.isEmpty, !selfUserId.isEmpty else { return nil }
+        let ck = chainCacheKey(peerUserId, false)
+
+        let current: ATSAMChainState
+        if let cached = chainCache[ck] {
+            current = cached
+        } else if let raw = Self.kcGetData(account: Self.chainAccount(for: peerUserId, sending: false)),
+                  let decoded = ATSAMChainState.decode(raw) {
+            current = decoded
+        } else {
+            current = ATSAMChainState(
+                chainKey: ATSAMChainRatchet.initialChainKey(root: root,
+                                                            senderUserId: peerUserId,
+                                                            recipientUserId: selfUserId)
+            )
+        }
+
+        guard let opened = try? ATSAMChainRatchet.openKey(
+            state: current,
+            index: index,
+            senderUserId: peerUserId,
+            recipientUserId: selfUserId
+        ) else { return nil }
+
+        // Verify FIRST. A failure leaves the chain untouched.
+        guard let plaintext = verify(opened.key) else { return nil }
+
+        // Success is not accepted until the consumed index is durably persisted.
+        // Returning plaintext while only the in-memory cache advanced would let
+        // a restart roll the chain back and re-accept a replay. Fail closed: the
+        // caller receives nil and therefore must not persist or ACK this frame.
+        do {
+            try Self.kcSetData(
+                opened.next.encode(),
+                account: Self.chainAccount(for: peerUserId, sending: false)
+            )
+        } catch {
+            return nil
+        }
+        chainCache[ck] = opened.next
+        return plaintext
+    }
+
     /// Wipe a peer's pairing material. Called when the user
     /// explicitly clears a pairing or when the device is being
     /// signed-out. Idempotent.
@@ -157,35 +318,68 @@ actor ATSAMRootStorage {
         guard !userId.isEmpty else { return }
         rootCache.removeValue(forKey: userId)
         transcriptCache.removeValue(forKey: userId)
+        chainCache.removeValue(forKey: chainCacheKey(userId, true))
+        chainCache.removeValue(forKey: chainCacheKey(userId, false))
         Self.kcDelete(account: Self.rootAccount(for: userId))
         Self.kcDelete(account: Self.transcriptAccount(for: userId))
+        Self.kcDelete(account: Self.chainAccount(for: userId, sending: true))
+        Self.kcDelete(account: Self.chainAccount(for: userId, sending: false))
     }
 
     /// Wipe everything. Called on sign-out / "delete my account".
     func purgeAll() async {
         rootCache.removeAll()
         transcriptCache.removeAll()
+        chainCache.removeAll()
         Self.kcDeleteAll()
     }
 
     // MARK: - Keychain helpers
 
     private static func kcSetData(_ data: Data, account: String) throws {
-        // Delete-then-add (idempotent overwrite — Keychain has no
-        // built-in upsert that survives every iOS version cleanly).
-        kcDelete(account: account)
-        let query: [String: Any] = [
+        let identityQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
             kSecAttrSynchronizable as String: kCFBooleanFalse as Any,
-            kSecValueData as String: data,
         ]
-        let status = SecItemAdd(query as CFDictionary, nil)
-        guard status == errSecSuccess else {
-            throw ATSAMRootStorageError.keychainWriteFailed(status: status)
+
+        // Updating an existing item preserves the prior value if the operation
+        // fails. This avoids the delete-then-add rollback hole for ratchet state.
+        let updateStatus = SecItemUpdate(
+            identityQuery as CFDictionary,
+            [kSecValueData as String: data] as CFDictionary
+        )
+        if updateStatus == errSecSuccess {
+            return
         }
+        guard updateStatus == errSecItemNotFound else {
+            throw ATSAMRootStorageError.keychainWriteFailed(status: updateStatus)
+        }
+
+        var addQuery = identityQuery
+        addQuery.merge([
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+            kSecValueData as String: data,
+        ]) { _, new in new }
+        let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
+        if addStatus == errSecSuccess {
+            return
+        }
+
+        // Another writer may have inserted between update and add. Retry the
+        // non-destructive update once; every other error remains fail-closed.
+        if addStatus == errSecDuplicateItem {
+            let retryStatus = SecItemUpdate(
+                identityQuery as CFDictionary,
+                [kSecValueData as String: data] as CFDictionary
+            )
+            if retryStatus == errSecSuccess {
+                return
+            }
+            throw ATSAMRootStorageError.keychainWriteFailed(status: retryStatus)
+        }
+        throw ATSAMRootStorageError.keychainWriteFailed(status: addStatus)
     }
 
     private static func kcGetData(account: String) -> Data? {

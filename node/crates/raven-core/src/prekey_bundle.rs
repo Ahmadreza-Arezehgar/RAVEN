@@ -255,11 +255,7 @@ impl PrekeyStore {
         Ok(())
     }
 
-    pub fn fetch(
-        &self,
-        ed_pub: &[u8; 32],
-        now_ms: u64,
-    ) -> Result<Option<PrekeyBundle>, String> {
+    pub fn fetch(&self, ed_pub: &[u8; 32], now_ms: u64) -> Result<Option<PrekeyBundle>, String> {
         let key = hex::encode(PrekeyBundle::store_key(ed_pub));
         let Some(j) = self.bundles.get(&key) else {
             return Ok(None);

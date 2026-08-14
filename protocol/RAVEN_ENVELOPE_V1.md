@@ -1,7 +1,10 @@
 # RAVEN Envelope V1
 
 **Version:** 1 (`rvn1`)
-**Status:** Frozen. See [`SPEC.md`](SPEC.md) for scope and versioning policy.
+**Status:** Wire layout frozen; production security hold. The mandatory
+processing corrections in
+[`SECURITY_ERRATA_RVN1_2026-08-13.md`](SECURITY_ERRATA_RVN1_2026-08-13.md)
+override §6 where they conflict. See [`SPEC.md`](SPEC.md).
 **Audience:** re-implementers of the wire codec and anyone writing a relay,
 bridge, or transport adapter.
 
@@ -107,26 +110,24 @@ for any `env_type` that requires an Ed25519 `sender_authentication`, per the
 canonical signing-bytes rule in §2. No implementation should treat the field
 widths as the real limit.
 
-**Recommended practical ceiling:** implementations SHOULD enforce a hard total
-envelope-size limit well below the field-width theoretical maximum. The
-current internet-bridge transport already does this at the transport layer:
-`ios-native/RAVEN/Libp2pBridge/bridge.go:47` sets
-`maxEnvelopeBytes = 24 * 1024 * 1024` (24 MiB), sized to fit a serverless
-media message (inline-embedded AES-encrypted attachment bytes, capped at
-10 MB raw) plus envelope overhead.
+**Canonical V1 ceiling:** decoders MUST reject a packed envelope larger than
+1,048,576 bytes before reading its declared variable lengths. The text sealer
+has a tighter 256 KiB body ceiling. Media is outside the first serverless
+milestone and MUST use a separately versioned bounded/chunked transport rather
+than silently raising the canonical text-object limit.
 
-> **Known issue — DoS to close in Phase B.** The 24 MiB check in
-> `bridge.go` (`ios-native/RAVEN/Libp2pBridge/bridge.go:242-245`) compares the
-> attacker-supplied length prefix against the 24 MiB ceiling, then
-> **immediately allocates a buffer of the full claimed length**
-> (`env := make([]byte, envLen)`) *before* running any of the size → decode →
-> version → structure checks in §5 below. A hostile peer can open many
-> concurrent libp2p streams, each declaring a length near 24 MiB, forcing
-> large allocations ahead of any envelope validation — a memory-exhaustion
-> vector distinct from (and not fixed by) the per-frame ceiling itself. Phase
-> B should validate structure incrementally (e.g. read and check the 86-byte
-> prefix before allocating room for the variable-length fields) or cap total
-> concurrent unvalidated allocation per remote peer, not just per-frame size.
+> **Implemented transport guard (2026-08-13).** The legacy Go media bridge has
+> a wider 24 MiB carrier frame for old server payloads; that does not make an
+> oversized object valid RVN1. It still reserves the declared buffer before
+> the envelope codec runs, because it must hand the
+> exact opaque object across the Swift boundary. It now does so only after a
+> non-blocking reservation: at most two inbound streams and one maximum-sized
+> frame per remote peer, eight streams globally, and two maximum-sized frames
+> globally. The idempotency-key field is capped at 512 bytes, every read has a
+> deadline, and malformed, stalled, or over-budget streams are reset with all
+> reservations released. Adversarial and race tests cover these limits. This
+> bounds pre-validation allocation; deployments should still set lower policy
+> limits when the text-only profile does not need the 24 MiB media-era ceiling.
 
 ## 5. "No plaintext identities on the wire"
 
@@ -150,8 +151,12 @@ conversation/room identifier in the clear:
 
 ## 6. Incoming-processing pipeline
 
-Implementations MUST apply these checks in this order. Each stage either
-drops/rejects and stops, or passes the envelope to the next stage.
+The original Phase A ordering wrote attacker-selected dedup identifiers before
+authentication. That is unsafe and is superseded by the security errata. An
+implementation MUST first determine whether it is acting as an endpoint or an
+opaque relay. Each stage either rejects/stops or passes to the next stage.
+
+### 6.1 Checks common to every role
 
 1. **size** — reject the raw frame if it exceeds the transport's configured
    maximum before attempting to parse anything (§4).
@@ -167,36 +172,58 @@ drops/rejects and stops, or passes the envelope to the next stage.
    are zero, and the declared lengths are internally consistent (already
    enforced by decode's total-length check, but revalidated here against
    `env_type`-specific expectations, e.g. `auth_len == 64`).
-5. **dedup** — `message_id` checked against a bounded recently-seen set;
-   a duplicate is dropped silently, no error surfaced.
-6. **replay** — `anti_replay_nonce` checked against a per-sender/per-tag
-   replay window. This is distinct from dedup: dedup is keyed on the envelope
-   identity (`message_id`); replay defends against a captured-and-resent
-   ciphertext even if an attacker altered `message_id`.
-7. **TTL** — `expires_at` compared against the local validation clock; past
+5. **TTL** — `expires_at` compared against the local validation clock; past
    expiry, the envelope is dropped by relays before further processing.
    **Vector:** `shared-vectors/rvn1/negative/envelope_expired.json` —
    `expires_at_ms` one second before `validation_clock_ms`; expected
    `relay_action: drop`.
-8. **hop/replication** — for relays only: `hop_limit` and
-   `replication_budget` must both be greater than zero before re-broadcasting;
-   both are decremented before the envelope is forwarded onward.
-9. **tag/session** — `routing_tag` is matched against locally-known sessions
+6. **role/tag/session** — `routing_tag` is matched against locally-known sessions
    ([`RAVEN_ROUTING_TAG_V1.md`](RAVEN_ROUTING_TAG_V1.md)); if no local session
-   recognizes the tag, the envelope is "not for me" and is relayed or dropped
-   per the node's role, not authenticated or decrypted locally.
-10. **authenticate** — verify `sender_authentication` against `signing_bytes`
+   recognizes the tag, the envelope is not an endpoint delivery. It may enter
+   the opaque-relay pipeline below if local policy permits.
+
+### 6.2 Endpoint-only pipeline
+
+7. **read-only duplicate hint** — an implementation may check a bounded cache
+   for a previously *authenticated* `(session, message_id, object_digest)` but
+   MUST NOT insert or claim any identifier yet.
+8. **authenticate device** — resolve the expected device from the session,
+   validate its certificate/revocation state, then verify
+   `sender_authentication` against `signing_bytes`
     (§2) using the sender's device Ed25519 key, resolved via a known session
     or `RavenDeviceCertificateV1` ([`RAVEN_IDENTITY_V1.md`](RAVEN_IDENTITY_V1.md)).
     **Vector:** `shared-vectors/rvn1/negative/envelope_tampered_body.json` —
     tampering after signing fails exactly here.
-11. **decrypt** — only after authentication succeeds, hand
+9. **decrypt and ratchet replay check** — only after authentication succeeds,
+    hand
     `ratchet_header_ciphertext` and `message_ciphertext` to the session
-    sealer to recover plaintext.
-12. **commit** — persist the decrypted content locally. This is the point at
-    which the message becomes visible to the application/user.
-13. **ACK** — emit a `RavenAckV1` (`env_type=2`) back to the sender per
-    [`RAVEN_ACK_V1.md`](RAVEN_ACK_V1.md).
+    sealer. AEAD authentication, the directional receive index, and bounded
+    skipped-key state decide replay acceptance; unverified
+    `anti_replay_nonce` alone is not authoritative.
+10. **atomic commit** — in one recoverable transaction, persist the receive
+    ratchet/journal update, authenticated dedup receipt, inbox content, and an
+    ACK-outbox intent. A failure rolls back all four; no plaintext is surfaced.
+11. **ACK outbox** — only after commit, a worker transmits the sealed,
+    independently signed `RavenAckV1` (`env_type=2`) per
+    [`RAVEN_ACK_V1.md`](RAVEN_ACK_V1.md). A committed duplicate may resend the
+    existing ACK intent but cannot create a second visible message.
+
+### 6.3 Opaque-relay pipeline
+
+7. **read-only object dedup** — check a bounded, expiring cache keyed by a
+   digest of the immutable signing bytes plus outer signature. Do not insert
+   an unverified `message_id`.
+8. **local resource policy** — enforce per-peer byte/rate/queue ceilings before
+   accepting custody. When the sender device key is resolvable, verify it; when
+   it is not, treat the object as unauthenticated opaque data.
+9. **cooperative hop policy** — require nonzero `hop_limit` and
+   `replication_budget` before forwarding and decrement them for the next hop.
+   These unsigned values bound compliant local behavior only; §2 does not make
+   them a Byzantine-relay security guarantee.
+10. **admit then mark seen** — atomically enqueue/forward-admit the opaque
+    object, then record its immutable-object digest in the bounded replay
+    cache. Admission failure writes no seen entry. Relays never decrypt message
+    or ACK content and never advance endpoint delivery state.
 
 ## 7. Binding sealed content frames (`RVNA1` / `RVNS1` / `RVNH1`)
 

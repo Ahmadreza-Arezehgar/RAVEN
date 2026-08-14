@@ -3,8 +3,8 @@
 //  RAVEN — E2EE async contact request (Discovery V1).
 //
 //  Spec: protocol/RAVEN_CONTACT_REQUEST_V1.md
-//  Wire-compatible with raven_core::contact_request (interim pairwise seal).
-//  Delivered as opaque RavenEnvelopeV1 body via MessageRouter / BLE / Bridge.
+//  Wire-compatible with raven_core::contact_request (authenticated ATSAM root).
+//  Product transport is held until durable indexed-session state is integrated.
 //
 
 import Foundation
@@ -29,6 +29,10 @@ enum RavenContactRequestError: Error, Equatable {
     case inboxFull
     case senderCap
     case rateLimited
+    case oversized
+    /// Contact-request confidentiality is unavailable until an authenticated
+    /// ATSAM root and durable chain state exist for this peer.
+    case sessionRequired
 }
 
 struct ContactRequestInner: Equatable {
@@ -44,15 +48,24 @@ struct ContactRequestInner: Equatable {
     static let magic = Data("rvn1/contact-req-inner".utf8)
 
     func encode() throws -> Data {
-        precondition(requestId.count == 16)
-        precondition(senderProfileDigest.count == 32)
+        guard requestId.count == 16, senderProfileDigest.count == 32 else {
+            throw RavenContactRequestError.missingKeys
+        }
+        let encodedAliases = senderAliases.map { Data($0.utf8) }
+        guard senderAliases.count <= Int(UInt16.max),
+              Data(senderRavenId.utf8).count <= Int(UInt16.max),
+              Data(senderDisplayName.utf8).count <= Int(UInt16.max),
+              Data(optionalMessage.utf8).count <= Int(UInt16.max),
+              encodedAliases.allSatisfy({ $0.count <= Int(UInt16.max) }) else {
+            throw RavenContactRequestError.oversized
+        }
         var out = Self.magic
         out.append(requestId)
         out.append(Self.lp(Data(senderRavenId.utf8)))
         out.append(Self.lp(Data(senderDisplayName.utf8)))
         out.appendUInt16BE(UInt16(senderAliases.count))
-        for a in senderAliases {
-            out.append(Self.lp(Data(a.utf8)))
+        for alias in encodedAliases {
+            out.append(Self.lp(alias))
         }
         out.append(senderProfileDigest)
         out.append(Self.lp(Data(optionalMessage.utf8)))
@@ -81,7 +94,8 @@ struct ContactRequestInner: Equatable {
         let (msg, o3) = try readLPString(raw, off); off = o3
         guard off + 16 <= raw.count else { throw RavenContactRequestError.truncated }
         let created = raw.readUInt64BE(at: off); off += 8
-        let expires = raw.readUInt64BE(at: off)
+        let expires = raw.readUInt64BE(at: off); off += 8
+        guard off == raw.count else { throw RavenContactRequestError.truncated }
         return ContactRequestInner(
             requestId: requestId,
             senderRavenId: senderRavenId,
@@ -137,29 +151,53 @@ struct RavenContactRequestV1: Equatable {
         return out
     }
 
-    /// Seal inner fields to recipient Ed25519 pub (pairwise interim key).
+    /// Rootless compatibility entry point. Public Ed25519 keys are not secret,
+    /// so this path always fails closed in both Debug and Release builds.
     static func create(
         senderSigningKey: Curve25519.Signing.PrivateKey,
         recipientPub: Data,
         recipientAddr: String,
         inner: ContactRequestInner
     ) throws -> RavenContactRequestV1 {
+        _ = (senderSigningKey, recipientPub, recipientAddr, inner)
+        throw RavenContactRequestError.sessionRequired
+    }
+
+    /// Seal under a root established by an authenticated ATSAM pairing.
+    /// Session establishment and crash-safe, monotonic index allocation remain
+    /// the caller's responsibility; the contact UI deliberately does not call
+    /// this until that durable session boundary is integrated.
+    static func createWithATSAMRoot(
+        senderSigningKey: Curve25519.Signing.PrivateKey,
+        recipientPub: Data,
+        recipientAddr: String,
+        inner: ContactRequestInner,
+        root: ATSAMRootKey,
+        chainIndex: UInt32,
+        nonce: Data
+    ) throws -> RavenContactRequestV1 {
         guard recipientPub.count == 32, inner.requestId.count == 16 else {
             throw RavenContactRequestError.missingKeys
         }
         let senderPub = senderSigningKey.publicKey.rawRepresentation
+        let senderAddr = RavenAddressV1.encode(ed25519PublicKey: senderPub) ?? ""
+        guard !senderAddr.isEmpty,
+              RavenAddressV1.encode(ed25519PublicKey: recipientPub) == recipientAddr,
+              inner.senderRavenId == senderAddr,
+              inner.expiresAt > inner.createdAt else {
+            throw RavenContactRequestError.idMismatch
+        }
         let plain = try inner.encode()
-        let key = RavenInterimSeal.derivePairwiseKey(localPub: senderPub, peerPub: recipientPub)
-        let ciphertext: Data
-        do {
-            ciphertext = try RavenInterimSeal.seal(
-                key: key,
-                plaintext: plain,
-                senderAddr: RavenAddressV1.encode(ed25519PublicKey: senderPub) ?? "",
-                recipientAddr: recipientAddr,
-                messageId: inner.requestId
-            )
-        } catch {
+        let ciphertext = try RavenContactRequestATSAMSeal.seal(
+            root: root,
+            senderAddr: senderAddr,
+            recipientAddr: recipientAddr,
+            messageId: inner.requestId.ravenHex,
+            chainIndex: chainIndex,
+            nonce: nonce,
+            plaintext: plain
+        )
+        guard ciphertext.count <= Int(UInt16.max) else {
             throw RavenContactRequestError.sealFailed
         }
         var req = RavenContactRequestV1(
@@ -177,6 +215,7 @@ struct RavenContactRequestV1: Equatable {
     }
 
     func verifyOuter(nowMs: UInt64) throws {
+        guard expiresAt > createdAt else { throw RavenContactRequestError.idMismatch }
         if nowMs > expiresAt { throw RavenContactRequestError.expired }
         guard senderAuthentication.count == 64, senderPub.count == 32 else {
             throw RavenContactRequestError.badSignature
@@ -188,17 +227,40 @@ struct RavenContactRequestV1: Equatable {
     }
 
     func open(recipientSigningKey: Curve25519.Signing.PrivateKey) throws -> ContactRequestInner {
+        _ = recipientSigningKey
+        throw RavenContactRequestError.sessionRequired
+    }
+
+    /// Open with the authenticated ATSAM root paired with the outer sender.
+    func openWithATSAMRoot(
+        recipientSigningKey: Curve25519.Signing.PrivateKey,
+        root: ATSAMRootKey
+    ) throws -> ContactRequestInner {
+        guard requestId.count == 16, senderPub.count == 32 else {
+            throw RavenContactRequestError.missingKeys
+        }
         let recipientPub = recipientSigningKey.publicKey.rawRepresentation
-        let key = RavenInterimSeal.derivePairwiseKey(localPub: senderPub, peerPub: recipientPub)
+        guard RavenAddressV1.encode(ed25519PublicKey: recipientPub) == recipientRavenId else {
+            throw RavenContactRequestError.wrongRecipient
+        }
         let senderAddr = RavenAddressV1.encode(ed25519PublicKey: senderPub) ?? ""
-        let plain = try RavenInterimSeal.unseal(
-            key: key,
+        guard !senderAddr.isEmpty else { throw RavenContactRequestError.badSignature }
+        let plain = try RavenContactRequestATSAMSeal.open(
+            root: root,
             wire: ciphertext,
             senderAddr: senderAddr,
             recipientAddr: recipientRavenId,
-            messageId: requestId
+            messageId: requestId.ravenHex
         )
-        return try ContactRequestInner.decode(plain)
+        let inner = try ContactRequestInner.decode(plain)
+        guard inner.requestId == requestId,
+              inner.senderRavenId == senderAddr,
+              inner.createdAt == createdAt,
+              inner.expiresAt == expiresAt,
+              inner.expiresAt > inner.createdAt else {
+            throw RavenContactRequestError.idMismatch
+        }
+        return inner
     }
 
     var isCiphertextOnly: Bool {
@@ -239,7 +301,7 @@ struct RavenContactRequestV1: Equatable {
         let expires = raw.readUInt64BE(at: off); off += 8
         guard off + 2 <= raw.count else { throw RavenContactRequestError.truncated }
         let ctLen = Int(raw.readUInt16BE(at: off)); off += 2
-        guard off + ctLen + 64 + 32 <= raw.count else { throw RavenContactRequestError.truncated }
+        guard off + ctLen + 64 + 32 == raw.count else { throw RavenContactRequestError.truncated }
         let ciphertext = raw.subdata(in: off..<(off + ctLen)); off += ctLen
         let auth = raw.subdata(in: off..<(off + 64)); off += 64
         let pub = raw.subdata(in: off..<(off + 32))
@@ -259,6 +321,166 @@ struct RavenContactRequestV1: Equatable {
         out.appendUInt16BE(UInt16(data.count))
         out.append(data)
         return out
+    }
+}
+
+/// Pure RVNA1-v2 primitive used only when the caller already owns an
+/// authenticated ATSAM root and a durably reserved chain index. Keeping this
+/// helper local prevents the contact UI from silently establishing or
+/// synthesising session state.
+private enum RavenContactRequestATSAMSeal {
+    private static let magic = Data([0x52, 0x56, 0x4E, 0x41, 0x31, 0x00, 0x00, 0x00])
+    private static let proto: UInt8 = 0x02
+    private static let suite: UInt8 = 0x01
+    private static let aadDomain = Data("ATSAM/v1/msg-seal/aad".utf8)
+    private static let headerBytes = 8 + 2 + 4 + 12
+    /// This helper derives from CK0 and is O(index). Product receive paths must
+    /// use persisted ratchet state; cap stateless work to prevent hostile
+    /// headers from forcing billions of HKDF operations.
+    private static let maximumPortableChainIndex: UInt32 = 4_096
+
+    static func seal(
+        root: ATSAMRootKey,
+        senderAddr: String,
+        recipientAddr: String,
+        messageId: String,
+        chainIndex: UInt32,
+        nonce: Data,
+        plaintext: Data
+    ) throws -> Data {
+        guard validIdentifier(senderAddr), validIdentifier(recipientAddr),
+              validIdentifier(messageId), nonce.count == 12,
+              chainIndex <= maximumPortableChainIndex else {
+            throw RavenContactRequestError.sealFailed
+        }
+        let key = keyAtIndex(
+            root: root,
+            senderAddr: senderAddr,
+            recipientAddr: recipientAddr,
+            chainIndex: chainIndex
+        )
+        let aad = buildAAD(
+            senderAddr: senderAddr,
+            recipientAddr: recipientAddr,
+            messageId: messageId,
+            chainIndex: chainIndex
+        )
+        do {
+            let nonceValue = try ChaChaPoly.Nonce(data: nonce)
+            let sealed = try ChaChaPoly.seal(
+                plaintext,
+                using: key,
+                nonce: nonceValue,
+                authenticating: aad
+            )
+            var wire = Data()
+            wire.append(magic)
+            wire.append(proto)
+            wire.append(suite)
+            wire.appendUInt32BE(chainIndex)
+            wire.append(nonce)
+            wire.append(sealed.ciphertext)
+            wire.append(sealed.tag)
+            return wire
+        } catch {
+            throw RavenContactRequestError.sealFailed
+        }
+    }
+
+    static func open(
+        root: ATSAMRootKey,
+        wire: Data,
+        senderAddr: String,
+        recipientAddr: String,
+        messageId: String
+    ) throws -> Data {
+        guard validIdentifier(senderAddr), validIdentifier(recipientAddr),
+              validIdentifier(messageId) else {
+            throw RavenContactRequestError.sealFailed
+        }
+        guard wire.count >= headerBytes + 16 else {
+            throw RavenContactRequestError.truncated
+        }
+        guard wire.prefix(magic.count) == magic,
+              wire[8] == proto, wire[9] == suite else {
+            throw RavenContactRequestError.badMagic
+        }
+        let chainIndex = wire.readUInt32BE(at: 10)
+        guard chainIndex <= maximumPortableChainIndex else {
+            throw RavenContactRequestError.sealFailed
+        }
+        let nonceBytes = wire.subdata(in: 14..<26)
+        let tagStart = wire.count - 16
+        let ciphertext = wire.subdata(in: 26..<tagStart)
+        let tag = wire.subdata(in: tagStart..<wire.count)
+        let key = keyAtIndex(
+            root: root,
+            senderAddr: senderAddr,
+            recipientAddr: recipientAddr,
+            chainIndex: chainIndex
+        )
+        let aad = buildAAD(
+            senderAddr: senderAddr,
+            recipientAddr: recipientAddr,
+            messageId: messageId,
+            chainIndex: chainIndex
+        )
+        do {
+            let nonce = try ChaChaPoly.Nonce(data: nonceBytes)
+            let box = try ChaChaPoly.SealedBox(
+                nonce: nonce,
+                ciphertext: ciphertext,
+                tag: tag
+            )
+            return try ChaChaPoly.open(box, using: key, authenticating: aad)
+        } catch {
+            throw RavenContactRequestError.sealFailed
+        }
+    }
+
+    private static func keyAtIndex(
+        root: ATSAMRootKey,
+        senderAddr: String,
+        recipientAddr: String,
+        chainIndex: UInt32
+    ) -> SymmetricKey {
+        var chainKey = ATSAMChainRatchet.initialChainKey(
+            root: root,
+            senderUserId: senderAddr,
+            recipientUserId: recipientAddr
+        )
+        for _ in 0..<chainIndex {
+            chainKey = ATSAMChainRatchet.advanceChainKey(chainKey)
+        }
+        return ATSAMChainRatchet.messageKey(
+            chainKey: chainKey,
+            senderUserId: senderAddr,
+            recipientUserId: recipientAddr
+        )
+    }
+
+    private static func buildAAD(
+        senderAddr: String,
+        recipientAddr: String,
+        messageId: String,
+        chainIndex: UInt32
+    ) -> Data {
+        var hasher = SHA256()
+        hasher.update(data: aadDomain)
+        hasher.update(data: Data([0x00, proto, suite]))
+        var be = chainIndex.bigEndian
+        withUnsafeBytes(of: &be) { hasher.update(data: Data($0)) }
+        hasher.update(data: Data([0x00]))
+        hasher.update(data: Data(senderAddr.utf8))
+        hasher.update(data: Data([0x00]))
+        hasher.update(data: Data(recipientAddr.utf8))
+        hasher.update(data: Data([0x00]))
+        hasher.update(data: Data(messageId.utf8))
+        return Data(hasher.finalize())
+    }
+
+    private static func validIdentifier(_ value: String) -> Bool {
+        !value.isEmpty && !value.contains("\0")
     }
 }
 
@@ -380,6 +602,54 @@ struct ContactRequestInbox: Equatable {
             throw RavenContactRequestError.wrongRecipient
         }
         let inner = try outer.open(recipientSigningKey: recipientSigningKey)
+        guard inner.requestId == outer.requestId else {
+            throw RavenContactRequestError.idMismatch
+        }
+        if pending.contains(where: { $0.outer.requestId == outer.requestId }) {
+            return inner
+        }
+        if pending.count >= Self.maxPending {
+            throw RavenContactRequestError.inboxFull
+        }
+        let fromSender = pending.filter { $0.outer.senderPub == outer.senderPub }
+        if fromSender.count >= Self.maxPerSender {
+            throw RavenContactRequestError.senderCap
+        }
+        let inWindow = fromSender.filter {
+            nowMs &- $0.receivedAt <= Self.senderWindowMs
+        }.count
+        if inWindow >= Self.maxPerSenderWindow {
+            throw RavenContactRequestError.rateLimited
+        }
+        pending.append(PendingContactRequest(outer: outer, inner: inner, receivedAt: nowMs))
+        return inner
+    }
+
+    /// Authenticated session-root variant. Decryption and all identity/time
+    /// bindings complete before the request ID enters the pending set.
+    mutating func ingestWithATSAMRoot(
+        outer: RavenContactRequestV1,
+        recipientSigningKey: Curve25519.Signing.PrivateKey,
+        recipientAddr: String,
+        root: ATSAMRootKey,
+        nowMs: UInt64
+    ) throws -> ContactRequestInner {
+        try outer.verifyOuter(nowMs: nowMs)
+        guard outer.recipientRavenId == recipientAddr else {
+            throw RavenContactRequestError.wrongRecipient
+        }
+        let inner = try outer.openWithATSAMRoot(
+            recipientSigningKey: recipientSigningKey,
+            root: root
+        )
+        return try ingestOpened(outer: outer, inner: inner, nowMs: nowMs)
+    }
+
+    private mutating func ingestOpened(
+        outer: RavenContactRequestV1,
+        inner: ContactRequestInner,
+        nowMs: UInt64
+    ) throws -> ContactRequestInner {
         guard inner.requestId == outer.requestId else {
             throw RavenContactRequestError.idMismatch
         }

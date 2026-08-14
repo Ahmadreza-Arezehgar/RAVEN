@@ -104,7 +104,23 @@ The honest positioning: *RAVEN follows you to the wrist*, not *mesh on the wrist
 
 ## 📂 What's in this repository
 
-The **security-critical core** lives here. Anything that touches your data is auditable.
+The **security-critical core** lives here for public audit. Brand marks and UI artwork stay under [`TRADEMARK.md`](TRADEMARK.md) / [`ASSET_LICENSE.md`](ASSET_LICENSE.md); source is AGPL-3.0.
+
+### Open-source audit surface (essential)
+
+| Path | Purpose |
+|------|---------|
+| `protocol/` | Normative RVN1 / ATSAM specs, errata, interoperability notes |
+| `protocol/reference/` | Python reference codecs + parity tests |
+| `shared-vectors/rvn1/` | Deterministic cross-language test vectors |
+| `node/` (`raven-core`, `raven-node`, `ash`, `raven-swarm`) | Serverless node, terminal, crypto, transport |
+| `ios-native/RAVEN/RAVEN/Core/Protocol/` | iOS envelope / PairInit / LAN path |
+| `ios-native/RAVEN/RAVEN/Core/Security/` | Mesh crypto, ATSAM, Noise, sealers |
+| `ios-native/RAVEN/RAVEN/Core/Mesh/` | BLE mesh engine + routing |
+
+**Not claimed production-complete for serverless DMs.** Production builds keep experimental friendship / indexed-session paths **fail-closed**. Lab unlock (debug only): set `RAVEN_LAB_TEST_A=1`. Release binaries ignore that env and stay closed until documented gates pass. See `protocol/SECURITY_ERRATA_RVN1_2026-08-13.md` and `CONTRIBUTING.md`.
+
+**Excluded from publish (local / private):** `.env` files, keychains, `identity.seed`, `~/.raven-ash` contacts/history, `node/target/`, proof-run artifacts, deploy keys, personal debug logs.
 
 ### 🛡️ Encryption & key handling
 | File | Purpose |
@@ -131,14 +147,24 @@ The **security-critical core** lives here. Anything that touches your data is au
 | `ios-native/RAVEN/RAVEN/RAVEN.entitlements` | iOS capabilities (BLE, push, mesh) |
 | `ios-native/RAVEN/RAVEN/RAVEN-Catalyst.entitlements` | Mac Catalyst capabilities (sandbox-off, BLE peripheral) |
 
-### 🖥️ Server
+### 🖥️ Legacy application server
 | Path | Purpose |
 |------|---------|
-| `server/main.py` | FastAPI entry point |
-| `server/routers/` | All API endpoints (auth, messages, posts, rooms) |
+| `server/main.py` | FastAPI entry point (legacy app features; not the serverless DM path) |
+| `server/routers/` | API endpoints (auth, messages, posts, rooms) |
 | `server/models.py` | Database schema |
 | `server/auth.py` | Token issuance + validation |
 | `server/middleware/` | Rate limiting + auth guards |
+
+### 🦀 Serverless node (build)
+
+```bash
+cd node
+cargo test -p raven-core -p raven-node -p ash -p raven-swarm
+cargo run -p ash -- --help
+```
+
+Platform notes: `node/INSTALL_macOS.md`, `node/INSTALL_Linux.md`, `node/INSTALL_Windows.md`.
 
 ---
 

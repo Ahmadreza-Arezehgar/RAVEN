@@ -6,7 +6,7 @@
 //! Invariants: same message_id; no protocol translation; hop/TTL/dedup/size limits.
 
 use crate::bridge::{prepare_forward, BridgeRole, DropReason, EnvelopeIdentity};
-use crate::envelope::{Envelope, EnvType};
+use crate::envelope::{EnvType, Envelope};
 use crate::forward_queue::{
     ForwardItem, ForwardQueue, ForwardQueueError, ForwardState, PeerRateDecision,
     MAX_ENVELOPE_BYTES,
@@ -24,7 +24,10 @@ pub struct InboundEnvelope {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RouterOutcome {
     /// Local endpoint role should consume (decrypt/ACK outside BridgeSubsystem).
-    DeliverToEndpoint { packed: Vec<u8>, identity: EnvelopeIdentity },
+    DeliverToEndpoint {
+        packed: Vec<u8>,
+        identity: EnvelopeIdentity,
+    },
     /// Queued for later egress (store-carry-bridge).
     QueuedForForward {
         message_id: [u8; 16],
@@ -37,7 +40,9 @@ pub enum RouterOutcome {
         egress: TransportKind,
         identity: EnvelopeIdentity,
     },
-    Dropped { reason: DropReason },
+    Dropped {
+        reason: DropReason,
+    },
     Error(String),
 }
 
@@ -68,18 +73,14 @@ impl MessageRouter {
     pub fn pick_egress(&self, ingress: TransportKind) -> Option<TransportKind> {
         match ingress {
             TransportKind::Ble | TransportKind::MockBle => {
-                if self.local_has_internet {
-                    Some(TransportKind::Lan)
-                } else if self.store_enabled {
+                if self.local_has_internet || self.store_enabled {
                     Some(TransportKind::Lan) // queue until internet
                 } else {
                     None
                 }
             }
             TransportKind::Lan | TransportKind::Internet => {
-                if self.local_has_ble {
-                    Some(TransportKind::MockBle)
-                } else if self.store_enabled {
+                if self.local_has_ble || self.store_enabled {
                     Some(TransportKind::MockBle)
                 } else {
                     None
@@ -101,7 +102,9 @@ impl MessageRouter {
         })
     }
 
-    /// Ingress handler: dedup → TTL/hop → endpoint or bridge queue/forward.
+    /// Ingress handler: validate bounds/TTL, perform a read-only immutable
+    /// object replay lookup, then endpoint or bridge admission. Relay seen
+    /// state is written only after a successful queue admission.
     pub fn handle_inbound(
         &self,
         queue: &ForwardQueue,
@@ -129,12 +132,8 @@ impl MessageRouter {
             };
         }
 
-        let dup = match queue.seen_check_and_insert(
-            &env.message_id,
-            inbound.now_ms,
-            inbound.ingress,
-            &inbound.previous_hop,
-        ) {
+        let identity = EnvelopeIdentity::from_envelope(&env);
+        let dup = match queue.object_was_seen(&identity.object_digest) {
             Ok(d) => d,
             Err(e) => return RouterOutcome::Error(e.to_string()),
         };
@@ -144,12 +143,12 @@ impl MessageRouter {
             };
         }
 
-        let identity = EnvelopeIdentity::from_envelope(&env);
-
         // Endpoint may accept when not forcing bridge and endpoint role on.
         // Bridge path always for cross-transport when bridge enabled.
         let want_bridge = force_bridge
-            || (self.bridge_enabled && self.pick_egress(inbound.ingress).is_some() && !self.endpoint_only_mode());
+            || (self.bridge_enabled
+                && self.pick_egress(inbound.ingress).is_some()
+                && !self.endpoint_only_mode());
 
         // Multi-role: if bridge enabled and ingress needs cross-transport, bridge wins
         // over local endpoint for Message (ACK reverse also bridges).
@@ -190,11 +189,7 @@ impl MessageRouter {
             };
         };
         // Abuse protection before mutate/enqueue (spec §24).
-        match queue.check_peer_rate(
-            &inbound.previous_hop,
-            inbound.now_ms,
-            inbound.packed.len(),
-        ) {
+        match queue.check_peer_rate(&inbound.previous_hop, inbound.now_ms, inbound.packed.len()) {
             Ok(PeerRateDecision::Allow) => {}
             Ok(PeerRateDecision::PeerQueueFull) | Ok(PeerRateDecision::RateLimited) => {
                 return RouterOutcome::Dropped {
@@ -214,6 +209,7 @@ impl MessageRouter {
         }
         let packed = fwd.pack();
         let item = ForwardItem {
+            object_digest: identity.object_digest,
             message_id: env.message_id,
             packed_envelope: packed.clone(),
             ingress: inbound.ingress,
@@ -230,6 +226,14 @@ impl MessageRouter {
                 },
                 other => RouterOutcome::Error(other.to_string()),
             };
+        }
+        if let Err(e) = queue.mark_object_seen(
+            &identity.object_digest,
+            inbound.now_ms,
+            inbound.ingress,
+            &inbound.previous_hop,
+        ) {
+            return RouterOutcome::Error(e.to_string());
         }
 
         // If store-only path or egress radio "down", leave queued.
@@ -258,17 +262,15 @@ impl MessageRouter {
         queue: &ForwardQueue,
         now_ms: u64,
     ) -> Result<Vec<(ForwardItem, EnvelopeIdentity)>, String> {
-        let items = queue
-            .pending_ready(now_ms)
-            .map_err(|e| e.to_string())?;
+        let items = queue.pending_ready(now_ms).map_err(|e| e.to_string())?;
         let mut out = Vec::new();
         for item in items {
             let Some(env) = Envelope::unpack(&item.packed_envelope) else {
-                let _ = queue.mark_state(&item.message_id, ForwardState::Failed);
+                let _ = queue.mark_object_state(&item.object_digest, ForwardState::Failed);
                 continue;
             };
             if now_ms > env.expires_at {
-                let _ = queue.mark_state(&item.message_id, ForwardState::Expired);
+                let _ = queue.mark_object_state(&item.object_digest, ForwardState::Expired);
                 continue;
             }
             let id = EnvelopeIdentity::from_envelope(&env);
@@ -421,6 +423,47 @@ mod tests {
             } => {}
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn same_public_message_id_different_object_is_not_poisoned() {
+        let dir = tempdir().unwrap();
+        let q = ForwardQueue::open(&dir.path().join("f.sqlite")).unwrap();
+        let router = MessageRouter {
+            bridge_enabled: true,
+            endpoint_enabled: false,
+            ..Default::default()
+        };
+        let (attacker_variant, _) = pack_msg(5, i64::MAX as u64, b"forged-first");
+        let (valid_variant, _) = pack_msg(5, i64::MAX as u64, b"valid-later");
+
+        assert!(matches!(
+            router.handle_inbound(
+                &q,
+                InboundEnvelope {
+                    packed: attacker_variant,
+                    ingress: TransportKind::Lan,
+                    previous_hop: "attacker".into(),
+                    now_ms: 10,
+                },
+                true,
+            ),
+            RouterOutcome::ForwardNow { .. }
+        ));
+        assert!(matches!(
+            router.handle_inbound(
+                &q,
+                InboundEnvelope {
+                    packed: valid_variant,
+                    ingress: TransportKind::Lan,
+                    previous_hop: "honest".into(),
+                    now_ms: 11,
+                },
+                true,
+            ),
+            RouterOutcome::ForwardNow { .. }
+        ));
+        assert_eq!(q.count_all().unwrap(), 2);
     }
 
     #[test]

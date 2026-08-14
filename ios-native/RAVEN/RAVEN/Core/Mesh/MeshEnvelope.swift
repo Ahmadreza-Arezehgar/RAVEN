@@ -111,6 +111,44 @@ struct MeshEnvelope: Codable, Identifiable {
     /// init call-sites (MessageRouter, ChatMessage.toMeshEnvelope,
     /// etc.) compile without change — the sealer hooks in at the
     /// BLE chokepoints and populates this field in place.
+    /// 🔴 2026-07-24 — RELAY INTEGRITY. These two fields exist so a relayed
+    /// envelope can still reproduce the ORIGIN's signing bytes.
+    ///
+    /// `SecureMeshEnvelope.signingData()` binds `nonce` and `senderPublicKey`,
+    /// but neither was carried here — `toSecureEnvelope()` minted a fresh
+    /// random nonce on every call and stamped the *forwarding* device's key. So
+    /// the moment any relay re-wrapped an envelope the reconstructed bytes
+    /// differed from what the origin signed, `originalSignature` could never
+    /// verify at hop >= 1, and EVERY honest multi-hop delivery was rejected.
+    /// Multi-hop mesh relay — the product's headline capability — was dead.
+    ///
+    /// Making them properties of the MESSAGE rather than of the wrap fixes it:
+    /// generated once at origination, copied by `forwarded(by:)`, and preserved
+    /// across the wire by the codec. Both are optional so an envelope from a
+    /// pre-fix sender still decodes (its relay path was already broken, so
+    /// there is no regression to cause).
+    var meshNonce: String? = MeshEnvelope.freshNonce()
+    var originSenderPublicKey: String? = DeviceIdentityService.shared.publicKeyBase64
+
+    /// 🔴 LOCAL-ONLY. Whether the SENDER's authorship was cryptographically
+    /// proven for this envelope (see `MeshCryptoService.AuthVerdict`).
+    ///
+    /// Deliberately absent from `CodingKeys` and from the decoder, so it can
+    /// NEVER arrive from the wire — an attacker-settable "I am authenticated"
+    /// flag would hand back the exact impersonation this exists to stop. It is
+    /// set locally, only by the ingest path, only from the verdict.
+    ///
+    /// Defaults to `false`: anything that has not been explicitly authenticated
+    /// is treated as unproven.
+    var senderAuthenticated: Bool = false
+
+    /// 16 random bytes, base64 — same shape `toSecureEnvelope()` used to mint.
+    static func freshNonce() -> String {
+        var bytes = [UInt8](repeating: 0, count: 16)
+        _ = SecRandomCopyBytes(kSecRandomDefault, 16, &bytes)
+        return Data(bytes).base64EncodedString()
+    }
+
     var mediaSealed: String? = nil
     /// Serverless media: AES-GCM ciphertext of the actual media bytes (base64),
     /// encrypted under a random content key carried E2E-sealed in mediaSealed.
@@ -216,6 +254,8 @@ struct MeshEnvelope: Codable, Identifiable {
         case senderIdHash = "sih"
         case recipientIdHash = "rih"
         case sealFormat = "sf"   // sealed-sender v2 (task_a1157777)
+        case meshNonce = "mn"    // origin-stamped nonce, stable across hops
+        case originSenderPublicKey = "opk" // origin's Ed25519 key, stable across hops
         // Round 46 — group-lifecycle discriminator (group_create, etc.)
         case payloadKind = "pk"
     }
@@ -347,6 +387,13 @@ extension MeshEnvelope {
         self.senderIdHash = try c.decodeIfPresent(String.self, forKey: .senderIdHash)
         self.recipientIdHash = try c.decodeIfPresent(String.self, forKey: .recipientIdHash)
         self.sealFormat = try c.decodeIfPresent(Int.self, forKey: .sealFormat)
+        // Relay integrity: take the ORIGIN's values off the wire and keep them.
+        // Overwriting either here with a locally-generated value is exactly the
+        // bug that killed multi-hop relay — see the field declarations.
+        self.meshNonce = try Self.capString(
+            try c.decodeIfPresent(String.self, forKey: .meshNonce), max: Bounds.maxIDLen)
+        self.originSenderPublicKey = try Self.capString(
+            try c.decodeIfPresent(String.self, forKey: .originSenderPublicKey), max: Bounds.maxStringLen)
         // Round 46 — payload-kind discriminator for group lifecycle
         // events (group_create, etc.). nil = normal chat message.
         self.payloadKind = try c.decodeIfPresent(String.self, forKey: .payloadKind)

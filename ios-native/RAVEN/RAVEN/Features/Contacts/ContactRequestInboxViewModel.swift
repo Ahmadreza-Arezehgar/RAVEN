@@ -1,173 +1,156 @@
 //
 //  ContactRequestInboxViewModel.swift
-//  RAVEN — Accept / Decline / Block for inbound RavenContactRequestV1.
+//  RAVEN — PairInit friend-request inbox (legacy contact-request path stay fail-closed).
 //
 
 import Foundation
 import CryptoKit
 import Observation
-import Security
+
+struct PendingPairInitRequest: Identifiable, Equatable {
+    var id: String { initID.ravenHex }
+    let initID: Data
+    let wire: Data
+    let initiatorAddress: String
+    let createdAtMs: UInt64
+}
 
 @MainActor
 @Observable
 final class ContactRequestInboxViewModel {
-    var pending: [PendingContactRequest] = []
+    var pending: [PendingPairInitRequest] = []
     var statusMessage: String?
-    var petnameDraft: [String: String] = [:] // requestId hex → petname
+    var petnameDraft: [String: String] = [:]
     var isBusy: Bool = false
 
+    /// Legacy RavenContactRequestV1 rows — intentionally unused for Test A.
+    var legacyPending: [PendingContactRequest] = []
+
     var isEnabled: Bool { FeatureFlag.isRavenEnvelopeV1Enabled }
+
+    private var stored: [Data: Data] = [:] // initID → wire
 
     func reload() {
         guard isEnabled else {
             pending = []
             statusMessage = "Enable RavenEnvelopeV1 for contact-request inbox"
+            Self.traceFriendRequest(
+                status: "WAITING_FOR_RAVEN_ENVELOPE_FLAG",
+                detail: "flag_off"
+            )
             return
         }
-        guard let seed = DeviceIdentityService.shared.deviceSigningSeed,
-              let key = try? Curve25519.Signing.PrivateKey(rawRepresentation: seed) else {
+        if !ATSAMPairInitV1.productionEnabled {
             pending = []
-            statusMessage = "Missing local identity"
+            statusMessage = "Security hold: set RAVEN_LAB_TEST_A=1 (DEBUG) for PairInit friend requests"
+            Self.traceFriendRequest(
+                status: "PRODUCTION_GATE_DISABLED:WAITING_FOR_PAIR_INIT_SESSION",
+                detail: "pair_init=\(ATSAMPairInitV1.productionEnabled) endpoint=\(ATSAMEndpointTransactionV1.productionEnabled)"
+            )
             return
         }
-        let addr = RavenAddressV1.encode(ed25519PublicKey: key.publicKey.rawRepresentation) ?? ""
-        let now = UInt64(Date().timeIntervalSince1970 * 1000)
-        let inbox = ContactRequestInboxStore.buildInbox(
-            recipientKey: key,
-            recipientAddr: addr,
-            nowMs: now
-        )
-        pending = inbox.pending
+        pending = stored.values.compactMap { wire in
+            guard let decoded = try? ATSAMPairInitV1.decodeInit(wire) else { return nil }
+            return PendingPairInitRequest(
+                initID: decoded.initID,
+                wire: wire,
+                initiatorAddress: decoded.initiatorAddress,
+                createdAtMs: decoded.createdAtMs
+            )
+        }
+        .sorted { $0.createdAtMs > $1.createdAtMs }
         statusMessage = pending.isEmpty
-            ? "No pending contact requests"
-            : "\(pending.count) pending — Accept binds raven_id + petname"
+            ? "No pending PairInit — pull from Mac while Raven is open"
+            : "\(pending.count) PairInit waiting"
+        Self.traceFriendRequest(
+            status: "PAIR_INIT_INBOX_READY",
+            detail: "count=\(pending.count)"
+        )
     }
 
-    /// Ingest opaque wire body from LAN/BLE delivery (Bridge never decrypts).
+    private static func traceFriendRequest(status: String, detail: String) {
+        #if DEBUG
+        let payload: [String: Any] = [
+            "sessionId": "532d3b",
+            "runId": "test-a-recovery",
+            "hypothesisId": "TRACE",
+            "location": "ContactRequestInboxViewModel.reload",
+            "message": "TRACE_FRIEND_REQUEST",
+            "data": [
+                "status": status,
+                "detail": detail,
+                "pair_init": ATSAMPairInitV1.productionEnabled,
+                "endpoint": ATSAMEndpointTransactionV1.productionEnabled,
+            ],
+            "timestamp": Int(Date().timeIntervalSince1970 * 1000),
+        ]
+        if let data = try? JSONSerialization.data(withJSONObject: payload),
+           let line = String(data: data, encoding: .utf8) {
+            print(line)
+        }
+        #endif
+    }
+
+    /// Ingest PairInit wire (RVPI1) from LAN/BLE endpoint dispatch.
+    @discardableResult
+    func ingestPairInitWire(_ wire: Data) -> Bool {
+        guard ATSAMPairInitV1.productionEnabled else { return false }
+        guard let decoded = try? ATSAMPairInitV1.decodeInit(wire) else { return false }
+        stored[decoded.initID] = wire
+        reload()
+        return true
+    }
+
+    /// Legacy path — always fail closed.
     @discardableResult
     func ingestWire(_ wire: Data) -> Bool {
-        guard isEnabled else { return false }
-        guard let seed = DeviceIdentityService.shared.deviceSigningSeed,
-              let key = try? Curve25519.Signing.PrivateKey(rawRepresentation: seed),
-              let outer = try? RavenContactRequestV1.decodeWire(wire) else {
-            return false
+        // Prefer PairInit magic if present.
+        if case .pairInit(let initWire) = RavenPairInitLanOob.classifyMessageCiphertext(wire) {
+            return ingestPairInitWire(initWire)
         }
-        let addr = RavenAddressV1.encode(ed25519PublicKey: key.publicKey.rawRepresentation) ?? ""
-        let now = UInt64(Date().timeIntervalSince1970 * 1000)
-        var inbox = ContactRequestInbox()
-        do {
-            _ = try inbox.ingest(
-                outer: outer,
-                recipientSigningKey: key,
-                recipientAddr: addr,
-                nowMs: now
-            )
-            ContactRequestInboxStore.upsertWire(wire)
-            reload()
-            return true
-        } catch {
-            return false
+        if wire.count == ATSAMPairInitV1.initWireLength {
+            return ingestPairInitWire(wire)
         }
+        return false
     }
 
     func accept(requestId: Data) async throws {
-        guard isEnabled else { throw RavenContactRequestError.missingKeys }
-        let hex = requestId.ravenHex
-        let pet = (petnameDraft[hex] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !pet.isEmpty else { throw RavenContactRequestError.petnameRequired }
-        guard let seed = DeviceIdentityService.shared.deviceSigningSeed,
-              let key = try? Curve25519.Signing.PrivateKey(rawRepresentation: seed) else {
-            throw RavenContactRequestError.missingKeys
+        guard isEnabled, ATSAMPairInitV1.productionEnabled else {
+            throw RavenContactRequestError.sessionRequired
         }
-        let addr = RavenAddressV1.encode(ed25519PublicKey: key.publicKey.rawRepresentation) ?? ""
-        let now = UInt64(Date().timeIntervalSince1970 * 1000)
-        var inbox = ContactRequestInboxStore.buildInbox(
-            recipientKey: key,
-            recipientAddr: addr,
-            nowMs: now
+        guard let wire = stored[requestId] else {
+            throw RavenContactRequestError.sessionRequired
+        }
+        isBusy = true
+        defer { isBusy = false }
+        // Complete ML-KEM decap + PairResponse + LAN uplink (durable session first).
+        try await ATSAMPairInitAcceptService.accept(pairInitWire: wire)
+        NotificationCenter.default.post(
+            name: .ravenPairInitAccepted,
+            object: nil,
+            userInfo: ["wire": wire, "initID": requestId]
         )
-        let outcome = try inbox.accept(
-            requestId: requestId,
-            accepterKey: key,
-            petname: pet,
-            nowMs: now
-        )
-        try outcome.accept.verify()
-
-        // Bind local contact (raven_id + petname); verification = trusted contact.
-        DiscoveryContactBindingStore.upsert(LocalDiscoveryContact(
-            ravenId: outcome.binding.ravenId,
-            pubHex: outcome.binding.pubHex,
-            petname: outcome.binding.petname,
-            publicTag: "",
-            displayName: outcome.binding.petname,
-            pinned: false,
-            directlyVerified: false
-        ))
-        ContactRequestInboxStore.remove(requestId: requestId)
-
-        await deliverAccept(outcome.accept, signingKey: key)
-        petnameDraft.removeValue(forKey: hex)
+        stored.removeValue(forKey: requestId)
         reload()
-        statusMessage = "Accepted — bound \(pet)"
+        statusMessage = "Accepted — PairResponse uplinked"
+        #if DEBUG
+        print("TRACE_PAIR_INIT_ACCEPTED init=\(requestId.prefix(4).map { String(format: "%02x", $0) }.joined())…")
+        #endif
     }
 
     func decline(requestId: Data) throws {
-        guard let seed = DeviceIdentityService.shared.deviceSigningSeed,
-              let key = try? Curve25519.Signing.PrivateKey(rawRepresentation: seed) else {
-            throw RavenContactRequestError.missingKeys
-        }
-        let addr = RavenAddressV1.encode(ed25519PublicKey: key.publicKey.rawRepresentation) ?? ""
-        let now = UInt64(Date().timeIntervalSince1970 * 1000)
-        var inbox = ContactRequestInboxStore.buildInbox(
-            recipientKey: key,
-            recipientAddr: addr,
-            nowMs: now
-        )
-        try inbox.decline(requestId: requestId)
-        ContactRequestInboxStore.remove(requestId: requestId)
+        stored.removeValue(forKey: requestId)
         reload()
         statusMessage = "Declined"
     }
 
     func block(requestId: Data) throws {
-        guard let seed = DeviceIdentityService.shared.deviceSigningSeed,
-              let key = try? Curve25519.Signing.PrivateKey(rawRepresentation: seed) else {
-            throw RavenContactRequestError.missingKeys
-        }
-        let addr = RavenAddressV1.encode(ed25519PublicKey: key.publicKey.rawRepresentation) ?? ""
-        let now = UInt64(Date().timeIntervalSince1970 * 1000)
-        var inbox = ContactRequestInboxStore.buildInbox(
-            recipientKey: key,
-            recipientAddr: addr,
-            nowMs: now
-        )
-        let pubHex = try inbox.block(requestId: requestId)
-        DiscoveryBlockStore.block(pubHex)
-        ContactRequestInboxStore.remove(requestId: requestId)
+        stored.removeValue(forKey: requestId)
         reload()
         statusMessage = "Blocked locally"
     }
+}
 
-    private func deliverAccept(
-        _ accept: ContactAcceptV1,
-        signingKey: Curve25519.Signing.PrivateKey
-    ) async {
-        let wire = accept.encodeWire()
-        let messageId = accept.requestId
-        let routingTag = Data(SHA256.hash(data: wire.prefix(64) + messageId)).prefix(16)
-        let env = RavenServerlessLanPath.packSealedMessage(
-            sealedBody: wire,
-            messageId: messageId,
-            routingTag: Data(routingTag),
-            signingKey: signingKey
-        )
-        let packed = env.pack()
-        if BLEMeshEngine.shared.hasActiveConnections {
-            await BLEMeshEngine.shared.enqueueRawRavenEnvelopeV1(packed)
-        }
-        if let cfg = RavenServerlessLanConfig.stored {
-            _ = try? await RavenServerlessLanPath.sendEnvelope(env, host: cfg.host, port: cfg.port)
-        }
-    }
+extension Notification.Name {
+    static let ravenPairInitAccepted = Notification.Name("ravenPairInitAccepted")
 }

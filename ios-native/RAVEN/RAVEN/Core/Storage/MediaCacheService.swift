@@ -29,7 +29,7 @@ actor MediaCacheService {
         config.waitsForConnectivity = true
         // Use a dedicated queue for downloads
         config.httpMaximumConnectionsPerHost = 3
-        session = URLSession(configuration: config)
+        session = URLSession(configuration: RavenRuntimePolicy.protectForXCTest(config))
     }
     
     // MARK: - Public API

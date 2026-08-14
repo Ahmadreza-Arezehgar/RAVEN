@@ -19,7 +19,7 @@ impl NearbyAdvertisement {
         rand::thread_rng().fill_bytes(&mut ephemeral_token);
         let mut h = Sha256::new();
         h.update(b"raven/nearby/v1");
-        h.update(&ephemeral_token);
+        h.update(ephemeral_token);
         h.update(confirm_secret);
         let session_commitment = h.finalize().into();
         Self {
@@ -122,10 +122,10 @@ impl NearbyRegistry {
 /// Shown OOB before pin — finding nearby ≠ verifying a person.
 pub fn nearby_safety_phrase(token: &[u8; 16], commitment: &[u8; 32]) -> String {
     const WORDS: [&str; 32] = [
-        "amber", "birch", "cedar", "delta", "ember", "flint", "grove", "harbor",
-        "iris", "jade", "kite", "lotus", "maple", "nova", "olive", "pine",
-        "quartz", "river", "sage", "tide", "umbra", "vale", "willow", "xenon",
-        "yarrow", "zephyr", "coral", "dusk", "echo", "fern", "glen", "haze",
+        "amber", "birch", "cedar", "delta", "ember", "flint", "grove", "harbor", "iris", "jade",
+        "kite", "lotus", "maple", "nova", "olive", "pine", "quartz", "river", "sage", "tide",
+        "umbra", "vale", "willow", "xenon", "yarrow", "zephyr", "coral", "dusk", "echo", "fern",
+        "glen", "haze",
     ];
     let mut h = Sha256::new();
     h.update(b"raven/nearby/safety-phrase/v1");

@@ -3,7 +3,67 @@ import httpx
 import re
 import json
 import base64
+import socket
+import ipaddress
+from urllib.parse import urlparse
 from typing import Optional, Tuple
+
+
+def _ip_is_safe(ip_str: str) -> bool:
+    """True only for a public unicast address."""
+    try:
+        ip = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return False
+    if ip.version == 6 and ip.ipv4_mapped is not None:
+        # Re-classify ::ffff:a.b.c.d as its embedded IPv4 so an
+        # IPv6-mapped internal address can't slip past the checks.
+        ip = ip.ipv4_mapped
+    return not (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified)
+
+
+def _resolve_safe_public_ips(url: str):
+    """🔒 SSRF guard (audit H7). Return the list of resolved IP strings for
+    an https URL whose host resolves EXCLUSIVELY to public unicast
+    addresses, else None.
+
+    NOTE (documented residual): callers here still connect by hostname, so a
+    fast DNS-rebind between this resolve and httpx's resolve remains a
+    narrow TOCTOU. The version-sensitive fix (pin the vetted IP into the
+    connection transport) is tracked as COMPILE_UNVERIFIED; this guard still
+    blocks the direct-internal-IP, metadata-host and IPv6-mapped attacks.
+    """
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return None
+    if parsed.scheme != "https":
+        return None
+    host = parsed.hostname
+    if not host:
+        return None
+    if host.lower().rstrip(".") in ("metadata", "metadata.google.internal"):
+        return None
+    try:
+        infos = socket.getaddrinfo(host, parsed.port or 443, proto=socket.IPPROTO_TCP)
+    except Exception:
+        return None
+    if not infos:
+        return None
+    ips = []
+    for info in infos:
+        ip_str = info[4][0]
+        if not _ip_is_safe(ip_str):
+            return None
+        ips.append(ip_str)
+    return ips
+
+
+def _is_safe_public_url(url: str) -> bool:
+    """Back-compat boolean wrapper. Prefer _resolve_safe_public_ips so the
+    resolved IP can be PINNED into the connection (rebinding-safe)."""
+    return _resolve_safe_public_ips(url) is not None
 
 
 class GeminiService:
@@ -87,13 +147,22 @@ class GeminiService:
         """
         if not audio_url:
             return None, None
-        
+
+        # 🔒 SECURITY (audit H7 — SSRF / metadata-token exfil): audio_url
+        # is client-controlled (stored verbatim from comment/message/group
+        # media_url). Refuse anything that isn't an https URL resolving to
+        # a public address, and DISABLE redirects so a public 302→internal
+        # bounce can't reintroduce the attack.
+        if not _is_safe_public_url(audio_url):
+            print("🚫 [Transcribe] Refusing unsafe/non-public audio URL")
+            return None, None
+
         print(f"🎙️ [Transcribe] Downloading audio: {audio_url[:80]}...")
-        
+
         try:
-            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=False) as client:
                 response = await client.get(audio_url)
-                
+
                 if response.status_code != 200:
                     print(f"❌ [Transcribe] Failed to download audio: {response.status_code}")
                     return None, None
@@ -116,6 +185,13 @@ class GeminiService:
                 audio_bytes = response.content
                 if len(audio_bytes) == 0:
                     print("❌ [Transcribe] Downloaded audio is empty (0 bytes)")
+                    return None, None
+                # 🔒 (audit L-15) cap the remote body so a client-referenced
+                # URL can't buffer an unbounded object (+1.33x base64 copy)
+                # into RAM. Audio messages are small; 25 MB is generous.
+                _MAX_AUDIO_BYTES = 25 * 1024 * 1024
+                if len(audio_bytes) > _MAX_AUDIO_BYTES:
+                    print(f"❌ [Transcribe] Audio exceeds {_MAX_AUDIO_BYTES}-byte cap")
                     return None, None
                 
                 base64_data = base64.b64encode(audio_bytes).decode("utf-8")
@@ -276,11 +352,21 @@ Examples:
         """
         if not image_url:
             return None, None
-        
+
+        # 🔒 SECURITY (audit SSRF bypass #2): image_url is client-controlled
+        # (stored post/message media). The H7 guard was applied to the audio
+        # path ONLY — this vision path had NO guard and followed redirects,
+        # so image_url="http://169.254.169.254/computeMetadata/v1/..." (or a
+        # public 302→internal bounce) base64'd the SA token into the vision
+        # request. Same guard as audio, and DISABLE redirects.
+        if not _resolve_safe_public_ips(image_url):
+            print("🚫 [Vision] Refusing unsafe/non-public image URL")
+            return None, None
+
         print(f"🖼️ [Vision] Downloading image: {image_url[:60]}...")
-        
+
         try:
-            async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
                 response = await client.get(image_url)
                 
                 if response.status_code != 200:

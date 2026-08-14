@@ -13,17 +13,20 @@ use crate::atsam_kdf::{advance_chain_key, initial_chain_key, message_key};
 use crate::seal::{ATSAM_PROTO_V2, SEAL_MAGIC_RVNA1, STUB_SUITE};
 
 pub const AAD_DOMAIN: &[u8] = b"ATSAM/v1/msg-seal/aad";
+/// Stateless portable helpers derive from `CK0` and therefore do O(index)
+/// work. Bound that work; production ratchets must use persisted chain state.
+pub const MAX_PORTABLE_CHAIN_INDEX: u32 = 4_096;
 
 /// AAD for RVNA1 v1 (accept-only layout): no proto/suite/index in the hash.
 pub fn build_aad_v1(sender: &str, recipient: &str, msg_id: &str) -> [u8; 32] {
     let mut h = Sha256::new();
     h.update(AAD_DOMAIN);
-    h.update(&[0]);
-    h.update(&[0]);
+    h.update([0]);
+    h.update([0]);
     h.update(sender.as_bytes());
-    h.update(&[0]);
+    h.update([0]);
     h.update(recipient.as_bytes());
-    h.update(&[0]);
+    h.update([0]);
     h.update(msg_id.as_bytes());
     h.finalize().into()
 }
@@ -39,14 +42,14 @@ pub fn build_aad_v2(
 ) -> [u8; 32] {
     let mut h = Sha256::new();
     h.update(AAD_DOMAIN);
-    h.update(&[0]);
-    h.update(&[proto, suite]);
-    h.update(&index.to_be_bytes());
-    h.update(&[0]);
+    h.update([0]);
+    h.update([proto, suite]);
+    h.update(index.to_be_bytes());
+    h.update([0]);
     h.update(sender.as_bytes());
-    h.update(&[0]);
+    h.update([0]);
     h.update(recipient.as_bytes());
-    h.update(&[0]);
+    h.update([0]);
     h.update(msg_id.as_bytes());
     h.finalize().into()
 }
@@ -70,6 +73,9 @@ pub fn seal_rvna1_v2(
     plaintext: &[u8],
     nonce12: &[u8; 12],
 ) -> Result<Vec<u8>, String> {
+    if index > MAX_PORTABLE_CHAIN_INDEX {
+        return Err("chain index exceeds portable helper limit".into());
+    }
     if sender.is_empty()
         || recipient.is_empty()
         || msg_id.is_empty()
@@ -120,19 +126,16 @@ pub fn unseal_rvna1_v2(
         return Err("unsupported proto/suite".into());
     }
     let index = u32::from_be_bytes([wire[10], wire[11], wire[12], wire[13]]);
+    if index > MAX_PORTABLE_CHAIN_INDEX {
+        return Err("chain index exceeds portable helper limit".into());
+    }
     let nonce = Nonce::from_slice(&wire[14..26]);
     let ct = &wire[26..];
     let key = key_at_index(root, sender, recipient, index);
     let aad = build_aad_v2(ATSAM_PROTO_V2, STUB_SUITE, index, sender, recipient, msg_id);
     let cipher = ChaCha20Poly1305::new((&key).into());
     cipher
-        .decrypt(
-            nonce,
-            Payload {
-                msg: ct,
-                aad: &aad,
-            },
-        )
+        .decrypt(nonce, Payload { msg: ct, aad: &aad })
         .map_err(|_| "unseal failed".to_string())
 }
 
@@ -173,5 +176,20 @@ mod tests {
         let nonce = [0xABu8; 12];
         let wire = seal_rvna1_v2(&root, "alice", "bob", "msg-001", 0, b"x", &nonce).unwrap();
         assert!(unseal_rvna1_v2(&root, &wire, "alice", "bob", "msg-002").is_err());
+    }
+
+    #[test]
+    fn portable_index_work_is_bounded() {
+        let err = seal_rvna1_v2(
+            &[0x11; 32],
+            "alice",
+            "bob",
+            "msg-001",
+            MAX_PORTABLE_CHAIN_INDEX + 1,
+            b"x",
+            &[0xAB; 12],
+        )
+        .unwrap_err();
+        assert!(err.contains("portable helper limit"));
     }
 }

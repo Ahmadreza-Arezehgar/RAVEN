@@ -178,8 +178,18 @@ flutter_launcher_icons.yaml
 hybrid_messenger.iml
 .flutter-plugins
 .flutter-plugins-dependencies
-node/proof_artifacts/*/
+# Rust build output (never publish)
+node/target/
+**/target/
+# Keep proof artifact README only; ignore run dirs + LATEST symlinks
+node/proof_artifacts/**
+!node/proof_artifacts/README.md
+
+# Local ash / node identity & runtime data (never publish)
+**/.raven-ash/
+**/identity.seed
+**/contacts.json
+**/chat_history.json
 
 # Unsigned release layouts (local only)
 dist/
-!node/proof_artifacts/README.md

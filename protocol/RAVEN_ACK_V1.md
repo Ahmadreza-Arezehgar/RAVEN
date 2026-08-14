@@ -1,7 +1,10 @@
 # RAVEN Ack V1
 
 **Version:** 1 (`rvn1`)
-**Status:** Frozen. See [`SPEC.md`](SPEC.md) for scope and versioning policy.
+**Status:** Record layout frozen; production security hold. Read
+[`SECURITY_ERRATA_RVN1_2026-08-13.md`](SECURITY_ERRATA_RVN1_2026-08-13.md).
+In particular, an ACK body is sealed: a relay or transport MUST NOT peek
+`acked_message_id`, and an ID-only callback MUST NOT advance delivery.
 **Audience:** re-implementers of delivery-state tracking on either the sending
 or receiving side.
 
@@ -19,6 +22,13 @@ Every rule in that document — the incoming-processing pipeline, the
 mutable-field exclusion from the outer signature, dedup, replay, TTL — applies
 identically to ACK envelopes. This document defines only what's specific to
 the ACK payload itself.
+
+The additive, production-disabled
+[`ATSAM_INDEXED_SESSION_PROFILE_V1.md`](ATSAM_INDEXED_SESSION_PROFILE_V1.md)
+freezes one exact construction: the 101-byte record below (including its
+64-byte signature) becomes a 143-byte RVNA1 `0x03` ACK-lane ciphertext and a
+293-byte signed outer envelope when `hdr_len=0`. It is not active until a
+signed PairInit negotiates and transcript-binds that profile.
 
 ## 2. Record and signing bytes
 
@@ -124,3 +134,6 @@ signature domain separation (§2), not for idempotency tracking.
 `protocol/reference/raven_protocol/ack.py`. Vectors:
 `shared-vectors/rvn1/ack/delivered_bob_to_alice.json`,
 `shared-vectors/rvn1/negative/ack_wrong_signer.json`.
+
+Indexed sealed-ACK fixture:
+`shared-vectors/rvn1/atsam/indexed_session_v1_sealed_ack_001.json`.

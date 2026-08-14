@@ -1,7 +1,9 @@
 # RAVEN Prekey Bundle V1
 
 **Version:** 1 (`rvn1`)  
-**Status:** Binding for serverless first-contact (no central prekey server required)  
+**Status:** Additive structural binding; protected Rust lifecycle actor
+implemented but **production disabled** pending integration, Swift parity,
+confidential PairInit carrier, and review gates
 **Companions:** [`RAVEN_IDENTITY_V1.md`](RAVEN_IDENTITY_V1.md), [`ATSAM_PRIMITIVE_MAPPING_V1.md`](ATSAM_PRIMITIVE_MAPPING_V1.md), [`RAVEN_ALIAS_V1.md`](RAVEN_ALIAS_V1.md)
 
 ## 1. Purpose
@@ -35,14 +37,18 @@ A `RavenPrekeyBundleV1` lets a sender establish an ATSAM hybrid root (X25519 ‖
   || u64(created_at_ms) || u64(expires_at_ms)
 ```
 
-`lp(x) = u16_be(len) || x`. Signature domain is fixed — no silent downgrade to classical-only without an explicit `mlkem768_ek` of all zeros **and** a capability bit that receivers MUST treat as degraded (see mapping doc). Production senders SHOULD refuse all-zero EK.
+`lp(x) = u16_be(len) || x`. Signature domain is fixed. The V1 hybrid suite
+requires a nonzero 1,184-byte ML-KEM encapsulation key; an all-zero key is a
+hard reject, not an in-band downgrade. A classical-only suite would require a
+new signed suite/version contract and must never be inferred from malformed
+key material.
 
 ## 4. Validation order
 
 1. Length / version / field bounds  
 2. `expires_at_ms > now` (clock skew tolerance ±5 min)  
 3. Signature verify against `identity_ed25519_pub`  
-4. Reject if `mlkem768_ek` length ≠ 1184  
+4. Reject if `mlkem768_ek` length ≠ 1184 or is all zero
 5. Reject otp fields inconsistent with `one_time_prekey_id`  
 6. Cache by `(identity_ed25519_pub, signed_prekey_id)`; prefer highest id that still validates
 
@@ -60,6 +66,11 @@ HTTP FastAPI prekey routes are **legacy optional**, not required for V1 serverle
 
 If two senders consume the same OTP due to distributed state, both sessions remain cryptographically distinct (different X25519 ephemeral + ML-KEM CT). Recipient MUST accept both; OTP reuse MUST be logged as a soft anomaly, not a hard fail that drops messages.
 
+The normative protected rotation, bounded grace, atomic exact-claim,
+idempotency, handoff, and destruction behavior is defined in
+[`RAVEN_PREKEY_LIFECYCLE_V1.md`](RAVEN_PREKEY_LIFECYCLE_V1.md). Its Rust
+reference is production-disabled and does not solve the confidential carrier.
+
 ## 7. Vectors
 
 | Id | Path | Notes |
@@ -67,7 +78,8 @@ If two senders consume the same OTP due to distributed state, both sessions rema
 | Structural KAT | `shared-vectors/rvn1/prekey/bundle_structure_001.json` | signing-bytes hex + field sizes (EK may be deterministic test bytes) |
 | Negative | `shared-vectors/rvn1/negative/prekey_bad_sig.json` | tampered signature → reject |
 
-Rust: `raven_core::prekey_bundle`. iOS publish path remains `ATSAMPrekeyService` until fully migrated off HTTP.
+Rust: `raven_core::prekey_bundle`. Existing iOS HTTP publication is a held
+legacy path, not serverless activation evidence.
 
 ## 8. Unknown / version behavior
 

@@ -1,0 +1,305 @@
+# Raven PairInit V1
+
+**Version:** 1
+
+**Suite:** 1 = X25519 + ML-KEM-768 + HKDF-SHA256 + Ed25519
+
+**Negotiated profile:** `ATSAM/indexed-session/v1`
+
+**Status:** additive byte contract; **production disabled**
+
+This document freezes an offline-capable, signed session-establishment
+transcript for
+[`ATSAM_INDEXED_SESSION_PROFILE_V1.md`](ATSAM_INDEXED_SESSION_PROFILE_V1.md).
+It deliberately does not activate RVNA1 `0x03`, assign a live network carrier,
+or replace the durable session-state requirements in
+[`SECURITY_ERRATA_RVN1_2026-08-13.md`](SECURITY_ERRATA_RVN1_2026-08-13.md).
+
+PairInit is designed for the required asynchronous case: Alice can use Bob's
+already identity-signed prekey bundle to create one signed PairInit, derive a
+**provisional** hybrid root, seal indexed-session message 0, and queue both
+while Bob is offline. Bob later validates the exact trust records and PairInit,
+derives the same root, and returns a signed `PairResponse`. The response
+confirms Bob's possession of that exact root; Alice does not wait for it before
+encrypting message 0.
+
+## 1. Security state and prerequisites
+
+PairInit has immutable transcript roles:
+
+| Role byte | Endpoint | Indexed-session direction |
+|---:|---|---:|
+| `0` | initiator (Alice) | Alice to Bob = `0` |
+| `1` | responder (Bob) | Bob to Alice = `1` |
+
+Before accepting a PairInit, an implementation MUST possess and validate:
+
+1. Alice's and Bob's exact `RavenDeviceCertificateV1` records, including each
+   identity signature, certificate validity, and the verifier's current local
+   revocation decision.
+2. Bob's exact `RavenPrekeyBundleV1`, including its identity signature,
+   validity, nonzero ML-KEM-768 encapsulation key, and consistent one-time
+   prekey fields.
+3. Exact lowercase canonical `RavenAddressV1` values derived from the identity
+   Ed25519 public keys that signed those records.
+4. Equality between the prekey bundle's identity and Bob's certificate owner,
+   and between its opaque `device_id` and Bob's certificate `device_id`.
+
+The PairInit validity interval MUST be contained in the intersection of both
+certificate validity intervals and Bob's prekey-bundle validity interval. The
+initiator device signature is verified only after structural, trust-record,
+identity, role, profile, suite, time, and resource checks.
+
+V1 has no signed global device-revocation record. Consequently, PairInit can
+bind the exact certificates and can require a verifier's local denylist, but it
+cannot prove that a partitioned verifier has the latest revocation state. This
+is a protocol limitation, not a field that implementations may replace with an
+unsigned "revocation hash."
+
+## 2. Exact trust-record digests
+
+The transcript binds the complete signed records, not only their key fields.
+All hashes are SHA-256:
+
+```
+device_cert_hash = SHA-256(
+    "rvn1/pair-devcert"
+    || identity_ed25519_pub(32)
+    || RavenDeviceCertificateV1.signing_bytes
+    || certificate_signature(64)
+)
+
+prekey_bundle_hash = SHA-256(
+    "rvn1/pair-prekey"
+    || RavenPrekeyBundleV1.signing_bytes
+    || prekey_signature(64)
+)
+```
+
+Including the certificate signer makes a byte-identical certificate body
+certified by a different identity produce a different digest. The prekey
+signing bytes already include its identity Ed25519 public key.
+
+## 3. PairInit wire (exactly 2788 bytes)
+
+All integers are unsigned big-endian. Addresses are exact 44-byte ASCII
+canonical `RavenAddressV1` strings. There are no optional or trailing bytes.
+The one-time X25519 slot is fixed width so there is only one parse.
+
+| Offset | Bytes | Field |
+|---:|---:|---|
+| 0 | 8 | magic `RVPI1\0\0\0` |
+| 8 | 1 | version = `0x01` |
+| 9 | 1 | suite = `0x01` |
+| 10 | 1 | role = initiator = `0x00` |
+| 11 | 1 | profile length = `24` |
+| 12 | 24 | ASCII `ATSAM/indexed-session/v1` |
+| 36 | 44 | initiator address |
+| 80 | 44 | responder address |
+| 124 | 16 | fresh, nonzero `init_id` |
+| 140 | 32 | fresh, nonzero `pairing_nonce` |
+| 172 | 32 | initiator device Ed25519 public key |
+| 204 | 32 | responder device Ed25519 public key |
+| 236 | 32 | initiator fresh ephemeral X25519 public key |
+| 268 | 32 | responder signed X25519 public key from prekey bundle |
+| 300 | 32 | responder one-time X25519 public key, or all zero |
+| 332 | 32 | initiator device-certificate hash |
+| 364 | 32 | responder device-certificate hash |
+| 396 | 32 | responder prekey-bundle hash |
+| 428 | 4 | nonzero `signed_prekey_id` |
+| 432 | 4 | `one_time_prekey_id`; zero means absent |
+| 436 | 1184 | responder ML-KEM-768 encapsulation key |
+| 1620 | 1088 | initiator's ML-KEM-768 ciphertext |
+| 2708 | 8 | `created_at_ms` |
+| 2716 | 8 | `expires_at_ms`, strictly greater than creation |
+| 2724 | 64 | initiator-device Ed25519 signature |
+
+If `one_time_prekey_id == 0`, the 32-byte one-time-key slot MUST be all zero.
+If the id is nonzero, the slot MUST be nonzero and match the signed bundle.
+The selected responder X25519 key is the one-time key when present and the
+signed X25519 key otherwise. The initiator ephemeral key, selected responder
+key, ML-KEM key, ciphertext, three record digests, nonce, and `init_id` MUST
+not be all zero. X25519 agreement MUST additionally reject a non-contributory
+(all-zero) shared result.
+
+The signature input is exactly:
+
+```
+"rvn1/pair-init" || PairInit[0 .. 2724]
+```
+
+It is signed by the initiator device Ed25519 key at offset 172. That key is
+authorized only by the exact initiator certificate whose digest is at offset
+332; a self-asserted device key is insufficient.
+
+Unknown version, suite, role, profile, noncanonical address, inconsistent
+one-time fields, wrong fixed length, trailing bytes, invalid trust binding,
+invalid time, or bad signature is a hard reject. There is no negotiation by
+"pick the closest supported value."
+
+## 4. Offline provisional hybrid root
+
+Alice performs:
+
+```
+selected_pk_B = otp_x25519_pub if one_time_prekey_id != 0
+                else signed_x25519_pub
+Z_X = X25519(alice_fresh_ephemeral_secret, selected_pk_B)
+(ct_PQ, Z_PQ) = ML-KEM-768.Encaps(responder_mlkem768_ek)
+```
+
+Alice places `ct_PQ` in PairInit, signs the complete prefix, and only then
+derives the root. Bob first accepts the signed PairInit and then computes:
+
+```
+Z_X  = X25519(selected_responder_secret, initiator_ephemeral_x25519_pub)
+Z_PQ = ML-KEM-768.Decaps(responder_mlkem768_secret, ct_PQ)
+```
+
+Both compute:
+
+```
+init_hash = SHA-256("rvn1/pair-init" || complete_PairInit_wire)
+
+transcript_material = "rvn1/pair-init" || complete_PairInit_wire
+transcript_hash = SHA-256("ATSAM/v1/transcript" || transcript_material)
+
+K_root = HKDF-SHA256(
+    IKM  = Z_X || Z_PQ,
+    salt = transcript_hash,
+    info = "ATSAM/v1/pair-init" || transcript_hash,
+    L    = 32
+)
+
+session_id = SHA-256("rvn1/pair-session" || init_hash)
+```
+
+`complete_PairInit_wire` includes the initiator signature. Thus the root binds
+the exact profile, suite, roles, identities, device keys, signed trust records,
+prekey ids and material, both hybrid contributions, freshness, and the
+initiator's authorization of all those bytes.
+
+Because the ML-KEM ciphertext is part of the transcript, an initiator MUST NOT
+use an API that derives the root before encapsulation and later substitutes a
+different transcript. Rust exposes a zeroizing `PendingHybridInitiation` for
+the required order: encapsulate, build/sign PairInit, hash, then consume and
+finalize. A port without an equivalent split operation MUST remain disabled.
+
+After deriving `K_root`, Alice may use indexed-session direction `0`, message
+index `0`, and the profile's route derivation to seal and durably queue message
+0 without a response. "Provisional" is a trust/UI state: the ciphertext is
+hybrid encrypted to Bob's identity-signed prekey, but Bob has not yet confirmed
+receipt and possession of the corresponding private material.
+
+## 5. PairResponse wire (exactly 228 bytes)
+
+Bob returns this only after the accepted PairInit and provisional session have
+been durably committed. It is key confirmation, not a message-delivery ACK.
+
+| Offset | Bytes | Field |
+|---:|---:|---|
+| 0 | 8 | magic `RVPR1\0\0\0` |
+| 8 | 1 | version = `0x01` |
+| 9 | 1 | suite = `0x01` |
+| 10 | 1 | role = responder = `0x01` |
+| 11 | 1 | profile length = `24` |
+| 12 | 24 | ASCII `ATSAM/indexed-session/v1` |
+| 36 | 16 | exact accepted `init_id` |
+| 52 | 32 | exact accepted `init_hash` |
+| 84 | 32 | responder device Ed25519 public key |
+| 116 | 8 | response `created_at_ms` |
+| 124 | 8 | response `expires_at_ms` |
+| 132 | 32 | root-confirmation tag |
+| 164 | 64 | responder-device Ed25519 signature |
+
+The tag is:
+
+```
+confirmation_tag = HMAC-SHA256(
+    K_root,
+    "ATSAM/pair-init/v1/confirm" || 0x00 || init_hash
+)
+```
+
+The signature input is:
+
+```
+"rvn1/pair-response" || PairResponse[0 .. 164]
+```
+
+The response signer MUST equal the responder device key bound in PairInit and
+its certificate. Response creation must fall inside the PairInit interval, its
+expiry must not exceed PairInit expiry, and verification uses
+`created_at_ms <= now_ms < expires_at_ms`. Verification requires the exact
+accepted PairInit, exact root tag (constant-time comparison), and signature.
+Only then may Alice change session state from `provisional` to `confirmed`.
+
+## 6. Replay, idempotency, and one-time prekeys
+
+PairInit ingestion requires a durable atomic claim before any plaintext or
+session-dependent ACK is accepted:
+
+```
+collision key = (responder_address, responder_device_ed_pub, init_id)
+stored value  = (init_hash, session_id, transcript_hash, prekey ids, state)
+```
+
+- An exact `(init_id, init_hash)` duplicate is idempotent. It reuses the
+  existing provisional session and MUST NOT decapsulate again, reset ratchets,
+  duplicate message 0, or emit another state transition.
+- The same collision key with a different `init_hash` is a conflict and MUST
+  be rejected.
+- A retry transmits the exact same PairInit bytes. Rebuilding with a new nonce,
+  signature, or ciphertext creates a different session.
+- PairResponse duplicates with the same signed bytes are idempotent. A
+  different response for the same accepted init that fails any exact binding
+  is rejected and does not mutate state.
+
+`RAVEN_PREKEY_BUNDLE_V1.md` requires distinct valid sessions to survive a
+distributed race where more than one sender obtained the same one-time prekey.
+Therefore a receiver MUST NOT use `(one_time_prekey_id)` alone as a uniqueness
+constraint. Each distinct, valid signed PairInit gets its own `init_hash`,
+hybrid ciphertext, root, and session record; reuse is recorded as a bounded
+local anomaly without logging identity/key bytes. Exact duplicates remain one
+session.
+
+The protected Rust lifecycle policy for this tradeoff is now frozen in
+[`RAVEN_PREKEY_LIFECYCLE_V1.md`](RAVEN_PREKEY_LIFECYCLE_V1.md): retained
+private material has a bundle-expiry-plus-7-day bound, distinct signed races
+remain distinct, and exact claims/root handoffs are crash recoverable. That
+actor remains production-disabled, has no Swift parity or live integration,
+and does not solve the confidential carrier. No codec helper alone may pretend
+to solve that storage or transport problem.
+
+## 7. Privacy/carrier and activation gaps
+
+The canonical PairInit bytes are signed but not encrypted and contain both
+addresses and public trust material. They MUST NOT be placed directly in an
+observable relay body when Raven claims relationship privacy. A confidential
+bootstrap carrier and its opaque offline rendezvous derivation are not frozen
+by this document. PairInit may currently be exercised only in vectors, local
+tests, or an already confidential/OOB channel. The future carrier must deliver
+PairInit plus indexed-session message 0 without changing any bytes defined
+here and must tolerate reordering and exact retries.
+
+Production remains disabled until, at minimum:
+
+- the confidential asynchronous bootstrap carrier is specified and tested;
+- the protected Rust prekey lifecycle actor is atomically integrated with the
+  durable session actor and has equivalent Swift behavior;
+- protected address-keyed storage, ratchet crash consistency, and zeroization
+  pass the errata release gates;
+- Swift and Rust verify these exact PairInit/response vectors and message-0
+  state transitions; and
+- external protocol/security review approves the transcript and state machine.
+
+## 8. Reference and vectors
+
+- Python: `protocol/reference/raven_protocol/pair_init.py`
+- Rust: `node/crates/raven-core/src/pair_init.rs`
+- Rust split hybrid primitive: `node/crates/raven-core/src/atsam_mlkem.rs`
+- Swift: `ios-native/RAVEN/RAVEN/Core/Security/ATSAM/ATSAMPairInitV1.swift`
+- KAT: `shared-vectors/rvn1/atsam/pair_init_v1_001.json`
+
+All implementations are codec/KDF/verification support only. The live
+endpoint and relay classifiers intentionally do not recognize these records.

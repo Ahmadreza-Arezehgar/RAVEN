@@ -122,7 +122,7 @@ final class NetworkMonitor: ObservableObject, NetworkStatusProviding {
         config.allowsExpensiveNetworkAccess = true
         config.allowsConstrainedNetworkAccess = true
         config.waitsForConnectivity = true   // FIX: Allow cellular radio to wake up
-        return URLSession(configuration: config)
+        return URLSession(configuration: RavenRuntimePolicy.protectForXCTest(config))
     }()
     
     private let monitor = NWPathMonitor()
@@ -148,6 +148,7 @@ final class NetworkMonitor: ObservableObject, NetworkStatusProviding {
     // MARK: - Public API
     
     func start() {
+        guard RavenRuntimePolicy.allowsExternalSideEffects else { return }
         guard !isStarted else { return }
         isStarted = true
         
@@ -186,6 +187,7 @@ final class NetworkMonitor: ObservableObject, NetworkStatusProviding {
     /// Lightweight probe to check if our backend is actually reachable.
     /// Detects captive portals, broken Wi-Fi, DNS issues, etc.
     private func runServerProbe() async {
+        guard RavenRuntimePolicy.allowsExternalSideEffects else { return }
         guard isOnline else {
             updateProbeResult(success: false)
             return
@@ -215,6 +217,7 @@ final class NetworkMonitor: ObservableObject, NetworkStatusProviding {
     
     /// The actual HTTP probe — lightweight HEAD/GET to our backend.
     private func probeBackend() async -> Bool {
+        guard RavenRuntimePolicy.allowsExternalSideEffects else { return false }
         guard let url = AppConfig.apiURL(path: "/health") else { return false }
         
         var request = URLRequest(url: url)
@@ -225,6 +228,7 @@ final class NetworkMonitor: ObservableObject, NetworkStatusProviding {
         
         do {
             // 👇 Use dedicated probeSession (NOT URLSession.shared — it fails on cellular transitions)
+            RavenTestExternalSideEffectAudit.recordActual(.http)
             let (_, response) = try await probeSession.data(for: request)
             if let http = response as? HTTPURLResponse {
                 // Any 2xx or even 401 means the server is reachable
@@ -273,6 +277,7 @@ final class NetworkMonitor: ObservableObject, NetworkStatusProviding {
     /// Keep control-plane state (CANCEL + pending ACK sync) fresh while online.
     /// This prevents mesh relays from running too long when server delivery wins later.
     func syncControlPlaneIfNeeded(force: Bool = false) async {
+        guard RavenRuntimePolicy.allowsExternalSideEffects else { return }
         guard isOnline else { return }
         
         let now = Date()
@@ -293,6 +298,7 @@ final class NetworkMonitor: ObservableObject, NetworkStatusProviding {
     // MARK: - Private Helpers
     
     private func updateStatus(from path: NWPath) {
+        guard RavenRuntimePolicy.allowsExternalSideEffects else { return }
         let wasOnline = isOnline
         isOnline = (path.status == .satisfied)
         isExpensive = path.isExpensive

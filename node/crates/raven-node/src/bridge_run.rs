@@ -3,14 +3,12 @@
 //! LAN + mock BLE are both TCP length-prefix frames (same RavenEnvelopeV1).
 //! BridgeSubsystem never decrypts. Closing `ash` does not stop this process.
 
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use raven_core::ble_adapter::validate_opaque_rvn1;
-use raven_core::envelope::{Envelope, EnvType};
 use raven_core::forward_queue::{ForwardQueue, ForwardState};
 use raven_core::message_router::{InboundEnvelope, MessageRouter, RouterOutcome};
 use raven_core::node_policy::{load_policy, BridgeStatusSnapshot, NodePolicy};
@@ -33,8 +31,6 @@ pub fn forward_queue_path(data_dir: &Path) -> PathBuf {
 struct BridgeState {
     policy: NodePolicy,
     queue: ForwardQueue,
-    /// message_id → channel to write recipient ACK back to ingress waiter (e.g. A).
-    ack_waiters: HashMap<[u8; 16], mpsc::Sender<Vec<u8>>>,
     lan_out: Vec<mpsc::Sender<Vec<u8>>>,
     ble_out: Vec<mpsc::Sender<Vec<u8>>>,
 }
@@ -106,10 +102,9 @@ async fn flush_pending(state: &Arc<Mutex<BridgeState>>) {
         if n > 0 {
             let _ = st
                 .queue
-                .mark_state(&identity.message_id, ForwardState::Forwarded);
+                .mark_object_state(&identity.object_digest, ForwardState::Forwarded);
             eprintln!(
-                "raven-node: BRIDGE flush mid={} → {}",
-                hex::encode(identity.message_id),
+                "raven-node: BRIDGE flush → {} (opaque)",
                 item.egress.as_str()
             );
         }
@@ -123,19 +118,18 @@ async fn on_frame(
     ingress: TransportKind,
     previous_hop: &str,
 ) {
-    // Recipient ACK arriving on reverse transport → wake ingress waiter.
-    if let Some(acked) = raven_core::opaque_acked_message_id(&packed) {
-        let waiter = {
-            let mut st = state.lock().await;
-            st.ack_waiters.remove(&acked)
-        };
-        if let Some(tx) = waiter {
-            let _ = tx.send(packed.clone());
-            eprintln!(
-                "raven-node: BRIDGE recipient ACK mid={} via {}",
-                hex::encode(acked),
-                ingress.as_str()
-            );
+    // Lab Test A: always sniff PairResponse OOB before opaque bridge routing.
+    if let raven_core::pair_init_lan_oob::PairInitOobClassify::PairResponse(wire) =
+        raven_core::pair_init_lan_oob::classify_packed_envelope(&packed)
+    {
+        let path = data_dir.join("lab_pair_response.rvpr1");
+        match std::fs::write(&path, &wire) {
+            Ok(()) => eprintln!(
+                "raven-node: lab PairResponse → {} ({} bytes)",
+                path.display(),
+                wire.len()
+            ),
+            Err(e) => eprintln!("raven-node: lab PairResponse drop write failed: {e}"),
         }
     }
 
@@ -166,32 +160,37 @@ async fn on_frame(
             if n > 0 {
                 let _ = st
                     .queue
-                    .mark_state(&identity.message_id, ForwardState::Forwarded);
+                    .mark_object_state(&identity.object_digest, ForwardState::Forwarded);
                 eprintln!(
-                    "raven-node: BRIDGE forward mid={} {}→{} (opaque)",
-                    hex::encode(identity.message_id),
+                    "raven-node: BRIDGE forward {}→{} (opaque)",
                     ingress.as_str(),
                     egress.as_str()
                 );
             } else {
                 let _ = st
                     .queue
-                    .mark_state(&identity.message_id, ForwardState::Queued);
+                    .mark_object_state(&identity.object_digest, ForwardState::Queued);
                 eprintln!(
-                    "raven-node: BRIDGE queued mid={} waiting {}",
-                    hex::encode(identity.message_id),
+                    "raven-node: BRIDGE queued waiting {} (opaque)",
                     egress.as_str()
                 );
             }
         }
-        RouterOutcome::QueuedForForward {
-            message_id, egress, ..
-        } => {
+        RouterOutcome::QueuedForForward { egress, .. } => {
             eprintln!(
-                "raven-node: BRIDGE store-carry mid={} → {}",
-                hex::encode(message_id),
+                "raven-node: BRIDGE store-carry → {} (opaque)",
                 egress.as_str()
             );
+        }
+        RouterOutcome::DeliverToEndpoint { packed, identity } => {
+            eprintln!(
+                "raven-node: BRIDGE deliver_to_endpoint mid={}",
+                hex::encode(&identity.message_id[..4])
+            );
+            let inbox = data_dir.join("lab_endpoint_inbox");
+            let _ = std::fs::create_dir_all(&inbox);
+            let name = hex::encode(identity.object_digest);
+            let _ = std::fs::write(inbox.join(name), &packed);
         }
         RouterOutcome::Dropped { reason } => {
             eprintln!("raven-node: BRIDGE drop {reason:?}");
@@ -210,18 +209,41 @@ async fn accept_loop(
         let Ok((stream, addr)) = listener.accept().await else {
             break;
         };
-        eprintln!(
-            "raven-node: BRIDGE accept {} {}",
-            ingress.as_str(),
-            addr
-        );
+        eprintln!("raven-node: BRIDGE accept {}", ingress.as_str());
         let st = state.clone();
         let dir = data_dir.clone();
         tokio::spawn(async move {
             let (mut reader, mut writer) = stream.into_split();
             let (out_tx, mut out_rx) = mpsc::channel::<Vec<u8>>(64);
-            // Local reply path for ACKs that must return on THIS socket (A←B).
-            let (reply_tx, mut reply_rx) = mpsc::channel::<Vec<u8>>(8);
+
+            // Do NOT flush on bare accept: probes (nc -z) and half-open connects
+            // used to drain the Mac outbox and mark messages Forwarded forever.
+            // Wait for pull hello `RVNP`, a stable silent pull (~400ms), or an
+            // inbound framed length prefix. Early disconnect → no flush.
+            let mut pending_len_prefix: Option<[u8; 4]> = None;
+            let is_lan = matches!(ingress, TransportKind::Lan | TransportKind::Internet);
+            if is_lan {
+                let mut magic = [0u8; 4];
+                let classify = tokio::select! {
+                    res = reader.read_exact(&mut magic) => match res {
+                        Ok(_) if &magic == b"RVNP" => "hello",
+                        Ok(_) => "frame",
+                        Err(_) => "drop",
+                    },
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(400)) => "silent",
+                };
+                match classify {
+                    "drop" => {
+                        eprintln!("raven-node: BRIDGE drop probe (no flush)");
+                        return;
+                    }
+                    "frame" => {
+                        pending_len_prefix = Some(magic);
+                    }
+                    "hello" | "silent" => {}
+                    _ => return,
+                }
+            }
 
             {
                 let mut s = st.lock().await;
@@ -230,33 +252,35 @@ async fn accept_loop(
                     TransportKind::Ble | TransportKind::MockBle => s.ble_out.push(out_tx),
                 }
             }
-            flush_pending(&st).await;
+            if is_lan || matches!(ingress, TransportKind::Ble | TransportKind::MockBle) {
+                flush_pending(&st).await;
+            }
 
             let write_task = tokio::spawn(async move {
-                loop {
-                    tokio::select! {
-                        Some(bytes) = out_rx.recv() => {
-                            let len = (bytes.len() as u32).to_be_bytes();
-                            if writer.write_all(&len).await.is_err() { break; }
-                            if writer.write_all(&bytes).await.is_err() { break; }
-                            let _ = writer.flush().await;
-                        }
-                        Some(bytes) = reply_rx.recv() => {
-                            let len = (bytes.len() as u32).to_be_bytes();
-                            if writer.write_all(&len).await.is_err() { break; }
-                            if writer.write_all(&bytes).await.is_err() { break; }
-                            let _ = writer.flush().await;
-                        }
-                        else => break,
+                while let Some(bytes) = out_rx.recv().await {
+                    let len = (bytes.len() as u32).to_be_bytes();
+                    if writer.write_all(&len).await.is_err() {
+                        break;
+                    }
+                    if writer.write_all(&bytes).await.is_err() {
+                        break;
+                    }
+                    if writer.flush().await.is_err() {
+                        break;
                     }
                 }
             });
 
             loop {
-                let mut len_buf = [0u8; 4];
-                if reader.read_exact(&mut len_buf).await.is_err() {
-                    break;
-                }
+                let len_buf = if let Some(p) = pending_len_prefix.take() {
+                    p
+                } else {
+                    let mut b = [0u8; 4];
+                    if reader.read_exact(&mut b).await.is_err() {
+                        break;
+                    }
+                    b
+                };
                 let len = u32::from_be_bytes(len_buf) as usize;
                 if len == 0 || len > 1_048_576 {
                     break;
@@ -264,28 +288,6 @@ async fn accept_loop(
                 let mut buf = vec![0u8; len];
                 if reader.read_exact(&mut buf).await.is_err() {
                     break;
-                }
-
-                // LAN Message from A: wait for recipient ACK and reply on this conn.
-                if let Some(env) = Envelope::unpack(&buf) {
-                    if env.env_type == EnvType::Message as u8
-                        && matches!(ingress, TransportKind::Lan | TransportKind::Internet)
-                    {
-                        let (ack_tx, mut ack_rx) = mpsc::channel::<Vec<u8>>(1);
-                        {
-                            let mut s = st.lock().await;
-                            s.ack_waiters.insert(env.message_id, ack_tx);
-                        }
-                        on_frame(&st, &dir, buf, ingress, &addr.to_string()).await;
-                        if let Ok(Some(ack)) =
-                            tokio::time::timeout(std::time::Duration::from_secs(25), ack_rx.recv())
-                                .await
-                        {
-                            let _ = reply_tx.send(ack).await;
-                            eprintln!("raven-node: BRIDGE wrote recipient ACK upstream to A");
-                        }
-                        continue;
-                    }
                 }
 
                 on_frame(&st, &dir, buf, ingress, &addr.to_string()).await;
@@ -312,7 +314,6 @@ pub async fn run_bridge_daemon(
     let state = Arc::new(Mutex::new(BridgeState {
         policy,
         queue,
-        ack_waiters: HashMap::new(),
         lan_out: Vec::new(),
         ble_out: Vec::new(),
     }));
@@ -385,4 +386,77 @@ pub async fn run_bridge_daemon(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use raven_core::atsam_aead::seal_rvna1_v2;
+    use raven_core::envelope::{EnvType, Envelope};
+    use raven_core::identity::Identity;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn sealed_ack_is_forwarded_opaquely_and_never_marked_delivered() {
+        let dir = tempdir().unwrap();
+        let queue = ForwardQueue::open(&forward_queue_path(dir.path())).unwrap();
+        let (lan_tx, mut lan_rx) = mpsc::channel(1);
+        let state = Arc::new(Mutex::new(BridgeState {
+            policy: NodePolicy::default(),
+            queue,
+            lan_out: vec![lan_tx],
+            ble_out: Vec::new(),
+        }));
+
+        let sender = Identity::generate();
+        let message_id = [0xA5; 16];
+        let sealed_ack = seal_rvna1_v2(
+            &[0x42; 32],
+            "recipient-device",
+            "origin-device",
+            "ack-envelope-1",
+            0,
+            &[0x77; 101],
+            &[0x24; 12],
+        )
+        .unwrap();
+        let now = now_ms();
+        let mut envelope = Envelope {
+            env_type: EnvType::Ack as u8,
+            flags: 0,
+            message_id,
+            routing_tag: [0x18; 16],
+            dest_device_hint: 0,
+            created_at: now,
+            expires_at: now + 60_000,
+            hop_limit: 3,
+            replication_budget: 2,
+            anti_replay_nonce: [0x24; 12],
+            ratchet_header_ciphertext: Vec::new(),
+            message_ciphertext: sealed_ack.clone(),
+            sender_authentication: Vec::new(),
+        };
+        envelope.sign_with(&sender);
+
+        on_frame(
+            &state,
+            dir.path(),
+            envelope.pack(),
+            TransportKind::MockBle,
+            "test-ble-hop",
+        )
+        .await;
+
+        let forwarded = tokio::time::timeout(std::time::Duration::from_secs(1), lan_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let forwarded = Envelope::unpack(&forwarded).unwrap();
+        assert_eq!(forwarded.env_type, EnvType::Ack as u8);
+        assert_eq!(forwarded.message_id, message_id);
+        assert_eq!(forwarded.message_ciphertext, sealed_ack);
+
+        let stored = state.lock().await.queue.get(&message_id).unwrap().unwrap();
+        assert_eq!(stored.state, ForwardState::Forwarded);
+    }
 }

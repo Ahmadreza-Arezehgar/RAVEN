@@ -4,14 +4,18 @@
 //! Never prints private keys, seeds, session keys, recovery secrets, or plaintext.
 
 mod ext;
+mod pair_init_lab;
+mod trace_delivery;
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::process::Command;
 
 use clap::{Parser, Subcommand};
 use raven_core::address::{decode_address, encode_address};
 use raven_core::alias_record::{AliasClaimStore, AliasRecord};
+use raven_core::chat_history::BlockList;
 use raven_core::contact_request::{
     ContactRequestInbox, ContactRequestInner, RavenContactRequestV1,
 };
@@ -22,9 +26,9 @@ use raven_core::discovery_resolver::{
 use raven_core::fingerprint::device_fingerprint_v1;
 use raven_core::forward_queue::ForwardQueue;
 use raven_core::identity::Identity;
-use raven_core::ipc::{
-    decode_response, default_socket_path, encode_request, IpcRequest, IpcResponse, IPC_VERSION,
-};
+#[cfg(unix)]
+use raven_core::ipc::{decode_response, encode_request, IpcRequest, IPC_VERSION};
+use raven_core::ipc::{default_socket_path, IpcResponse};
 use raven_core::messaging_path::{
     assert_no_silent_fastapi, resolve_terminal_messaging_path, MessagingPath,
 };
@@ -34,7 +38,6 @@ use raven_core::prekey_bundle::{PrekeyBundle, PrekeyBundleJson, PrekeyStore};
 use raven_core::profile_record::ProfileStore;
 use raven_core::queue::{DeliveryState, OutgoingQueue};
 use raven_core::sanitize::sanitize_terminal_text;
-use raven_core::chat_history::BlockList;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -83,6 +86,54 @@ const C_CYAN: &str = "\x1b[1m";
 const C_PURPLE: &str = "\x1b[1m";
 const C_GREEN: &str = "\x1b[1m";
 
+fn default_ash_data_dir() -> PathBuf {
+    std::env::var_os("ASH_DATA_DIR")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".raven-ash")))
+        .unwrap_or_else(|| PathBuf::from("./raven-data"))
+}
+
+fn is_ephemeral_data_dir(p: &Path) -> bool {
+    let s = p.to_string_lossy();
+    s.contains("/T/tmp.")
+        || s.contains("/tmp/raven-ash-")
+        || (s.contains("/var/folders/") && s.contains("/T/tmp"))
+}
+
+fn resolve_data_dir(raw: &str) -> PathBuf {
+    let t = raw.trim();
+    let p = if t.is_empty() {
+        default_ash_data_dir()
+    } else {
+        PathBuf::from(t)
+    };
+    let explicit_ephemeral = std::env::var_os("RAVEN_ALLOW_EPHEMERAL_DATA_DIR")
+        .map(|value| value == "1")
+        .unwrap_or(false);
+    if !is_ephemeral_data_dir(&p) || explicit_ephemeral {
+        return p;
+    }
+    let stable = default_ash_data_dir();
+    eprintln!(
+        "{C_PURPLE}WARN{C_RESET}: ephemeral data-dir detected — switching to stable {}",
+        stable.display()
+    );
+    eprintln!(
+        "{C_DIM}FA:{C_RESET} mktemp هویت مک را هر بار عوض می‌کند و آیفون وصل نمی‌شود. از ~/.raven-ash استفاده می‌کنیم."
+    );
+    eprintln!(
+        "{C_DIM}EN:{C_RESET} Stop using DATA=$(mktemp -d). Using ~/.raven-ash so Mac whoami stays stable."
+    );
+    let _ = std::fs::create_dir_all(&stable);
+    // Best-effort: bring contacts along once.
+    let from_c = p.join("contacts.json");
+    let to_c = stable.join("contacts.json");
+    if from_c.is_file() && !to_c.is_file() {
+        let _ = std::fs::copy(&from_c, &to_c);
+    }
+    stable
+}
+
 /// Public logo assets (no secrets) — credit raven-messager.com.
 pub const LOGO_URL: &str = "https://raven-messager.com/raven_logo.png";
 #[allow(dead_code)]
@@ -96,8 +147,10 @@ pub const LOGO_64_URL: &str = "https://raven-messager.com/raven_logo_64.png";
                   Never prints private keys. Brand: https://raven-messager.com/"
 )]
 struct Cli {
-    #[arg(long, global = true, default_value = "./raven-data")]
-    data_dir: PathBuf,
+    /// Stable local profile (default: ~/.raven-ash). Do NOT use mktemp — phone
+    /// must re-paste Mac whoami every time the identity changes.
+    #[arg(long, global = true, default_value = "")]
+    data_dir: String,
     #[command(subcommand)]
     cmd: Option<Commands>,
 }
@@ -180,6 +233,33 @@ enum Commands {
         #[command(subcommand)]
         cmd: MailboxCommands,
     },
+    /// Test A lab helpers (requires debug + RAVEN_LAB_TEST_A=1 for live PairInit).
+    Lab {
+        #[command(subcommand)]
+        cmd: LabCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum LabCommands {
+    /// Export local device certificate JSON for the peer's peer_device_certs.json.
+    ExportCert,
+    /// Import peer device certificate JSON into peer_device_certs.json.
+    ImportPeerCert {
+        #[arg(long)]
+        peer_pub_hex: String,
+        #[arg(long)]
+        file: PathBuf,
+    },
+    /// Import peer prekey JSON into local prekey_store.json (OOB paste file).
+    ImportPeerPrekey {
+        #[arg(long)]
+        peer_pub_hex: String,
+        #[arg(long)]
+        file: PathBuf,
+    },
+    /// Print lab unlock status.
+    Status,
 }
 
 #[derive(Subcommand, Debug)]
@@ -228,7 +308,11 @@ Interactive (recommended for first-timers):
         #[arg(long)]
         prekey_file: Option<PathBuf>,
         /// Optional LAN listen host:port (saved for Send / Chat — beginners pick #, not dial).
-        #[arg(long, default_value = "", help = "Peer LAN listen host:port, e.g. 192.168.1.20:7420")]
+        #[arg(
+            long,
+            default_value = "",
+            help = "Peer LAN listen host:port, e.g. 192.168.1.20:7420"
+        )]
         lan_dial: String,
     },
     /// List contacts: petname first, @tag subtitle (never address-primary).
@@ -275,13 +359,9 @@ Interactive (recommended for first-timers):
         petname: String,
     },
     /// Decline a pending request (local only — no central moderation).
-    Decline {
-        request_id: String,
-    },
+    Decline { request_id: String },
     /// Block sender of a pending request (local block list).
-    Block {
-        request_id: String,
-    },
+    Block { request_id: String },
 }
 
 #[derive(Subcommand, Debug)]
@@ -557,6 +637,7 @@ fn print_welcome(data_dir: &Path) {
     println!();
     println!("{dim}Brand logo (PNG):{reset} {LOGO_URL}");
     println!("{dim}Site:{reset}             https://raven-messager.com/");
+    println!("{dim}data_dir:{reset}         {}", data_dir.display());
     println!();
 
     match try_load_identity(data_dir) {
@@ -637,11 +718,7 @@ fn read_paste_blob() -> String {
 fn cmd_messages(data_dir: &Path) {
     let qpath = data_dir.join("queue.db");
     let qpath2 = data_dir.join("queue.sqlite");
-    let path = if qpath.exists() {
-        qpath
-    } else {
-        qpath2
-    };
+    let path = if qpath.exists() { qpath } else { qpath2 };
     if path.exists() {
         match OutgoingQueue::open(&path) {
             Ok(q) => match q.list_all() {
@@ -649,10 +726,7 @@ fn cmd_messages(data_dir: &Path) {
                     if items.is_empty() {
                         println!("{C_DIM}Queue empty.{C_RESET}");
                     } else {
-                        println!(
-                            "{C_DIM}{:<12} {:<12} {}{C_RESET}",
-                            "msg_id", "state", "peer"
-                        );
+                        println!("{C_DIM}{:<12} {:<12} peer{C_RESET}", "msg_id", "state");
                         for it in items {
                             let id = hex::encode(it.message_id);
                             let st = match it.state {
@@ -661,12 +735,7 @@ fn cmd_messages(data_dir: &Path) {
                                 DeliveryState::Delivered => "delivered",
                                 DeliveryState::Failed => "failed",
                             };
-                            println!(
-                                "{}… {:<12} {}",
-                                &id[..8.min(id.len())],
-                                st,
-                                it.peer_addr
-                            );
+                            println!("{}… {:<12} {}", &id[..8.min(id.len())], st, it.peer_addr);
                         }
                     }
                 }
@@ -677,26 +746,31 @@ fn cmd_messages(data_dir: &Path) {
     } else {
         println!("{C_DIM}No outgoing queue yet.{C_RESET}");
     }
-    let hist = raven_core::ChatHistory::load(data_dir);
-    if hist.entries.is_empty() {
-        println!("{C_DIM}No local chat history.{C_RESET}");
-    } else {
-        println!("{C_BOLD}Recent history{C_RESET} (sanitized previews)");
-        for e in hist.entries.iter().rev().take(15).rev() {
-            let label = if !e.peer_petname.is_empty() {
-                sanitize_terminal_text(&e.peer_petname)
-            } else if !e.peer_tag.is_empty() {
-                format!("@{}", sanitize_terminal_text(&e.peer_tag))
-            } else {
-                e.peer_pub_hex.chars().take(12).collect()
-            };
-            println!(
-                "  {C_DIM}{}{C_RESET} {} → {}  {}",
-                &e.message_id_hex[..8.min(e.message_id_hex.len())],
-                e.direction,
-                label,
-                sanitize_terminal_text(&e.preview)
-            );
+    match raven_core::ChatHistory::load(data_dir) {
+        Ok(hist) if hist.entries.is_empty() => {
+            println!("{C_DIM}No local chat history.{C_RESET}");
+        }
+        Ok(hist) => {
+            println!("{C_BOLD}Recent history{C_RESET} (protected at rest)");
+            for e in hist.entries.iter().rev().take(15).rev() {
+                let label = if !e.peer_petname.is_empty() {
+                    sanitize_terminal_text(&e.peer_petname)
+                } else if !e.peer_tag.is_empty() {
+                    format!("@{}", sanitize_terminal_text(&e.peer_tag))
+                } else {
+                    e.peer_pub_hex.chars().take(12).collect()
+                };
+                println!(
+                    "  {C_DIM}{}{C_RESET} {} → {}  {}",
+                    &e.message_id_hex[..8.min(e.message_id_hex.len())],
+                    e.direction,
+                    label,
+                    sanitize_terminal_text(&e.preview)
+                );
+            }
+        }
+        Err(error) => {
+            eprintln!("local protected history unavailable: {error}");
         }
     }
 }
@@ -792,8 +866,7 @@ fn extract_address_field(blob: &str) -> Option<String> {
             let rest = rest.trim_start_matches(['=', ':', ' ', '\t']);
             // Recover original casing from the line after the key.
             if let Some(idx) = t.to_ascii_lowercase().find("address") {
-                let after = t[idx + "address".len()..]
-                    .trim_start_matches(['=', ':', ' ', '\t']);
+                let after = t[idx + "address".len()..].trim_start_matches(['=', ':', ' ', '\t']);
                 if after.starts_with("rvn1") {
                     return Some(after.split_whitespace().next()?.to_string());
                 }
@@ -806,6 +879,22 @@ fn extract_address_field(blob: &str) -> Option<String> {
     }
     None
 }
+
+/// iPhone "Copy pub hex" (and accidental `@` + 64 hex) — not an Soft Unique @alias.
+fn looks_like_bare_pub_hex(s: &str) -> Option<String> {
+    let t = s.trim().trim_start_matches('@').trim();
+    if t.len() == 64 && t.chars().all(|c| c.is_ascii_hexdigit()) {
+        Some(t.to_ascii_lowercase())
+    } else {
+        None
+    }
+}
+
+/// Default Raven LAN listen port (Mac listens / iPhone Serverless LAN).
+const DEFAULT_LAN_PORT: u16 = 7420;
+
+/// Env overrides for peer LAN dial (checked in order). Matches RAVEN_* convention.
+const ENV_PEER_LAN_DIAL: &[&str] = &["RAVEN_PEER", "ASH_LAN_DIAL"];
 
 fn looks_like_lan_dial(s: &str) -> bool {
     let t = s.trim();
@@ -844,6 +933,110 @@ fn update_contact_lan_dial(data_dir: &Path, pub_hex: &str, dial: &str) -> Result
         return Err("contact not found for lan_dial update".into());
     }
     save_contacts(data_dir, &contacts)
+}
+
+/// How Send / Chat reaches a contact on LAN without an interactive host:port prompt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ResolvedLanPeer {
+    /// Dial this `host:port` (saved, env, or discovered).
+    Dial(String),
+    /// Product path: this Mac listens; message is queued locally (phone dials Mac).
+    LocalListenQueue,
+}
+
+fn env_peer_lan_dial() -> Option<String> {
+    for key in ENV_PEER_LAN_DIAL {
+        if let Ok(v) = std::env::var(key) {
+            let t = v.trim();
+            if looks_like_lan_dial(t) {
+                return Some(t.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn ipc_daemon_up(data_dir: &Path) -> bool {
+    let sock = default_socket_path(data_dir);
+    if !sock.exists() {
+        return false;
+    }
+    matches!(ipc_ping_blocking(&sock), Ok(IpcResponse::Pong { .. }))
+}
+
+fn ensure_mac_lan_service(data_dir: &Path) -> bool {
+    ext::ensure_mac_lan_daemon(data_dir)
+}
+
+/// Best-effort primary LAN IPv4 for tips (macOS `ipconfig getifaddr en0`, else none).
+fn local_lan_ipv4_tip() -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        for iface in ["en0", "en1"] {
+            if let Ok(out) = Command::new("ipconfig").args(["getifaddr", iface]).output() {
+                if out.status.success() {
+                    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                    if !s.is_empty() && s.parse::<std::net::Ipv4Addr>().is_ok() {
+                        return Some(s);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn print_lan_unresolved_hint(contact_label: &str) {
+    let s = style();
+    let bold = s.bold;
+    let dim = s.dim;
+    let reset = s.reset;
+    println!(
+        "{bold}LAN peer not resolved{reset} for {} — identity ≠ IP.",
+        sanitize_terminal_text(contact_label)
+    );
+    println!(
+        "{dim}EN:{reset} Peer must reach this Mac (iPhone Serverless LAN → Host=Mac IP, Port={DEFAULT_LAN_PORT}),"
+    );
+    println!(
+        "{dim}   {reset} or set listen on the phone / export RAVEN_PEER=host:port. No host:port prompt."
+    );
+    println!(
+        "{dim}FA:{reset} مخاطب باید به این مک برسد (آیفون Serverless LAN → Host=آی‌پی مک، Port={DEFAULT_LAN_PORT})؛"
+    );
+    println!(
+        "{dim}   {reset} یا روی گوشی listen بگذارید / RAVEN_PEER=host:port. از شما port نمی‌پرسیم."
+    );
+    if let Some(ip) = local_lan_ipv4_tip() {
+        println!(
+            "{dim}Tip / نکته:{reset} Mac LAN IP ≈ {bold}{ip}{reset}  → phone Host={ip} Port={DEFAULT_LAN_PORT}"
+        );
+    } else {
+        println!(
+            "{dim}Tip:{reset} `ipconfig getifaddr en0` → put that IP + port {DEFAULT_LAN_PORT} on the phone."
+        );
+    }
+    println!(
+        "{dim}Also:{reset} `raven-node run --listen 0.0.0.0:{DEFAULT_LAN_PORT}` (Mac listens; phone dials)."
+    );
+}
+
+/// Pure resolution used by tests: saved dial → env → Mac-listens local queue.
+/// `ipc_up` is informational for callers; empty dial always prefers local queue (daemon may auto-start).
+fn resolve_lan_peer_parts(
+    saved_lan_dial: &str,
+    env_dial: Option<&str>,
+    _ipc_up: bool,
+) -> Option<ResolvedLanPeer> {
+    let saved = saved_lan_dial.trim();
+    if looks_like_lan_dial(saved) {
+        return Some(ResolvedLanPeer::Dial(saved.to_string()));
+    }
+    if let Some(e) = env_dial.map(str::trim).filter(|t| looks_like_lan_dial(t)) {
+        return Some(ResolvedLanPeer::Dial(e.to_string()));
+    }
+    // No peer IP from identity alone — Mac listens; phone dials (or env/saved dial above).
+    Some(ResolvedLanPeer::LocalListenQueue)
 }
 
 fn contact_fingerprint(c: &Contact) -> String {
@@ -916,9 +1109,7 @@ fn save_alias_claim(data_dir: &Path, rec: &AliasRecord) -> Result<(), String> {
         .ok()
         .and_then(|r| serde_json::from_str(&r).ok())
         .unwrap_or_default();
-    rows.retain(|r| {
-        !(r.alias == rec.alias && r.identity_address == rec.identity_address)
-    });
+    rows.retain(|r| !(r.alias == rec.alias && r.identity_address == rec.identity_address));
     rows.push(AliasClaimJson {
         alias: rec.alias.clone(),
         identity_address: rec.identity_address.clone(),
@@ -987,7 +1178,10 @@ fn print_discovery_hit(i: usize, h: &DiscoveryResult) {
             VerificationState::ExpiredOrStale => "EXPIRED_OR_STALE".into(),
         }
     );
-    println!("      {C_DIM}raven_id{C_RESET}  {}", sanitize_terminal_text(&h.raven_id));
+    println!(
+        "      {C_DIM}raven_id{C_RESET}  {}",
+        sanitize_terminal_text(&h.raven_id)
+    );
     if !h.aliases.is_empty() {
         println!(
             "      {C_DIM}aliases{C_RESET}   {}",
@@ -1004,7 +1198,14 @@ fn print_discovery_hit(i: usize, h: &DiscoveryResult) {
     );
 }
 
-fn cmd_find(data_dir: &Path, query: &str, local: bool, exact_id: bool, exact_alias: bool, all: bool) {
+fn cmd_find(
+    data_dir: &Path,
+    query: &str,
+    local: bool,
+    exact_id: bool,
+    exact_alias: bool,
+    all: bool,
+) {
     let ctx = build_discovery_ctx(data_dir);
     let scope = if local {
         DiscoveryScope::Local
@@ -1088,7 +1289,10 @@ fn cmd_nearby(data_dir: &Path) {
     tokens.sort();
     tokens.dedup();
     std::fs::create_dir_all(data_dir).ok();
-    let _ = std::fs::write(path, serde_json::to_string_pretty(&tokens).unwrap_or_default());
+    let _ = std::fs::write(
+        path,
+        serde_json::to_string_pretty(&tokens).unwrap_or_default(),
+    );
     println!("{C_BOLD}Nearby{C_RESET} (ephemeral — no permanent Raven ID in adv)");
     for a in reg.scan_live(now_ms()) {
         let phrase = raven_core::nearby_safety_phrase(&a.ephemeral_token, &a.session_commitment);
@@ -1105,12 +1309,42 @@ fn cmd_nearby(data_dir: &Path) {
     println!("{C_DIM}Confirm pairing locally before binding to rvn1 identity.{C_RESET}");
 }
 
-fn cmd_contact_request(
-    data_dir: &Path,
-    target: &str,
-    message: &str,
-    pick: Option<usize>,
-) {
+/// Product contact-request transport stays off until ash owns an authenticated
+/// ATSAM root plus crash-safe send/receive chain state. The low-level codec is
+/// available for vectors, but CLI commands never synthesize that session.
+///
+/// Legacy RavenContactRequestV1 entry points remain fail-closed. Live friendship
+/// bootstrap is PairInit (see `pair_init::PRODUCTION_ENABLED`), not rootless
+/// contact ciphertext.
+fn contact_session_transport_ready() -> bool {
+    // PairInit + prekey lifecycle + indexed session must all be production-live
+    // before contact/friendship wire is emitted. Do not treat Raven ID alone as
+    // readiness.
+    trace_delivery::live_pair_init_outbound_ready()
+}
+
+fn refuse_unready_contact_session() -> ! {
+    let status = "PRODUCTION_GATE_DISABLED:WAITING_FOR_PAIR_INIT_SESSION";
+    trace_delivery::trace_event(
+        "ash/cli.rs:refuse_unready_contact_session",
+        "TRACE_FRIEND_REQUEST_BLOCKED",
+        status,
+        None,
+        Some("legacy_contact_request_entry_fail_closed"),
+    );
+    eprintln!(
+        "{C_PURPLE}status{C_RESET} {status}"
+    );
+    eprintln!(
+        "{C_PURPLE}security hold{C_RESET}: authenticated PairInit/ATSAM session required; no request or accept wire was created/opened"
+    );
+    std::process::exit(2)
+}
+
+fn cmd_contact_request(data_dir: &Path, target: &str, message: &str, pick: Option<usize>) {
+    if !contact_session_transport_ready() {
+        refuse_unready_contact_session();
+    }
     let id = ensure_identity(data_dir);
     let ctx = build_discovery_ctx(data_dir);
     let q = target.trim();
@@ -1159,14 +1393,13 @@ fn cmd_contact_request(
             std::process::exit(1);
         })
     } else if let Ok(claims) = ctx.aliases.lookup_exact(
-        chosen
-            .aliases
-            .first()
-            .map(|s| s.as_str())
-            .unwrap_or(q),
+        chosen.aliases.first().map(|s| s.as_str()).unwrap_or(q),
         now_ms(),
     ) {
-        if let Some(claim) = claims.iter().find(|c| c.identity_address == chosen.raven_id) {
+        if let Some(claim) = claims
+            .iter()
+            .find(|c| c.identity_address == chosen.raven_id)
+        {
             claim.ed25519_pub
         } else if claims.len() == 1 {
             claims[0].ed25519_pub
@@ -1214,7 +1447,10 @@ fn cmd_contact_request(
     std::fs::write(&out_wire, &wire).ok();
     println!("{C_GREEN}contact request sealed{C_RESET} (ciphertext-only for store/bridge)");
     println!("{C_DIM}request_id{C_RESET} {}", hex::encode(request_id));
-    println!("{C_DIM}recipient{C_RESET}  {}", sanitize_terminal_text(&chosen.raven_id));
+    println!(
+        "{C_DIM}recipient{C_RESET}  {}",
+        sanitize_terminal_text(&chosen.raven_id)
+    );
     println!("{C_DIM}ciphertext{C_RESET} {}", out_ct.display());
     println!("{C_DIM}wire{C_RESET}       {}", out_wire.display());
     println!(
@@ -1277,6 +1513,9 @@ fn remove_inbox_wire(data_dir: &Path, request_id: &[u8; 16]) {
 }
 
 fn cmd_contact_pending(data_dir: &Path) {
+    if !contact_session_transport_ready() {
+        refuse_unready_contact_session();
+    }
     let inbox = load_contact_inbox(data_dir);
     println!(
         "{C_BOLD}Pending contact requests{C_RESET} ({})",
@@ -1298,12 +1537,13 @@ fn cmd_contact_pending(data_dir: &Path) {
             sanitize_terminal_text(&p.inner.optional_message)
         );
     }
-    println!(
-        "{C_DIM}ash contact accept <id> --petname \"…\" | decline <id> | block <id>{C_RESET}"
-    );
+    println!("{C_DIM}ash contact accept <id> --petname \"…\" | decline <id> | block <id>{C_RESET}");
 }
 
 fn cmd_contact_ingest(data_dir: &Path, file: &Path) {
+    if !contact_session_transport_ready() {
+        refuse_unready_contact_session();
+    }
     let id = ensure_identity(data_dir);
     let raw = std::fs::read(file).unwrap_or_else(|e| {
         eprintln!("read failed: {e}");
@@ -1316,15 +1556,20 @@ fn cmd_contact_ingest(data_dir: &Path, file: &Path) {
     // Bridge/store opacity: wire encodes outer metadata + opaque ciphertext.
     assert!(outer.is_ciphertext_only());
     let mut inbox = ContactRequestInbox::default();
-    let inner = inbox.ingest(outer.clone(), &id, now_ms()).unwrap_or_else(|e| {
-        eprintln!("ingest refused: {e}");
-        std::process::exit(1);
-    });
+    let inner = inbox
+        .ingest(outer.clone(), &id, now_ms())
+        .unwrap_or_else(|e| {
+            eprintln!("ingest refused: {e}");
+            std::process::exit(1);
+        });
     if let Err(e) = persist_inbox_wire(data_dir, &outer) {
         eprintln!("persist failed: {e}");
         std::process::exit(1);
     }
-    println!("{C_GREEN}ingested{C_RESET} request {}", hex::encode(inner.request_id));
+    println!(
+        "{C_GREEN}ingested{C_RESET} request {}",
+        hex::encode(inner.request_id)
+    );
     println!(
         "{C_DIM}from{C_RESET} {} — {}",
         sanitize_terminal_text(&inner.sender_raven_id),
@@ -1333,13 +1578,18 @@ fn cmd_contact_ingest(data_dir: &Path, file: &Path) {
 }
 
 fn cmd_contact_accept(data_dir: &Path, request_id_hex: &str, petname: &str) {
+    if !contact_session_transport_ready() {
+        refuse_unready_contact_session();
+    }
     let id = ensure_identity(data_dir);
     let rid = parse_request_id_hex(request_id_hex);
     let mut inbox = load_contact_inbox(data_dir);
-    let outcome = inbox.accept(&rid, &id, petname, now_ms()).unwrap_or_else(|e| {
-        eprintln!("accept failed: {e}");
-        std::process::exit(1);
-    });
+    let outcome = inbox
+        .accept(&rid, &id, petname, now_ms())
+        .unwrap_or_else(|e| {
+            eprintln!("accept failed: {e}");
+            std::process::exit(1);
+        });
     remove_inbox_wire(data_dir, &rid);
     // Bind local contact (raven_id + petname); verification = trusted contact.
     if let Err(e) = add_contact(
@@ -1359,13 +1609,28 @@ fn cmd_contact_accept(data_dir: &Path, request_id_hex: &str, petname: &str) {
     });
     let out = data_dir.join(format!("contact_accept_{}.wire", hex::encode(rid)));
     std::fs::write(&out, &wire).ok();
-    println!("{C_GREEN}accepted{C_RESET} + bound petname \"{}\"", sanitize_terminal_text(&outcome.binding.petname));
-    println!("{C_DIM}raven_id{C_RESET} {}", sanitize_terminal_text(&outcome.binding.raven_id));
-    println!("{C_DIM}verify{C_RESET}   {:?}", outcome.binding.verification_state);
-    println!("{C_DIM}accept wire{C_RESET} {} (deliver opaque via MessageRouter)", out.display());
+    println!(
+        "{C_GREEN}accepted{C_RESET} + bound petname \"{}\"",
+        sanitize_terminal_text(&outcome.binding.petname)
+    );
+    println!(
+        "{C_DIM}raven_id{C_RESET} {}",
+        sanitize_terminal_text(&outcome.binding.raven_id)
+    );
+    println!(
+        "{C_DIM}verify{C_RESET}   {:?}",
+        outcome.binding.verification_state
+    );
+    println!(
+        "{C_DIM}accept wire{C_RESET} {} (deliver opaque via MessageRouter)",
+        out.display()
+    );
 }
 
 fn cmd_contact_decline(data_dir: &Path, request_id_hex: &str) {
+    if !contact_session_transport_ready() {
+        refuse_unready_contact_session();
+    }
     let rid = parse_request_id_hex(request_id_hex);
     let mut inbox = load_contact_inbox(data_dir);
     if let Err(e) = inbox.decline(&rid) {
@@ -1377,6 +1642,9 @@ fn cmd_contact_decline(data_dir: &Path, request_id_hex: &str) {
 }
 
 fn cmd_contact_block(data_dir: &Path, request_id_hex: &str) {
+    if !contact_session_transport_ready() {
+        refuse_unready_contact_session();
+    }
     let rid = parse_request_id_hex(request_id_hex);
     let mut inbox = load_contact_inbox(data_dir);
     let mut blocks = BlockList::load(data_dir);
@@ -1455,22 +1723,21 @@ fn add_contact(
     // Key-change warning: pinned row with same public_tag but different pub/address.
     if !tag_clean.is_empty() {
         for c in contacts.iter() {
-            if normalize_tag(&c.public_tag) == tag_clean && c.pinned {
-                if c.pub_hex != hex::encode(ed) || c.address != address {
-                    eprintln!(
-                        "{C_PURPLE}KEY-CHANGE WARNING{C_RESET}: pinned @{tag_clean} was"
-                    );
-                    eprintln!(
-                        "  old fp={}  {}",
-                        contact_fingerprint(c),
-                        sanitize_terminal_text(&c.address)
-                    );
-                    eprintln!("  new fp={fp}  {}", sanitize_terminal_text(&address));
-                    eprintln!(
-                        "{C_DIM}DHT/gossip cannot overwrite pin. Refuse unless you intend to re-pin after verify.{C_RESET}"
-                    );
-                    return Err("KEY_CHANGE_REFUSED_WITHOUT_REPIN".into());
-                }
+            if normalize_tag(&c.public_tag) == tag_clean
+                && c.pinned
+                && (c.pub_hex != hex::encode(ed) || c.address != address)
+            {
+                eprintln!("{C_PURPLE}KEY-CHANGE WARNING{C_RESET}: pinned @{tag_clean} was");
+                eprintln!(
+                    "  old fp={}  {}",
+                    contact_fingerprint(c),
+                    sanitize_terminal_text(&c.address)
+                );
+                eprintln!("  new fp={fp}  {}", sanitize_terminal_text(&address));
+                eprintln!(
+                    "{C_DIM}DHT/gossip cannot overwrite pin. Refuse unless you intend to re-pin after verify.{C_RESET}"
+                );
+                return Err("KEY_CHANGE_REFUSED_WITHOUT_REPIN".into());
             }
         }
     }
@@ -1479,9 +1746,7 @@ fn add_contact(
     if !tag_clean.is_empty() {
         let clashes: Vec<&Contact> = contacts
             .iter()
-            .filter(|c| {
-                normalize_tag(&c.public_tag) == tag_clean && c.pub_hex != hex::encode(ed)
-            })
+            .filter(|c| normalize_tag(&c.public_tag) == tag_clean && c.pub_hex != hex::encode(ed))
             .collect();
         if !clashes.is_empty() {
             eprintln!(
@@ -1504,7 +1769,9 @@ fn add_contact(
                         .into(),
                 );
             }
-            eprintln!("{C_DIM}saving with distinct petname — pinned rows stay authoritative{C_RESET}");
+            eprintln!(
+                "{C_DIM}saving with distinct petname — pinned rows stay authoritative{C_RESET}"
+            );
         }
     }
 
@@ -1539,7 +1806,10 @@ fn add_contact(
     });
     save_contacts(data_dir, &contacts)?;
     println!("{C_GREEN}contact saved{C_RESET} (local only — no FastAPI / no registrar)");
-    println!("{C_DIM}petname{C_RESET}     {}", contacts.last().unwrap().primary_label());
+    println!(
+        "{C_DIM}petname{C_RESET}     {}",
+        contacts.last().unwrap().primary_label()
+    );
     if let Some(t) = contacts.last().unwrap().tag_subtitle() {
         println!("{C_DIM}public_tag{C_RESET}  {t}");
     }
@@ -1557,6 +1827,12 @@ fn add_contact(
         } else {
             "no (pass --verify-fp to pin)"
         }
+    );
+    println!(
+        "{C_DIM}iPhone:{C_RESET} this did NOT sync to the phone. On iPhone: Discover → Paste ash whoami → paste THIS Mac `ash whoami` (address + pub_hex)."
+    );
+    println!(
+        "{C_DIM}آیفون:{C_RESET} مخاطب فقط روی مک ذخیره شد. روی گوشی: Discover → Paste ash whoami → whoami همین مک را بچسبانید."
     );
     Ok(())
 }
@@ -1582,9 +1858,7 @@ fn cmd_contact_list(data_dir: &Path) {
         println!(
             "  {bold}ash contact add --address rvn1… --pub-hex <64 hex> --petname \"Poline\"{reset}"
         );
-        println!(
-            "  {dim}ash contact add --help{reset}  for Soft Unique Tag examples"
-        );
+        println!("  {dim}ash contact add --help{reset}  for Soft Unique Tag examples");
         return;
     }
     for (i, c) in contacts.iter().enumerate() {
@@ -1605,10 +1879,7 @@ fn cmd_contact_list(data_dir: &Path) {
                 sanitize_terminal_text(&c.lan_dial)
             );
         }
-        println!(
-            "      {dim}fp={}{reset}",
-            contact_fingerprint(c)
-        );
+        println!("      {dim}fp={}{reset}", contact_fingerprint(c));
     }
 }
 
@@ -1628,8 +1899,12 @@ fn cmd_contacts(data_dir: &Path) {
     cmd_contact_list(data_dir);
     println!();
     println!("{bold}Contacts menu{reset}");
-    println!("  {bold}a{reset}  Add contact     {dim}rvn1… or @alias + petname + fingerprint{reset}");
+    println!(
+        "  {bold}a{reset}  Add contact     {dim}rvn1… or @alias + petname + fingerprint{reset}"
+    );
     println!("  {bold}l{reset}  List again");
+    println!("  {bold}2{reset}  Send / Chat     {dim}jump to message a contact{reset}");
+    println!("  {bold}1{reset}  Messages       {dim}outgoing queue / history{reset}");
     println!("  {bold}Enter{reset}  Back to main menu");
     print!("\n{bold}contacts>{reset} ");
     let _ = io::stdout().flush();
@@ -1637,8 +1912,20 @@ fn cmd_contacts(data_dir: &Path) {
     match choice.to_ascii_lowercase().as_str() {
         "a" | "add" | "y" | "yes" => cmd_contact_add_interactive(data_dir),
         "l" | "list" => cmd_contact_list(data_dir),
+        "2" | "s" | "send" => {
+            println!("{dim}→ Send / Chat{reset}");
+            cmd_send_interactive(data_dir);
+        }
+        "1" | "m" | "messages" => {
+            println!("{dim}→ Messages (queue/history — to compose a new DM use 2){reset}");
+            cmd_messages(data_dir);
+        }
+        "4" | "status" => cmd_status(data_dir),
+        "q" | "quit" | "exit" => {
+            println!("{dim}Press Enter to leave Contacts, then type q at raven> to quit.{reset}");
+        }
         "" => {}
-        other => println!("{dim}unknown:{reset} {other} — try a / l / Enter"),
+        other => println!("{dim}unknown:{reset} {other} — try a / l / 2 (Send) / Enter (back)"),
     }
 }
 
@@ -1650,9 +1937,14 @@ fn cmd_contact_add_interactive(data_dir: &Path) {
 
     println!();
     println!("{bold}Add contact{reset} {dim}(public bits only — never paste a seed){reset}");
-    println!("{dim}Soft Unique Tags: @alias is NOT globally unique. Always check fingerprint.{reset}");
+    println!(
+        "{dim}Soft Unique Tags: @alias is NOT globally unique. Always check fingerprint.{reset}"
+    );
     println!(
         "{dim}Tip: paste their whole `ash whoami` block, or just the rvn1… line + pub_hex.{reset}"
+    );
+    println!(
+        "{bold}iPhone:{reset} {dim}Account → Serverless LAN → copy address + pub hex (NOT Terminal cargo / cd).{reset}"
     );
     println!();
     print!("Enter Raven address (rvn1…) / @alias / paste whoami: ");
@@ -1664,6 +1956,9 @@ fn cmd_contact_add_interactive(data_dir: &Path) {
     }
     if looks_like_shell_input(&who) {
         eprintln!("{}", shell_paste_rejection());
+        eprintln!(
+            "{dim}To add an iPhone: on the phone open Account → Serverless LAN, copy rvn1… + pub hex, paste HERE — not `cargo` / `cd`.{reset}"
+        );
         return;
     }
 
@@ -1673,12 +1968,32 @@ fn cmd_contact_add_interactive(data_dir: &Path) {
 
     let trimmed = who.trim();
     // Full whoami paste: has both address + pub_hex lines.
-    if let (Some(addr), Some(ph)) = (extract_address_field(trimmed), extract_pub_hex_field(trimmed))
-    {
+    if let (Some(addr), Some(ph)) = (
+        extract_address_field(trimmed),
+        extract_pub_hex_field(trimmed),
+    ) {
         address = addr;
         pub_hex = ph;
         println!(
             "{dim}Parsed whoami → {}{reset}",
+            sanitize_terminal_text(&address)
+        );
+        print!("optional public @tag (Soft Unique, e.g. poline): ");
+        let _ = io::stdout().flush();
+        tag = read_line();
+    } else if let Some(ph) = looks_like_bare_pub_hex(trimmed) {
+        // iPhone Serverless LAN "Copy pub hex" — derive rvn1; do NOT treat as @alias.
+        let ed = match parse_pub_hex(&ph) {
+            Ok(a) => a,
+            Err(e) => {
+                eprintln!("rejected: {e}");
+                return;
+            }
+        };
+        address = encode_address(&ed);
+        pub_hex = ph;
+        println!(
+            "{dim}Detected pub_hex → derived {}{reset}",
             sanitize_terminal_text(&address)
         );
         print!("optional public @tag (Soft Unique, e.g. poline): ");
@@ -1700,7 +2015,10 @@ fn cmd_contact_add_interactive(data_dir: &Path) {
             println!(
                 "{dim}ash find @{tag} only helps when a claim is already available — it does not work as offline lookup.{reset}"
             );
-            print!("Paste rvn1… / whoami instead (or Enter to cancel): ");
+            println!(
+                "{dim}Tip: iPhone Account → Serverless LAN → Copy whoami for ash (or paste 64-char pub hex alone).{reset}"
+            );
+            print!("Paste rvn1… / whoami / pub_hex instead (or Enter to cancel): ");
             let _ = io::stdout().flush();
             let pasted = read_paste_blob();
             if pasted.trim().is_empty() {
@@ -1710,19 +2028,39 @@ fn cmd_contact_add_interactive(data_dir: &Path) {
                 eprintln!("{}", shell_paste_rejection());
                 return;
             }
-            address = extract_address_field(&pasted).unwrap_or_else(|| pasted.trim().to_string());
-            if let Some(ph) = extract_pub_hex_field(&pasted) {
+            if let Some(ph) = looks_like_bare_pub_hex(pasted.trim()) {
+                let ed = match parse_pub_hex(&ph) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        eprintln!("rejected: {e}");
+                        return;
+                    }
+                };
+                address = encode_address(&ed);
                 pub_hex = ph;
+                println!(
+                    "{dim}Detected pub_hex → derived {}{reset}",
+                    sanitize_terminal_text(&address)
+                );
             } else {
-                print!("pub_hex (64 chars, public only): ");
-                let _ = io::stdout().flush();
-                pub_hex = read_line();
+                address =
+                    extract_address_field(&pasted).unwrap_or_else(|| pasted.trim().to_string());
+                if let Some(ph) = extract_pub_hex_field(&pasted) {
+                    pub_hex = ph;
+                } else {
+                    print!("pub_hex (64 chars, public only): ");
+                    let _ = io::stdout().flush();
+                    pub_hex = read_line();
+                }
             }
         } else if claims.len() == 1 {
             let c = &claims[0];
             address = c.identity_address.clone();
             pub_hex = hex::encode(c.ed25519_pub);
-            println!("{dim}Resolved @{tag} → {}{reset}", sanitize_terminal_text(&address));
+            println!(
+                "{dim}Resolved @{tag} → {}{reset}",
+                sanitize_terminal_text(&address)
+            );
         } else {
             println!(
                 "{bold}alias conflict{reset}: {} candidates — pick one (never silent)",
@@ -1776,7 +2114,7 @@ fn cmd_contact_add_interactive(data_dir: &Path) {
     let _ = io::stdout().flush();
     let petname = read_line();
 
-    print!("Optional LAN dial host:port (Enter to skip — set later on Send): ");
+    print!("Optional LAN dial host:port (Enter to skip — Send auto-resolves / Mac-listens): ");
     let _ = io::stdout().flush();
     let lan_dial = read_line();
 
@@ -1819,7 +2157,9 @@ fn cmd_contact_add_interactive(data_dir: &Path) {
     ) {
         eprintln!("rejected: {e}");
     } else {
-        println!("{dim}Tip: menu 2 Send / Chat → pick this contact by # or @tag (not host:port).{reset}");
+        println!(
+            "{dim}Tip: menu 2 Send / Chat → pick this contact by # or @tag (not host:port).{reset}"
+        );
     }
 }
 
@@ -1968,12 +2308,27 @@ fn cmd_prekey_fetch(data_dir: &Path, pub_hex: &str, file: Option<&Path>) {
         eprintln!("PREKEY_IDENTITY_MISMATCH");
         return;
     }
-    println!("{C_GREEN}prekey ok{C_RESET}");
+    // Persist into local untrusted store so PairInit / lab send can fetch.
+    {
+        let mut store = PrekeyStore::load(data_dir);
+        if let Err(e) = store.publish(&bundle, now) {
+            eprintln!("store publish: {e}");
+            return;
+        }
+        if let Err(e) = store.save(data_dir) {
+            eprintln!("store save: {e}");
+            return;
+        }
+    }
+    println!("{C_GREEN}prekey ok{C_RESET} (cached in prekey_store.json)");
     println!(
         "{C_DIM}fingerprint{C_RESET} {}",
         device_fingerprint_v1(&bundle.identity_ed25519_pub)
     );
-    println!("{C_DIM}device_id{C_RESET}   {}", sanitize_terminal_text(&bundle.device_id));
+    println!(
+        "{C_DIM}device_id{C_RESET}   {}",
+        sanitize_terminal_text(&bundle.device_id)
+    );
     println!("{C_DIM}prekey_id{C_RESET}   {}", bundle.signed_prekey_id);
     println!("{C_DIM}expires_ms{C_RESET}  {}", bundle.expires_at_ms);
 }
@@ -1992,6 +2347,59 @@ fn print_messaging_path_diag() {
     );
 }
 
+fn print_production_gate_matrix() {
+    let on = |b: bool| {
+        if b {
+            format!("{C_GREEN}true{C_RESET}")
+        } else {
+            format!("{C_DIM}false{C_RESET}")
+        }
+    };
+    println!("{C_BOLD}production gates (Test A PairInit path){C_RESET}");
+    println!(
+        "  {C_DIM}pair_init::PRODUCTION_ENABLED{C_RESET}              {}",
+        on(raven_core::pair_init::PRODUCTION_ENABLED)
+    );
+    println!(
+        "  {C_DIM}pair_init::live_enabled{C_RESET}                   {}",
+        on(raven_core::pair_init::live_enabled())
+    );
+    println!(
+        "  {C_DIM}RAVEN_LAB_TEST_A{C_RESET}                           {}",
+        on(raven_core::pair_init::lab_test_a_enabled())
+    );
+    println!(
+        "  {C_DIM}atsam_indexed_session::PRODUCTION_ENABLED{C_RESET}  {}",
+        on(raven_core::atsam_indexed_session::PRODUCTION_ENABLED)
+    );
+    println!(
+        "  {C_DIM}INDEXED_SESSION_STORE_PRODUCTION_ENABLED{C_RESET}   {}",
+        on(raven_core::INDEXED_SESSION_STORE_PRODUCTION_ENABLED)
+    );
+    println!(
+        "  {C_DIM}PREKEY_LIFECYCLE_PRODUCTION_ENABLED{C_RESET}        {}",
+        on(raven_core::PREKEY_LIFECYCLE_PRODUCTION_ENABLED)
+    );
+    println!(
+        "  {C_DIM}unsafe-demo-crypto feature{C_RESET}                {}",
+        on(cfg!(feature = "unsafe-demo-crypto"))
+    );
+    println!(
+        "  {C_DIM}contact_session_transport_ready{C_RESET}           {}",
+        on(contact_session_transport_ready())
+    );
+    println!(
+        "  {C_DIM}live_outbound_status{C_RESET}                      {}",
+        trace_delivery::production_gate_status()
+    );
+    println!(
+        "{C_DIM}note{C_RESET}: Lab unlock = debug build + RAVEN_LAB_TEST_A=1 (Release stays fail-closed)."
+    );
+    println!(
+        "{C_DIM}note{C_RESET}: LAN PairInit rides RVN1 OOB wrap (RVPI1/RVPR1 as message ciphertext)."
+    );
+}
+
 fn cmd_status(data_dir: &Path) {
     println!("{C_BOLD}Status{C_RESET}");
     println!("{C_DIM}data_dir{C_RESET} {}", data_dir.display());
@@ -2006,7 +2414,9 @@ fn cmd_status(data_dir: &Path) {
             let id = ensure_identity(data_dir);
             println!("{C_GREEN}●{C_RESET} identity created {C_DIM}(public bits only — never a seed){C_RESET}");
             print_public_identity(&id);
-            println!("{C_DIM}Share address + pub_hex via `ash whoami` — never share a seed.{C_RESET}");
+            println!(
+                "{C_DIM}Share address + pub_hex via `ash whoami` — never share a seed.{C_RESET}"
+            );
         }
     }
     let contacts = load_contacts(data_dir);
@@ -2017,22 +2427,12 @@ fn cmd_status(data_dir: &Path) {
     let (pending, total) = if fwd_path.exists() {
         ForwardQueue::open(&fwd_path)
             .ok()
-            .map(|q| {
-                (
-                    q.count_pending().unwrap_or(0),
-                    q.count_all().unwrap_or(0),
-                )
-            })
+            .map(|q| (q.count_pending().unwrap_or(0), q.count_all().unwrap_or(0)))
             .unwrap_or((0, 0))
     } else {
         (0, 0)
     };
-    let snap = BridgeStatusSnapshot::from_policy(
-        &policy,
-        &["lan", "mock_ble"],
-        pending,
-        total,
-    );
+    let snap = BridgeStatusSnapshot::from_policy(&policy, &["lan", "mock_ble"], pending, total);
     let on = |b: bool| {
         if b {
             format!("{C_GREEN}on{C_RESET}")
@@ -2174,7 +2574,9 @@ fn cmd_send_interactive(data_dir: &Path) {
         // advanced direct peer
         println!();
         println!("{bold}Advanced — direct peer{reset}");
-        println!("{dim}Use when you already know the peer's LAN listen address + public key.{reset}");
+        println!(
+            "{dim}Use when you already know the peer's LAN listen address + public key.{reset}"
+        );
         println!("{dim}Prefer contacts for normal messaging (menu 3).{reset}");
         print!("peer host:port: ");
         let _ = io::stdout().flush();
@@ -2189,7 +2591,11 @@ fn cmd_send_interactive(data_dir: &Path) {
             eprintln!("empty message");
             return;
         }
-        ext::run_send_secure(data_dir, &id, &peer, &pub_hex, "127.0.0.1:0", &text, "", "");
+        if let Err(error) =
+            ext::run_send_secure(data_dir, &id, &peer, &pub_hex, "127.0.0.1:0", &text, "", "")
+        {
+            eprintln!("send refused: {error}");
+        }
         return;
     }
 
@@ -2218,7 +2624,9 @@ fn cmd_send_interactive(data_dir: &Path) {
     let _ = io::stdout().flush();
     let choice = read_line();
 
-    let (peer, peer_pub_hex, petname, tag, open_chat) = if choice.trim().eq_ignore_ascii_case("advanced")
+    let (resolved_peer, peer_pub_hex, petname, tag, open_chat) = if choice
+        .trim()
+        .eq_ignore_ascii_case("advanced")
         || (looks_like_lan_dial(choice.trim())
             && choice.parse::<usize>().is_err()
             && !choice.trim().starts_with('@'))
@@ -2231,27 +2639,38 @@ fn cmd_send_interactive(data_dir: &Path) {
             print!("peer pub_hex: ");
             let _ = io::stdout().flush();
             let pub_hex = read_line();
-            (peer, pub_hex, String::new(), String::new(), false)
+            (
+                ResolvedLanPeer::Dial(peer),
+                pub_hex,
+                String::new(),
+                String::new(),
+                false,
+            )
         } else {
             print!("peer pub_hex: ");
             let _ = io::stdout().flush();
             let pub_hex = read_line();
-            (choice, pub_hex, String::new(), String::new(), false)
+            (
+                ResolvedLanPeer::Dial(choice),
+                pub_hex,
+                String::new(),
+                String::new(),
+                false,
+            )
         }
     } else if let Ok(n) = choice.parse::<usize>() {
         if n >= 1 && n <= contacts.len() {
             let c = &contacts[n - 1];
-            let peer = prompt_or_reuse_lan_dial(data_dir, c);
-            if peer.is_empty() {
+            let Some(resolved) = resolve_or_reuse_lan_dial(data_dir, c) else {
                 return;
-            }
+            };
             print!("open chat session? [Y/n]: ");
             let _ = io::stdout().flush();
             let yn = read_line();
             let chat =
                 yn.is_empty() || yn.eq_ignore_ascii_case("y") || yn.eq_ignore_ascii_case("yes");
             (
-                peer,
+                resolved,
                 c.pub_hex.clone(),
                 c.primary_label(),
                 normalize_tag(&c.public_tag),
@@ -2286,12 +2705,11 @@ fn cmd_send_interactive(data_dir: &Path) {
             }
             return;
         }
-        let peer = prompt_or_reuse_lan_dial(data_dir, hits[0]);
-        if peer.is_empty() {
+        let Some(resolved) = resolve_or_reuse_lan_dial(data_dir, hits[0]) else {
             return;
-        }
+        };
         (
-            peer,
+            resolved,
             hits[0].pub_hex.clone(),
             hits[0].primary_label(),
             normalize_tag(&hits[0].public_tag),
@@ -2302,8 +2720,17 @@ fn cmd_send_interactive(data_dir: &Path) {
         return;
     };
 
+    let peer = match &resolved_peer {
+        ResolvedLanPeer::Dial(d) => d.as_str(),
+        ResolvedLanPeer::LocalListenQueue => "local-listen",
+    };
+    let listen_bind = match &resolved_peer {
+        ResolvedLanPeer::Dial(_) => "127.0.0.1:0".to_string(),
+        ResolvedLanPeer::LocalListenQueue => format!("0.0.0.0:{DEFAULT_LAN_PORT}"),
+    };
+
     if open_chat {
-        ext::cmd_chat_session(data_dir, &id, &petname, &tag, &peer_pub_hex, &peer);
+        ext::cmd_chat_session(data_dir, &id, &petname, &tag, &peer_pub_hex, peer);
         return;
     }
     print!("message (stdin — never argv): ");
@@ -2313,64 +2740,91 @@ fn cmd_send_interactive(data_dir: &Path) {
         eprintln!("empty message");
         return;
     }
-    ext::run_send_secure(
+    if let Err(error) = ext::run_send_secure(
         data_dir,
         &id,
-        &peer,
+        peer,
         &peer_pub_hex,
-        "127.0.0.1:0",
+        &listen_bind,
         &text,
         &petname,
         &tag,
-    );
+    ) {
+        eprintln!("send refused: {error}");
+    }
 }
 
-/// Reuse saved contact LAN dial, or ask once and persist (beginners never re-type host:port).
-fn prompt_or_reuse_lan_dial(data_dir: &Path, c: &Contact) -> String {
+/// Silent reuse / auto-resolve LAN peer for an existing contact — never blocks on host:port stdin.
+fn resolve_or_reuse_lan_dial(data_dir: &Path, c: &Contact) -> Option<ResolvedLanPeer> {
     let s = style();
     let bold = s.bold;
     let dim = s.dim;
     let reset = s.reset;
-    if !c.lan_dial.is_empty() {
-        println!(
-            "{dim}Using saved LAN dial{reset} {bold}{}{reset} {dim}(contact {}){reset}",
-            sanitize_terminal_text(&c.lan_dial),
-            c.primary_label()
-        );
-        print!("Press Enter to keep, or type a new host:port: ");
-        let _ = io::stdout().flush();
-        let line = read_line();
-        if line.trim().is_empty() {
-            return c.lan_dial.clone();
+
+    let env = env_peer_lan_dial();
+    let had_saved = looks_like_lan_dial(&c.lan_dial);
+    let ipc_up = ipc_daemon_up(data_dir);
+    let mut resolved = resolve_lan_peer_parts(&c.lan_dial, env.as_deref(), ipc_up);
+    if matches!(resolved, Some(ResolvedLanPeer::LocalListenQueue)) && !ipc_up {
+        println!("{dim}Starting Mac LAN listen (raven-node service :{DEFAULT_LAN_PORT})…{reset}");
+        if !ensure_mac_lan_service(data_dir) {
+            // Still allow LocalListenQueue tip path only if we somehow enqueue later; else fail clear.
+            print_lan_unresolved_hint(&c.primary_label());
+            resolved = None;
         }
-        if !looks_like_lan_dial(line.trim()) {
-            eprintln!("{dim}invalid host:port — cancelled.{reset}");
-            return String::new();
+    }
+
+    match &resolved {
+        Some(ResolvedLanPeer::Dial(dial)) => {
+            if had_saved && c.lan_dial.trim() == dial.as_str() {
+                println!(
+                    "{dim}LAN dial{reset} {bold}{}{reset} {dim}(saved · {}){reset}",
+                    sanitize_terminal_text(dial),
+                    c.primary_label()
+                );
+            } else {
+                println!(
+                    "{dim}LAN dial{reset} {bold}{}{reset} {dim}(auto · {}){reset}",
+                    sanitize_terminal_text(dial),
+                    c.primary_label()
+                );
+                if let Err(e) = update_contact_lan_dial(data_dir, &c.pub_hex, dial) {
+                    eprintln!("{dim}could not save dial: {e}{reset}");
+                } else {
+                    println!("{dim}Saved lan_dial on contact for next Send.{reset}");
+                }
+            }
         }
-        let _ = update_contact_lan_dial(data_dir, &c.pub_hex, line.trim());
-        return line.trim().to_string();
+        Some(ResolvedLanPeer::LocalListenQueue) => {
+            println!(
+                "{bold}Mac listens / صف محلی{reset} {dim}— no peer host:port (contact {}){reset}",
+                c.primary_label()
+            );
+            println!(
+                "{dim}EN:{reset} Message queued locally. iPhone Serverless LAN should point at this Mac (port {DEFAULT_LAN_PORT})."
+            );
+            println!(
+                "{dim}FA:{reset} پیام در صف محلی است. آیفون باید Host=آی‌پی مک و Port={DEFAULT_LAN_PORT} را بزند."
+            );
+            if let Some(ip) = local_lan_ipv4_tip() {
+                println!("{dim}Mac LAN IP ≈{reset} {bold}{ip}{reset}:{DEFAULT_LAN_PORT}");
+            }
+        }
+        None => {
+            print_lan_unresolved_hint(&c.primary_label());
+        }
     }
-    println!("{bold}First send to {}{reset}", c.primary_label());
-    println!("{dim}They must be listening (raven-node / ash) on the same LAN.{reset}");
-    println!("{dim}Ask them for host:port (e.g. 192.168.1.20:7420). You only enter this once — we save it on the contact.{reset}");
-    print!("peer listen host:port: ");
-    let _ = io::stdout().flush();
-    let peer = read_line();
-    if !looks_like_lan_dial(peer.trim()) {
-        eprintln!("{dim}need host:port (not rvn1…). cancelled.{reset}");
-        return String::new();
-    }
-    if let Err(e) = update_contact_lan_dial(data_dir, &c.pub_hex, peer.trim()) {
-        eprintln!("{dim}could not save dial: {e}{reset}");
-    } else {
-        println!("{dim}Saved LAN dial on contact — next Send uses # only.{reset}");
-    }
-    peer.trim().to_string()
+    resolved
 }
 
 fn run_send(data_dir: &Path, peer: &str, peer_pub_hex: &str, listen: &str, text: &str) {
     let id = ensure_identity(data_dir);
-    ext::run_send_secure(data_dir, &id, peer, peer_pub_hex, listen, text, "", "");
+    if let Err(error) =
+        ext::run_send_secure(data_dir, &id, peer, peer_pub_hex, listen, text, "", "")
+    {
+        eprintln!("send refused: {error}");
+        std::process::exit(1);
+    }
 }
 
 fn interactive(data_dir: &Path) {
@@ -2401,7 +2855,8 @@ pub fn run() {
         std::process::exit(1);
     }
     let cli = Cli::parse();
-    let data_dir = cli.data_dir;
+    let data_dir = resolve_data_dir(&cli.data_dir);
+    let _ = std::fs::create_dir_all(&data_dir);
     match cli.cmd {
         None => interactive(&data_dir),
         Some(Commands::Banner) => print_welcome(&data_dir),
@@ -2460,9 +2915,7 @@ pub fn run() {
                     .iter()
                     .find(|c| c.pub_hex.eq_ignore_ascii_case(&peer_pub_hex));
                 let pet = c.map(|c| c.primary_label()).unwrap_or_default();
-                let tag = c
-                    .map(|c| normalize_tag(&c.public_tag))
-                    .unwrap_or_default();
+                let tag = c.map(|c| normalize_tag(&c.public_tag)).unwrap_or_default();
                 ext::cmd_chat_session(&data_dir, &id, &pet, &tag, &peer_pub_hex, &peer);
             } else {
                 print!("message (stdin, never argv): ");
@@ -2502,11 +2955,8 @@ pub fn run() {
                     std::process::exit(1);
                 }
                 if prekey_file.is_some() || data_dir.join("prekey_store.json").exists() {
-                    match ext::contact_add_fetch_prekey(
-                        &data_dir,
-                        &pub_hex,
-                        prekey_file.as_deref(),
-                    ) {
+                    match ext::contact_add_fetch_prekey(&data_dir, &pub_hex, prekey_file.as_deref())
+                    {
                         Ok(()) => {}
                         Err(e) => {
                             eprintln!("{C_DIM}prekey note:{C_RESET} {e}");
@@ -2539,9 +2989,7 @@ pub fn run() {
                 request_id,
                 petname,
             } => cmd_contact_accept(&data_dir, &request_id, &petname),
-            ContactCommands::Decline { request_id } => {
-                cmd_contact_decline(&data_dir, &request_id)
-            }
+            ContactCommands::Decline { request_id } => cmd_contact_decline(&data_dir, &request_id),
             ContactCommands::Block { request_id } => cmd_contact_block(&data_dir, &request_id),
         },
         Some(Commands::Find {
@@ -2624,6 +3072,40 @@ pub fn run() {
                 slot,
             } => ext::cmd_mailbox_get(&data_dir, &k_route_hex, epoch, slot),
         },
+        Some(Commands::Lab { cmd }) => {
+            let id = ensure_identity(&data_dir);
+            match cmd {
+                LabCommands::ExportCert => {
+                    if let Err(e) = pair_init_lab::export_lab_device_cert(&data_dir, &id) {
+                        eprintln!("{e}");
+                        std::process::exit(1);
+                    }
+                }
+                LabCommands::ImportPeerCert {
+                    peer_pub_hex,
+                    file,
+                } => {
+                    if let Err(e) =
+                        pair_init_lab::import_peer_device_cert(&data_dir, &peer_pub_hex, &file)
+                    {
+                        eprintln!("{e}");
+                        std::process::exit(1);
+                    }
+                }
+                LabCommands::ImportPeerPrekey {
+                    peer_pub_hex,
+                    file,
+                } => {
+                    cmd_prekey_fetch(&data_dir, &peer_pub_hex, Some(&file));
+                }
+                LabCommands::Status => {
+                    print_production_gate_matrix();
+                    println!(
+                        "{C_DIM}hint{C_RESET}: export RAVEN_LAB_TEST_A=1 && rebuild debug ash"
+                    );
+                }
+            }
+        },
     }
 }
 
@@ -2668,7 +3150,7 @@ fn ipc_ping_blocking(sock: &Path) -> Result<IpcResponse, String> {
         let mut frame = Vec::with_capacity(4 + n);
         frame.extend_from_slice(&len_buf);
         frame.extend_from_slice(&body);
-        return decode_response(&frame);
+        decode_response(&frame)
     }
     #[cfg(not(unix))]
     {
@@ -2690,6 +3172,7 @@ fn cmd_doctor(data_dir: &Path) {
         sanitize_terminal_text(&data_dir.display().to_string())
     );
     print_messaging_path_diag();
+    print_production_gate_matrix();
     {
         let cfg = raven_core::load_bootstrap(data_dir);
         println!(
@@ -2723,10 +3206,7 @@ fn cmd_doctor(data_dir: &Path) {
 
     // Identity store (backend label only — never seed bytes).
     let ks = raven_core::store_status(data_dir);
-    let backend = ks
-        .backend
-        .map(|b| b.as_str())
-        .unwrap_or("none");
+    let backend = ks.backend.map(|b| b.as_str()).unwrap_or("none");
     println!(
         "  secure_keystore: backend={backend} identity={}",
         if ks.has_identity { "present" } else { "absent" }
@@ -2768,16 +3248,17 @@ fn cmd_doctor(data_dir: &Path) {
     {
         let bin_ash = Path::new("/bin/ash");
         if bin_ash.exists() {
+            println!("  {C_GREEN}note{C_RESET}: /bin/ash exists — Raven must NOT overwrite it");
             println!(
-                "  {C_GREEN}note{C_RESET}: /bin/ash exists — Raven must NOT overwrite it"
+                "  conflict_detection: system ash present; use `raven` or ~/.local/bin/ash → raven"
             );
-            println!("  conflict_detection: system ash present; use `raven` or ~/.local/bin/ash → raven");
-            if let (Ok(cur), Ok(sys)) = (
-                std::fs::canonicalize(&exe),
-                std::fs::canonicalize(bin_ash),
-            ) {
+            if let (Ok(cur), Ok(sys)) =
+                (std::fs::canonicalize(&exe), std::fs::canonicalize(bin_ash))
+            {
                 if cur == sys {
-                    println!("  {C_PURPLE}WARNING{C_RESET}: running binary IS /bin/ash — unexpected");
+                    println!(
+                        "  {C_PURPLE}WARNING{C_RESET}: running binary IS /bin/ash — unexpected"
+                    );
                 } else {
                     println!("  conflict_ok: this binary ≠ /bin/ash");
                 }
@@ -2808,7 +3289,9 @@ fn cmd_doctor(data_dir: &Path) {
         "  policy bridge={} store={} relay={}",
         pol.bridge, pol.store, pol.relay
     );
-    println!("{C_DIM}Closing this CLI does not stop raven-node if installed as a service.{C_RESET}");
+    println!(
+        "{C_DIM}Closing this CLI does not stop raven-node if installed as a service.{C_RESET}"
+    );
     println!("{C_DIM}Diagnostics never print private keys, seeds, or plaintext bodies.{C_RESET}");
 }
 
@@ -2822,6 +3305,11 @@ mod tests {
         assert!(LOGO_64_URL.starts_with("https://raven-messager.com/"));
         assert!(!LOGO_URL.contains("seed"));
         assert!(!LOGO_URL.contains("private"));
+    }
+
+    #[test]
+    fn contact_session_transport_is_fail_closed() {
+        assert!(!contact_session_transport_ready());
     }
 
     #[test]
@@ -2846,7 +3334,9 @@ mod tests {
 
     #[test]
     fn shell_looking_paste_is_detected() {
-        assert!(looks_like_shell_input("export PATH=\"$HOME/.cargo/bin:$PATH\""));
+        assert!(looks_like_shell_input(
+            "export PATH=\"$HOME/.cargo/bin:$PATH\""
+        ));
         assert!(looks_like_shell_input("cargo build -p ash"));
         assert!(looks_like_shell_input("DATA=$(mktemp -d)"));
         assert!(looks_like_shell_input("ash --data-dir \"$DATA\" whoami"));
@@ -2866,6 +3356,21 @@ mod tests {
     }
 
     #[test]
+    fn bare_pub_hex_is_not_treated_as_alias_token() {
+        let hex = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
+        assert_eq!(looks_like_bare_pub_hex(hex).as_deref(), Some(hex));
+        assert_eq!(
+            looks_like_bare_pub_hex(&format!("@{hex}")).as_deref(),
+            Some(hex)
+        );
+        assert!(looks_like_bare_pub_hex("@poline").is_none());
+        assert!(looks_like_bare_pub_hex("rvn1qabc").is_none());
+        let ed = parse_pub_hex(hex).unwrap();
+        let addr = encode_address(&ed);
+        assert!(addr.starts_with("rvn1"));
+    }
+
+    #[test]
     fn whoami_blob_extracts_address_and_pub_hex() {
         let blob = "\
 address     rvn1qexampleaddressonlyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
@@ -2873,9 +3378,7 @@ fingerprint ABCD-EFGH-IJKL
 pub_hex     d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a
 ";
         // address may fail bech32 decode later — extractor still finds the token
-        assert!(extract_address_field(blob)
-            .unwrap()
-            .starts_with("rvn1"));
+        assert!(extract_address_field(blob).unwrap().starts_with("rvn1"));
         assert_eq!(
             extract_pub_hex_field(blob).unwrap(),
             "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
@@ -2889,9 +3392,43 @@ pub_hex     d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a
     }
 
     #[test]
+    fn resolve_reuses_saved_lan_dial_without_prompt() {
+        let got = resolve_lan_peer_parts("192.168.1.20:7420", None, false);
+        assert_eq!(got, Some(ResolvedLanPeer::Dial("192.168.1.20:7420".into())));
+        // Saved wins over env — no stdin involved.
+        let got = resolve_lan_peer_parts("10.0.0.2:7420", Some("10.0.0.9:7420"), true);
+        assert_eq!(got, Some(ResolvedLanPeer::Dial("10.0.0.2:7420".into())));
+    }
+
+    #[test]
+    fn resolve_empty_dial_uses_env_then_local_queue_never_requires_stdin() {
+        let got = resolve_lan_peer_parts("", Some("192.168.1.50:7420"), false);
+        assert_eq!(got, Some(ResolvedLanPeer::Dial("192.168.1.50:7420".into())));
+        let got = resolve_lan_peer_parts("", None, true);
+        assert_eq!(got, Some(ResolvedLanPeer::LocalListenQueue));
+        // Empty + no env → Mac-listens queue (daemon auto-start is caller's job).
+        assert_eq!(
+            resolve_lan_peer_parts("", None, false),
+            Some(ResolvedLanPeer::LocalListenQueue)
+        );
+        // Invalid saved dial treated as empty → local queue.
+        assert_eq!(
+            resolve_lan_peer_parts("not-a-dial", None, false),
+            Some(ResolvedLanPeer::LocalListenQueue)
+        );
+        assert_eq!(
+            resolve_lan_peer_parts("", Some("rvn1notadial"), false),
+            Some(ResolvedLanPeer::LocalListenQueue)
+        );
+    }
+
+    #[test]
     fn parse_pub_hex_accepts_whoami_line() {
         let line = "pub_hex     d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
         let got = parse_pub_hex(line).unwrap();
-        assert_eq!(hex::encode(got), "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a");
+        assert_eq!(
+            hex::encode(got),
+            "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+        );
     }
 }

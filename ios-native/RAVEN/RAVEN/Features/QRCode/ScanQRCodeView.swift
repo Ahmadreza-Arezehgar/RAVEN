@@ -315,8 +315,12 @@ struct ScanQRCodeView: View {
            let idB64 = payload.identityPubBase64,
            let identityKey = Data(base64Encoded: idB64), identityKey.count == 32 {
             let agreementKey = payload.agreementPubBase64.flatMap { Data(base64Encoded: $0) }
-            let fingerprint = payload.fingerprint
-                ?? DeviceIdentityService.deriveFingerprint(from: identityKey)
+            // 🔴 ALWAYS derive; never trust the card's `fingerprint` field. It
+            // is outside the signed transcript while `friend_devices.fingerprint`
+            // is globally UNIQUE under INSERT OR REPLACE, so an attacker-chosen
+            // value can evict an existing contact's trust row. Same reasoning
+            // and same fix as `RemoteInviteService.applyVerifiedCard`.
+            let fingerprint = DeviceIdentityService.deriveFingerprint(from: identityKey)
             let device = FriendDevice(
                 friendUserId: userId,
                 fingerprint: fingerprint,

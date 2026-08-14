@@ -11,7 +11,7 @@
 
 use sha2::{Digest, Sha256};
 
-use crate::envelope::{Envelope, EnvType};
+use crate::envelope::{EnvType, Envelope};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BridgeRole {
@@ -38,8 +38,12 @@ pub enum BridgeAction {
     /// Local endpoint should handle (decrypt/ACK if Message).
     DeliverLocal,
     /// Relay should store/forward this packed envelope (hop already applied).
-    Forward { packed: Vec<u8> },
-    Drop { reason: DropReason },
+    Forward {
+        packed: Vec<u8>,
+    },
+    Drop {
+        reason: DropReason,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,6 +51,23 @@ pub struct EnvelopeIdentity {
     pub message_id: [u8; 16],
     pub body_sha256: [u8; 32],
     pub auth_sha256: [u8; 32],
+    /// Stable across compliant hop mutations and safe for unauthenticated
+    /// relay dedup. Unlike `message_id`, this value is not attacker-selected
+    /// independently of the signed object bytes.
+    pub object_digest: [u8; 32],
+}
+
+/// Digest of the immutable, purportedly authenticated envelope object.
+///
+/// Relays may not know the sender key, so this is *not* proof of authenticity.
+/// It is only a bounded replay-cache key that lets a later valid envelope with
+/// the same attacker-visible `message_id` remain independently admissible.
+pub fn authenticated_object_digest(env: &Envelope) -> [u8; 32] {
+    let mut h = Sha256::new();
+    h.update(b"rvn1/relay-object-digest/v1");
+    h.update(env.signing_bytes());
+    h.update(&env.sender_authentication);
+    h.finalize().into()
 }
 
 impl EnvelopeIdentity {
@@ -59,6 +80,7 @@ impl EnvelopeIdentity {
             message_id: env.message_id,
             body_sha256: body,
             auth_sha256: auth,
+            object_digest: authenticated_object_digest(env),
         }
     }
 
@@ -67,6 +89,7 @@ impl EnvelopeIdentity {
         self.message_id == other.message_id
             && self.body_sha256 == other.body_sha256
             && self.auth_sha256 == other.auth_sha256
+            && self.object_digest == other.object_digest
     }
 }
 
@@ -74,12 +97,7 @@ impl EnvelopeIdentity {
 ///
 /// `is_duplicate` is supplied by the caller (persistent dedup). Relays never
 /// return `DeliverLocal` for Message/Ack — they forward or drop.
-pub fn decide(
-    packed: &[u8],
-    role: BridgeRole,
-    now_ms: u64,
-    is_duplicate: bool,
-) -> BridgeAction {
+pub fn decide(packed: &[u8], role: BridgeRole, now_ms: u64, is_duplicate: bool) -> BridgeAction {
     let Some(env) = Envelope::unpack(packed) else {
         return BridgeAction::Drop {
             reason: DropReason::Malformed,
@@ -136,24 +154,6 @@ pub fn split_replication(budget: u8) -> (u8, u8) {
     let given = budget / 2;
     let kept = budget - given;
     (kept, given)
-}
-
-/// Peek `acked_message_id` from an opaque ACK envelope body without decrypting
-/// conversation content. Layout matches raven-node `build_ack_envelope`:
-/// `acked_message_id(16) || status(1) || ack_nonce(12) || created_at(8) || sig(64)`.
-///
-/// Relays use this only to match waiters / reverse-path routing — never to forge Delivered.
-pub fn opaque_acked_message_id(packed: &[u8]) -> Option<[u8; 16]> {
-    let env = Envelope::unpack(packed)?;
-    if env.env_type != EnvType::Ack as u8 {
-        return None;
-    }
-    if env.message_ciphertext.len() < 16 {
-        return None;
-    }
-    let mut id = [0u8; 16];
-    id.copy_from_slice(&env.message_ciphertext[0..16]);
-    Some(id)
 }
 
 /// Multi-role classification: destination wins over bridge so B never steals C's body.
@@ -302,39 +302,6 @@ mod tests {
         assert_eq!(split_replication(1), (0, 1));
         assert_eq!(split_replication(4), (2, 2));
         assert_eq!(split_replication(5), (3, 2));
-    }
-
-    #[test]
-    fn opaque_acked_id_from_ack_body() {
-        let id = Identity::generate();
-        let acked = [0xABu8; 16];
-        let mut body = Vec::new();
-        body.extend_from_slice(&acked);
-        body.push(1);
-        body.extend_from_slice(&[9u8; 12]);
-        body.extend_from_slice(&1u64.to_be_bytes());
-        body.extend_from_slice(&[0u8; 64]);
-        let mut env = Envelope {
-            env_type: EnvType::Ack as u8,
-            flags: 0,
-            message_id: [3u8; 16],
-            routing_tag: [4u8; 16],
-            dest_device_hint: 0,
-            created_at: 1,
-            expires_at: u64::MAX,
-            hop_limit: 4,
-            replication_budget: 1,
-            anti_replay_nonce: [5u8; 12],
-            ratchet_header_ciphertext: vec![],
-            message_ciphertext: body,
-            sender_authentication: vec![],
-        };
-        env.sign_with(&id);
-        assert_eq!(opaque_acked_message_id(&env.pack()), Some(acked));
-        assert_eq!(
-            opaque_acked_message_id(&sample_env(4, 3, u64::MAX).pack()),
-            None
-        );
     }
 
     #[test]

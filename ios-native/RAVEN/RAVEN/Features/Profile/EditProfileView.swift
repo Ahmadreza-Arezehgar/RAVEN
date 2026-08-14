@@ -138,28 +138,16 @@ struct EditProfileView: View {
         }
         .alert("Remove Photo?", isPresented: $showRemoveAvatarAlert) {
             Button("Remove", role: .destructive) {
+                // Serverless build: there is no server record to PATCH. The avatar
+                // is a purely local value, so clear it on-device only — drop the
+                // picked image and null out the in-memory avatar path. (The old
+                // /api/users/me PATCH hit the dead server and threw .unauthorized
+                // before any HTTP fired.) No NetworkService call here.
                 selectedImage = nil
-                // Clear avatar on server
-                Task {
-                    struct ClearAvatarPayload: Encodable {
-                        let avatarPath: String?
-                        enum CodingKeys: String, CodingKey { case avatarPath = "avatar_path" }
-                        func encode(to encoder: Encoder) throws {
-                            var container = encoder.container(keyedBy: CodingKeys.self)
-                            try container.encodeNil(forKey: .avatarPath)
-                        }
-                    }
-                    let _: ProfileUpdateResponse = try await NetworkService.shared.patch(
-                        path: "/api/users/me",
-                        body: ClearAvatarPayload(avatarPath: nil)
-                    )
-                    await MainActor.run {
-                        authService.currentUser?.avatarPath = nil
-                        #if DEBUG
-                        print("✅ [EditProfile] Avatar cleared on server")
-                        #endif
-                    }
-                }
+                authService.setLocalAvatarPath(nil)   // clears the persisted avatar too
+                #if DEBUG
+                print("✅ [EditProfile] Avatar cleared locally")
+                #endif
             }
             Button("Cancel", role: .cancel) {}
         }
@@ -779,126 +767,97 @@ struct EditProfileView: View {
     private func saveProfile() async {
         isSaving = true
         defer { isSaving = false }
-        
-        // Upload avatar if a new image was selected
-        if let image = selectedImage {
-            do {
-                try await uploadAvatar(image)
-            } catch {
-                #if DEBUG
-                print("❌ Avatar upload failed: \(error)")
-                #endif
-                await MainActor.run {
-                    errorMessage = "Failed to upload avatar: \(error.localizedDescription)"
-                    showError = true
-                    Haptics.error()
-                }
-                return
-            }
+
+        // Serverless build: the device fingerprint IS the account — there is no
+        // server record to PATCH/GET. The display name is a purely local,
+        // on-device value, so persist it to the local key and rebuild
+        // currentUser in place. This both updates the UI immediately and
+        // survives relaunch (bootstrapLocalIdentity reads the same key).
+        //
+        // The old /api/users/me PATCH + GET round-trip is dead in the
+        // serverless pivot (no token ⇒ NetworkService throws .unauthorized
+        // before any HTTP fires), which made the name effectively un-editable
+        // and surfaced a "Failed to save profile" alert. We also drop the
+        // server-only avatar upload and the username/bio/birthday/tags/phone
+        // payload from this save path — those endpoints only hit the dead
+        // server. We deliberately do NOT call NetworkService here.
+        let trimmedName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let finalName = trimmedName.isEmpty ? "Raven User" : trimmedName
+
+        let saved = await MainActor.run {
+            authService.setLocalDisplayName(finalName)
         }
-        
-        let cleanPhone = phoneNumber.hasPrefix("0") ? String(phoneNumber.dropFirst()) : phoneNumber
-        let fullPhone = cleanPhone.isEmpty ? nil : countryCode + cleanPhone
-        
-        let payload = ProfileUpdatePayload(
-            displayName: displayName.isEmpty ? nil : displayName,
-            username: username.isEmpty ? nil : username,
-            bio: bio.isEmpty ? nil : bio,
-            birthday: hasBirthday ? birthday : nil,
-            tags: tags.isEmpty ? nil : tags,
-            phone: fullPhone,
-            showBirthday: showBirthdayOnProfile
-        )
-        
-        do {
-            let _: ProfileUpdateResponse = try await NetworkService.shared.patch(
-                path: "/api/users/me",
-                body: payload
-            )
-            
-            let updatedUser: User = try await NetworkService.shared.get(path: "/api/users/me")
-            
-            await MainActor.run {
-                authService.currentUser = updatedUser
-                Haptics.success()
-                dismiss()
-            }
-        } catch {
+
+        guard saved else {
             #if DEBUG
-            print("❌ Profile save error: \(error)")
+            print("❌ Profile save error: device fingerprint unavailable")
             #endif
             await MainActor.run {
-                errorMessage = "Failed to save profile: \(error.localizedDescription)"
+                errorMessage = "Couldn't save your name. Please try again."
                 showError = true
                 Haptics.error()
             }
+            return
+        }
+
+        // Avatar — LOCAL-only. No NetworkService, no /api/users/me upload.
+        // If the user picked a new photo, persist the bytes to the app
+        // container (Documents/avatars/) and point currentUser.avatarPath at
+        // the file:// URL. AppConfig.mediaURL + GlassAvatar already render
+        // file:// paths, so the new photo shows immediately everywhere
+        // currentUser.avatarPath is read (Account/Settings, group create, …).
+        //
+        // NOTE: setLocalDisplayName above rebuilt currentUser with a nil
+        // avatarPath, so we set the path AFTER that call. This is the source
+        // of truth for the current session. It does NOT survive relaunch:
+        // bootstrapLocalIdentity rebuilds currentUser with avatarPath=nil and
+        // lives in AuthService (out of scope for this edit). Persisting the
+        // path across launches would require an AuthService change.
+        if let picked = selectedImage,
+           let localPath = persistAvatarLocally(picked) {
+            await MainActor.run {
+                authService.setLocalAvatarPath(localPath)   // persists across relaunch (serverless)
+            }
+            #if DEBUG
+            print("✅ [EditProfile] Avatar saved locally → \(localPath)")
+            #endif
+        }
+
+        await MainActor.run {
+            Haptics.success()
+            dismiss()
         }
     }
-    
-    private func uploadAvatar(_ image: UIImage) async throws {
-        // Step 1: upload via the shared, hardened multipart pipeline (retries
-        // on transient network errors that older iOS devices regularly hit
-        // when talking to Cloud Run over HTTP/3 — without retry the user just
-        // sees "server is down" the first time the radio hiccups).
-        let imageUrl = try await AttachmentService.shared.uploadAvatarImage(image)
 
-        // Step 2: tell the server this URL is the new avatar. Small JSON
-        // request, so we ride NetworkService which already has its own retry.
-        struct ProfilePictureBody: Encodable { let imageUrl: String }
-        let _: Empty = try await NetworkService.shared.post(
-            path: "/api/users/profile-picture",
-            body: ProfilePictureBody(imageUrl: imageUrl)
-        )
-
-        #if DEBUG
-        print("✅ Avatar uploaded successfully via 2-step upload")
-        #endif
+    /// Write the picked avatar to the app container and return a `file://`
+    /// URL string suitable for `currentUser.avatarPath`. LOCAL-only — never
+    /// touches the network. Returns `nil` if encoding/writing fails (the
+    /// save then proceeds without changing the avatar rather than erroring).
+    private func persistAvatarLocally(_ image: UIImage) -> String? {
+        guard let data = image.jpegData(compressionQuality: 0.85) else { return nil }
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let dir = docs.appendingPathComponent("avatars", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        // Stable filename keyed to our own id so we overwrite our previous
+        // avatar instead of leaking a new file on every save.
+        let selfId = currentUser?.id ?? "self"
+        let fileURL = dir.appendingPathComponent("me-\(selfId).jpg", isDirectory: false)
+        do {
+            try data.write(to: fileURL, options: .atomic)
+            return fileURL.absoluteString   // file:///…/avatars/me-<id>.jpg
+        } catch {
+            #if DEBUG
+            print("⚠️ [EditProfile] Failed to persist avatar locally: \(error)")
+            #endif
+            return nil
+        }
     }
 }
 
 // MARK: - Supporting Types
 
-private struct ProfileUpdateResponse: Decodable {
-    let success: Bool?
-    let bio: String?
-    let hobbies: [String]?
-}
-
 private struct UsernameCheckResponse: Decodable {
     let available: Bool
-}
-
-private struct ProfileUpdatePayload: Encodable {
-    let displayName: String?
-    let username: String?
-    let bio: String?
-    let birthday: Date?
-    let tags: [String]?
-    let phone: String?
-    let showBirthday: Bool?
-    
-    enum CodingKeys: String, CodingKey {
-        case displayName = "display_name"
-        case username
-        case bio
-        case birthday
-        case tags
-        case phone
-        case showBirthday = "show_birthday"
-    }
-    
-    /// Explicitly encode nil as null so the server clears the field
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encodeIfPresent(displayName, forKey: .displayName)
-        try container.encodeIfPresent(username, forKey: .username)
-        // Always encode bio/birthday/tags/phone — server needs null to clear them
-        if let bio = bio { try container.encode(bio, forKey: .bio) } else { try container.encodeNil(forKey: .bio) }
-        if let birthday = birthday { try container.encode(birthday, forKey: .birthday) } else { try container.encodeNil(forKey: .birthday) }
-        if let tags = tags { try container.encode(tags, forKey: .tags) } else { try container.encodeNil(forKey: .tags) }
-        if let phone = phone { try container.encode(phone, forKey: .phone) } else { try container.encodeNil(forKey: .phone) }
-        try container.encodeIfPresent(showBirthday, forKey: .showBirthday)
-    }
 }
 
 // MARK: - Section Transition Modifier

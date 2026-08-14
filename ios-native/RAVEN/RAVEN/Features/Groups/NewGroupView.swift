@@ -112,25 +112,46 @@ struct NewGroupView: View {
         
         Task {
             do {
-                // Upload group avatar if one was selected
+                // Upload group avatar if one was selected.
+                //
+                // 🔴 SERVERLESS PIVOT (2026-06-20): RAVEN now runs with NO
+                // server and NO auth token. The old flow uploaded the avatar to
+                // "/api/uploads/image" *before* GroupService.createGroup; with no
+                // token NetworkService throws `.unauthorized`, which aborted the
+                // whole Task and meant picking an avatar broke group creation
+                // entirely. We now only attempt the upload when an auth token
+                // actually exists, and even then any upload failure is swallowed
+                // so group creation always proceeds to GroupService.createGroup
+                // (which is itself serverless-tolerant). With no token the picked
+                // avatar simply isn't given a remote URL — the local UIImage is
+                // still shown in the picker; we just don't synthesize a dead URL.
                 var avatarUrl: String? = nil
                 if let avatar = groupAvatar,
-                   let data = avatar.jpegData(compressionQuality: 0.8) {
+                   let data = avatar.jpegData(compressionQuality: 0.8),
+                   await KeychainService.shared.getToken() != nil {
                     struct AvatarUploadResponse: Decodable {
                         let imageUrl: String
                     }
-                    let response: AvatarUploadResponse = try await NetworkService.shared.uploadMultipart(
-                        path: "/api/uploads/image",
-                        fileData: data,
-                        fileName: "group_avatar.jpg",
-                        mimeType: "image/jpeg"
-                    )
-                    avatarUrl = response.imageUrl
-                    #if DEBUG
-                    print("✅ [NewGroupView] Group avatar uploaded: \(avatarUrl ?? "")")
-                    #endif
+                    do {
+                        let response: AvatarUploadResponse = try await NetworkService.shared.uploadMultipart(
+                            path: "/api/uploads/image",
+                            fileData: data,
+                            fileName: "group_avatar.jpg",
+                            mimeType: "image/jpeg"
+                        )
+                        avatarUrl = response.imageUrl
+                        #if DEBUG
+                        print("✅ [NewGroupView] Group avatar uploaded: \(avatarUrl ?? "")")
+                        #endif
+                    } catch {
+                        // Avatar upload is best-effort — never block group
+                        // creation on it. Proceed with no remote avatar URL.
+                        #if DEBUG
+                        print("⚠️ [NewGroupView] Group avatar upload skipped/failed: \(error.localizedDescription)")
+                        #endif
+                    }
                 }
-                
+
                 let group = try await GroupService.shared.createGroup(
                     name: groupName,
                     memberIds: selectedMembers.map { $0.id },

@@ -22,12 +22,13 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"time"
 
-	dht "github.com/libp2p/go-libp2p-kad-dht"
 	libp2p "github.com/libp2p/go-libp2p"
+	dht "github.com/libp2p/go-libp2p-kad-dht"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
@@ -45,6 +46,137 @@ const bridgeProtocol = protocol.ID("/raven/bridge/1.0.0")
 // (MeshMediaSealer, capped at 10 MB raw ⇒ ~13 MB base64 + envelope) — fits in a
 // single bridge frame. Still a hard ceiling against an unbounded-length attack.
 const maxEnvelopeBytes = 24 * 1024 * 1024
+
+// Idempotency keys are message identifiers/nonces, not an auxiliary payload.
+// Keep their wire field bounded far below its uint16 representation ceiling so
+// a peer cannot use it as a second attacker-sized allocation. Existing Raven
+// keys are UUIDs or short, prefixed UUIDs.
+const maxIdempotencyKeyBytes = 512
+
+// Inbound limits preserve the 24 MiB per-envelope contract while bounding the
+// aggregate memory a set of authenticated Noise peers can ask us to reserve
+// before Swift has authenticated or committed an envelope. A single peer can
+// always send one maximum-sized frame; two different peers can do so at once.
+const (
+	maxInboundStreamsGlobal  = 8
+	maxInboundStreamsPerPeer = 2
+	maxInboundBytesPerPeer   = int64(maxEnvelopeBytes + maxIdempotencyKeyBytes)
+	maxInboundBytesGlobal    = 2 * maxInboundBytesPerPeer
+)
+
+type inboundLimitConfig struct {
+	streamsGlobal  int
+	streamsPerPeer int
+	bytesGlobal    int64
+	bytesPerPeer   int64
+}
+
+var defaultInboundLimits = inboundLimitConfig{
+	streamsGlobal:  maxInboundStreamsGlobal,
+	streamsPerPeer: maxInboundStreamsPerPeer,
+	bytesGlobal:    maxInboundBytesGlobal,
+	bytesPerPeer:   maxInboundBytesPerPeer,
+}
+
+type inboundPeerUsage struct {
+	streams int
+	bytes   int64
+}
+
+// inboundLimiter is a non-blocking reservation gate. Refusing excess work is
+// intentional: waiting handlers would still pin one goroutine per hostile
+// stream and turn the limiter itself into a slow-loris queue.
+type inboundLimiter struct {
+	mu          sync.Mutex
+	limits      inboundLimitConfig
+	streams     int
+	bytes       int64
+	usageByPeer map[peer.ID]*inboundPeerUsage
+}
+
+type inboundReservation struct {
+	limiter  *inboundLimiter
+	remote   peer.ID
+	bytes    int64
+	released bool
+}
+
+func newInboundLimiter(limits inboundLimitConfig) *inboundLimiter {
+	return &inboundLimiter{
+		limits:      limits,
+		usageByPeer: make(map[peer.ID]*inboundPeerUsage),
+	}
+}
+
+func (l *inboundLimiter) acquire(remote peer.ID) (*inboundReservation, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	peerUsage := l.usageByPeer[remote]
+	peerStreams := 0
+	if peerUsage != nil {
+		peerStreams = peerUsage.streams
+	}
+	if l.streams >= l.limits.streamsGlobal || peerStreams >= l.limits.streamsPerPeer {
+		return nil, false
+	}
+	if peerUsage == nil {
+		peerUsage = &inboundPeerUsage{}
+		l.usageByPeer[remote] = peerUsage
+	}
+	l.streams++
+	peerUsage.streams++
+	return &inboundReservation{limiter: l, remote: remote}, true
+}
+
+// reserveBytes atomically extends a stream's reservation. The subtraction
+// form of each check avoids integer overflow if this helper is reused with a
+// length from a wider wire field in a future protocol version.
+func (r *inboundReservation) reserveBytes(size int64) bool {
+	if size < 0 {
+		return false
+	}
+	if size == 0 {
+		return true
+	}
+
+	l := r.limiter
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if r.released {
+		return false
+	}
+	peerUsage := l.usageByPeer[r.remote]
+	if peerUsage == nil || size > l.limits.bytesGlobal-l.bytes || size > l.limits.bytesPerPeer-peerUsage.bytes {
+		return false
+	}
+	l.bytes += size
+	peerUsage.bytes += size
+	r.bytes += size
+	return true
+}
+
+func (r *inboundReservation) release() {
+	l := r.limiter
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if r.released {
+		return
+	}
+	r.released = true
+
+	peerUsage := l.usageByPeer[r.remote]
+	if peerUsage == nil {
+		return
+	}
+	l.streams--
+	l.bytes -= r.bytes
+	peerUsage.streams--
+	peerUsage.bytes -= r.bytes
+	if peerUsage.streams == 0 {
+		delete(l.usageByPeer, r.remote)
+	}
+}
 
 // Delegate is implemented on the Swift side. Calls arrive on background
 // goroutines — the Swift implementation must hop to its own actor/queue.
@@ -71,6 +203,11 @@ type Node struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
 	started  bool
+
+	// inboundLimiter is independent from n.mu because handlers run
+	// concurrently and must never hold the host lifecycle lock while reading.
+	inboundLimiter     *inboundLimiter
+	inboundReadTimeout time.Duration
 	// relays are the configured bootstrap/relay nodes (from bootstrapCSV).
 	// A mobile peer does not listen on a publicly dialable address, so it is
 	// only reachable THROUGH a relay it has reserved a slot on (AutoRelay).
@@ -106,7 +243,12 @@ func NewNode(ed25519Key []byte, delegate Delegate) (*Node, error) {
 	if err != nil {
 		return nil, fmt.Errorf("wrap ed25519 key: %w", err)
 	}
-	return &Node{priv: priv, delegate: delegate}, nil
+	return &Node{
+		priv:               priv,
+		delegate:           delegate,
+		inboundLimiter:     newInboundLimiter(defaultInboundLimits),
+		inboundReadTimeout: streamReadTimeout,
+	}, nil
 }
 
 // Start boots the libp2p host: identity, Noise transport, Circuit Relay v2
@@ -228,35 +370,94 @@ func (n *Node) reserveRelays(ctx context.Context) {
 const streamReadTimeout = 30 * time.Second
 
 func (n *Node) handleStream(s network.Stream) {
-	defer s.Close()
-	// Slow-loris guard: fail the whole frame read if the peer stalls.
-	_ = s.SetReadDeadline(time.Now().Add(streamReadTimeout))
+	n.handleInboundStream(s, s.Conn().RemotePeer())
+}
+
+// inboundBridgeStream is the minimal stream surface used by the frame reader.
+// Keeping it small makes all abort and timeout paths directly testable without
+// weakening the production network.Stream handler signature.
+type inboundBridgeStream interface {
+	io.Reader
+	io.Closer
+	Reset() error
+	SetReadDeadline(time.Time) error
+}
+
+func (n *Node) getInboundLimiter() *inboundLimiter {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.inboundLimiter == nil {
+		n.inboundLimiter = newInboundLimiter(defaultInboundLimits)
+	}
+	return n.inboundLimiter
+}
+
+func (n *Node) getInboundReadTimeout() time.Duration {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.inboundReadTimeout <= 0 {
+		return streamReadTimeout
+	}
+	return n.inboundReadTimeout
+}
+
+func (n *Node) handleInboundStream(s inboundBridgeStream, remote peer.ID) {
+	accepted := false
+	defer func() {
+		if accepted {
+			_ = s.Close()
+			return
+		}
+		// Malformed, stalled, or over-budget streams are aborted rather than
+		// gracefully closed so unread attacker bytes are discarded immediately.
+		_ = s.Reset()
+	}()
+
+	reservation, ok := n.getInboundLimiter().acquire(remote)
+	if !ok {
+		return
+	}
+	defer reservation.release()
+
+	// Slow-loris guard: fail the whole frame read if the peer stalls. A
+	// deadline setup failure is itself fail-closed because otherwise there is
+	// no bound on how long this reservation can remain live.
+	if err := s.SetReadDeadline(time.Now().Add(n.getInboundReadTimeout())); err != nil {
+		return
+	}
 	r := bufio.NewReader(s)
 
 	// Frame: [4-byte big-endian len][envelope bytes][2-byte idemKey len][idemKey].
 	var lenBuf [4]byte
-	if _, err := readFull(r, lenBuf[:]); err != nil {
+	if _, err := io.ReadFull(r, lenBuf[:]); err != nil {
 		return
 	}
 	envLen := int(binary.BigEndian.Uint32(lenBuf[:]))
 	if envLen <= 0 || envLen > maxEnvelopeBytes {
 		return
 	}
+	if !reservation.reserveBytes(int64(envLen)) {
+		return
+	}
 	env := make([]byte, envLen)
-	if _, err := readFull(r, env); err != nil {
+	if _, err := io.ReadFull(r, env); err != nil {
 		return
 	}
 	var keyLenBuf [2]byte
-	if _, err := readFull(r, keyLenBuf[:]); err != nil {
+	if _, err := io.ReadFull(r, keyLenBuf[:]); err != nil {
 		return
 	}
 	keyLen := int(binary.BigEndian.Uint16(keyLenBuf[:]))
+	if keyLen > maxIdempotencyKeyBytes || !reservation.reserveBytes(int64(keyLen)) {
+		return
+	}
 	idem := make([]byte, keyLen)
 	if keyLen > 0 {
-		if _, err := readFull(r, idem); err != nil {
+		if _, err := io.ReadFull(r, idem); err != nil {
 			return
 		}
 	}
+	accepted = true
 	// Hand the opaque envelope to Swift. `env` is already the base64 text the
 	// sender wrote (1:1 with the server bridge's envelope_b64 contract).
 	if n.delegate != nil {
@@ -285,6 +486,11 @@ func (n *Node) Send(peerIDStr, envelopeB64, idempotencyKey string) error {
 	n.mu.Unlock()
 	if h == nil || kdht == nil {
 		return errors.New("node not started")
+	}
+	env := []byte(envelopeB64)
+	idem := []byte(idempotencyKey)
+	if err := validateOutboundFrame(env, idem); err != nil {
+		return err
 	}
 
 	pid, err := peer.Decode(peerIDStr)
@@ -326,12 +532,6 @@ func (n *Node) Send(peerIDStr, envelopeB64, idempotencyKey string) error {
 	}
 	defer s.Close()
 
-	env := []byte(envelopeB64)
-	if len(env) > maxEnvelopeBytes {
-		return errors.New("envelope too large")
-	}
-	idem := []byte(idempotencyKey)
-
 	var hdr [4]byte
 	binary.BigEndian.PutUint32(hdr[:], uint32(len(env)))
 	if _, err := s.Write(hdr[:]); err != nil {
@@ -347,6 +547,19 @@ func (n *Node) Send(peerIDStr, envelopeB64, idempotencyKey string) error {
 	}
 	if _, err := s.Write(idem); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateOutboundFrame(env, idem []byte) error {
+	if len(env) == 0 {
+		return errors.New("envelope is empty")
+	}
+	if len(env) > maxEnvelopeBytes {
+		return errors.New("envelope too large")
+	}
+	if len(idem) > maxIdempotencyKeyBytes {
+		return errors.New("idempotency key too large")
 	}
 	return nil
 }

@@ -750,8 +750,118 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
     /// `audioDuration` in plaintext. The legacy six fields are
     /// nulled IN PLACE; the receiver unseals via
     /// `MeshMediaSealer.unseal` and re-populates them.
+    /// Phase G (flagged): broadcast packed RavenEnvelopeV1 bytes on BLE.
+    /// MeshEnvelope spray path is unchanged. Flag OFF → no-op.
+    func enqueueRawRavenEnvelopeV1(_ packed: Data) async {
+        guard FeatureFlag.isRavenEnvelopeV1Enabled else { return }
+        guard RavenEnvelopeV1.unpack(packed) != nil else { return }
+        await broadcastData(packed)
+    }
+
+    /// Inbound BLE RavenEnvelopeV1 — structural unpack; optional notify.
+    /// ACKs remain opaque relay objects. This layer never extracts delivery
+    /// evidence or mutates sender state.
+    private func handleInboundRavenEnvelopeV1(_ data: Data, from deviceId: String) async {
+        guard FeatureFlag.isRavenEnvelopeV1Enabled else { return }
+        let result = RavenBleRvn1Carrier.ingest(data)
+        switch result {
+        case let .opaqueAck(packed):
+            guard let env = RavenEnvelopeV1.unpack(packed) else { return }
+            let digest = env.relayObjectDigest()
+            let dedupId = "rvn1-object:" + digest.map { String(format: "%02x", $0) }.joined()
+            let isNew = await MeshDedupRepository.shared.isNewMessage(id: dedupId)
+            guard isNew else { return }
+            await MainActor.run {
+                NotificationCenter.default.post(
+                    name: .ravenEnvelopeV1BleReceived,
+                    object: nil,
+                    userInfo: [
+                        "packed": packed,
+                        "peerDeviceId": deviceId,
+                        "envType": RavenEnvelopeV1.EnvType.ack.rawValue
+                    ]
+                )
+                RavenEnvelopeBridgeService.shared.start()
+            }
+            await MeshDedupRepository.shared.markProcessed(id: dedupId)
+            #if DEBUG
+            logger.debug("[BLE-RVN1] ACK accepted as opaque relay object")
+            #endif
+            return
+        case let .verified(messageId, sealedBody, hybridPQ):
+            await postBleRvn1Message(
+                data: data,
+                messageId: messageId,
+                sealedBody: sealedBody,
+                hybridPQ: hybridPQ,
+                verified: true,
+                deviceId: deviceId
+            )
+        case let .structural(messageId, sealedBody, hybridPQ):
+            await postBleRvn1Message(
+                data: data,
+                messageId: messageId,
+                sealedBody: sealedBody,
+                hybridPQ: hybridPQ,
+                verified: false,
+                deviceId: deviceId
+            )
+        default:
+            #if DEBUG
+            if case .malformed = result {
+                logger.debug("[BLE-RVN1] drop malformed")
+            } else if case .badSignature = result {
+                logger.debug("[BLE-RVN1] drop bad signature")
+            }
+            #endif
+            return
+        }
+    }
+
+    private func postBleRvn1Message(
+        data: Data,
+        messageId: Data,
+        sealedBody: Data,
+        hybridPQ: Bool,
+        verified: Bool,
+        deviceId: String
+    ) async {
+        guard let env = RavenEnvelopeV1.unpack(data) else { return }
+        let digest = env.relayObjectDigest()
+        let dedupId = "rvn1-object:" + digest.map { String(format: "%02x", $0) }.joined()
+        let isNew = await MeshDedupRepository.shared.isNewMessage(id: dedupId)
+        guard isNew else { return }
+        await MainActor.run {
+            NotificationCenter.default.post(
+                name: .ravenEnvelopeV1BleReceived,
+                object: nil,
+                userInfo: [
+                    "messageId": messageId,
+                    "sealedBody": sealedBody,
+                    "packed": data,
+                    "hybridPQ": hybridPQ,
+                    "peerDeviceId": deviceId,
+                    "verified": verified,
+                    "envType": RavenEnvelopeV1.EnvType.message.rawValue
+                ]
+            )
+            RavenEnvelopeBridgeService.shared.start()
+            RavenEnvelopeChatWire.shared.start()
+        }
+        await MeshDedupRepository.shared.markProcessed(id: dedupId)
+        #if DEBUG
+        logger.debug("[BLE-RVN1] accepted opaque envelope \(dedupId.prefix(20), privacy: .public) from \(deviceId, privacy: .private) bytes=\(sealedBody.count, privacy: .public)")
+        #endif
+    }
+
     func enqueueForBroadcast(_ envelope: MeshEnvelope) async {
-        let allowedTypes = [0, 4, 6] // text, location, system
+        // 🔴 ROUND 71 — serverless-media fix. The old whitelist [0,4,6] dropped
+        // image/file/voice/video BEFORE MeshMediaSealer.seal could run, so media
+        // never travelled over the BLE mesh (only text). The sealer below
+        // AES-GCM-encrypts media bytes + the content key and nulls the legacy
+        // plaintext fields, so these types are safe to broadcast. (Local send
+        // gate only — no MeshEnvelope wire-format change.)
+        let allowedTypes = [0, 1, 2, 3, 4, 6, 7, 8, 9] // text, image, file, voice, location, system, video, videoNote, ephemeralPhoto
         guard allowedTypes.contains(envelope.type) else {
             return
         }
@@ -838,8 +948,14 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
         if signedAck.signature == nil {
             signedAck.sign()
         }
-        guard signedAck.signature != nil else {
+        guard signedAck.signature != nil,
+              signedAck.signerPublicKey != nil,
+              signedAck.isSignatureValid() else {
             logger.debug("Refusing to send unsigned ACK \(ack.originalMessageId, privacy: .private) - signing failed")
+            return
+        }
+        guard await MeshACKHandler.shared.authorizeOutgoingACK(signedAck) else {
+            logger.debug("Refusing ACK without an exact authenticated durable commit for \(ack.originalMessageId, privacy: .private)")
             return
         }
         guard let data = signedAck.toData() else {
@@ -1818,6 +1934,14 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
     /// Internal access so MeshPacketProcessor actor can call it.
     // MARK: - FAST-PATH JSON PEEKING & PRE-VERIFICATION DEDUP
     func processIncomingDataSecure(_ data: Data, from deviceId: String) async {
+        // Phase G (flagged): raw RavenEnvelopeV1 on BLE — before JSON MeshEnvelope.
+        // Flag OFF → identical to historical Mesh JSON-only path.
+        if FeatureFlag.isRavenEnvelopeV1Enabled,
+           RavenBleRvn1Carrier.looksLikeRavenEnvelopeV1(data) {
+            await handleInboundRavenEnvelopeV1(data, from: deviceId)
+            return
+        }
+
         // 💡 INNOVATION: O(1) Parsing to prevent CPU meltdown.
         // Using JSONSerialization is ~10x faster than blindly trying 8 different JSONDecoders.
         guard let jsonDict = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: Any] else {
@@ -1981,48 +2105,39 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
         
         // 4. ACK
         if jsonDict["isACK"] != nil || jsonDict["status"] != nil {
-            let originalMessageId = jsonDict["originalMessageId"] as? String ?? ""
-            let senderId = jsonDict["senderId"] as? String ?? ""
-            let recipientId = jsonDict["recipientId"] as? String ?? ""
-            let statusRaw = jsonDict["status"] as? String ?? ""
-            let relayKey = "\(originalMessageId)|\(senderId)|\(recipientId)|\(statusRaw)"
-            
-            let dedupId = "ack:\(relayKey)"
-            let isNew = await MeshDedupRepository.shared.isNewMessage(id: dedupId)
-            guard isNew else { return }
-            
-            if let ack = MeshACKEnvelope.fromData(data), ack.isACK {
-                // ⚡ SECURITY (audit #5b): unsigned ACKs are now REJECTED.
-                // Previously an attacker could fabricate read/delivered ACKs,
-                // poisoning sender-side delivery state and prematurely halting
-                // mesh broadcast for a victim's message. All outgoing ACKs are
-                // now signed in `sendACK(_:)`.
-                guard ack.signature != nil, ack.isSignatureValid() else {
-                    logger.debug("[ACK] Rejected unsigned/invalid ACK for \(ack.originalMessageId, privacy: .private)")
-                    await MeshDedupRepository.shared.unclaimMessage(id: dedupId)
+            guard let ack = MeshACKEnvelope.fromData(data),
+                  ack.isACK,
+                  ack.signature != nil,
+                  ack.signerPublicKey != nil,
+                  ack.isSignatureValid() else {
+                logger.debug("[ACK] Rejected unsigned, malformed, or invalid ACK")
+                return
+            }
+
+            // A relay may carry the signed object without understanding it, but
+            // the local endpoint must bind the signer to the exact recipient of
+            // an existing outbound row before even claiming the dedup key.
+            let myUserId = await KeychainService.shared.getUserId() ?? ""
+            if !myUserId.isEmpty, ack.recipientId == myUserId {
+                guard await MeshACKHandler.shared.authorizeIncomingACK(ack) != nil else {
+                    logger.debug("[ACK] Rejected ACK not bound to its exact outbound message/recipient")
                     return
                 }
-                do {
-                    if let signerKey = ack.signerPublicKey {
-                        let trustedDevices = await FriendDeviceRepository.shared.getTrustedDevices(forUser: ack.senderId)
-                        let isOwnKey = (signerKey == DeviceIdentityService.shared.publicKeyBase64)
-                        let keyMatches = trustedDevices.contains { $0.publicKeyBase64 == signerKey }
-                        if !isOwnKey && !keyMatches {
-                            if !trustedDevices.isEmpty {
-                                await MeshDedupRepository.shared.unclaimMessage(id: dedupId)
-                                return
-                            }
-                            if let pubKeyData = Data(base64Encoded: signerKey) {
-                                let fingerprint = String(signerKey.prefix(16))
-                                let device = FriendDevice(friendUserId: ack.senderId, fingerprint: fingerprint, publicKey: pubKeyData, trustState: .trusted, verifiedAt: Date(), addedAt: Date(), deviceName: "mesh-tofu-ack-\(ack.senderId.prefix(8))")
-                                try? await FriendDeviceRepository.shared.upsert(device)
-                            }
-                        }
-                    }
-                }
-                await MeshDedupRepository.shared.markProcessed(id: dedupId)
+                // Do not persistently dedup a locally addressed receipt before
+                // its durable status/effect pipeline finishes. A crash between
+                // dedup and commit would otherwise suppress every retransmit.
+                // The endpoint gate is replay-safe and monotonic/idempotent.
                 await MainActor.run { self.processIncomingACK(ack, isAlreadyDeduped: true) }
+                return
             }
+
+            // Relays have no endpoint state to commit, so authenticated-object
+            // dedup remains appropriate for their bounded forwarding cache.
+            guard let dedupId = Self.authenticatedACKDedupId(ack) else { return }
+            let isNew = await MeshDedupRepository.shared.isNewMessage(id: dedupId)
+            guard isNew else { return }
+            await MeshDedupRepository.shared.markProcessed(id: dedupId)
+            await MainActor.run { self.processIncomingACK(ack, isAlreadyDeduped: true) }
             return
         }
         
@@ -2030,8 +2145,11 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
         if jsonDict["c"] != nil && jsonDict["spk"] != nil {
             if let nonce = jsonDict["n"] as? String {
                 let dedupId = "enc:\(nonce)"
-                let isNew = await MeshDedupRepository.shared.isNewMessage(id: dedupId)
-                guard isNew else { return }
+                // Retransmissions still pass through authenticated decrypt so
+                // the application can re-ACK a previously committed row when
+                // the first receipt was lost. The message-ID dedup below keeps
+                // them out of the normal insert/relay path.
+                _ = await MeshDedupRepository.shared.isNewMessage(id: dedupId)
                 
                 if let encryptedPayload = try? decoder.decode(EncryptedMeshPayload.self, from: data) {
                     do {
@@ -2041,25 +2159,25 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
                             let messageId = decrypted.clientMessageId
                             
                             let isNewMsg = await MeshDedupRepository.shared.isNewMessage(id: messageId)
-                            if !isNewMsg {
-                                let myUserId = await KeychainService.shared.getUserId() ?? ""
-                                if decrypted.recipientId == myUserId {
-                                    let ack = MeshACKEnvelope(originalMessageId: messageId, senderId: myUserId, recipientId: decrypted.senderId, status: .delivered, pathUsed: "mesh", originDeviceId: DeviceIdentityService.shared.fingerprint ?? "")
-                                    await self.sendACK(ack)
-                                }
-                                return
-                            }
-
                             if let signature = encryptedPayload.signature, let signerPublicKey = encryptedPayload.signerPublicKey {
                                 let signedPayload = SignedMeshPayload(envelope: decrypted, signature: signature, signerPublicKey: signerPublicKey)
-                                let isValid = await MeshCryptoService.shared.verifySignature(signedPayload)
-                                guard isValid else {
+                                let verdict = await MeshCryptoService.shared.authenticate(signedPayload)
+                                guard verdict.isAcceptable else {
                                     await MeshDedupRepository.shared.unclaimMessage(id: messageId)
                                     return
                                 }
                                 var envelope = decrypted.toMeshEnvelope()
+                                // Carry authorship forward. `.relayAttested` means an
+                                // authenticated relay vouched, NOT that the named sender
+                                // wrote this — the render path refuses to attribute
+                                // unsealed content in that case.
+                                envelope.senderAuthenticated = verdict.isAuthorProven
                                 envelope.originalSignature = signedPayload.originalSignature ?? signature
                                 envelope.originalSignerPublicKey = signedPayload.originalSignerPublicKey ?? signerPublicKey
+                                if !isNewMsg {
+                                    await redeliverVerifiedDuplicateToEndpoint(envelope)
+                                    return
+                                }
                                 await MeshDedupRepository.shared.markProcessed(id: messageId)
                                 await processVerifiedEnvelope(envelope, from: deviceId, isAlreadyDeduped: true)
                                 return
@@ -2085,22 +2203,19 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
             if let signedPayload = try? decoder.decode(SignedMeshPayload.self, from: data) {
                 let messageId = signedPayload.envelope.clientMessageId
                 let isNew = await MeshDedupRepository.shared.isNewMessage(id: messageId)
-                if !isNew {
-                    let myUserId = await KeychainService.shared.getUserId() ?? ""
-                    if signedPayload.envelope.recipientId == myUserId {
-                        let ack = MeshACKEnvelope(originalMessageId: messageId, senderId: myUserId, recipientId: signedPayload.envelope.senderId, status: .delivered, pathUsed: "mesh", originDeviceId: DeviceIdentityService.shared.fingerprint ?? "")
-                        await self.sendACK(ack)
-                    }
-                    return
-                }
-                let isValid = await MeshCryptoService.shared.verifySignature(signedPayload)
-                guard isValid else {
+                let verdict = await MeshCryptoService.shared.authenticate(signedPayload)
+                guard verdict.isAcceptable else {
                     await MeshDedupRepository.shared.unclaimMessage(id: messageId)
                     return
                 }
                 var envelope = signedPayload.envelope.toMeshEnvelope()
+                envelope.senderAuthenticated = verdict.isAuthorProven
                 envelope.originalSignature = signedPayload.originalSignature ?? signedPayload.signature
                 envelope.originalSignerPublicKey = signedPayload.originalSignerPublicKey ?? signedPayload.signerPublicKey
+                if !isNew {
+                    await redeliverVerifiedDuplicateToEndpoint(envelope)
+                    return
+                }
                 await MeshDedupRepository.shared.markProcessed(id: messageId)
                 await processVerifiedEnvelope(envelope, from: deviceId, isAlreadyDeduped: true)
             }
@@ -2120,18 +2235,7 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
         if !isAlreadyDeduped {
             let isNew = await MeshDedupRepository.shared.isNewMessage(id: envelope.clientMessageId)
             if !isNew {
-                let myUserId = await KeychainService.shared.getUserId() ?? ""
-                if envelope.recipientId == myUserId {
-                    let ack = MeshACKEnvelope(
-                        originalMessageId: envelope.clientMessageId,
-                        senderId: myUserId,
-                        recipientId: envelope.senderId,
-                        status: .delivered,
-                        pathUsed: "mesh",
-                        originDeviceId: DeviceIdentityService.shared.fingerprint ?? ""
-                    )
-                    await self.sendACK(ack)
-                }
+                await redeliverVerifiedDuplicateToEndpoint(envelope)
                 return
             }
             await MeshDedupRepository.shared.markProcessed(id: envelope.clientMessageId)
@@ -2141,13 +2245,37 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
             self.processValidatedEnvelope(envelope, from: deviceId)
         }
     }
+
+    /// Re-run only the endpoint content-authentication/commit path for a
+    /// verified retransmission. It never relays or emits an ACK itself.
+    private func redeliverVerifiedDuplicateToEndpoint(_ envelope: MeshEnvelope) async {
+        let boundsValid = await MeshCryptoService.shared.validateDTNBounds(
+            hopCount: envelope.hopCount,
+            hopLimit: envelope.hopLimit,
+            sprayCounter: envelope.sprayCounter
+        )
+        guard boundsValid else { return }
+
+        let myUserId = await KeychainService.shared.getUserId() ?? ""
+        let hashMatches: Bool = {
+            guard envelope.recipientId.isEmpty,
+                  let recipientHash = envelope.recipientIdHash,
+                  !recipientHash.isEmpty,
+                  !myUserId.isEmpty else { return false }
+            return recipientHash == MeshIdentityToken.hash(userId: myUserId)
+        }()
+        guard !myUserId.isEmpty,
+              envelope.recipientId == myUserId || hashMatches else { return }
+
+        await MainActor.run { self.onMessageReceived?(envelope) }
+    }
     
-    /// ACK relay + optional uplink flow:
-    /// 1) Dedup persistently, 2) deliver locally if recipient, 3) uplink if online bridge,
-    /// 4) forward in mesh while under hop limit.
+    /// ACK relay flow. Only the exact originating endpoint may turn an ACK into
+    /// delivery state; intermediate nodes forward the signed object and never
+    /// uplink or otherwise interpret it as proof of delivery.
     private func processIncomingACK(_ ack: MeshACKEnvelope, isAlreadyDeduped: Bool = false) {
         Task {
-            let dedupId = "ack:\(ack.relayKey)"
+            guard let dedupId = Self.authenticatedACKDedupId(ack) else { return }
             if !isAlreadyDeduped {
                 let isNew = await MeshDedupRepository.shared.isNewMessage(id: dedupId)
                 guard isNew else { return }
@@ -2159,8 +2287,6 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
             
             if isForMe {
                 await MainActor.run { self.onACKReceived?(ack) }
-            } else {
-                await uplinkACKIfOnline(ack)
             }
             
             guard !isForMe else { return }
@@ -2173,41 +2299,24 @@ final class BLEMeshEngine: NSObject, ObservableObject, MeshTransportProtocol, @u
             await broadcastData(forwardedData)
         }
     }
-    
-    /// If this relay node has internet, uplink ACK to server for canonical delivery.
-    private func uplinkACKIfOnline(_ ack: MeshACKEnvelope) async {
-        guard ack.status == .delivered else { return }
-        guard NetworkMonitor.shared.isOnline else { return }
-        
-        let deliveredVia = ack.pathUsed ?? "mesh"
-        do {
-            let response: AckDeliveredResponse = try await NetworkService.shared.post(
-                path: "/api/messages/ack-delivered",
-                body: AckDeliveredRequest(
-                    messageId: ack.originalMessageId,
-                    deliveredVia: deliveredVia,
-                    pathUsed: "mesh-bridge"
-                ),
-                idempotencyKey: "ack-\(ack.relayKey)"
-            )
-            
-            if response.stopMesh {
-                await handleStop(ack.originalMessageId)
-            }
-            
-            // Clear any queued legacy ACK for this message if present.
-            try? await PendingACKRepository.shared.remove(clientMessageId: ack.originalMessageId)
-            logger.debug("[BLE ACK] Uplinked ACK via bridge: \(ack.originalMessageId, privacy: .private)")
-        } catch {
-            // Keep a retry signal for next online sync cycle.
-            try? await PendingACKRepository.shared.add(
-                clientMessageId: ack.originalMessageId,
-                deliveredVia: deliveredVia,
-                pathUsed: "mesh-bridge",
-                idempotencyKey: "ack-\(ack.relayKey)"
-            )
-            logger.debug("[BLE ACK] Bridge uplink failed, queued: \(ack.originalMessageId, privacy: .private) - \(error.localizedDescription, privacy: .public)")
+
+    /// Dedup on the immutable authenticated object, not attacker-selected
+    /// public IDs. A forged self-signed ACK with the same message/sender fields
+    /// therefore cannot poison a relay's cache ahead of the genuine receipt.
+    private static func authenticatedACKDedupId(_ ack: MeshACKEnvelope) -> String? {
+        guard let signatureB64 = ack.signature,
+              let signature = Data(base64Encoded: signatureB64),
+              let signerB64 = ack.signerPublicKey,
+              let signer = Data(base64Encoded: signerB64) else {
+            return nil
         }
+        var authenticatedObject = Data("RAVEN-LEGACY-ACK-OBJECT-V1".utf8)
+        authenticatedObject.append(ack.signingData())
+        authenticatedObject.append(signer)
+        authenticatedObject.append(signature)
+        return "ack-object:" + SHA256.hash(data: authenticatedObject)
+            .map { String(format: "%02x", $0) }
+            .joined()
     }
     
     /// Process envelope after all security checks passed
@@ -3325,14 +3434,15 @@ extension BLEMeshEngine: CBPeripheralDelegate {
                 return
             }
 
-            let isValid = await MeshCryptoService.shared.verifySignature(signedPayload)
-            guard isValid else {
+            let verdict = await MeshCryptoService.shared.authenticate(signedPayload)
+            guard verdict.isAcceptable else {
                 await MeshDedupRepository.shared.unclaimMessage(id: messageId)
                 logger.debug("[mesh-v2-noise-native] signature verify failed from \(deviceId, privacy: .private)")
                 return
             }
 
             var envelope = signedPayload.envelope.toMeshEnvelope()
+            envelope.senderAuthenticated = verdict.isAuthorProven
             envelope.originalSignature = signedPayload.originalSignature ?? signedPayload.signature
             envelope.originalSignerPublicKey = signedPayload.originalSignerPublicKey ?? signedPayload.signerPublicKey
             await MeshDedupRepository.shared.markProcessed(id: messageId)
@@ -5195,455 +5305,30 @@ extension BLEMeshEngine {
     ///   longer rely on it for correctness.
     @discardableResult
     func bridgeMeshMessageToServer(_ envelope: MeshEnvelope) async -> Bool {
-        // 🟦 ROUND 46 (2026-05-17) — defensive guard against bridging
-        // group-lifecycle envelopes to the server. These carry a
-        // `GroupSyncPayload` in `text` (NOT a chat-message body); the
-        // server already owns the group canonical state via its own
-        // /api/groups endpoint, so bridging would either be a no-op
-        // or actively corrupt the messages table by storing a JSON
-        // metadata blob as if it were a chat body. Caller in
-        // RAVENApp.handleMeshMessage early-intercepts these envelopes
-        // so this guard should never fire in practice — kept as
-        // belt-and-braces for future callers that might forget the
-        // intercept.
-        if let kind = envelope.payloadKind, !kind.isEmpty {
-            #if DEBUG
-            print("🟦 [BRIDGE] SKIP — payloadKind=\(kind) is a lifecycle event, not a chat message. mid=\(envelope.clientMessageId.prefix(8))")
-            #endif
-            return true   // Report success: nothing to do; not an error.
-        }
-
-        let peerCount = await MainActor.run { self.connectedPeers.count }
+        // 🛑 SERVERLESS PIVOT (2026-06-21) — the HTTP bridge target is
+        // decommissioned. RAVEN is now a serverless, no-account app:
+        // there is no `raven-server` to POST to, so the old mesh→server
+        // uplink path is dead. This function is now a safe no-op.
+        //
+        // A "not-for-me" envelope is simply relayed over mesh / libp2p
+        // by the normal forwarding path (`processVerifiedEnvelope`); it
+        // is NEVER bridged to a server. We deliberately do NOT post to
+        // any HTTP endpoint here.
+        //
+        // We return `false` ("not bridged"). The callers in
+        // RAVENApp.handleMeshMessage and DeliveryJobRunner only use the
+        // result for debug logging and never gate mesh relay on it, so
+        // `false` is the correct, non-disruptive signal and mesh relay
+        // continues unaffected.
+        //
+        // NOTE: the previous body POSTed the envelope to
+        // `/api/messages/bridge` (with bridge-signature / proxy-create
+        // retry logic). All of that was removed in the serverless pivot.
+        // Do NOT re-introduce a server POST here.
         #if DEBUG
-        print("🌉 [BRIDGE] ENTER bridgeMeshMessageToServer mid=\(envelope.clientMessageId.prefix(8)) recipient=\(envelope.recipientId.prefix(8)) peers=\(peerCount) isGroup=\(envelope.isGroup.map(String.init) ?? "nil") textLen=\(envelope.text?.count ?? 0)")
+        print("🛑 [BRIDGE] no-op (serverless) — mid=\(envelope.clientMessageId.prefix(8)) relayed over mesh, not bridged to a server")
         #endif
-        logger.debug("[BRIDGE] Bridging mesh -> server for recipient: \(envelope.recipientId, privacy: .private) (peers=\(peerCount, privacy: .public))")
-
-        // 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — RESOLVE FIRST,
-        // SIGN SECOND. The bridge_signature is verified server-side
-        // against `relay:{msg_id}:{sender_id}:{recipient_id}` using
-        // the SAME values the server sees on the upload — i.e. the
-        // resolved real userIds. If we sign with the raw stripped-
-        // empty envelope fields here (modernATSAM strip nulls them
-        // to "") and upload with the resolved real ids below, the
-        // server reconstructs `relay:msgId:resolvedSender:resolvedRecip`
-        // which never matches the signed `relay:msgId::` (empty
-        // sender + recipient). Result: every bridge from a stripped
-        // envelope hits the 403 "Invalid bridge signature" gate at
-        // messages.py:967 — the actual production symptom of
-        // "bridge doesn't work" reported by the user.
-        //
-        // Fix: resolve hashes first, then sign over the resolved ids.
-        var bridgeResolvedSenderId: String = envelope.senderId
-        if bridgeResolvedSenderId.isEmpty,
-           let hash = envelope.senderIdHash,
-           let real = await MeshIdentityResolver.shared.resolve(hash: hash) {
-            bridgeResolvedSenderId = real
-        }
-        var bridgeResolvedRecipientId: String = envelope.recipientId
-        if bridgeResolvedRecipientId.isEmpty,
-           let hash = envelope.recipientIdHash,
-           let real = await MeshIdentityResolver.shared.resolve(hash: hash) {
-            bridgeResolvedRecipientId = real
-        }
-
-        let relayData = "relay:\(envelope.clientMessageId):\(bridgeResolvedSenderId):\(bridgeResolvedRecipientId)".data(using: .utf8) ?? Data()
-        let bridgeSig = DeviceIdentityService.shared.sign(relayData)?.base64EncodedString() ?? ""
-        let bridgePubKey = DeviceIdentityService.shared.publicKeyBase64 ?? ""
-
-        // Bug 2 fix: Use envelope.isGroup flag for reliable group detection
-        // instead of string comparison which misidentifies 1:1 chats as groups
-        let isGroupRoom = envelope.isGroup == true
-
-        // 🔴 ROUND 21 — hacker-audit Bridge F1 CRITICAL fix.
-        //
-        // Previously the bridge node decrypted the group AES-GCM
-        // ciphertext (using the per-group symmetric key it holds as
-        // a group member) and uploaded PLAINTEXT to the server.
-        // That meant:
-        //   • The server (and any admin / compromised infra / DB
-        //     dump) read every group message body in cleartext,
-        //     even though E2EE was supposed to keep them opaque.
-        //   • The "encryption-at-rest" Fernet wrap on the server
-        //     side gave a false sense of security — it's encrypted
-        //     to a SERVER-held key, not the group key.
-        //
-        // The fix: forward the ORIGINAL ciphertext + the group key
-        // version unchanged. Downstream members receive the opaque
-        // blob via the WS push / inbox poll and decrypt locally
-        // using the same `GroupKeyService.decrypt` that the BLE
-        // receive path uses. The server never sees plaintext, and
-        // the group key never leaves the members' devices.
-        //
-        // Both `MessageStore.fetchMessages` and the WS handler
-        // already call `GroupKeyService.decrypt` when they see a
-        // `group_key_version` field; the server-side fan-out only
-        // needs to pass that field through.
-        let contentForServer = envelope.text ?? ""
-
-        // 🔍 ROUND 43 (2026-05-17) — diagnostic for the "empty
-        // bridge content after A↔B verification" bug.  Print
-        // exactly what we're about to ship to the server so we
-        // can see if envelope.text was lost somewhere upstream
-        // (sender-side seal-to-wrong-recipient, BLE-layer
-        // decrypt-and-discard, etc.).
-        #if DEBUG
-        let contentPrefix = contentForServer.prefix(40)
-        print("🔍 [BRIDGE-CONTENT] mid=\(envelope.clientMessageId.prefix(8)) recipient=\(envelope.recipientId.prefix(8)) sender=\(envelope.senderId.prefix(8)) contentLen=\(contentForServer.count) contentPrefix='\(contentPrefix)' isEmpty=\(contentForServer.isEmpty)")
-        #endif
-
-        // 🟥 ROUND 39 (2026-05-17) — drop originalSignature on bridge POST.
-        //
-        // PROBLEM (from user log, smoking gun):
-        //   The server returns HTTP 403 "Invalid original-sender
-        //   signature" on EVERY bridge upload that includes the
-        //   originalSignature field.
-        //
-        // ROOT CAUSE — signing-target mismatch between client + server:
-        //   • iOS signs the envelope's `signingData()` (mesh canonical
-        //     form: 17+ "|"-delimited fields including clientMessageId,
-        //     roomId, senderId, senderName, recipientId, type, nonce,
-        //     senderPublicKey, timestamp, originDeviceId, text, the
-        //     six media fields, mediaSealed, etc.).  See
-        //     `SecureMeshEnvelope.signingData()` in
-        //     MeshCryptoService.swift:563.
-        //   • iOS-to-iOS verify re-derives that same signingData and
-        //     verifies — consistent.
-        //   • Server's `verify_message_signature` (mesh_crypto.py:94)
-        //     verifies signature over just `content.encode("utf-8")`.
-        //     The comment says "iOS client signs the raw content
-        //     bytes" — but the iOS client actually signs the full
-        //     signingData, NOT raw content.  The server hardening
-        //     (round-22 audit Server-F3) was specced for a content-
-        //     only signature that the iOS side never shipped.
-        //
-        // Effect: every bridge POST that carries an originalSignature
-        // is rejected.  Server check (messages.py:723–738) fires the
-        // 403 and the bridge fails.
-        //
-        // Fix (this round): pass `nil` for originalSignature so the
-        // server-side gate (line 723) is skipped — the server
-        // (messages.py:749–758) accepts the bridge with a logged
-        // warning about missing attestation.  Trade-off: we lose
-        // the audit Server-F3 protection against forging-bridge
-        // attacks, but the alternative is "no bridge works at all"
-        // which is worse for the user.
-        //
-        // 🔴 ROUND 71 phase 3 (2026-05-24) — forward the envelope's
-        // own `originalSignature` instead of hardcoding nil. The
-        // round-26 envelope schema already preserves the original
-        // sender's Ed25519 signature + pubkey through every relay
-        // hop (see BLEMeshEngine:2126-2127 + 2167-2168); the
-        // bridge code was simply dropping them. With the server's
-        // R71 p3 relax (messages.py:bridge_message accepts
-        // attribution_verified=false for cross-user uploads), even
-        // an envelope WITHOUT a signature now gets through —
-        // forwarding what we have when we have it gives the
-        // receiver the strongest provenance the network can
-        // currently offer.
-        let originalSig: String? = envelope.originalSignature
-        let originalSigKey: String? = envelope.originalSignerPublicKey
-
-        // Reuse the resolved ids computed BEFORE the bridge_signature
-        // was signed (round-71 phase 3 follow-up — see the
-        // `bridgeResolvedSenderId` block at the top of this function).
-        // Signing and uploading must use the SAME ids or the server's
-        // `verify_bridge_signature` reconstructs different bytes and
-        // 403s.
-        #if DEBUG
-        if envelope.senderId.isEmpty {
-            print("🔍 [BRIDGE] resolved empty senderId via hash → \(bridgeResolvedSenderId.prefix(8))")
-        }
-        if envelope.recipientId.isEmpty {
-            print("🔍 [BRIDGE] resolved empty recipientId via hash → \(bridgeResolvedRecipientId.prefix(8))")
-        }
-        #endif
-
-        let request = MeshUplinkRequest(
-            recipientId: bridgeResolvedRecipientId,
-            content: contentForServer,
-            messageType: MessageType.from(index: envelope.type).rawValue,
-            messageId: envelope.clientMessageId,
-            bridgedFrom: DeviceIdentityService.shared.fingerprint ?? "unknown",
-            originalSenderId: bridgeResolvedSenderId,
-            originalSenderName: envelope.senderName,
-            isBridged: true,
-            createdAt: PerformanceConstants.iso8601.string(from: Date(timeIntervalSince1970: envelope.timestamp)),
-            ttlSeconds: envelope.ttlSeconds,
-            hopCount: envelope.hopCount,
-            hopLimit: envelope.hopLimit,
-            sprayCounter: envelope.sprayCounter,
-            bridgeSignature: bridgeSig,
-            bridgePublicKey: bridgePubKey,
-            // 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — declare
-            // group context to the server. `isGroup=true` switches
-            // the server bridge handler from the 1:1 path (which
-            // would store the row with `recipient_id=group_id` —
-            // not a real user — and fail to deliver) to
-            // `_bridge_group_message`, which writes a GroupMessage
-            // row and fans out to every group member's WS push.
-            isGroup: isGroupRoom ? true : nil,
-            groupId: isGroupRoom ? envelope.recipientId : nil,
-            groupMemberIds: nil,  // Server resolves members from the GroupMember table.
-            roomId: isGroupRoom ? envelope.roomId : nil,
-            mediaUrl: envelope.mediaUrl,
-            thumbnailUrl: envelope.thumbnailUrl,
-            fileName: envelope.fileName,
-            mimeType: envelope.mimeType,
-            fileSize: envelope.fileSize,
-            audioDurationSeconds: envelope.audioDuration,
-            replyToMessageId: envelope.replyToMessageId,
-            replyToTextPreview: nil,    // Round 14 + 19 — never leak preview cleartext.
-            replyToSenderName: envelope.replyToSenderName,
-            // Round 21 — Bridge F1: tell the server which group-key
-            // version the receiver needs to use for decrypt.
-            groupKeyVersion: envelope.groupKeyVersion,
-            originalSignerPublicKey: originalSigKey,
-            originalSignature: originalSig
-        )
-        
-        // 🟥 FIX (2026-05-17) — was a two-step try-/uplink-then-/bridge
-        // fallback chain.  `/api/messages/uplink` doesn't exist on the
-        // FastAPI router (only `/bridge` and `/bridge-downlink` do —
-        // see server/routers/messages.py:665 + 2139), so every bridge
-        // burned a wasted POST → HTTP 405 → log noise before falling
-        // through to the real endpoint.  Hit `/bridge` directly.
-        #if DEBUG
-        print("🌉 [BRIDGE] POSTing /api/messages/bridge mid=\(envelope.clientMessageId.prefix(8)) bridgeSig.len=\(bridgeSig.count) origSig.set=\(originalSig != nil)")
-        #endif
-        var success = false
-        struct EmptyResp: Decodable {}
-
-        // 🟢 ROUND 72 (2026-05-24) — bridge stability: retry-with-backoff.
-        //
-        // User report: "bebein bridge group chat kheili begir nagir
-        // dare, mitone stable taresh koni?" — the bridge POST was
-        // dropping intermittent calls (Cloud Run cold-starts, Wi-Fi
-        // hand-offs, BLE radio contention on the bridge node).
-        // Without retries a single 503/timeout silently lost the
-        // bridge for the whole envelope — receivers never get it.
-        //
-        // Fix: 3 attempts with 500ms / 1500ms exponential backoff
-        // for TRANSIENT errors only (5xx, 408, 429, network drops).
-        // Permanent errors (401/403/404/4xx-validation) skip retries
-        // and fail fast so the existing 404→proxy-create path still
-        // fires. Each attempt reuses the same `idempotencyKey`, so
-        // server-side dedup absorbs duplicates if a retry races a
-        // late success on the server end (server returns
-        // `{"status":"duplicate"}` for any re-POST of the same id).
-        let isTransientBridgeError: (Error) -> Bool = { error in
-            if let api = error as? APIError {
-                switch api {
-                case .serverError, .rateLimited:
-                    return true
-                case .networkError(let underlying):
-                    if let urlErr = underlying as? URLError {
-                        switch urlErr.code {
-                        case .timedOut, .cannotConnectToHost,
-                             .networkConnectionLost, .notConnectedToInternet,
-                             .dnsLookupFailed, .cannotFindHost,
-                             .resourceUnavailable:
-                            return true
-                        default:
-                            return false
-                        }
-                    }
-                    return false
-                case .httpError(let code, _):
-                    return code >= 500 || code == 408 || code == 429
-                default:
-                    return false
-                }
-            }
-            if let urlErr = error as? URLError {
-                switch urlErr.code {
-                case .timedOut, .cannotConnectToHost,
-                     .networkConnectionLost, .notConnectedToInternet,
-                     .dnsLookupFailed, .cannotFindHost:
-                    return true
-                default:
-                    return false
-                }
-            }
-            return false
-        }
-
-        // Reusable POST helper: retries transient errors, throws the
-        // last error on exhaustion. Permanent errors short-circuit
-        // immediately so the outer 404→proxy-create branch still
-        // catches them on the first attempt.
-        func postBridgeWithRetry() async throws {
-            let maxAttempts = 3
-            let backoffMs: [UInt64] = [500, 1500]
-            var lastError: Error?
-            for attempt in 1...maxAttempts {
-                if attempt > 1 {
-                    let delay = backoffMs[min(attempt - 2, backoffMs.count - 1)]
-                    try? await Task.sleep(nanoseconds: delay * 1_000_000)
-                    #if DEBUG
-                    print("🔁 [BRIDGE] retry attempt=\(attempt)/\(maxAttempts) mid=\(envelope.clientMessageId.prefix(8)) after \(delay)ms backoff")
-                    #endif
-                }
-                do {
-                    let _: EmptyResp = try await NetworkService.shared.post(
-                        path: "/api/messages/bridge",
-                        body: request,
-                        idempotencyKey: envelope.clientMessageId
-                    )
-                    return
-                } catch {
-                    lastError = error
-                    if attempt < maxAttempts, isTransientBridgeError(error) {
-                        #if DEBUG
-                        print("⚠️ [BRIDGE] transient error attempt=\(attempt) — will retry: \(error.localizedDescription)")
-                        #endif
-                        continue
-                    }
-                    throw error
-                }
-            }
-            throw lastError ?? APIError.serverError
-        }
-
-        do {
-            try await postBridgeWithRetry()
-            success = true
-            #if DEBUG
-            print("✅ [BRIDGE] POST /api/messages/bridge SUCCESS mid=\(envelope.clientMessageId.prefix(8))")
-            #endif
-        } catch APIError.notFound where isGroupRoom && envelope.recipientId.hasPrefix("local_") {
-            // 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — bridge
-            // proxy-sync for offline-only groups.
-            //
-            // SCENARIO (user-reported 2026-05-24):
-            //   "on device ke faghat be bluetooth vasle... payam hash
-            //    mire az tarigh mesh be device B vali be Device C ke
-            //    bayad bridge beshe nemire payam"
-            //   ≈ A (BLE-only) creates a group + sends. B (online)
-            //   receives via mesh and bridges to server. Server 404s
-            //   because A never synced "local_xxxx" → C (online but
-            //   out of BLE range with A) never sees the message.
-            //
-            // ROOT CAUSE: server only adopts client_id from the
-            // ORIGINAL creator. A is offline forever (or until they
-            // eventually go online), so no one ever registers
-            // "local_xxxx" → bridge stays broken for the duration.
-            //
-            // FIX: if we (the bridger) have the group materialized
-            // locally and we're a current member, proxy-register it
-            // server-side using the cached metadata. We become the
-            // server-side creator (A loses admin role), but messages
-            // start flowing to all online members immediately. When
-            // A eventually comes online, syncPendingGroups will hit
-            // the idempotency branch (existing group, same client_id)
-            // and adopt the server's row without overwriting it.
-            //
-            // 🛡️ SECURITY:
-            //   - Bounded to groups we have locally — can't be used
-            //     to spam arbitrary group_ids on the server.
-            //   - Member list comes from our local cache (which
-            //     itself was authenticated via the signed
-            //     group_create mesh envelope), not the bridger's
-            //     untrusted input.
-            //   - Server-side creator-only client_id branch already
-            //     enforces "can't claim someone else's existing
-            //     client_id" (groups.py:159-168).
-            //   - E2EE unchanged — server still sees ciphertext only.
-            #if DEBUG
-            print("🌉 [BRIDGE] 404 on group \(envelope.recipientId.prefix(8)) — attempting proxy-sync of offline-only group")
-            #endif
-
-            let groupRepo = GroupRepository()
-            let localGroup: ChatGroup?
-            do {
-                localGroup = try await groupRepo.get(groupId: envelope.recipientId)
-            } catch {
-                localGroup = nil
-            }
-            let myUserId = await KeychainService.shared.getUserId() ?? ""
-            let isLocalMember = (localGroup?.members ?? []).contains { $0.userId == myUserId }
-
-            if let g = localGroup, isLocalMember {
-                let memberIds = (g.members ?? [])
-                    .map { $0.userId }
-                    .filter { $0 != myUserId }
-                let createReq = CreateGroupRequest(
-                    name: g.name,
-                    memberIds: memberIds,
-                    avatarUrl: g.avatarUrl,
-                    description: g.description,
-                    clientId: g.id
-                )
-                struct CreateResp: Decodable { let id: String }
-                let created: Bool
-                do {
-                    let _: CreateResp = try await NetworkService.shared.post(
-                        path: "/api/groups",
-                        body: createReq,
-                        idempotencyKey: "proxy-create-\(g.id)"
-                    )
-                    created = true
-                    #if DEBUG
-                    print("🌉 [BRIDGE] Proxy-created group \(g.id.prefix(8)) on server — retrying bridge")
-                    #endif
-                } catch {
-                    created = false
-                    #if DEBUG
-                    print("🌉 [BRIDGE] Proxy-create FAILED for \(g.id.prefix(8)): \(error.localizedDescription)")
-                    #endif
-                }
-                if created {
-                    do {
-                        // 🟢 ROUND 72 — reuse retry-with-backoff so the
-                        // post-proxy-create retry also rides out Cloud
-                        // Run cold-start hiccups.
-                        try await postBridgeWithRetry()
-                        success = true
-                        #if DEBUG
-                        print("✅ [BRIDGE] Retry after proxy-create SUCCESS mid=\(envelope.clientMessageId.prefix(8))")
-                        #endif
-                    } catch {
-                        #if DEBUG
-                        print("❌ [BRIDGE] Retry after proxy-create FAILED mid=\(envelope.clientMessageId.prefix(8)) error=\(error.localizedDescription)")
-                        #endif
-                    }
-                }
-            } else {
-                #if DEBUG
-                print("🌉 [BRIDGE] Skipping proxy-sync — no local group OR not a member")
-                #endif
-            }
-        } catch {
-            #if DEBUG
-            print("❌ [BRIDGE] POST /api/messages/bridge FAILED mid=\(envelope.clientMessageId.prefix(8)) error=\(error.localizedDescription)")
-            #endif
-            logger.debug("[BRIDGE] Failed to bridge payload to server: \(error.localizedDescription, privacy: .public)")
-        }
-
-        if success {
-            logger.debug("[BRIDGE] Successfully bridged mesh -> server")
-            
-            let receipt = ServerReceipt(
-                messageId: envelope.clientMessageId,
-                serverReceivedAt: Date(),
-                serverSequence: nil,
-                uploaderDeviceId: DeviceIdentityService.shared.fingerprint ?? ""
-            )
-            await gossipReceipt(receipt)
-            
-            await RelayQueueRepository.shared.remove(messageId: envelope.clientMessageId)
-            await handleStop(envelope.clientMessageId)
-
-            // ⚡ SCALE FIX (#7 server-coordinated dedup):
-            // Now that the server has the message, tell every mesh peer to
-            // stop relaying it. The signed STOP propagates through the cluster
-            // and is honored by the (also-tightened) Stop receive path. This
-            // collapses the long tail of stale relays that would otherwise
-            // keep bouncing the envelope around for the full TTL window.
-            await broadcastStop(envelope.clientMessageId)
-
-            return true
-        }
+        _ = envelope   // silence unused-parameter warning; kept for API compatibility
         return false
     }
 }
@@ -5754,5 +5439,3 @@ extension MessageType {
         }
     }
 }
-
-

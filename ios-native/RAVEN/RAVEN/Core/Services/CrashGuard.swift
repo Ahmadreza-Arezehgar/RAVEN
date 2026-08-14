@@ -69,6 +69,7 @@ final class CrashGuard {
     
     /// Call as the FIRST line in didFinishLaunchingWithOptions
     func start() {
+        guard RavenRuntimePolicy.allowsExternalSideEffects else { return }
         #if DEBUG
         print("🛡️ [CrashGuard] Starting — session \(sessionId)")
         #endif
@@ -295,6 +296,7 @@ final class CrashGuard {
     // MARK: - Server Upload
     
     private func uploadCrashReport(_ report: CrashReport) {
+        guard RavenRuntimePolicy.allowsExternalSideEffects else { return }
         guard let url = AppConfig.apiURL(path: "/api/crash-reports") else {
             #if DEBUG
             print("🛡️ [CrashGuard] No API URL configured — skipping upload")
@@ -303,6 +305,7 @@ final class CrashGuard {
         }
         
         Task.detached(priority: .utility) {
+            guard RavenRuntimePolicy.allowsExternalSideEffects else { return }
             do {
                 var request = URLRequest(url: url)
                 request.httpMethod = "POST"
@@ -317,6 +320,7 @@ final class CrashGuard {
                 encoder.dateEncodingStrategy = .iso8601
                 request.httpBody = try encoder.encode(report)
                 
+                RavenTestExternalSideEffectAudit.recordActual(.http)
                 let (_, response) = try await URLSession.shared.data(for: request)
                 let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
                 #if DEBUG

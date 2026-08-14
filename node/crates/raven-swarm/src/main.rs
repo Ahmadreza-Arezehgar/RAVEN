@@ -29,7 +29,10 @@ struct RavenBehaviour {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "raven-swarm", about = "RAVEN libp2p swarm smoke (TCP/QUIC + Kad)")]
+#[command(
+    name = "raven-swarm",
+    about = "RAVEN libp2p swarm smoke (TCP/QUIC + Kad)"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Commands,
@@ -99,8 +102,7 @@ fn now_ms() -> u64 {
 }
 
 fn load_or_create_identity(data_dir: &std::path::Path) -> Result<Identity, Box<dyn Error>> {
-    Ok(raven_core::load_or_create_identity(data_dir)
-        .map(|(id, _)| id)?)
+    Ok(raven_core::load_or_create_identity(data_dir).map(|(id, _)| id)?)
 }
 
 fn libp2p_keypair_from_raven(id: &Identity) -> Keypair {
@@ -181,7 +183,11 @@ async fn cmd_serve(
             for p in listen_maddr.iter() {
                 match p {
                     Protocol::Tcp(_) => {
-                        q.push(Protocol::Udp(if tcp_port == 0 { 0 } else { tcp_port.saturating_add(1) }));
+                        q.push(Protocol::Udp(if tcp_port == 0 {
+                            0
+                        } else {
+                            tcp_port.saturating_add(1)
+                        }));
                         q.push(Protocol::QuicV1);
                     }
                     other => q.push(other),
@@ -308,13 +314,19 @@ async fn cmd_dial(
     if boot.manual_peer_only_ok() {
         println!("bootstrap_mode=manual_peer_only");
     } else {
-        println!("bootstrap_mode=config_effective count={}", boot.effective_peers().len());
+        println!(
+            "bootstrap_mode=config_effective count={}",
+            boot.effective_peers().len()
+        );
     }
     for p in boot.effective_peers() {
         println!("bootstrap_peer={p}");
     }
 
-    swarm.behaviour_mut().kad.add_address(&remote_peer, remote_addr.clone());
+    swarm
+        .behaviour_mut()
+        .kad
+        .add_address(&remote_peer, remote_addr.clone());
     swarm.dial(remote_addr.with(Protocol::P2p(remote_peer)))?;
 
     let pub_bytes = hex::decode(raven_pub_hex.trim())?;
@@ -405,7 +417,10 @@ fn cmd_bootstrap_init(
         cfg.add_custom(c);
     }
     save_bootstrap(&data_dir, &cfg)?;
-    println!("bootstrap_path={}", data_dir.join("bootstrap.json").display());
+    println!(
+        "bootstrap_path={}",
+        data_dir.join("bootstrap.json").display()
+    );
     println!("manual_peer_only={}", cfg.manual_peer_only_ok());
     println!("effective_count={}", cfg.effective_peers().len());
     Ok(())

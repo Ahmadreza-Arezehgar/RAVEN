@@ -4,10 +4,10 @@
 #
 # Usage:
 #   ./scripts/secret_history_scan.sh           # write docs/SECRET_HISTORY_SCAN_REPORT.md
-#   ./scripts/secret_history_scan.sh --ci      # exit 1 on high-confidence hits in HEAD tree
+#   ./scripts/secret_history_scan.sh --ci      # exit 1 on hard-fail tree/history classes
 #
-# Scope: working tree + recent commit messages / blobs (bounded). Never prints
-# full secret values — only path:line and pattern class.
+# Scope: working tree + every blob reachable from every Git ref. Never prints
+# full secret values — only path:line, pattern class, and a shortened blob ID.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -25,6 +25,9 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 HITS="$TMP/hits.txt"
+HISTORY_BLOB_FILE="$TMP/history-blob"
+HISTORY_OBJECTS="$TMP/history-objects.txt"
+HISTORY_MATCHES="$TMP/history-matches.txt"
 : >"$HITS"
 
 # High-confidence patterns (private key material / cloud tokens). Avoid matching
@@ -39,6 +42,11 @@ scan_file() {
   esac
   [[ -f "$f" ]] || return 0
   [[ -s "$f" ]] || return 0
+  local size
+  size=$(wc -c <"$f" 2>/dev/null || echo 0)
+  [[ "$size" =~ ^[0-9]+$ ]] || return 0
+  (( size <= 2097152 )) || return 0
+  LC_ALL=C grep -Iq . "$f" || return 0
 
   # Pattern classes — report class only.
   if grep -nE 'BEGIN (RSA |OPENSSH |EC |DSA )?PRIVATE KEY' "$f" >/dev/null 2>&1; then
@@ -73,13 +81,93 @@ scan_file() {
   fi
 }
 
+# Scan one historical Git blob without checking it out and without ever
+# printing the matching line. `display_path` is metadata from
+# `git rev-list --objects --all`; the shortened object ID makes a finding
+# reviewable even when the path was later renamed or deleted.
+scan_history_blob() {
+  local oid="$1"
+  local display_path="$2"
+  local size="$3"
+  local short_oid="${oid:0:12}"
+  local finding_path="history:${display_path}@${short_oid}"
+
+  case "$display_path" in
+    *.png|*.jpg|*.jpeg|*.gif|*.webp|*.ico|*.pdf|*.wasm|*.bin) return 0 ;;
+    */shared-vectors/*|*/target/*|*/node_modules/*|*/Pods/*|*/build/*|*/DerivedData/*) return 0 ;;
+  esac
+
+  # Ignore large/binary blobs before regex work. The size guard is a resource
+  # bound, not a security exemption: source/config credentials should be far
+  # below it, while archived media and generated databases should not consume
+  # unbounded scanner memory/CPU.
+  [[ "$size" =~ ^[0-9]+$ ]] || return 0
+  (( size > 0 && size <= 2097152 )) || return 0
+  git cat-file blob "$oid" >"$HISTORY_BLOB_FILE" 2>/dev/null || return 0
+  LC_ALL=C grep -Iq . "$HISTORY_BLOB_FILE" || return 0
+
+  # One parser pass per blob. It emits only class + line number + action;
+  # matching source text never leaves the temporary file.
+  awk '
+    {
+      upper = toupper($0)
+      lower = tolower($0)
+      if (!pem && upper ~ /BEGIN (RSA |OPENSSH |EC |DSA )?PRIVATE KEY/) {
+        print "PRIVATE_KEY_PEM|" NR "|human_rotate_if_real"; pem = 1
+      }
+      if (!aws && upper ~ /AKIA[0-9A-Z][0-9A-Z][0-9A-Z][0-9A-Z][0-9A-Z][0-9A-Z][0-9A-Z][0-9A-Z][0-9A-Z][0-9A-Z][0-9A-Z][0-9A-Z][0-9A-Z][0-9A-Z][0-9A-Z][0-9A-Z]/) {
+        print "AWS_ACCESS_KEY_ID|" NR "|human_rotate_if_real"; aws = 1
+      }
+      if (!github && (lower ~ /ghp_[a-z0-9]{20,}/ || lower ~ /github_pat_[a-z0-9_]{20,}/)) {
+        print "GITHUB_TOKEN|" NR "|human_rotate_if_real"; github = 1
+      }
+      if (!slack && lower ~ /xox[baprs]-[a-z0-9-]{10,}/) {
+        print "SLACK_TOKEN|" NR "|human_rotate_if_real"; slack = 1
+      }
+      if (!envsecret && upper ~ /^[A-Z0-9_]*(SECRET|PASSWORD|PRIVATE_KEY|API_KEY)[A-Z0-9_]*=.+/ &&
+          lower !~ /(change_me|todo|placeholder|example|your_|<.*>|\*\*\*|xxx)/) {
+        print "ENV_SECRET_ASSIGNMENT|" NR "|human_review"; envsecret = 1
+      }
+    }
+  ' "$HISTORY_BLOB_FILE" >"$HISTORY_MATCHES"
+
+  while IFS='|' read -r cls line action; do
+    [[ -n "${cls:-}" ]] || continue
+    echo "$cls|$finding_path|${line:-0}|$action" >>"$HITS"
+  done <"$HISTORY_MATCHES"
+}
+
 echo "Scanning working tree (tracked + common secret filenames)..."
 # Tracked files (bounded)
 git ls-files -z | while IFS= read -r -d '' f; do
   scan_file "$f"
 done
 
-# Untracked but present secret-ish names
+# Include present untracked and ignored working files too. This catches a
+# credential in a correctly-gitignored local deploy helper without exposing
+# its value or pretending it was committed. Generated/build trees are skipped
+# by `scan_file`; CI checkouts normally have no such local files.
+git ls-files --others --exclude-standard -z | while IFS= read -r -d '' f; do
+  scan_file "$f"
+done
+git ls-files --others --ignored --exclude-standard -z | while IFS= read -r -d '' f; do
+  scan_file "$f"
+done
+
+echo "Scanning every reachable Git-history blob (values remain redacted)..."
+HISTORY_BLOBS_SCANNED=0
+git rev-list --objects --all \
+  | git cat-file --batch-check='%(objectname) %(objecttype) %(objectsize) %(rest)' \
+  >"$HISTORY_OBJECTS"
+while IFS=' ' read -r oid object_type object_size path; do
+  [[ -n "${path:-}" ]] || continue
+  [[ "$object_type" == "blob" ]] || continue
+  HISTORY_BLOBS_SCANNED=$((HISTORY_BLOBS_SCANNED + 1))
+  scan_history_blob "$oid" "$path" "$object_size"
+done <"$HISTORY_OBJECTS"
+
+# Untracked but present secret-ish names (also assign the hard-fail filename
+# class so an accidental `.env` never gets downgraded to pattern-only review).
 for f in .env .env.local .env.production credentials.json service-account.json; do
   if [[ -f "$f" ]]; then
     echo "UNTRACKED_SECRET_FILE|$f|0|human_ensure_gitignored" >>"$HITS"
@@ -122,14 +210,16 @@ HEAD="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
   echo "- HEAD: \`$HEAD\`"
   echo "- Script: \`scripts/secret_history_scan.sh\`"
   echo "- Hit rows: **$HIT_COUNT** (pattern class only — values redacted)"
+  echo "- Historical blobs examined: **$HISTORY_BLOBS_SCANNED** (all reachable refs)"
   echo "- CI hard-fail classes present: **$CI_FAIL** (1=yes)"
   echo
   echo "## Policy"
   echo
   echo "- Findings are flagged for **HUMAN** rotation / history rewrite decisions."
+  echo "- Historical findings use \`history:path@blob-id\`; no matching value is emitted."
   echo "- This script does **not** rotate credentials or rewrite git history."
   echo "- Public test vectors / shared-vectors hex are excluded from path scope."
-  echo "- \`.env.example\` / README placeholder assignments are reported but do not hard-fail CI."
+  echo "- Environment-style assignments are always reported for human review but do not hard-fail CI; PEM/cloud-token patterns and untracked secret files do."
   echo
   echo "## Findings"
   echo
@@ -151,7 +241,7 @@ HEAD="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
   echo
   echo "## CI"
   echo
-  echo "\`--ci\` exits non-zero only for hard-fail classes (PEM/cloud tokens/untracked secret files / non-example ENV assignments)."
+  echo "\`--ci\` exits non-zero only for hard-fail classes (PEM/cloud-token patterns or untracked secret files). Environment-style assignments remain non-blocking human-review findings."
 } >"$REPORT"
 
 # Also refresh the short pointer file used by older checklist notes.
@@ -171,5 +261,5 @@ if [[ "$CI_MODE" -eq 1 ]]; then
     echo "CI: failing closed on hard-fail secret-scan hit(s). See $REPORT"
     exit 1
   fi
-  echo "CI: secret scan clean (or docs-only placeholders)"
+  echo "CI: no hard-fail secret classes (human-review findings may remain)"
 fi

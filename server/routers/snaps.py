@@ -84,6 +84,57 @@ def _get_gcs_bucket():
         return None
 
 
+# ────────────────────────────────────────────────────────────────────
+# 🔴 H8 — V4 signed-URL credentials on Cloud Run (mirrors uploads.py
+# ROUND 31). Cloud Run authenticates via Compute Engine metadata-server
+# tokens, NOT a private key file. A plain `blob.generate_signed_url`
+# raises `AttributeError: you need a private key to sign credentials`
+# there, and the old except-block returned the RAW unsigned GCS URL —
+# useless on the private UBLA bucket and, if ever public, an eternal
+# unauthenticated leak that defeats the 30-second ephemeral guarantee.
+#
+# Fix: pass `version="v4"` + IAM `service_account_email`/`access_token`
+# so the SDK routes signing through IAM signBlob (needs
+# `roles/iam.serviceAccountTokenCreator` on the service account itself).
+# Locally, credentials carry a private key so we return (None, None)
+# and the SDK signs directly. Identical to uploads._get_signing_credentials.
+_signing_creds_cache: dict = {"creds": None}
+
+
+def _get_signing_credentials():
+    """Return `(service_account_email, access_token)` for passing to
+    `blob.generate_signed_url(...)` on Cloud Run. Returns `(None, None)`
+    in dev / when credentials have a local private key."""
+    try:
+        import google.auth
+        import google.auth.transport.requests as _gauth_requests
+
+        creds = _signing_creds_cache.get("creds")
+        if creds is None:
+            creds, _project = google.auth.default(
+                scopes=["https://www.googleapis.com/auth/cloud-platform"]
+            )
+            _signing_creds_cache["creds"] = creds
+
+        # Local private key (dev / service-account JSON): SDK can sign
+        # without IAM — return None so we don't over-engineer the call.
+        if hasattr(creds, "signer_email") and not hasattr(creds, "service_account_email"):
+            return (None, None)
+
+        # Compute Engine path: refresh to mint a token, return (email, token).
+        if not getattr(creds, "valid", False):
+            creds.refresh(_gauth_requests.Request())
+
+        sa_email = getattr(creds, "service_account_email", None)
+        token = getattr(creds, "token", None)
+        if sa_email and token:
+            return (sa_email, token)
+        return (None, None)
+    except Exception as e:
+        print(f"⚠️ [SnapSignCreds] could not get signing credentials: {type(e).__name__}: {e}")
+        return (None, None)
+
+
 def _upload_to_gcs(bucket, content: bytes, gcs_path: str, content_type: str) -> str:
     """Upload bytes to GCS and return the public URL."""
     blob = bucket.blob(gcs_path)
@@ -103,13 +154,31 @@ def _generate_signed_url(media_url: str, expiry_seconds: int = SIGNED_URL_EXPIRY
         blob_path = media_url.replace(prefix, "")
         blob = bucket.blob(blob_path)
         try:
-            return blob.generate_signed_url(
-                expiration=timedelta(seconds=expiry_seconds),
-                method="GET",
-            )
+            # 🔴 H8 — pass IAM signing credentials so Cloud Run (no
+            # private key) can sign via the signBlob API. See
+            # `_get_signing_credentials` for the why.
+            sa_email, access_token = _get_signing_credentials()
+            sign_kwargs = {
+                "version": "v4",
+                "expiration": timedelta(seconds=expiry_seconds),
+                "method": "GET",
+            }
+            if sa_email and access_token:
+                sign_kwargs["service_account_email"] = sa_email
+                sign_kwargs["access_token"] = access_token
+            return blob.generate_signed_url(**sign_kwargs)
         except Exception as e:
-            print(f"⚠️ Signed URL generation failed: {e}")
-            return media_url
+            # 🔴 H8 — FAIL CLOSED. Never return the raw unsigned URL for
+            # a private-bucket ephemeral snap. Grant the Cloud Run
+            # service account 'roles/iam.serviceAccountTokenCreator' on
+            # itself to enable signBlob if this fires in production.
+            print(f"❌ Snap signed-URL generation failed ({type(e).__name__}: {e}) — "
+                  f"refusing to serve unsigned ephemeral URL. Grant the Cloud Run "
+                  f"service account 'roles/iam.serviceAccountTokenCreator'.")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Snap media temporarily unavailable (signing failed).",
+            )
     return media_url
 
 

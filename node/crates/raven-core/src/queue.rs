@@ -39,6 +39,8 @@ pub enum QueueError {
     Sqlite(#[from] rusqlite::Error),
     #[error("bad message_id length")]
     BadId,
+    #[error("message_id collision with a different immutable outbound object")]
+    MessageIdCollision,
 }
 
 pub struct OutgoingQueue {
@@ -72,8 +74,25 @@ impl OutgoingQueue {
         if item.message_id.len() != 16 {
             return Err(QueueError::BadId);
         }
+        // Retries of the exact same immutable object are idempotent and must
+        // not reset delivery state. Reusing an ID for different ciphertext or
+        // a different recipient is a hard local integrity failure.
+        let existing: Option<(Vec<u8>, String)> = self
+            .conn
+            .query_row(
+                "SELECT packed, peer_addr FROM outgoing WHERE message_id = ?1",
+                params![item.message_id.as_slice()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        if let Some((packed, peer_addr)) = existing {
+            if packed == item.packed_envelope && peer_addr == item.peer_addr {
+                return Ok(());
+            }
+            return Err(QueueError::MessageIdCollision);
+        }
         self.conn.execute(
-            "INSERT OR REPLACE INTO outgoing (message_id, packed, peer_addr, state, created_at_ms)
+            "INSERT INTO outgoing (message_id, packed, peer_addr, state, created_at_ms)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
                 item.message_id.as_slice(),
@@ -86,12 +105,34 @@ impl OutgoingQueue {
         Ok(())
     }
 
-    pub fn mark_state(&self, message_id: &[u8; 16], state: DeliveryState) -> Result<(), QueueError> {
-        self.conn.execute(
-            "UPDATE outgoing SET state = ?1 WHERE message_id = ?2",
-            params![state as u8, message_id.as_slice()],
-        )?;
+    pub fn mark_state(
+        &self,
+        message_id: &[u8; 16],
+        state: DeliveryState,
+    ) -> Result<(), QueueError> {
+        // Delivery is monotonic. In particular, a concurrent transport-write
+        // completion must never regress Delivered back to Sent.
+        let predicate = match state {
+            DeliveryState::Queued => "state = 0",
+            DeliveryState::Sent => "state = 0",
+            DeliveryState::Delivered | DeliveryState::Failed => "state IN (0, 1)",
+        };
+        let sql = format!("UPDATE outgoing SET state = ?1 WHERE message_id = ?2 AND ({predicate})");
+        self.conn
+            .execute(&sql, params![state as u8, message_id.as_slice()])?;
         Ok(())
+    }
+
+    /// Compare-and-set used by authenticated receipt handling. Returns true
+    /// exactly once for a live Queued/Sent row; duplicates and terminal rows
+    /// are no-ops, which prevents duplicate UI delivery events.
+    pub fn mark_delivered_once(&self, message_id: &[u8; 16]) -> Result<bool, QueueError> {
+        let changed = self.conn.execute(
+            "UPDATE outgoing SET state = ?1
+             WHERE message_id = ?2 AND state IN (0, 1)",
+            params![DeliveryState::Delivered as u8, message_id.as_slice()],
+        )?;
+        Ok(changed == 1)
     }
 
     pub fn get(&self, message_id: &[u8; 16]) -> Result<Option<QueueItem>, QueueError> {
@@ -172,7 +213,11 @@ impl OutgoingQueue {
     }
 
     /// Returns true if this inbound message_id was already seen (duplicate).
-    pub fn dedup_check_and_insert(&self, message_id: &[u8; 16], now_ms: u64) -> Result<bool, QueueError> {
+    pub fn dedup_check_and_insert(
+        &self,
+        message_id: &[u8; 16],
+        now_ms: u64,
+    ) -> Result<bool, QueueError> {
         let existing: Option<i64> = self
             .conn
             .query_row(
@@ -229,5 +274,54 @@ mod tests {
         let mid = [1u8; 16];
         assert!(!q.dedup_check_and_insert(&mid, 1).unwrap());
         assert!(q.dedup_check_and_insert(&mid, 2).unwrap());
+    }
+
+    #[test]
+    fn immutable_enqueue_is_idempotent_and_rejects_id_collision() {
+        let dir = tempdir().unwrap();
+        let q = OutgoingQueue::open(&dir.path().join("q.sqlite")).unwrap();
+        let item = QueueItem {
+            message_id: [9u8; 16],
+            packed_envelope: vec![1, 2, 3],
+            peer_addr: "rvn1peer".into(),
+            state: DeliveryState::Queued,
+            created_at_ms: 1,
+        };
+        q.enqueue(&item).unwrap();
+        q.mark_state(&item.message_id, DeliveryState::Sent).unwrap();
+        q.enqueue(&item).unwrap();
+        assert_eq!(
+            q.get(&item.message_id).unwrap().unwrap().state,
+            DeliveryState::Sent
+        );
+
+        let mut collision = item.clone();
+        collision.packed_envelope.push(4);
+        assert!(matches!(
+            q.enqueue(&collision),
+            Err(QueueError::MessageIdCollision)
+        ));
+    }
+
+    #[test]
+    fn delivered_state_never_regresses_and_cas_fires_once() {
+        let dir = tempdir().unwrap();
+        let q = OutgoingQueue::open(&dir.path().join("q.sqlite")).unwrap();
+        let mid = [8u8; 16];
+        q.enqueue(&QueueItem {
+            message_id: mid,
+            packed_envelope: vec![7],
+            peer_addr: "rvn1peer".into(),
+            state: DeliveryState::Queued,
+            created_at_ms: 1,
+        })
+        .unwrap();
+        assert!(q.mark_delivered_once(&mid).unwrap());
+        assert!(!q.mark_delivered_once(&mid).unwrap());
+        q.mark_state(&mid, DeliveryState::Sent).unwrap();
+        assert_eq!(
+            q.get(&mid).unwrap().unwrap().state,
+            DeliveryState::Delivered
+        );
     }
 }

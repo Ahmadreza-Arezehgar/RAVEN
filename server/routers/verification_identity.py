@@ -21,7 +21,7 @@ from pathlib import Path
 from database import get_db
 from models import User, VerificationRequest, Notification
 from routers.users import get_current_user
-from encryption import encrypt_text
+from encryption import encrypt_text, decrypt_text
 
 router = APIRouter(prefix="/api/verification", tags=["verification"])
 
@@ -301,28 +301,31 @@ async def cancel_verification_request(
     # absolute paths, ".." traversal, and other users' subdirs.
     allowed_root = (VERIFICATION_DOCS_DIR / str(current_user.id)).resolve()
 
-    def _safe_unlink_doc_url(url: Optional[str]) -> None:
-        if not url:
-            return
-        # Skip non-local URLs — GCS, https, etc. — we don't manage
-        # those files from this endpoint. Production cleanup is the
-        # GCS lifecycle policy's job.
-        if "://" in url:
-            return
-        # Defensive: refuse absolute paths and obvious traversal
-        # without even hitting the filesystem.
-        if url.startswith("/") or ".." in url.split("/"):
+    # 🔴 PB-M9 (GDPR erasure) — the doc_*_url columns are stored
+    # Fernet-WRAPPED at rest (see /request: encrypt_text(...)). The
+    # previous cancel logic fed the raw ciphertext into the path
+    # containment check, which always failed (ciphertext has no
+    # slashes → never resolves inside allowed_root), so NO file was
+    # ever deleted — yet the columns were NULLed, orphaning the KYC
+    # document forever. We now DECRYPT first, then delete from BOTH
+    # backends the doc could live in:
+    #   • local-fallback path  "verification_docs/<uid>/<file>"
+    #   • GCS pointer          "gcs://<bucket>/<uid>/<file>"
+    expected_gcs_fragment = f"/{current_user.id}/"
+
+    def _delete_local(rel_path: str) -> None:
+        # Reuse the strict per-user containment guard (defence in
+        # depth): absolute paths, "..", and other users' subdirs are
+        # refused before any unlink.
+        if rel_path.startswith("/") or ".." in rel_path.split("/"):
             return
         try:
-            candidate = (Path.cwd() / url).resolve(strict=False)
+            candidate = (Path.cwd() / rel_path).resolve(strict=False)
         except (OSError, RuntimeError):
             return
-        # Strict containment check. Python 3.9+ has `is_relative_to`;
-        # we use the explicit prefix form for portability.
         try:
             candidate.relative_to(allowed_root)
         except ValueError:
-            # Outside the per-user verification dir — refuse.
             return
         if candidate.is_file():
             try:
@@ -330,8 +333,59 @@ async def cancel_verification_request(
             except OSError:
                 pass
 
-    for url in (pending.doc_front_url, pending.doc_back_url, pending.selfie_url):
-        _safe_unlink_doc_url(url)
+    def _delete_gcs(gcs_url: str) -> None:
+        # Only delete blobs scoped to THIS user's subdir. Shape:
+        # gcs://<bucket>/<uid>/<file>. Refuse anything whose object
+        # path isn't under "<uid>/".
+        without_scheme = gcs_url[len("gcs://"):]
+        parts = without_scheme.split("/", 1)
+        if len(parts) != 2:
+            return
+        object_path = parts[1]  # "<uid>/<file>"
+        if not object_path.startswith(f"{current_user.id}/"):
+            return
+        if ".." in object_path.split("/"):
+            return
+        GCS_BUCKET = os.getenv(
+            "VERIFICATION_DOCS_BUCKET", "hybrid-messenger-verification-docs"
+        )
+        try:
+            from google.cloud import storage as gcs_storage
+            client = gcs_storage.Client()
+            bucket = client.bucket(GCS_BUCKET)
+            bucket.blob(object_path).delete()
+            print(f"🗑️ [KYC-cancel] GCS blob purged: {object_path}")
+        except Exception as e:
+            # GCS unavailable (dev) or blob already gone — best effort.
+            print(
+                f"⚠️ [KYC-cancel] GCS blob delete skipped for "
+                f"{object_path}: {type(e).__name__}: {e}"
+            )
+
+    def _erase_doc(stored: Optional[str]) -> None:
+        if not stored:
+            return
+        # Columns are Fernet-wrapped at rest; decrypt to the original
+        # storage pointer. decrypt_text passes through opaque/plain
+        # values and returns "[DECRYPT_FAILED]" (never raises) on a
+        # bad blob, which simply won't match either backend prefix.
+        try:
+            url = decrypt_text(stored)
+        except Exception:
+            return
+        if not url:
+            return
+        url = url.strip()
+        if url.startswith("gcs://"):
+            _delete_gcs(url)
+        elif "://" in url:
+            # Unknown remote scheme — nothing we manage here.
+            return
+        else:
+            _delete_local(url)
+
+    for stored in (pending.doc_front_url, pending.doc_back_url, pending.selfie_url):
+        _erase_doc(stored)
 
     # Null the columns so the row can't be replayed to re-trigger the
     # delete path on a future call (defence in depth).

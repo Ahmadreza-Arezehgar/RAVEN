@@ -9,7 +9,6 @@
 import Foundation
 import CryptoKit
 import Observation
-import Security
 
 /// UI scopes for Discovery V1 search (docs/RAVEN_DISCOVERY_V1.md).
 enum DiscoveryUIScope: String, CaseIterable, Identifiable {
@@ -143,6 +142,10 @@ enum DiscoveryNearbyStore {
 @MainActor
 @Observable
 final class DiscoverySearchViewModel {
+    /// Activation requires the durable indexed-session actor; a Debug feature
+    /// flag alone must never make rootless contact-request transport available.
+    private static let contactSessionTransportReady = false
+
     var query: String = ""
     var scope: DiscoveryUIScope = .all
     var results: [DiscoveryResult] = []
@@ -172,7 +175,8 @@ final class DiscoverySearchViewModel {
     }
 
     var canSendRequest: Bool {
-        guard FeatureFlag.isRavenEnvelopeV1Enabled else { return false }
+        guard FeatureFlag.isRavenEnvelopeV1Enabled,
+              Self.contactSessionTransportReady else { return false }
         guard let chosen = chosenResult, chosen.verificationState != .blocked else { return false }
         if requiresExplicitPick {
             return selectedRavenId != nil
@@ -237,8 +241,10 @@ final class DiscoverySearchViewModel {
         }
     }
 
-    /// Build + seal RavenContactRequestV1 and deliver via LAN/BLE when available.
-    /// Never FastAPI.
+    /// Contact-request transport is held until the selected peer has an
+    /// authenticated ATSAM root plus crash-safe chain-index state. The pure
+    /// root-required codec is implemented and tested, but this UI must not
+    /// synthesize a session or fall back to public-key-derived encryption.
     func sendContactRequest() async throws {
         guard FeatureFlag.isRavenEnvelopeV1Enabled else {
             throw RavenContactRequestError.missingKeys
@@ -257,39 +263,7 @@ final class DiscoverySearchViewModel {
               recipientPub.count == 32 else {
             throw RavenContactRequestError.missingKeys
         }
-        guard let seed = DeviceIdentityService.shared.deviceSigningSeed,
-              let signingKey = try? Curve25519.Signing.PrivateKey(rawRepresentation: seed) else {
-            throw RavenContactRequestError.missingKeys
-        }
-        let senderPub = signingKey.publicKey.rawRepresentation
-        let senderAddr = RavenAddressV1.encode(ed25519PublicKey: senderPub) ?? ""
-        var requestId = Data(count: 16)
-        requestId.withUnsafeMutableBytes { buf in
-            _ = SecRandomCopyBytes(kSecRandomDefault, 16, buf.baseAddress!)
-        }
-        let now = UInt64(Date().timeIntervalSince1970 * 1000)
-        let inner = ContactRequestInner(
-            requestId: requestId,
-            senderRavenId: senderAddr,
-            senderDisplayName: AuthService.shared.currentUser?.displayName ?? "",
-            senderAliases: [],
-            senderProfileDigest: Data(count: 32),
-            optionalMessage: requestNote,
-            createdAt: now,
-            expiresAt: now &+ 7 * 24 * 3600 * 1000
-        )
-        let req = try RavenContactRequestV1.create(
-            senderSigningKey: signingKey,
-            recipientPub: recipientPub,
-            recipientAddr: chosen.ravenId,
-            inner: inner
-        )
-        try req.verifyOuter(nowMs: now)
-        precondition(req.isCiphertextOnly)
-
-        lastRequestIdHex = requestId.ravenHex
-        await deliverContactRequest(req, signingKey: signingKey)
-        statusMessage = "Contact request sealed → \(shortId(chosen.ravenId))"
+        throw RavenContactRequestError.sessionRequired
     }
 
     /// Confirm nearby peer → Raven ID only after safety phrase match.
@@ -441,42 +415,6 @@ final class DiscoverySearchViewModel {
             return c.pubHex
         }
         return nil
-    }
-
-    private func deliverContactRequest(
-        _ req: RavenContactRequestV1,
-        signingKey: Curve25519.Signing.PrivateKey
-    ) async {
-        // Full wire object as opaque body — Bridge/store see ciphertext field only, never open.
-        let wire = req.encodeWire()
-        precondition(req.isCiphertextOnly)
-        let messageId = req.requestId
-        let routingTag = Data(SHA256.hash(data: wire.prefix(64) + messageId)).prefix(16)
-        let env = RavenServerlessLanPath.packSealedMessage(
-            sealedBody: wire,
-            messageId: messageId,
-            routingTag: Data(routingTag),
-            signingKey: signingKey
-        )
-        let packed = env.pack()
-
-        // BLE when peers nearby.
-        if BLEMeshEngine.shared.hasActiveConnections {
-            await BLEMeshEngine.shared.enqueueRawRavenEnvelopeV1(packed)
-        }
-
-        // Optional LAN peer.
-        if let cfg = RavenServerlessLanConfig.stored {
-            do {
-                _ = try await RavenServerlessLanPath.sendEnvelope(env, host: cfg.host, port: cfg.port)
-            } catch {
-                // Best-effort — request remains sealed locally.
-            }
-        }
-
-        // Persist outbound pending metadata (wire, not plaintext).
-        let pendingKey = "raven.discovery.pending_contact_req.\(req.requestId.ravenHex)"
-        UserDefaults.standard.set(wire, forKey: pendingKey)
     }
 
     /// Add a local contact from terminal `ash whoami` fields (rvn1 + pub_hex).

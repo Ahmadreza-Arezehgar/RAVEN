@@ -226,8 +226,8 @@ impl DiscoveryProvider for AliasDhtProvider {
     fn search(&self, ctx: &DiscoveryContext, query: &str) -> Vec<DiscoveryResult> {
         let raw = query.trim();
         // Exact alias lane: @name or normalized exact token (not fuzzy).
-        let is_alias_query = raw.starts_with('@')
-            || (normalize_alias(raw).is_ok() && !raw.starts_with("rvn1"));
+        let is_alias_query =
+            raw.starts_with('@') || (normalize_alias(raw).is_ok() && !raw.starts_with("rvn1"));
         if !is_alias_query {
             return vec![];
         }
@@ -286,8 +286,9 @@ impl DiscoveryProvider for SocialIntroductionProvider {
         let intros = ctx.intros.for_subject_alias(query, ctx.now_ms);
         let mut by_subject: HashMap<String, DiscoveryResult> = HashMap::new();
         for i in intros {
-            let entry = by_subject.entry(i.subject_raven_id.clone()).or_insert_with(|| {
-                DiscoveryResult {
+            let entry = by_subject
+                .entry(i.subject_raven_id.clone())
+                .or_insert_with(|| DiscoveryResult {
                     raven_id: i.subject_raven_id.clone(),
                     display_name: i.subject_display_name.clone(),
                     aliases: i.subject_aliases.clone(),
@@ -298,8 +299,7 @@ impl DiscoveryProvider for SocialIntroductionProvider {
                     conflict_count: 0,
                     sequence: 0,
                     expires_at: i.expires_at,
-                }
-            });
+                });
             entry.introductions.push(DiscoveryIntroduction {
                 introducer_raven_id: i.introducer_raven_id.clone(),
                 subject_raven_id: i.subject_raven_id.clone(),
@@ -374,7 +374,11 @@ fn profile_to_result(
     }
 }
 
-fn claim_to_result(claim: &AliasRecord, conflict_count: u32, ctx: &DiscoveryContext) -> DiscoveryResult {
+fn claim_to_result(
+    claim: &AliasRecord,
+    conflict_count: u32,
+    ctx: &DiscoveryContext,
+) -> DiscoveryResult {
     let mut r = if let Some(prof) = ctx.profiles.get(&claim.identity_address, ctx.now_ms) {
         profile_to_result(prof, DiscoverySource::AliasDht, conflict_count)
     } else {
@@ -451,7 +455,12 @@ impl DiscoveryResolver {
         }
     }
 
-    pub fn search(&self, query: &str, scope: DiscoveryScope, ctx: &DiscoveryContext) -> Vec<DiscoveryResult> {
+    pub fn search(
+        &self,
+        query: &str,
+        scope: DiscoveryScope,
+        ctx: &DiscoveryContext,
+    ) -> Vec<DiscoveryResult> {
         let active: BTreeSet<DiscoverySource> = match scope {
             DiscoveryScope::Local => [DiscoverySource::LocalContacts].into_iter().collect(),
             DiscoveryScope::ExactId => [DiscoverySource::ExactRavenId].into_iter().collect(),

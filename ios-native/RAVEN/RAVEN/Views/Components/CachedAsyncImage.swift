@@ -67,7 +67,7 @@ final class ImageCache: @unchecked Sendable {
         config.allowsConstrainedNetworkAccess = true
         config.waitsForConnectivity = true
         config.httpMaximumConnectionsPerHost = 6  // More parallel image downloads
-        return URLSession(configuration: config)
+        return URLSession(configuration: RavenRuntimePolicy.protectForXCTest(config))
     }()
 }
 

@@ -3,11 +3,13 @@
 //! Spec: `protocol/RAVEN_STORE_OBJECT_V1.md`
 
 use hmac::{Hmac, Mac};
-use sha2::Sha256;
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 
-use crate::internet::opaque_store_tag;
+use crate::bridge::authenticated_object_digest;
+use crate::envelope::Envelope;
 use crate::identity::Identity;
+use crate::internet::opaque_store_tag;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -15,6 +17,9 @@ pub const STORE_MAGIC: &[u8; 4] = b"RSO1";
 pub const MAILBOX_LABEL: &[u8] = b"rvn1/mailbox";
 pub const CUSTODY_DOMAIN: &[u8] = b"rvn1/store-custody";
 pub const MAX_ENVELOPE_LEN: usize = 1_048_576;
+pub const MAX_STORE_OBJECTS: usize = 4_096;
+pub const MAX_STORE_BYTES: usize = 64 * 1024 * 1024;
+pub const MAX_MAILBOX_DISK_BYTES: u64 = (MAX_STORE_BYTES as u64 * 2) + (16 * 1024 * 1024);
 pub const FLAG_CUSTODY_SIG: u16 = 1 << 0;
 
 /// mailbox_tag = HMAC-SHA256(K_route, "rvn1/mailbox" || epoch || slot)[:16]
@@ -57,11 +62,34 @@ pub struct StoreObject {
 }
 
 impl StoreObject {
+    fn validated_envelope(&self) -> Result<Envelope, String> {
+        if self.flags & !FLAG_CUSTODY_SIG != 0 {
+            return Err("unknown store flags".into());
+        }
+        if (self.flags & FLAG_CUSTODY_SIG != 0) != self.custody_sig.is_some() {
+            return Err("custody flag/signature mismatch".into());
+        }
+        if self.expires_at_ms <= self.created_at_ms {
+            return Err("invalid store lifetime".into());
+        }
+        let env = Envelope::unpack(&self.packed_envelope)
+            .ok_or_else(|| "invalid RavenEnvelopeV1".to_string())?;
+        if env.message_id != self.message_id {
+            return Err("store/envelope message_id mismatch".into());
+        }
+        if self.created_at_ms < env.created_at || self.expires_at_ms > env.expires_at {
+            return Err("store lifetime exceeds envelope lifetime".into());
+        }
+        Ok(env)
+    }
+
     pub fn pack_unsigned(&self) -> Result<Vec<u8>, String> {
         if self.packed_envelope.len() > MAX_ENVELOPE_LEN {
             return Err("envelope too large".into());
         }
-        let mut out = Vec::with_capacity(4 + 1 + 16 + 16 + 8 + 8 + 2 + 4 + self.packed_envelope.len());
+        self.validated_envelope()?;
+        let mut out =
+            Vec::with_capacity(4 + 1 + 16 + 16 + 8 + 8 + 2 + 4 + self.packed_envelope.len());
         out.extend_from_slice(STORE_MAGIC);
         out.push(1);
         out.extend_from_slice(&self.store_tag);
@@ -114,6 +142,9 @@ impl StoreObject {
         let created_at_ms = u64::from_be_bytes(raw[37..45].try_into().unwrap());
         let expires_at_ms = u64::from_be_bytes(raw[45..53].try_into().unwrap());
         let flags = u16::from_be_bytes([raw[53], raw[54]]);
+        if flags & !FLAG_CUSTODY_SIG != 0 {
+            return Err("unknown store flags".into());
+        }
         let elen = u32::from_be_bytes([raw[55], raw[56], raw[57], raw[58]]) as usize;
         if elen > MAX_ENVELOPE_LEN {
             return Err("envelope too large".into());
@@ -125,16 +156,19 @@ impl StoreObject {
         }
         let packed_envelope = raw[start..end].to_vec();
         let custody_sig = if flags & FLAG_CUSTODY_SIG != 0 {
-            if raw.len() < end + 64 {
+            if raw.len() != end + 64 {
                 return Err("missing custody sig".into());
             }
             let mut s = [0u8; 64];
             s.copy_from_slice(&raw[end..end + 64]);
             Some(s)
         } else {
+            if raw.len() != end {
+                return Err("trailing store bytes".into());
+            }
             None
         };
-        Ok(Self {
+        let value = Self {
             store_tag,
             message_id,
             created_at_ms,
@@ -142,7 +176,9 @@ impl StoreObject {
             flags,
             packed_envelope,
             custody_sig,
-        })
+        };
+        value.validated_envelope()?;
+        Ok(value)
     }
 
     pub fn verify_custody(&self, store_pub: &[u8; 32]) -> bool {
@@ -163,21 +199,43 @@ impl StoreObject {
 }
 
 /// In-memory mailbox indexed by store_tag (software substitute for multi-node store).
-#[derive(Default)]
 pub struct StoreMailbox {
     items: Vec<StoreObject>,
     max_per_tag: usize,
+    max_total: usize,
+    max_total_bytes: usize,
+}
+
+impl Default for StoreMailbox {
+    fn default() -> Self {
+        Self::new(64)
+    }
 }
 
 impl StoreMailbox {
     pub fn new(max_per_tag: usize) -> Self {
+        Self::new_with_resource_limits(max_per_tag, MAX_STORE_OBJECTS, MAX_STORE_BYTES)
+    }
+
+    pub fn new_with_limits(max_per_tag: usize, max_total: usize) -> Self {
+        Self::new_with_resource_limits(max_per_tag, max_total, MAX_STORE_BYTES)
+    }
+
+    pub fn new_with_resource_limits(
+        max_per_tag: usize,
+        max_total: usize,
+        max_total_bytes: usize,
+    ) -> Self {
         Self {
             items: Vec::new(),
             max_per_tag: max_per_tag.max(1),
+            max_total: max_total.max(1),
+            max_total_bytes: max_total_bytes.max(1),
         }
     }
 
     pub fn put(&mut self, obj: StoreObject) -> Result<(), String> {
+        let env = obj.validated_envelope()?;
         if obj.expired(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -185,6 +243,28 @@ impl StoreMailbox {
                 .as_millis() as u64,
         ) {
             return Err("STORE_EXPIRED".into());
+        }
+        let digest = authenticated_object_digest(&env);
+        if self.items.iter().any(|item| {
+            item.store_tag == obj.store_tag
+                && Envelope::unpack(&item.packed_envelope)
+                    .map(|known| authenticated_object_digest(&known) == digest)
+                    .unwrap_or(false)
+        }) {
+            return Ok(());
+        }
+        if self.items.len() >= self.max_total {
+            return Err("STORE_FULL".into());
+        }
+        let used_bytes = self.items.iter().try_fold(0usize, |used, item| {
+            used.checked_add(item.packed_envelope.len())
+        });
+        if used_bytes
+            .and_then(|used| used.checked_add(obj.packed_envelope.len()))
+            .map(|next| next > self.max_total_bytes)
+            .unwrap_or(true)
+        {
+            return Err("STORE_FULL".into());
         }
         let count = self
             .items
@@ -194,14 +274,9 @@ impl StoreMailbox {
         if count >= self.max_per_tag {
             return Err("STORE_FULL".into());
         }
-        // Dedup by message_id under same tag.
-        if self
-            .items
-            .iter()
-            .any(|i| i.store_tag == obj.store_tag && i.message_id == obj.message_id)
-        {
-            return Ok(());
-        }
+        // Different authenticated objects with the same public message_id are
+        // independent bounded rows. An attacker cannot pre-poison a genuine
+        // object by racing an ID collision.
         self.items.push(obj);
         Ok(())
     }
@@ -217,12 +292,6 @@ impl StoreMailbox {
         let before = self.items.len();
         self.items.retain(|i| !i.expired(now_ms));
         before - self.items.len()
-    }
-
-    pub fn delete_message(&mut self, message_id: &[u8; 16]) -> bool {
-        let before = self.items.len();
-        self.items.retain(|i| i.message_id != *message_id);
-        before != self.items.len()
     }
 
     /// Persist mailbox as opaque JSON (store_tag hex → objects). Never indexes usernames.
@@ -251,10 +320,45 @@ impl StoreMailbox {
             })
             .collect();
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).ok();
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
         let raw = serde_json::to_string_pretty(&rows).map_err(|e| e.to_string())?;
-        std::fs::write(path, raw).map_err(|e| e.to_string())
+        #[cfg(unix)]
+        {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let parent = path
+                .parent()
+                .ok_or_else(|| "mailbox path has no parent".to_string())?;
+            let tmp = parent.join(format!(
+                ".mailbox.tmp.{}.{}",
+                std::process::id(),
+                rand::random::<u64>()
+            ));
+            let result = (|| -> Result<(), String> {
+                let mut file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(&tmp)
+                    .map_err(|e| e.to_string())?;
+                file.write_all(raw.as_bytes()).map_err(|e| e.to_string())?;
+                file.sync_all().map_err(|e| e.to_string())?;
+                std::fs::rename(&tmp, path).map_err(|e| e.to_string())?;
+                std::fs::File::open(parent)
+                    .and_then(|directory| directory.sync_all())
+                    .map_err(|e| e.to_string())?;
+                Ok(())
+            })();
+            if result.is_err() {
+                let _ = std::fs::remove_file(&tmp);
+            }
+            result
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::write(path, raw).map_err(|e| e.to_string())
+        }
     }
 
     pub fn load_disk(path: &std::path::Path, max_per_tag: usize) -> Result<Self, String> {
@@ -269,15 +373,29 @@ impl StoreMailbox {
             custody_sig_hex: Option<String>,
         }
         let mut mb = Self::new(max_per_tag);
-        let Ok(raw) = std::fs::read_to_string(path) else {
+        let Ok(metadata) = std::fs::symlink_metadata(path) else {
             return Ok(mb);
         };
+        if !metadata.is_file() || metadata.len() > MAX_MAILBOX_DISK_BYTES {
+            return Err("mailbox file exceeds resource limit".into());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            if metadata.file_type().is_symlink()
+                || metadata.nlink() != 1
+                || metadata.permissions().mode() & 0o077 != 0
+            {
+                return Err("mailbox file is not a private regular file".into());
+            }
+        }
+        let raw = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
         let rows: Vec<Row> = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
         for r in rows {
             let st = hex::decode(&r.store_tag_hex).map_err(|e| e.to_string())?;
             let mid = hex::decode(&r.message_id_hex).map_err(|e| e.to_string())?;
             if st.len() != 16 || mid.len() != 16 {
-                continue;
+                return Err("invalid mailbox row identifier".into());
             }
             let mut store_tag = [0u8; 16];
             store_tag.copy_from_slice(&st);
@@ -288,7 +406,7 @@ impl StoreMailbox {
                 Some(h) => {
                     let v = hex::decode(h).map_err(|e| e.to_string())?;
                     if v.len() != 64 {
-                        None
+                        return Err("invalid custody signature length".into());
                     } else {
                         let mut s = [0u8; 64];
                         s.copy_from_slice(&v);
@@ -306,8 +424,15 @@ impl StoreMailbox {
                 packed_envelope,
                 custody_sig,
             };
-            // Bypass wall-clock put filter for reload.
-            mb.items.push(obj);
+            if obj.expired(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64,
+            ) {
+                continue;
+            }
+            mb.put(obj)?;
         }
         Ok(mb)
     }
@@ -316,6 +441,28 @@ impl StoreMailbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::envelope::{EnvType, Envelope};
+
+    fn packed_envelope(message_id: [u8; 16], expires_at: u64, body: u8) -> Vec<u8> {
+        let id = Identity::generate();
+        let mut env = Envelope {
+            env_type: EnvType::Message as u8,
+            flags: 0,
+            message_id,
+            routing_tag: [3u8; 16],
+            dest_device_hint: 0,
+            created_at: 1,
+            expires_at,
+            hop_limit: 4,
+            replication_budget: 2,
+            anti_replay_nonce: [4u8; 12],
+            ratchet_header_ciphertext: vec![],
+            message_ciphertext: vec![body],
+            sender_authentication: vec![],
+        };
+        env.sign_with(&id);
+        env.pack()
+    }
 
     #[test]
     fn mailbox_rotates_and_unlinks() {
@@ -357,14 +504,18 @@ mod tests {
             created_at_ms: 1,
             expires_at_ms: u64::MAX,
             flags: 0,
-            packed_envelope: b"RVN1opaque".to_vec(),
+            packed_envelope: packed_envelope([2u8; 16], u64::MAX, 7),
             custody_sig: None,
         };
         obj.sign_custody(&id).unwrap();
         let packed = obj.pack().unwrap();
         let got = StoreObject::unpack(&packed).unwrap();
-        assert_eq!(got.packed_envelope, b"RVN1opaque");
+        assert_eq!(got.packed_envelope, obj.packed_envelope);
         assert!(got.verify_custody(&id.public_key_bytes()));
+
+        let mut trailing = packed;
+        trailing.push(0);
+        assert!(StoreObject::unpack(&trailing).is_err());
     }
 
     #[test]
@@ -376,25 +527,172 @@ mod tests {
             created_at_ms: 1,
             expires_at_ms: 9_000_000_000_000,
             flags: 0,
-            packed_envelope: vec![1, 2, 3],
+            packed_envelope: packed_envelope([4u8; 16], 9_000_000_000_000, 1),
             custody_sig: None,
         };
         mb.put(obj).unwrap();
         assert_eq!(mb.get(&[3u8; 16], 50).len(), 1);
-        // Force-expire by replacing with short TTL object via delete + put
-        mb.delete_message(&[4u8; 16]);
+        // Force-expire through the private test fixture; production deletion is
+        // TTL-only and intentionally exposes no message-ID deletion API.
+        let mut expired_mb = StoreMailbox::new(2);
         let expired = StoreObject {
             store_tag: [3u8; 16],
             message_id: [5u8; 16],
             created_at_ms: 1,
             expires_at_ms: 100,
             flags: 0,
-            packed_envelope: vec![1, 2, 3],
+            packed_envelope: packed_envelope([5u8; 16], 100, 2),
             custody_sig: None,
         };
-        // Bypass put()'s wall-clock check by pushing via get/purge path:
-        mb.items.push(expired);
-        assert!(mb.get(&[3u8; 16], 100).is_empty());
-        assert_eq!(mb.purge_expired(100), 1);
+        expired_mb.items.push(expired);
+        assert!(expired_mb.get(&[3u8; 16], 100).is_empty());
+        assert_eq!(expired_mb.purge_expired(100), 1);
+    }
+
+    #[test]
+    fn same_public_id_different_objects_do_not_poison_each_other() {
+        let mid = [0x44u8; 16];
+        let expires = 9_000_000_000_000;
+        let mut mailbox = StoreMailbox::new_with_limits(4, 4);
+        for body in [1u8, 2u8] {
+            mailbox
+                .put(StoreObject {
+                    store_tag: [8u8; 16],
+                    message_id: mid,
+                    created_at_ms: 1,
+                    expires_at_ms: expires,
+                    flags: 0,
+                    packed_envelope: packed_envelope(mid, expires, body),
+                    custody_sig: None,
+                })
+                .unwrap();
+        }
+        assert_eq!(mailbox.get(&[8u8; 16], 2).len(), 2);
+    }
+
+    #[test]
+    fn identical_object_can_be_published_under_overlapping_mailbox_tags() {
+        let mid = [0x55u8; 16];
+        let expires = 9_000_000_000_000;
+        let packed = packed_envelope(mid, expires, 3);
+        let mut mailbox = StoreMailbox::new_with_limits(4, 4);
+        for tag in [[1u8; 16], [2u8; 16]] {
+            mailbox
+                .put(StoreObject {
+                    store_tag: tag,
+                    message_id: mid,
+                    created_at_ms: 1,
+                    expires_at_ms: expires,
+                    flags: 0,
+                    packed_envelope: packed.clone(),
+                    custody_sig: None,
+                })
+                .unwrap();
+        }
+        assert_eq!(mailbox.get(&[1u8; 16], 2).len(), 1);
+        assert_eq!(mailbox.get(&[2u8; 16], 2).len(), 1);
+    }
+
+    #[test]
+    fn aggregate_byte_limit_is_hard() {
+        let expires = 9_000_000_000_000;
+        let first = packed_envelope([1u8; 16], expires, 1);
+        let limit = first.len();
+        let mut mailbox = StoreMailbox::new_with_resource_limits(4, 4, limit);
+        mailbox
+            .put(StoreObject {
+                store_tag: [1u8; 16],
+                message_id: [1u8; 16],
+                created_at_ms: 1,
+                expires_at_ms: expires,
+                flags: 0,
+                packed_envelope: first,
+                custody_sig: None,
+            })
+            .unwrap();
+        assert_eq!(
+            mailbox
+                .put(StoreObject {
+                    store_tag: [2u8; 16],
+                    message_id: [2u8; 16],
+                    created_at_ms: 1,
+                    expires_at_ms: expires,
+                    flags: 0,
+                    packed_envelope: packed_envelope([2u8; 16], expires, 2),
+                    custody_sig: None,
+                })
+                .unwrap_err(),
+            "STORE_FULL"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn disk_snapshot_is_private_atomic_and_reloadable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mailbox.json");
+        let expires = 9_000_000_000_000;
+        let mut mailbox = StoreMailbox::new(4);
+        mailbox
+            .put(StoreObject {
+                store_tag: [7u8; 16],
+                message_id: [8u8; 16],
+                created_at_ms: 1,
+                expires_at_ms: expires,
+                flags: 0,
+                packed_envelope: packed_envelope([8u8; 16], expires, 9),
+                custody_sig: None,
+            })
+            .unwrap();
+        mailbox.save_disk(&path).unwrap();
+
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(std::fs::read_dir(dir.path()).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".mailbox.tmp")));
+        let loaded = StoreMailbox::load_disk(&path, 4).unwrap();
+        assert_eq!(loaded.get(&[7u8; 16], 2).len(), 1);
+    }
+
+    #[test]
+    fn total_and_per_tag_limits_are_hard() {
+        let expires = 9_000_000_000_000;
+        let mut mailbox = StoreMailbox::new_with_limits(1, 2);
+        for i in 0..2u8 {
+            let mid = [i; 16];
+            mailbox
+                .put(StoreObject {
+                    store_tag: [i; 16],
+                    message_id: mid,
+                    created_at_ms: 1,
+                    expires_at_ms: expires,
+                    flags: 0,
+                    packed_envelope: packed_envelope(mid, expires, i),
+                    custody_sig: None,
+                })
+                .unwrap();
+        }
+        let mid = [9u8; 16];
+        assert_eq!(
+            mailbox
+                .put(StoreObject {
+                    store_tag: [9u8; 16],
+                    message_id: mid,
+                    created_at_ms: 1,
+                    expires_at_ms: expires,
+                    flags: 0,
+                    packed_envelope: packed_envelope(mid, expires, 9),
+                    custody_sig: None,
+                })
+                .unwrap_err(),
+            "STORE_FULL"
+        );
     }
 }

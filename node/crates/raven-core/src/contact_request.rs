@@ -1,15 +1,15 @@
-//! RavenContactRequestV1 + ContactAcceptV1 — E2EE async via prekey / pairwise seal.
+//! RavenContactRequestV1 + ContactAcceptV1 — root-required ATSAM contact codec.
 //!
 //! Delivered as opaque RavenEnvelopeV1 message bodies through MessageRouter
 //! (direct / relay / store / BLE / Bridge). Bridge never decrypts.
 //!
 //! Recipient opens locally into `ContactRequestInbox`, then Accept / Decline / Block.
 
+use crate::atsam_aead::{seal_rvna1_v2, unseal_rvna1_v2};
 use crate::canon::{lp, u64_be};
 use crate::chat_history::BlockList;
 use crate::discovery_resolver::VerificationState;
 use crate::identity::Identity;
-use crate::seal::{derive_pairwise_key, seal_message, unseal_message};
 use sha2::{Digest, Sha256};
 
 pub const CONTACT_REQ_DOMAIN: &[u8] = b"rvn1/contact-req";
@@ -17,6 +17,11 @@ pub const CONTACT_ACCEPT_DOMAIN: &[u8] = b"rvn1/contact-accept";
 pub const CONTACT_REQ_INNER: &[u8] = b"rvn1/contact-req-inner";
 pub const CONTACT_REQ_WIRE: &[u8] = b"rvn1/contact-req-wire";
 pub const CONTACT_ACCEPT_WIRE: &[u8] = b"rvn1/contact-accept-wire";
+/// Rootless contact-request encryption is intentionally unavailable. Public
+/// identity keys are not secrets; callers must supply an authenticated ATSAM
+/// session root through the explicit `*_with_atsam_root` APIs.
+pub const CONTACT_REQ_SESSION_REQUIRED: &str =
+    "CONTACT_REQ_SESSION_REQUIRED: authenticated ATSAM root required";
 
 /// Cleartext fields that live *inside* the sealed payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,7 +42,9 @@ impl ContactRequestInner {
         out.extend_from_slice(&self.request_id);
         out.extend(lp(self.sender_raven_id.as_bytes())?);
         out.extend(lp(self.sender_display_name.as_bytes())?);
-        out.extend_from_slice(&(self.sender_aliases.len() as u16).to_be_bytes());
+        let alias_count = u16::try_from(self.sender_aliases.len())
+            .map_err(|_| "too many contact request aliases".to_string())?;
+        out.extend_from_slice(&alias_count.to_be_bytes());
         for a in &self.sender_aliases {
             out.extend(lp(a.as_bytes())?);
         }
@@ -88,6 +95,10 @@ impl ContactRequestInner {
         let created_at = u64::from_be_bytes(raw[off..off + 8].try_into().unwrap());
         off += 8;
         let expires_at = u64::from_be_bytes(raw[off..off + 8].try_into().unwrap());
+        off += 8;
+        if off != raw.len() {
+            return Err("contact req inner trailing bytes".into());
+        }
         Ok(Self {
             request_id,
             sender_raven_id,
@@ -144,14 +155,41 @@ impl RavenContactRequestV1 {
         recipient_addr: &str,
         inner: ContactRequestInner,
     ) -> Result<Self, String> {
+        let _ = (sender, recipient_pub, recipient_addr, inner);
+        Err(CONTACT_REQ_SESSION_REQUIRED.into())
+    }
+
+    /// Create a contact request under an already authenticated ATSAM session
+    /// root. Session establishment, root persistence, and monotonic index
+    /// allocation are the caller's responsibility.
+    pub fn create_with_atsam_root(
+        sender: &Identity,
+        recipient_pub: &[u8; 32],
+        recipient_addr: &str,
+        inner: ContactRequestInner,
+        root: &[u8; 32],
+        chain_index: u32,
+        nonce: &[u8; 12],
+    ) -> Result<Self, String> {
+        if crate::address::encode_address(recipient_pub) != recipient_addr {
+            return Err("CONTACT_REQ_RECIPIENT_KEY_MISMATCH".into());
+        }
+        let sender_addr = sender.address();
+        if inner.sender_raven_id != sender_addr {
+            return Err("CONTACT_REQ_SENDER_ID_MISMATCH".into());
+        }
+        if inner.expires_at <= inner.created_at {
+            return Err("CONTACT_REQ_INVALID_TIME_RANGE".into());
+        }
         let plain = inner.encode()?;
-        let key = derive_pairwise_key(&sender.public_key_bytes(), recipient_pub);
-        let ciphertext = seal_message(
-            &key,
-            &plain,
-            &sender.address(),
+        let ciphertext = seal_rvna1_v2(
+            root,
+            &sender_addr,
             recipient_addr,
-            &inner.request_id,
+            &hex::encode(inner.request_id),
+            chain_index,
+            &plain,
+            nonce,
         )?;
         let mut req = Self {
             request_id: inner.request_id,
@@ -162,12 +200,14 @@ impl RavenContactRequestV1 {
             sender_authentication: [0u8; 64],
             sender_pub: sender.public_key_bytes(),
         };
-        let sb = req.signing_bytes()?;
-        req.sender_authentication = sender.sign(&sb);
+        req.sender_authentication = sender.sign(&req.signing_bytes()?);
         Ok(req)
     }
 
     pub fn verify_outer(&self, now_ms: u64) -> Result<(), String> {
+        if self.expires_at <= self.created_at {
+            return Err("CONTACT_REQ_INVALID_TIME_RANGE".into());
+        }
         if now_ms > self.expires_at {
             return Err("CONTACT_REQ_EXPIRED".into());
         }
@@ -179,16 +219,36 @@ impl RavenContactRequestV1 {
     }
 
     pub fn open(&self, recipient: &Identity) -> Result<ContactRequestInner, String> {
-        let key = derive_pairwise_key(&self.sender_pub, &recipient.public_key_bytes());
+        let _ = recipient;
+        Err(CONTACT_REQ_SESSION_REQUIRED.into())
+    }
+
+    /// Open using the authenticated ATSAM session root paired with the sender.
+    pub fn open_with_atsam_root(
+        &self,
+        recipient: &Identity,
+        root: &[u8; 32],
+    ) -> Result<ContactRequestInner, String> {
+        if self.recipient_raven_id != recipient.address() {
+            return Err("CONTACT_REQ_WRONG_RECIPIENT".into());
+        }
         let sender_addr = crate::address::encode_address(&self.sender_pub);
-        let plain = unseal_message(
-            &key,
+        let plain = unseal_rvna1_v2(
+            root,
             &self.ciphertext,
             &sender_addr,
             &self.recipient_raven_id,
-            &self.request_id,
+            &hex::encode(self.request_id),
         )?;
-        ContactRequestInner::decode(&plain)
+        let inner = ContactRequestInner::decode(&plain)?;
+        if inner.request_id != self.request_id
+            || inner.sender_raven_id != sender_addr
+            || inner.created_at != self.created_at
+            || inner.expires_at != self.expires_at
+        {
+            return Err("CONTACT_REQ_INNER_BINDING_MISMATCH".into());
+        }
+        Ok(inner)
     }
 
     /// True when store/bridge only sees ciphertext (no plaintext markers).
@@ -199,7 +259,7 @@ impl RavenContactRequestV1 {
 
     pub fn content_hash(&self) -> [u8; 32] {
         let mut h = Sha256::new();
-        h.update(&self.request_id);
+        h.update(self.request_id);
         h.update(&self.ciphertext);
         h.finalize().into()
     }
@@ -242,7 +302,7 @@ impl RavenContactRequestV1 {
         }
         let ct_len = u16::from_be_bytes([raw[off], raw[off + 1]]) as usize;
         off += 2;
-        if off + ct_len + 64 + 32 > raw.len() {
+        if off + ct_len + 64 + 32 != raw.len() {
             return Err("ct trunc".into());
         }
         let ciphertext = raw[off..off + ct_len].to_vec();
@@ -401,10 +461,41 @@ impl ContactRequestInbox {
             return Err("CONTACT_REQ_WRONG_RECIPIENT".into());
         }
         let inner = outer.open(recipient)?;
+        self.ingest_opened(outer, inner, now_ms)
+    }
+
+    /// Verify, decrypt with an authenticated ATSAM root, then apply inbox
+    /// deduplication and anti-spam policy. Failed authentication never inserts
+    /// a durable request ID.
+    pub fn ingest_with_atsam_root(
+        &mut self,
+        outer: RavenContactRequestV1,
+        recipient: &Identity,
+        root: &[u8; 32],
+        now_ms: u64,
+    ) -> Result<ContactRequestInner, String> {
+        outer.verify_outer(now_ms)?;
+        if outer.recipient_raven_id != recipient.address() {
+            return Err("CONTACT_REQ_WRONG_RECIPIENT".into());
+        }
+        let inner = outer.open_with_atsam_root(recipient, root)?;
+        self.ingest_opened(outer, inner, now_ms)
+    }
+
+    fn ingest_opened(
+        &mut self,
+        outer: RavenContactRequestV1,
+        inner: ContactRequestInner,
+        now_ms: u64,
+    ) -> Result<ContactRequestInner, String> {
         if inner.request_id != outer.request_id {
             return Err("CONTACT_REQ_ID_MISMATCH".into());
         }
-        if self.pending.iter().any(|p| p.outer.request_id == outer.request_id) {
+        if self
+            .pending
+            .iter()
+            .any(|p| p.outer.request_id == outer.request_id)
+        {
             return Ok(inner);
         }
         if self.pending.len() >= CONTACT_REQ_MAX_PENDING {
@@ -483,11 +574,7 @@ impl ContactRequestInbox {
     }
 
     /// Local block — no central moderation. Removes pending + blocks sender pub.
-    pub fn block(
-        &mut self,
-        request_id: &[u8; 16],
-        blocks: &mut BlockList,
-    ) -> Result<(), String> {
+    pub fn block(&mut self, request_id: &[u8; 16], blocks: &mut BlockList) -> Result<(), String> {
         let pending = self.take(request_id)?;
         blocks.block(&hex::encode(pending.outer.sender_pub));
         Ok(())

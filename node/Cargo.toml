@@ -16,7 +16,7 @@ authors = ["RAVEN contributors"]
 
 [workspace.dependencies]
 raven-core = { path = "crates/raven-core" }
-ed25519-dalek = { version = "2", features = ["rand_core"] }
+ed25519-dalek = { version = "2", features = ["rand_core", "zeroize"] }
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 sha2 = "0.10"
 hmac = "0.12"

@@ -1,0 +1,52 @@
+{
+  "allocator": {
+    "counter": 59,
+    "env_type": 2,
+    "epoch": 1700000001,
+    "formula": "counter=(index<<3)|((env_type-1)<<1)|direction"
+  },
+  "description": "Exact 101-byte signed ACK sealed as 143-byte RVNA1 proto 0x03 and packed in a 293-byte RVN1 envelope",
+  "deterministic": true,
+  "expected": {
+    "aad_sha256_hex": "be147eb636eb1a31ac12beeb2a519c3f85aff06b301c874a428a2dc308c0f36b",
+    "ack_key_index7_hex": "ca52df748a222ea8d51a3070f596992adfa7649ce1156a81994ea40b00c0342d",
+    "ack_plaintext_hex": "00000000000000000000000000000001010000000000000000000000020000018bcfe56be8d07e3df8d65380cdf7c22a6451385fed401c27744d10178feb625ea398d1af0adc9b07f6d525ba32f7c8b7e35a62cd4cb3dfbdb445410251247aaf2b7ea5ae04",
+    "ack_plaintext_len": 101,
+    "ack_signing_bytes_hex": "72766e312f61636b00000000000000000000000000000001010000000000000000000000020000018bcfe56be8",
+    "inner_signature_hex": "d07e3df8d65380cdf7c22a6451385fed401c27744d10178feb625ea398d1af0adc9b07f6d525ba32f7c8b7e35a62cd4cb3dfbdb445410251247aaf2b7ea5ae04",
+    "outer_signature_hex": "d4ebd743e63a3c6f86c3d53f99d4fb622cb01a0f6e1a0a90fe9921b65facb0d362fe53181be147699e4d1080975707fc26efb6007abc194e1f9cae3a9d259606",
+    "outer_signing_bytes_hex": "52564e310102000000112233445546778899aabbccddeeff5ee0be72408d45e1cd825ee94b7e6baa00000000000000000000018bcfe56be80000018bd50bc7e8000000000000000000000000000300000000008f0040e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855b8b1cf1f69cb3f681f8d06a76ffc8cf190271eef994c77511a20f0b7ac2e0fbc",
+    "packed_envelope_hex": "52564e310102000000112233445546778899aabbccddeeff5ee0be72408d45e1cd825ee94b7e6baa00000000000000000000018bcfe56be80000018bd50bc7e8080300000000000000000000000300000000008f004052564e4131000000030100000007cdcdcdcdcdcdcdcdcdcdcdcda60df22ca18fdecdfbed01413965bda624581ea1174f2fd0ce31121dd5b730d7bfe1101be620ecc23495356505dcf119ee398035b3e155db998653494ab8f83c03cc0774c57ef5bfb10905679de841b4f32aa27820ac6b6c3c7fbc9d17fa78b13bd28a043e1d1c9021938fa3f5797b99047c514449d4ebd743e63a3c6f86c3d53f99d4fb622cb01a0f6e1a0a90fe9921b65facb0d362fe53181be147699e4d1080975707fc26efb6007abc194e1f9cae3a9d259606",
+    "packed_envelope_len": 293,
+    "routing_tag_hex": "5ee0be72408d45e1cd825ee94b7e6baa",
+    "rvna1_proto": 3,
+    "rvna1_suite": 1,
+    "sealed_body_hex": "52564e4131000000030100000007cdcdcdcdcdcdcdcdcdcdcdcda60df22ca18fdecdfbed01413965bda624581ea1174f2fd0ce31121dd5b730d7bfe1101be620ecc23495356505dcf119ee398035b3e155db998653494ab8f83c03cc0774c57ef5bfb10905679de841b4f32aa27820ac6b6c3c7fbc9d17fa78b13bd28a043e1d1c9021938fa3f5797b99047c514449",
+    "sealed_body_len": 143
+  },
+  "id": "atsam_indexed_session_v1_sealed_ack_001",
+  "input": {
+    "ack_chain_index": 7,
+    "ack_nonce_hex": "000000000000000000000002",
+    "acked_message_id_hex": "00000000000000000000000000000001",
+    "anti_replay_nonce_hex": "000000000000000000000003",
+    "created_at_ms": 1700000001000,
+    "direction": 1,
+    "expires_at_ms": 1700086401000,
+    "hop_limit": 8,
+    "initiator_address": "rvn1qysluvwl5922yctzd0u9gpr06gn3k7ldfvecule0",
+    "inner_signer_ed_public_hex": "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
+    "k_root_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+    "k_root_note": "public deterministic fixture material; never a live session root",
+    "outer_flags": 0,
+    "outer_message_id_aad_uuid": "00112233-4455-4677-8899-AABBCCDDEEFF",
+    "outer_message_id_hex": "00112233445546778899aabbccddeeff",
+    "replication_budget": 3,
+    "responder_address": "rvn1qyulwy7s5ezz20cy222zrw04rwds39uapqakqskn",
+    "seal_nonce_hex": "cdcdcdcdcdcdcdcdcdcdcdcd",
+    "status": 1
+  },
+  "production_activation": "disabled_pending_signed_pairinit_negotiation",
+  "production_enabled": false,
+  "profile_version": "ATSAM/indexed-session/v1"
+}

@@ -183,8 +183,9 @@ fn read_raw_seed_file(path: &Path) -> Result<Option<Vec<u8>>, IdentityStoreError
 
 #[cfg(target_os = "macos")]
 fn keychain_set(account: &str, seed: &[u8; 32]) -> Result<(), IdentityStoreError> {
-    use security_framework::passwords::{delete_generic_password, set_generic_password};
-    let _ = delete_generic_password(KEYCHAIN_SERVICE, account);
+    use security_framework::passwords::set_generic_password;
+    // `set_generic_password` performs update-or-add. Deleting first would turn
+    // a transient Keychain write failure into permanent identity loss.
     set_generic_password(KEYCHAIN_SERVICE, account, seed)
         .map_err(|e| IdentityStoreError::SecureStore(format!("keychain set: {e}")))
 }
@@ -244,8 +245,7 @@ fn dpapi_protect(plaintext: &[u8]) -> Result<Vec<u8>, IdentityStoreError> {
             "CryptProtectData failed".into(),
         ));
     }
-    let slice =
-        unsafe { std::slice::from_raw_parts(data_out.pbData, data_out.cbData as usize) };
+    let slice = unsafe { std::slice::from_raw_parts(data_out.pbData, data_out.cbData as usize) };
     let out = slice.to_vec();
     unsafe {
         LocalFree(data_out.pbData as _);
@@ -284,8 +284,7 @@ fn dpapi_unprotect(blob: &[u8]) -> Result<Vec<u8>, IdentityStoreError> {
             "CryptUnprotectData failed".into(),
         ));
     }
-    let slice =
-        unsafe { std::slice::from_raw_parts(data_out.pbData, data_out.cbData as usize) };
+    let slice = unsafe { std::slice::from_raw_parts(data_out.pbData, data_out.cbData as usize) };
     let out = slice.to_vec();
     unsafe {
         LocalFree(data_out.pbData as _);
@@ -342,13 +341,8 @@ fn secret_service_set(account: &str, seed: &[u8; 32]) -> Result<(), IdentityStor
             .unlock()
             .map_err(|e| IdentityStoreError::SecureStore(format!("secret-service unlock: {e}")))?;
     }
-    if let Ok(items) =
-        collection.search_items(vec![("service", KEYCHAIN_SERVICE), ("account", account)])
-    {
-        for item in items {
-            let _ = item.delete();
-        }
-    }
+    // `replace=true` updates the matching item. Never delete first: a failed
+    // create/update must leave the prior identity recoverable.
     collection
         .create_item(
             "RAVEN node identity seed",
@@ -411,9 +405,14 @@ fn secret_service_delete(account: &str) {
 }
 
 /// Persist seed using the best available platform backend.
-fn store_seed(data_dir: &Path, seed: &[u8; 32]) -> Result<IdentityStoreBackend, IdentityStoreError> {
+#[allow(clippy::needless_return)]
+fn store_seed(
+    data_dir: &Path,
+    seed: &[u8; 32],
+) -> Result<IdentityStoreBackend, IdentityStoreError> {
     std::fs::create_dir_all(data_dir).map_err(|e| IdentityStoreError::Io(e.to_string()))?;
     let path = seed_path(data_dir);
+    #[cfg(not(windows))]
     let account = account_for_data_dir(data_dir);
 
     // Demo/CI override: keep seed in mode-0600 file so ash ↔ raven-node share
@@ -476,15 +475,20 @@ fn bytes_to_seed(bytes: &[u8]) -> Result<[u8; 32], IdentityStoreError> {
 }
 
 /// Load from platform store or locked file; migrate legacy plaintext when needed.
+#[allow(clippy::needless_return)]
 fn load_seed_with_migrate(
     data_dir: &Path,
 ) -> Result<Option<([u8; 32], IdentityStoreBackend)>, IdentityStoreError> {
     let path = seed_path(data_dir);
+    #[cfg(not(windows))]
     let account = account_for_data_dir(data_dir);
 
     // Prefer explicit locked-file marker / demo override before platform stores.
     if force_locked_file_backend()
-        || matches!(read_marker(data_dir), Some(IdentityStoreBackend::LockedFile))
+        || matches!(
+            read_marker(data_dir),
+            Some(IdentityStoreBackend::LockedFile)
+        )
     {
         if let Some(bytes) = read_raw_seed_file(&path)? {
             if is_legacy_plaintext(&bytes) {
@@ -625,7 +629,11 @@ pub fn store_status(data_dir: &Path) -> IdentityStoreStatus {
         }
         #[cfg(windows)]
         {
-            if file_bytes.as_ref().map(|b| is_dpapi_blob(b)).unwrap_or(false) {
+            if file_bytes
+                .as_ref()
+                .map(|b| is_dpapi_blob(b))
+                .unwrap_or(false)
+            {
                 backend = Some(IdentityStoreBackend::WindowsDpapiFile);
             }
         }
@@ -640,10 +648,7 @@ pub fn store_status(data_dir: &Path) -> IdentityStoreStatus {
             }
         }
     }
-    let has_identity = match load_identity(data_dir) {
-        Ok(Some(_)) => true,
-        _ => false,
-    };
+    let has_identity = matches!(load_identity(data_dir), Ok(Some(_)));
     // After a successful load/migrate, plaintext should be gone on macOS / DPAPI hosts.
     let legacy_after = std::fs::read(&path)
         .ok()
@@ -653,10 +658,7 @@ pub fn store_status(data_dir: &Path) -> IdentityStoreStatus {
         backend,
         has_identity,
         legacy_plaintext_present: legacy_after
-            && !matches!(
-                backend,
-                Some(IdentityStoreBackend::LockedFile)
-            ),
+            && !matches!(backend, Some(IdentityStoreBackend::LockedFile)),
     }
 }
 
@@ -731,10 +733,7 @@ mod tests {
                 !path.exists(),
                 "plaintext identity.seed must be removed after Keychain migrate"
             );
-            assert_eq!(
-                read_marker(dir),
-                Some(IdentityStoreBackend::MacosKeychain)
-            );
+            assert_eq!(read_marker(dir), Some(IdentityStoreBackend::MacosKeychain));
         }
 
         #[cfg(windows)]

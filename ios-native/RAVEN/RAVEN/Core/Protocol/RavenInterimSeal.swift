@@ -65,6 +65,9 @@ public enum RavenInterimSeal {
         recipientAddr: String,
         messageId: Data
     ) throws -> Data {
+        #if !DEBUG
+        throw SealError.unsafeInterimDisabled
+        #endif
         precondition(messageId.count == 16)
         let aad = buildAAD(sender: senderAddr, recipient: recipientAddr, messageId: messageId)
         var nonce = Data(count: 12)
@@ -94,6 +97,9 @@ public enum RavenInterimSeal {
         recipientAddr: String,
         messageId: Data
     ) throws -> Data {
+        #if !DEBUG
+        throw SealError.unsafeInterimDisabled
+        #endif
         guard wire.count >= 8 + 2 + 12 + 16 else {
             throw SealError.truncated
         }
@@ -123,6 +129,7 @@ public enum RavenInterimSeal {
     }
 
     public enum SealError: Error {
+        case unsafeInterimDisabled
         case truncated
         case unsupported
     }

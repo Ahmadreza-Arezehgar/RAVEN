@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from database import get_db
 from models import User, Message, GroupMessage, Group, GroupMember, ConversationSetting
 from routers.users import get_current_user
-from encryption import encrypt_text, decrypt_text
+from encryption import encrypt_text, decrypt_text, _looks_opaque_envelope
 from middleware.rate_limit import rate_limiter
 from ws_manager import ws_manager
 import os
@@ -3482,10 +3482,15 @@ async def bridge_downlink(
                         
                         sender = db.query(User).filter(User.id == gmsg.sender_id).first()
                         
+                        # 🔒 SECURITY (audit C1) — same untrusted-bridge
+                        # invariant as the 1:1 path: never expose
+                        # server-decrypted legacy plaintext to the bridge
+                        # operator; relay only opaque client envelopes.
                         try:
-                            content = decrypt_text(gmsg.content) if gmsg.content else None
+                            _gdecoded = decrypt_text(gmsg.content) if gmsg.content else None
                         except Exception:
-                            content = "[Encrypted]"
+                            _gdecoded = None
+                        content = _gdecoded if (_gdecoded and _looks_opaque_envelope(_gdecoded)) else "[Encrypted]"
                         
                         # 🔴 ROUND 71 phase 3 follow-up (2026-05-24) —
                         # include `group_key_version` in the bridge-
@@ -3610,13 +3615,25 @@ async def bridge_downlink(
         for msg in pending:
             sender = senders.get(msg.sender_id)
             
-            # Decrypt content
+            # 🔒 SECURITY (audit C1 — CRITICAL plaintext theft):
+            # The bridge is UNTRUSTED infrastructure — any authenticated
+            # user can poll this endpoint for arbitrary peer ids (the
+            # friendship IDOR guard is intentionally removed for mesh
+            # relay). Its job is to forward OPAQUE client-sealed bytes,
+            # exactly as this function's own comments assert ("the bridge
+            # sees only opaque ciphertext, NEVER plaintext"). Enforce that
+            # invariant: only relay content that is still a client wire
+            # envelope (RVNS1/RVNP1). For any legacy row where
+            # decrypt_text() would hand back server-at-rest-decrypted
+            # PLAINTEXT, substitute a placeholder so the bridge operator
+            # can never read another user's message body.
             try:
-                content = decrypt_text(msg.content) if msg.content else None
+                _decoded = decrypt_text(msg.content) if msg.content else None
             except Exception as e:
                 print(f"⚠️ [Bridge Downlink] Decrypt failed for msg {msg.id}: {e}")
-                content = "[Encrypted]"
-            
+                _decoded = None
+            content = _decoded if (_decoded and _looks_opaque_envelope(_decoded)) else "[Encrypted]"
+
             result.append(MessageResponse(
                 id=msg.id,
                 sender_id=msg.sender_id,

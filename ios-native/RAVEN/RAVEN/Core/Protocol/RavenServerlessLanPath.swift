@@ -168,9 +168,52 @@ public enum RavenServerlessLanPath {
         case timeout
         case noAck
         case badAck
+        case unverifiedAck
+        case invalidEnvelope
+        case unsafeInterimDisabled
+        case unsupportedSealedBody
     }
 
-    /// Send a packed envelope to host:port; wait for one ACK envelope (env_type=2).
+    /// Outbound carrier admission. A signed outer envelope is not encryption:
+    /// accepting RVNP1 (or arbitrary bytes) here would expose the message to
+    /// every relay. Only formats whose own parsers can authenticate ciphertext
+    /// are eligible, with cheap structural bounds before any network attempt.
+    static func isEligibleOutboundSealedBody(_ body: Data) -> Bool {
+        let maxBodyBytes = 256 * 1024
+        guard body.count <= maxBodyBytes else { return false }
+
+        if body.prefix(ATSAMMessageSealer.magic.count) == ATSAMMessageSealer.magic {
+            // Shipping ATSAM v2: magic(8), proto/suite(2), index(4), nonce(12),
+            // at least one ciphertext byte, and Poly1305 tag(16). V1 is
+            // receive-only and the public-key-derived 0x7f demo is forbidden.
+            let minimumV2Bytes = 8 + 2 + 4 + 12 + 1 + 16
+            return body.count >= minimumV2Bytes
+                && body[8] == RavenInterimSeal.atsamProtoV2
+                && body[9] == RavenInterimSeal.suite
+        }
+
+        if body.prefix(MessageContentSealer.sealedMagic.count)
+            == MessageContentSealer.sealedMagic {
+            // A transport ciphertext has at least one byte plus its 16-byte tag.
+            return body.count >= MessageContentSealer.sealedMagic.count + 17
+        }
+
+        if body.prefix(MessageContentSealer.handshakeMagic.count)
+            == MessageContentSealer.handshakeMagic {
+            // Noise IK message 1: e(32) + encrypted static(48) + encrypted
+            // payload tag(16). The application itself rejects blank text.
+            return body.count >= MessageContentSealer.handshakeMagic.count + 96
+        }
+
+        return false
+    }
+
+    /// Legacy request/response transport helper.
+    ///
+    /// A structural `env_type=ACK` is not recipient delivery evidence. This API
+    /// therefore sends the frame but rejects every response until a caller can
+    /// supply a session-aware endpoint ACK validator. Production submission
+    /// paths use `sendPackedFireAndForget` and retain their pending state.
     public static func sendEnvelope(
         _ env: RavenEnvelopeV1,
         host: String,
@@ -209,12 +252,7 @@ public enum RavenServerlessLanPath {
                     if let data, !data.isEmpty {
                         box.rx.append(data)
                         if let (payload, _) = deframe(box.rx) {
-                            guard let ack = RavenEnvelopeV1.unpack(payload),
-                                  ack.envType == RavenEnvelopeV1.EnvType.ack.rawValue else {
-                                finish(.failure(LanError.badAck))
-                                return
-                            }
-                            finish(.success(ack))
+                            finish(.failure(unverifiedResponseError(payload)))
                             return
                         }
                     }
@@ -249,6 +287,137 @@ public enum RavenServerlessLanPath {
         }
     }
 
+    /// Pure response classifier used by the transport and adversarial tests.
+    /// It deliberately never returns an ACK object to application code.
+    static func unverifiedResponseError(_ payload: Data) -> LanError {
+        guard let envelope = RavenEnvelopeV1.unpack(payload),
+              envelope.envType == RavenEnvelopeV1.EnvType.ack.rawValue else {
+            return .badAck
+        }
+        return .unverifiedAck
+    }
+
+    /// Connect to Mac raven-node and read pending framed envelopes (Mac-listens path).
+    /// Sends pull hello `RVNP` so Mac does not treat probes as recipients.
+    public static func pullEnvelopes(
+        host: String,
+        port: UInt16,
+        durationSeconds: TimeInterval = 6
+    ) async -> [Data] {
+        guard isActive else { return [] }
+        // Direct IP TCP often does not show the Local Network prompt; Bonjour does.
+        await triggerLocalNetworkPermissionPrompt()
+        return await withCheckedContinuation { cont in
+            let queue = DispatchQueue(label: "raven.serverless.lan.pull")
+            let conn = NWConnection(
+                host: NWEndpoint.Host(host),
+                port: NWEndpoint.Port(rawValue: port)!,
+                using: .tcp
+            )
+            final class Box: @unchecked Sendable {
+                var resumed = false
+                var rx = Data()
+                var out: [Data] = []
+            }
+            let box = Box()
+            let finish: @Sendable () -> Void = {
+                queue.async {
+                    guard !box.resumed else { return }
+                    box.resumed = true
+                    conn.cancel()
+                    cont.resume(returning: box.out)
+                }
+            }
+            @Sendable func receiveMore() {
+                conn.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, isComplete, error in
+                    if error != nil || isComplete {
+                        finish()
+                        return
+                    }
+                    if let data, !data.isEmpty {
+                        box.rx.append(data)
+                        while let (payload, rest) = deframe(box.rx) {
+                            box.rx = rest
+                            if let env = RavenEnvelopeV1.unpack(payload),
+                               env.envType == RavenEnvelopeV1.EnvType.message.rawValue {
+                                box.out.append(payload)
+                            }
+                        }
+                    }
+                    receiveMore()
+                }
+            }
+            conn.stateUpdateHandler = { state in
+                switch state {
+                case .ready:
+                    // Pull hello — Mac waits for RVNP (or ~400ms silent legacy).
+                    conn.send(content: Data("RVNP".utf8), completion: .contentProcessed { _ in
+                        receiveMore()
+                    })
+                case .waiting(let err):
+                    var tag = "waiting"
+                    if #available(iOS 14.0, *) {
+                        if case .localNetworkDenied? = conn.currentPath?.unsatisfiedReason {
+                            tag = "localNetworkDenied"
+                        }
+                    }
+                    #if DEBUG
+                    print("🕊️ [LAN pull] \(tag):\(err.localizedDescription)")
+                    #endif
+                case .failed(let err):
+                    #if DEBUG
+                    print("🕊️ [LAN pull] failed: \(err.localizedDescription)")
+                    #endif
+                    finish()
+                case .cancelled:
+                    finish()
+                default:
+                    break
+                }
+            }
+            conn.start(queue: queue)
+            queue.asyncAfter(deadline: .now() + durationSeconds) {
+                finish()
+            }
+        }
+    }
+
+    /// Browse a declared Bonjour type briefly so iOS shows Local Network permission.
+    private static func triggerLocalNetworkPermissionPrompt() async {
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            let queue = DispatchQueue(label: "raven.serverless.lan.bonjour")
+            let params = NWParameters()
+            params.includePeerToPeer = true
+            guard let browser = try? NWBrowser(
+                for: .bonjour(type: "_raven-ash._tcp", domain: nil),
+                using: params
+            ) else {
+                cont.resume()
+                return
+            }
+            final class Once: @unchecked Sendable { var done = false }
+            let once = Once()
+            let finish: @Sendable () -> Void = {
+                queue.async {
+                    guard !once.done else { return }
+                    once.done = true
+                    browser.cancel()
+                    cont.resume()
+                }
+            }
+            browser.stateUpdateHandler = { state in
+                switch state {
+                case .ready, .failed, .cancelled:
+                    finish()
+                default:
+                    break
+                }
+            }
+            browser.start(queue: queue)
+            queue.asyncAfter(deadline: .now() + 1.2) { finish() }
+        }
+    }
+
     /// Write one framed envelope and close — no ACK wait (used for ACK reverse uplink).
     public static func sendPackedFireAndForget(
         _ packed: Data,
@@ -257,6 +426,12 @@ public enum RavenServerlessLanPath {
         timeoutSeconds: TimeInterval = 8
     ) async throws {
         guard isActive else { throw LanError.flagDisabled }
+        // This is a relay-capable API, so it deliberately does not inspect the
+        // opaque body. It must still enforce the canonical RVN1 wire boundary
+        // before opening a socket; a magic-prefix check is not admission.
+        guard RavenEnvelopeV1.unpack(packed) != nil else {
+            throw LanError.invalidEnvelope
+        }
         let framed = frame(packed)
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             let queue = DispatchQueue(label: "raven.serverless.lan.ff")
@@ -315,29 +490,14 @@ public enum RavenServerlessLanPath {
         messageId: Data = Data((0..<16).map { _ in UInt8.random(in: 0...255) })
     ) async throws -> RavenEnvelopeV1 {
         guard isActive else { throw LanError.flagDisabled }
-        let key = RavenInterimSeal.derivePairwiseKey(localPub: localPub, peerPub: peerPub)
-        let sealed = try RavenInterimSeal.seal(
-            key: key,
-            plaintext: plaintext,
-            senderAddr: localAddr,
-            recipientAddr: peerAddr,
-            messageId: messageId
-        )
-        // Demo routing tag: first 16 bytes of SHA-256(peerPub || messageId)
-        var tagMaterial = peerPub
-        tagMaterial.append(messageId)
-        let routingTag = Data(SHA256.hash(data: tagMaterial)).prefix(16)
-        let env = packSealedMessage(
-            sealedBody: sealed,
-            messageId: messageId,
-            routingTag: Data(routingTag),
-            signingKey: signingKey,
-            hybridPQHint: false
-        )
-        return try await sendEnvelope(env, host: host, port: port)
+        // This helper derived its AEAD key entirely from public Ed25519 keys.
+        // Keeping the source-compatible entry point but failing unconditionally
+        // prevents accidental use even in a feature-flagged production path.
+        throw LanError.unsafeInterimDisabled
     }
 
-    /// Pack real ATSAM/Noise sealed bytes as opaque envelope body (node ACKs without decrypt).
+    /// Pack real ATSAM/Noise sealed bytes and submit them opaquely. The returned
+    /// value is the outbound envelope, never a delivery ACK.
     public static func sendOpaqueSealed(
         sealedBody: Data,
         signingKey: Curve25519.Signing.PrivateKey,
@@ -346,6 +506,9 @@ public enum RavenServerlessLanPath {
         messageId: Data = Data((0..<16).map { _ in UInt8.random(in: 0...255) })
     ) async throws -> RavenEnvelopeV1 {
         guard isActive else { throw LanError.flagDisabled }
+        guard isEligibleOutboundSealedBody(sealedBody) else {
+            throw LanError.unsupportedSealedBody
+        }
         let hybrid = RavenInterimSeal.classify(sealedBody) == .opaqueAtsam(proto: RavenInterimSeal.atsamProtoV2)
             || RavenInterimSeal.classify(sealedBody) == .opaqueAtsam(proto: RavenInterimSeal.atsamProtoV1)
         var tagMaterial = sealedBody.prefix(32)
@@ -358,6 +521,7 @@ public enum RavenServerlessLanPath {
             signingKey: signingKey,
             hybridPQHint: hybrid
         )
-        return try await sendEnvelope(env, host: host, port: port)
+        try await sendPackedFireAndForget(env.pack(), host: host, port: port)
+        return env
     }
 }

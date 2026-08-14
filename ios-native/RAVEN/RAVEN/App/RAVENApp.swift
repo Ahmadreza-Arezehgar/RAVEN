@@ -108,6 +108,12 @@ struct RAVENApp: App {
                     }
                 }
                 .task {
+                    // XCTest launches the full SwiftUI application host before
+                    // executing test methods. Keep that host completely local:
+                    // no APNs, HTTP, WebSocket, prekey, heartbeat, diagnostics,
+                    // bridge, or background-sync startup is permitted.
+                    guard RavenRuntimePolicy.allowsExternalSideEffects else { return }
+
                     // v1.6 self-tests — verify the new cryptographic
                     // surfaces still work end-to-end on this device.
                     // PASS/FAIL appears once per launch in the console;
@@ -140,11 +146,9 @@ struct RAVENApp: App {
                     // ChatWire: endpoint ingest → sealer / Delivered ticks (key-free bridge).
                     // No-op when FeatureFlag.ravenEnvelopeV1 is OFF.
                     if FeatureFlag.isRavenEnvelopeV1Enabled {
-                        // Phone-as-destination for serverless DMs (bridge may still
-                        // forward when role says so). Tests may override.
-                        RavenEnvelopeBridgeService.shared.localIsDestination = true
                         RavenEnvelopeBridgeService.shared.start()
                         RavenEnvelopeChatWire.shared.start()
+                        ATSAMLabEndpointHost.shared.start()
                     }
 
                     // Boot the serverless internet-bridge transport (libp2p:
@@ -236,7 +240,7 @@ struct RAVENApp: App {
                 }
                 // 🚀 Cold Start Deep Link: After user authenticates, fire any pending deep link
                 .onChange(of: AuthService.shared.isAuthenticated) { _, isAuthenticated in
-                    if isAuthenticated {
+                    if isAuthenticated && RavenRuntimePolicy.allowsExternalSideEffects {
                         // 🔴 v1.8 — App Attest enrolment on fresh login.
                         AppAttestService.shared.enrolIfNeeded()
                         if let pending = DeepLinkRouter.shared.pendingDestination {
@@ -273,6 +277,7 @@ struct RAVENApp: App {
         }
         #endif
         .onChange(of: scenePhase) { _, newPhase in
+            guard RavenRuntimePolicy.allowsExternalSideEffects else { return }
             switch newPhase {
             case .active:
                 CrashGuard.shared.log(.lifecycle, "App became active (foreground)")
@@ -346,6 +351,18 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
+        // XCTest boots the containing app before loading its test bundle. This
+        // must be the first launch decision: install a process-wide URLSession
+        // backstop, then skip every production startup service. Local services
+        // needed by an individual test are initialized explicitly by that test.
+        if RavenRuntimePolicy.isXCTestHost {
+            RavenRuntimePolicy.installXCTestNetworkFirewallIfNeeded()
+            #if DEBUG
+            print("🧪 [App] XCTest host: external startup side effects disabled")
+            #endif
+            return true
+        }
+
         // Configure URLCache for offline image viewing (500 MB disk space)
         let memoryCapacity = 100 * 1024 * 1024 // 100 MB — prevents image eviction during active use
         let diskCapacity = 500 * 1024 * 1024 // 500 MB
@@ -414,6 +431,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         // the Keychain so we don't fire before `agreementPublicKeyData`
         // is populated (would skip-and-give-up otherwise).
         Task.detached(priority: .utility) {
+            guard !ProcessInfo.processInfo.isRunningRavenTests else { return }
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             await ATSAMPrekeyService.autoPublishIfNeeded()
             // Belt-and-suspenders: retry once more after 30 s so a
@@ -442,6 +460,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         // also drains anything queued from a previous session.
         _ = GroupService.shared
         Task.detached(priority: .utility) {
+            guard !ProcessInfo.processInfo.isRunningRavenTests else { return }
             try? await Task.sleep(nanoseconds: 5_000_000_000)
             guard NetworkMonitor.shared.isOnline else { return }
             await GroupService.shared.syncPendingGroups()
@@ -469,6 +488,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         // detached Task; silently swallows offline-at-launch.  3 s
         // delay rides out the cold-launch network bring-up.
         Task.detached(priority: .utility) {
+            guard !ProcessInfo.processInfo.isRunningRavenTests else { return }
             try? await Task.sleep(nanoseconds: 3_000_000_000)
             guard NetworkMonitor.shared.isOnline else {
                 NSLog("👫 [FriendsCache] skipped pre-warm — offline at launch.")
@@ -483,7 +503,9 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         }
 
         // 💎 RevenueCat — Configure subscription service early
-        SubscriptionService.shared.configure()
+        if RavenRuntimePolicy.allowsExternalSideEffects {
+            SubscriptionService.shared.configure()
+        }
         
         #if DEBUG
         print("🚀 [App] ═══════════════════════════════════════")
@@ -513,7 +535,10 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         // The user-facing `requestAuthorization()` prompt (the alert)
         // still happens later from the `.task {}` because it requires
         // user interaction and shouldn't block app launch.
-        UIApplication.shared.registerForRemoteNotifications()
+        if RavenRuntimePolicy.allowsExternalSideEffects {
+            RavenTestExternalSideEffectAudit.recordActual(.apnsRegistration)
+            UIApplication.shared.registerForRemoteNotifications()
+        }
         
         // Start DTN Mesh infrastructure (Server-first, Mesh-fallback)
         NetworkMonitor.shared.start()
@@ -586,6 +611,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
                 // failures only mean E2EE stays gated by its feature
                 // flag (`E2EEMessageGateway.isEnabled`).
                 Task.detached(priority: .utility) {
+                    guard !ProcessInfo.processInfo.isRunningRavenTests else { return }
                     await E2EEBootstrap.shared.runIfNeeded()
                 }
                 
@@ -624,6 +650,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         // handshake. Fires immediately at launch — runs in parallel with the rest
         // of init since networking is I/O-bound. Best-effort.
         Task.detached(priority: .utility) {
+            guard !ProcessInfo.processInfo.isRunningRavenTests else { return }
             await NetworkService.shared.warmConnection()
         }
         
@@ -1379,7 +1406,27 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
             }
         }
 
+        let carriedSealedMedia = !(envelope.mediaSealed?.isEmpty ?? true)
         await MeshMediaSealer.unseal(envelope: &envelope, myUserId: myId)
+
+        // Distinct from outer-envelope signature authentication: delivery ACKs
+        // require proof that endpoint-only content authentication/decryption
+        // actually succeeded. A signed envelope whose body failed to open must
+        // never be acknowledged as delivered.
+        var authenticatedContentOpened = false
+        let sealedMediaOpened = carriedSealedMedia
+            && (envelope.mediaUrl != nil
+            || envelope.thumbnailUrl != nil
+            || envelope.fileName != nil
+            || envelope.mimeType != nil
+            || envelope.fileSize != nil
+            || envelope.audioDuration != nil)
+        var authenticatedDecryptFailed = carriedSealedMedia && !sealedMediaOpened
+        if isGroupMessage, sealedMediaOpened {
+            // Group media metadata only materializes after the group-key AEAD
+            // opens and its JSON bundle decodes.
+            authenticatedContentOpened = true
+        }
 
         // Convert envelope to ChatMessage
         // IMPORTANT: roomId depends on message type:
@@ -1422,11 +1469,13 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
                 message.text = plaintext
                 // Opened under the per-group key, which only real members hold.
                 attributionProven = true
+                authenticatedContentOpened = true
             } else {
                 // Never leave undecrypted bytes in the bubble — `message.text`
                 // was initialised from the raw envelope by `fromMeshEnvelope`.
                 logger.debug("Could not decrypt group payload (\(envelope.recipientId, privacy: .private) v\(version, privacy: .public))")
                 message.text = "🔒 Sealed group message — couldn't decrypt"
+                authenticatedDecryptFailed = true
             }
         } else if isGroupMessage {
             // 🔴 2026-07-24 — GROUP IMPERSONATION GATE.
@@ -1445,6 +1494,9 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
             message.text = envelope.senderAuthenticated
                 ? "🔒 Sealed group message — couldn't decrypt"
                 : "⚠️ Unverified message — sender could not be authenticated"
+            if !(envelope.text?.isEmpty ?? true) {
+                authenticatedDecryptFailed = true
+            }
         } else if !isGroupMessage, let wire = envelope.text, !wire.isEmpty {
             // 🔴 ROUND 19 — hacker-audit Mesh F2. The 1:1 mesh
             // path now runs through the sealer — both engaging the
@@ -1456,6 +1508,8 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
             //     re-key,
             //   • render attacker-injected text as if the sender
             //     authored it.
+            let pinnedSenderAgreementKey = await PeerKeyDirectory.shared
+                .agreementKey(for: envelope.senderId)
             let unsealed = await MessageContentSealer.unseal(
                 encoded: wire,
                 senderUserId: envelope.senderId,
@@ -1473,7 +1527,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
                 // name complete with an "encrypted" lock badge — walking
                 // straight past the impersonation gate below, which only
                 // inspects self-declared-plaintext reasons.
-                senderAgreementPubKey: await PeerKeyDirectory.shared.agreementKey(for: envelope.senderId),
+                senderAgreementPubKey: pinnedSenderAgreementKey,
                 msgId: envelope.clientMessageId
             )
             #if DEBUG
@@ -1509,10 +1563,38 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
             let contentProvesSender: Bool = {
                 guard let u = unsealed else { return false }
                 switch u.reason {
+                case .noiseTransport:
+                    // Stateless Noise message-1 authenticates an ephemeral
+                    // initiator unless the expected static key is pinned.
+                    return pinnedSenderAgreementKey != nil
+                case .atsamHybrid:
+                    return true
+                default: return false
+                }
+            }()
+
+            let authenticatedBodyOpened: Bool = {
+                guard let reason = unsealed?.reason else { return false }
+                switch reason {
                 case .noiseTransport, .atsamHybrid: return true
                 default: return false
                 }
             }()
+
+            if let reason = unsealed?.reason {
+                switch reason {
+                case .decryptFailed, .noSenderKey:
+                    authenticatedDecryptFailed = true
+                default:
+                    break
+                }
+            } else {
+                authenticatedDecryptFailed = true
+            }
+
+            if authenticatedBodyOpened {
+                authenticatedContentOpened = true
+            }
 
             if let u = unsealed,
                !envelope.senderAuthenticated,
@@ -1783,9 +1865,15 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         // Check for duplicate using MeshACKHandler (in-memory cache)
         if await MeshACKHandler.shared.isDuplicate(message.id) {
             #if DEBUG
-            print("⚠️ [App] Duplicate mesh message (ACK cache) - sending ACK only")
+            print("⚠️ [App] Duplicate mesh message (ACK cache) - revalidating durable authenticated commit")
             #endif
-            // Still send ACK even for duplicates (to confirm receipt)
+            guard authenticatedContentOpened,
+                  attributionProven,
+                  !authenticatedDecryptFailed,
+                  await MeshACKHandler.shared.recordAuthenticatedCommit(for: message) else {
+                logger.debug("[MESH] duplicate was not authenticated/decrypted into the exact durable row — no ACK")
+                return
+            }
             await MeshACKHandler.shared.sendDeliveryACK(for: message.id, toSenderId: message.senderId)
             return
         }
@@ -1793,9 +1881,15 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         // Also check DB for duplicates (belt and suspenders)
         guard !(await messageRepo.exists(clientMessageId: message.id)) else {
             #if DEBUG
-            print("⚠️ [App] Duplicate mesh message (DB) - sending ACK only")
+            print("⚠️ [App] Duplicate mesh message (DB) - revalidating durable authenticated commit")
             #endif
-            // Already durably persisted — safe to record as seen and ACK.
+            guard authenticatedContentOpened,
+                  attributionProven,
+                  !authenticatedDecryptFailed,
+                  await MeshACKHandler.shared.recordAuthenticatedCommit(for: message) else {
+                logger.debug("[MESH] existing row did not exactly match an authenticated decrypt — no ACK")
+                return
+            }
             await MeshACKHandler.shared.markAsSeen(message.id)
             await MeshACKHandler.shared.sendDeliveryACK(for: message.id, toSenderId: message.senderId)
             return
@@ -1844,6 +1938,26 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
 
         // Durably persisted — now it's safe to record as seen for dedup.
         await MeshACKHandler.shared.markAsSeen(message.id)
+
+        var authenticatedCommitRecorded = false
+        if authenticatedContentOpened && attributionProven && !authenticatedDecryptFailed {
+            authenticatedCommitRecorded = await MeshACKHandler.shared
+                .recordAuthenticatedCommit(for: message)
+        }
+
+        // Generate the receipt immediately after the durable authenticated
+        // commit. Later UI/notification dedup branches intentionally return
+        // early, but those presentation decisions must never suppress a valid
+        // protocol receipt. Group rows fail closed in the authorization gate
+        // because they do not name one exact member recipient.
+        if authenticatedCommitRecorded {
+            await MeshACKHandler.shared.sendDeliveryACK(
+                for: message.id,
+                toSenderId: message.senderId
+            )
+        } else {
+            logger.debug("[MESH] suppressing ACK: authenticated decrypt/exact durable commit not proven for \(message.id, privacy: .private)")
+        }
 
         // Update conversation directly (don't use handleIncomingMessage as it has duplicate check)
         let currentUserId = await KeychainService.shared.getUserId() ?? ""
@@ -2040,20 +2154,6 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
             let request = UNNotificationRequest(identifier: message.id, content: content, trigger: nil)
             try? await UNUserNotificationCenter.current().add(request)
         }
-        
-        // Bug 4 fix: ALWAYS send ACK, even for group messages.
-        // ACK is point-to-point to the original sender only — it does NOT flood the network.
-        // Without ACK, the sender's DeliveryJobRunner retries broadcasting for days (TTL),
-        // causing a "broadcast storm" that drains battery and congests BLE.
-        let ack = MeshACKEnvelope(
-            originalMessageId: message.id,
-            senderId: currentUserId,
-            recipientId: message.senderId,
-            status: .delivered,
-            pathUsed: "mesh",
-            originDeviceId: DeviceIdentityService.shared.fingerprint ?? ""
-        )
-        await BLEMeshEngine.shared.sendACK(ack)
         
         // BRIDGE: If we're online, forward mesh message to server for the recipient
         // This allows offline users to reach online users through a bridge device
@@ -3010,12 +3110,19 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
     // MARK: - Handle Mesh ACK (Delivery/Read Receipt)
     
     static func handleMeshACK(_ ack: MeshACKEnvelope) async {
-        // Verify this ACK is for me
+        // Verify this ACK is for me, for an exact existing outbound row, and
+        // signed by one of that row's recipient user's already-pinned devices.
+        // This gate runs before status, outbox/job, UI, STOP, or server mutation.
         let myId = await KeychainService.shared.getUserId() ?? ""
         guard ack.recipientId == myId else {
             #if DEBUG
             print("⚠️ [App] ACK not for me - ignoring")
             #endif
+            return
+        }
+
+        guard let authorization = await MeshACKHandler.shared.authorizeIncomingACK(ack) else {
+            logger.debug("[MESH ACK] rejected receipt without exact outbound-recipient/signer binding")
             return
         }
         
@@ -3025,22 +3132,43 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         
         // Update message status in database
         let newStatus: MessageStatus = ack.status == .read ? .read : .delivered
-        
-        // ⚡️ FIX: Prevent out-of-order BLE ACKs from downgrading read to delivered
-        if newStatus == .delivered {
-            let rows = try? await DatabaseService.shared.query("SELECT status FROM messages WHERE client_message_id = ? LIMIT 1", params: [ack.originalMessageId])
-            if let currentStatusStr = rows?.first?["status"] as? String, currentStatusStr == "read" {
-                #if DEBUG
-                print("⚡️ [App] Skipping delivered ACK — message already read")
-                #endif
+
+        // Enforce monotonicity and make duplicate/replayed receipts side-effect
+        // free. In particular, delivered can never downgrade read.
+        let advances = MeshACKHandler.statusAdvances(
+            from: authorization.currentStatus,
+            to: newStatus
+        )
+        let repairsInterruptedEffects = authorization.currentStatus == newStatus
+        guard advances || repairsInterruptedEffects else { return }
+
+        do {
+            if advances {
+                try await MessageRepository.shared.updateStatus(
+                    clientMessageId: ack.originalMessageId,
+                    status: newStatus
+                )
+            }
+            let committed = try await DatabaseService.shared.query(
+                """
+                SELECT sender_id, recipient_id, status
+                FROM messages
+                WHERE client_message_id = ?
+                LIMIT 2
+                """,
+                params: [ack.originalMessageId]
+            )
+            guard committed.count == 1,
+                  committed[0]["sender_id"] as? String == myId,
+                  committed[0]["recipient_id"] as? String == ack.senderId,
+                  committed[0]["status"] as? String == newStatus.rawValue else {
+                logger.error("[MESH ACK] status did not commit to the exact authorized row; suppressing follow-on effects")
                 return
             }
+        } catch {
+            logger.error("[MESH ACK] durable status update failed; suppressing follow-on effects: \(error.localizedDescription, privacy: .public)")
+            return
         }
-        
-        try? await MessageRepository.shared.updateStatus(
-            clientMessageId: ack.originalMessageId,
-            status: newStatus
-        )
         
         // Bug 4 fix: Stop relay for BOTH delivered AND read ACKs.
         // Previously only .delivered stopped broadcast — .read ACKs were ignored,
@@ -3064,7 +3192,9 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         
         // Canonical delivery should be recorded on server.
         if ack.status == .delivered {
-            let deliveredVia = ack.pathUsed ?? "mesh"
+            // pathUsed is relay metadata and is not covered by the legacy ACK
+            // signature. Never let it influence authenticated state/reporting.
+            let deliveredVia = "mesh"
             let ackIdempotencyKey = "ack-\(ack.originalMessageId)-\(ack.senderId)"
             
             if NetworkMonitor.shared.isOnline {

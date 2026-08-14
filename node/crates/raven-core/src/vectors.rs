@@ -53,6 +53,13 @@ fn hex_to_arr12(s: &str) -> [u8; 12] {
     a
 }
 
+fn hex_to_arr64(s: &str) -> [u8; 64] {
+    let v = hex_to_vec(s);
+    let mut a = [0u8; 64];
+    a.copy_from_slice(&v);
+    a
+}
+
 const ALICE_SEED: &str = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60";
 const BOB_SEED: &str = "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb";
 
@@ -63,7 +70,10 @@ pub fn assert_all_rvn1_vectors() {
         let ed = hex_to_arr32(v["inputs"]["ed_public_hex"].as_str().unwrap());
         let addr = encode_address(&ed);
         assert_eq!(addr, v["expected"]["address"].as_str().unwrap());
-        assert_eq!(to_display(&addr), v["expected"]["display"].as_str().unwrap());
+        assert_eq!(
+            to_display(&addr),
+            v["expected"]["display"].as_str().unwrap()
+        );
     }
 
     // Fingerprints
@@ -149,9 +159,8 @@ pub fn assert_all_rvn1_vectors() {
         let v = load_json("negative/envelope_tampered_body.json");
         let raw = hex_to_vec(v["inputs"]["packed_hex"].as_str().unwrap());
         let env = Envelope::unpack(&raw).expect("structurally valid");
-        let alice_pub = hex_to_arr32(
-            "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
-        );
+        let alice_pub =
+            hex_to_arr32("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a");
         assert!(!env.verify(&alice_pub));
         assert_eq!(v["expected"]["verify_result"].as_str().unwrap(), "reject");
     }
@@ -196,7 +205,11 @@ pub fn assert_all_rvn1_vectors() {
         let v = load_json("negative/ack_wrong_signer.json");
         let sb = hex_to_vec(v["inputs"]["signing_bytes_hex"].as_str().unwrap());
         let sig = hex_to_vec(v["inputs"]["signature_hex"].as_str().unwrap());
-        let claimed = hex_to_arr32(v["inputs"]["claimed_signer_ed_public_hex"].as_str().unwrap());
+        let claimed = hex_to_arr32(
+            v["inputs"]["claimed_signer_ed_public_hex"]
+                .as_str()
+                .unwrap(),
+        );
         assert!(!verify_sig(&claimed, &sb, &sig));
     }
 
@@ -261,8 +274,11 @@ pub fn assert_all_rvn1_vectors() {
         let v = load_json("negative/device_cert_wrong_signer.json");
         let sb = hex_to_vec(v["inputs"]["signing_bytes_hex"].as_str().unwrap());
         let sig = hex_to_vec(v["inputs"]["signature_hex"].as_str().unwrap());
-        let claimed =
-            hex_to_arr32(v["inputs"]["claimed_user_identity_ed_public_hex"].as_str().unwrap());
+        let claimed = hex_to_arr32(
+            v["inputs"]["claimed_user_identity_ed_public_hex"]
+                .as_str()
+                .unwrap(),
+        );
         assert!(!verify_sig(&claimed, &sb, &sig));
     }
 
@@ -370,13 +386,251 @@ pub fn assert_all_rvn1_vectors() {
             hex::encode(build_aad_v1(sender, recipient, msg_id)),
             v["aad_v1_hex"].as_str().unwrap()
         );
-        let wire = seal_rvna1_v2(
-            &root, sender, recipient, msg_id, index, &plaintext, &nonce,
-        )
-        .expect("seal");
+        let wire = seal_rvna1_v2(&root, sender, recipient, msg_id, index, &plaintext, &nonce)
+            .expect("seal");
         assert_eq!(hex::encode(&wire), v["wire_hex"].as_str().unwrap());
         let pt = unseal_rvna1_v2(&root, &wire, sender, recipient, msg_id).expect("unseal");
         assert_eq!(pt, plaintext);
+    }
+
+    // ATSAM Indexed Session Profile V1 (additive, deliberately not activated).
+    {
+        use crate::atsam_indexed_session::{
+            ack_base_key, ack_chain_key_at_index, ack_key_at_index, derive_mailbox_tags,
+            mailbox_coordinates, message_key_at_index, route_direction_key, route_master_key,
+            session_context, Direction, PRODUCTION_ENABLED,
+        };
+        use crate::atsam_kdf::initial_chain_key;
+
+        let v = load_json("atsam/indexed_session_v1_subkeys_001.json");
+        assert_eq!(
+            v["production_activation"].as_str().unwrap(),
+            "disabled_pending_signed_pairinit_negotiation"
+        );
+        assert_eq!(
+            v["production_enabled"].as_bool().unwrap(),
+            PRODUCTION_ENABLED
+        );
+        let input = &v["input"];
+        let expected = &v["expected"];
+        let root = hex_to_arr32(input["k_root_hex"].as_str().unwrap());
+        let initiator = input["initiator_address"].as_str().unwrap();
+        let responder = input["responder_address"].as_str().unwrap();
+        let mailbox_time_ms = input["mailbox_time_ms"].as_u64().unwrap();
+        assert_eq!(
+            hex::encode(session_context(initiator, responder).unwrap()),
+            expected["session_context_hex"].as_str().unwrap()
+        );
+        assert_eq!(
+            hex::encode(ack_base_key(&root)),
+            expected["ack_base_key_hex"].as_str().unwrap()
+        );
+        assert_eq!(
+            hex::encode(route_master_key(&root)),
+            expected["route_master_key_hex"].as_str().unwrap()
+        );
+        for case in expected["directions"].as_array().unwrap() {
+            let direction =
+                Direction::from_u8(case["direction"].as_u64().unwrap() as u8).expect("direction");
+            let sender = case["sender_address"].as_str().unwrap();
+            let recipient = case["recipient_address"].as_str().unwrap();
+            assert_eq!(
+                hex::encode(initial_chain_key(&root, sender, recipient)),
+                case["message_ck0_hex"].as_str().unwrap()
+            );
+            assert_eq!(
+                hex::encode(
+                    message_key_at_index(&root, initiator, responder, direction, 0).unwrap()
+                ),
+                case["message_key_index0_hex"].as_str().unwrap()
+            );
+            assert_eq!(
+                hex::encode(
+                    ack_chain_key_at_index(&root, initiator, responder, direction, 0).unwrap()
+                ),
+                case["ack_ck0_hex"].as_str().unwrap()
+            );
+            assert_eq!(
+                hex::encode(ack_key_at_index(&root, initiator, responder, direction, 0).unwrap()),
+                case["ack_key_index0_hex"].as_str().unwrap()
+            );
+            assert_eq!(
+                hex::encode(route_direction_key(&root, direction)),
+                case["route_direction_key_hex"].as_str().unwrap()
+            );
+            let (day_epoch, slot) = mailbox_coordinates(mailbox_time_ms, direction);
+            assert_eq!(day_epoch, case["mailbox_day_epoch"].as_u64().unwrap());
+            assert_eq!(slot, case["mailbox_slot"].as_u64().unwrap());
+            let (mailbox, store) = derive_mailbox_tags(&root, mailbox_time_ms, direction);
+            assert_eq!(
+                hex::encode(mailbox),
+                case["mailbox_tag_hex"].as_str().unwrap()
+            );
+            assert_eq!(hex::encode(store), case["store_tag_hex"].as_str().unwrap());
+        }
+    }
+    {
+        use crate::atsam_indexed_session::{
+            ack_key_at_index, build_aad, decode_signed_ack, derive_route_tag, encode_signed_ack,
+            open_ack, route_coordinates, seal_ack, uuid_text, Direction, SignedAck,
+            ACK_PLAINTEXT_LEN, ACK_SEALED_WIRE_LEN,
+        };
+
+        let v = load_json("atsam/indexed_session_v1_sealed_ack_001.json");
+        assert!(!v["production_enabled"].as_bool().unwrap());
+        assert_eq!(
+            v["production_activation"].as_str().unwrap(),
+            "disabled_pending_signed_pairinit_negotiation"
+        );
+        let input = &v["input"];
+        let allocator = &v["allocator"];
+        let expected = &v["expected"];
+        let root = hex_to_arr32(input["k_root_hex"].as_str().unwrap());
+        let initiator = input["initiator_address"].as_str().unwrap();
+        let responder = input["responder_address"].as_str().unwrap();
+        let direction =
+            Direction::from_u8(input["direction"].as_u64().unwrap() as u8).expect("direction");
+        let index = input["ack_chain_index"].as_u64().unwrap() as u32;
+        let outer_message_id = hex_to_arr16(input["outer_message_id_hex"].as_str().unwrap());
+        assert_eq!(
+            uuid_text(&outer_message_id),
+            input["outer_message_id_aad_uuid"].as_str().unwrap()
+        );
+        let record = Ack {
+            acked_message_id: hex_to_arr16(input["acked_message_id_hex"].as_str().unwrap()),
+            status: input["status"].as_u64().unwrap() as u8,
+            ack_nonce: hex_to_arr12(input["ack_nonce_hex"].as_str().unwrap()),
+            created_at: input["created_at_ms"].as_u64().unwrap(),
+        };
+        assert_eq!(
+            hex::encode(record.signing_bytes()),
+            expected["ack_signing_bytes_hex"].as_str().unwrap()
+        );
+        let bob = Identity::from_seed(&hex_to_arr32(BOB_SEED));
+        assert_eq!(
+            hex::encode(bob.public_key_bytes()),
+            input["inner_signer_ed_public_hex"].as_str().unwrap()
+        );
+        let signed = SignedAck {
+            signature: record.sign(&bob),
+            record,
+        };
+        assert_eq!(
+            hex::encode(signed.signature),
+            expected["inner_signature_hex"].as_str().unwrap()
+        );
+        let plaintext = encode_signed_ack(&signed).unwrap();
+        assert_eq!(plaintext.len(), ACK_PLAINTEXT_LEN);
+        assert_eq!(
+            plaintext.len(),
+            expected["ack_plaintext_len"].as_u64().unwrap() as usize
+        );
+        assert_eq!(
+            hex::encode(plaintext),
+            expected["ack_plaintext_hex"].as_str().unwrap()
+        );
+        assert_eq!(decode_signed_ack(&plaintext).unwrap(), signed);
+        assert!(signed
+            .record
+            .verify(&signed.signature, &bob.public_key_bytes()));
+
+        let (epoch, counter) = route_coordinates(
+            signed.record.created_at,
+            index,
+            allocator["env_type"].as_u64().unwrap() as u8,
+            direction,
+        )
+        .unwrap();
+        assert_eq!(epoch, allocator["epoch"].as_u64().unwrap());
+        assert_eq!(counter, allocator["counter"].as_u64().unwrap());
+        let routing_tag =
+            derive_route_tag(&root, signed.record.created_at, index, 2, direction).unwrap();
+        assert_eq!(
+            hex::encode(routing_tag),
+            expected["routing_tag_hex"].as_str().unwrap()
+        );
+        assert_eq!(
+            hex::encode(ack_key_at_index(&root, initiator, responder, direction, index).unwrap()),
+            expected["ack_key_index7_hex"].as_str().unwrap()
+        );
+        assert_eq!(
+            hex::encode(build_aad(index, responder, initiator, &outer_message_id).unwrap()),
+            expected["aad_sha256_hex"].as_str().unwrap()
+        );
+        let nonce = hex_to_arr12(input["seal_nonce_hex"].as_str().unwrap());
+        let wire = seal_ack(
+            &root,
+            initiator,
+            responder,
+            direction,
+            index,
+            &outer_message_id,
+            &plaintext,
+            &nonce,
+        )
+        .unwrap();
+        assert_eq!(wire.len(), ACK_SEALED_WIRE_LEN);
+        assert_eq!(
+            wire.len(),
+            expected["sealed_body_len"].as_u64().unwrap() as usize
+        );
+        assert_eq!(
+            hex::encode(&wire),
+            expected["sealed_body_hex"].as_str().unwrap()
+        );
+        assert_eq!(
+            open_ack(
+                &root,
+                initiator,
+                responder,
+                direction,
+                &outer_message_id,
+                &wire,
+            )
+            .unwrap(),
+            plaintext
+        );
+
+        let mut env = Envelope {
+            env_type: 2,
+            flags: input["outer_flags"].as_u64().unwrap() as u16,
+            message_id: outer_message_id,
+            routing_tag,
+            dest_device_hint: 0,
+            created_at: signed.record.created_at,
+            expires_at: input["expires_at_ms"].as_u64().unwrap(),
+            hop_limit: input["hop_limit"].as_u64().unwrap() as u8,
+            replication_budget: input["replication_budget"].as_u64().unwrap() as u8,
+            anti_replay_nonce: hex_to_arr12(input["anti_replay_nonce_hex"].as_str().unwrap()),
+            ratchet_header_ciphertext: vec![],
+            message_ciphertext: wire,
+            sender_authentication: vec![],
+        };
+        assert_eq!(
+            hex::encode(env.signing_bytes()),
+            expected["outer_signing_bytes_hex"].as_str().unwrap()
+        );
+        env.sign_with(&bob);
+        assert_eq!(
+            hex::encode(&env.sender_authentication),
+            expected["outer_signature_hex"].as_str().unwrap()
+        );
+        let packed = env.pack();
+        assert_eq!(
+            packed.len(),
+            expected["packed_envelope_len"].as_u64().unwrap() as usize
+        );
+        assert_eq!(
+            hex::encode(&packed),
+            expected["packed_envelope_hex"].as_str().unwrap()
+        );
+        assert!(Envelope::unpack(&packed)
+            .unwrap()
+            .verify(&bob.public_key_bytes()));
+        assert_eq!(
+            hex_to_arr64(expected["inner_signature_hex"].as_str().unwrap()),
+            signed.signature
+        );
     }
 }
 

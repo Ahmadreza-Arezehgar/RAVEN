@@ -48,6 +48,23 @@ SESSION_TTL_SECONDS = 120
 # Mobile-side timestamps must be within this skew of server time.
 MAX_TIMESTAMP_SKEW_SECONDS = 30
 
+# ── /init abuse controls (PB-M2) ─────────────────────────────────────────
+# /init is unauthenticated by design (the desktop has no credentials yet),
+# so it is a prime target for row-flooding. Two defenses:
+#
+#   1. Per-IP rate limit via the shared in-process `rate_limiter` singleton.
+#      Generous vs. a real desktop (which calls /init once per login screen,
+#      occasionally re-initing on QR expiry) but caps a scripted flood.
+#   2. A lazy GC sweep: every /init opportunistically deletes rows whose TTL
+#      lapsed more than INIT_SWEEP_GRACE_SECONDS ago, so a stopped flood does
+#      not leave the table permanently bloated. The grace window keeps rows a
+#      live desktop might still be polling (TTL ≤ 120 s) safely untouched.
+INIT_RATE_MAX_ATTEMPTS = 30       # per IP per window
+INIT_RATE_WINDOW_MINUTES = 1
+INIT_RATE_LOCKOUT_MINUTES = 5
+INIT_SWEEP_GRACE_SECONDS = 3600   # only delete rows dead ≥ 1 h
+INIT_SWEEP_MAX_ROWS = 500         # bound the delete so a hot /init stays fast
+
 
 # ────────────────────────────────────────────────────────────────────────
 # DB Model
@@ -225,15 +242,55 @@ def _get_session_for_mobile(
 @router.post("/init", response_model=InitResponse)
 def init_session(request: Request, db: Session = Depends(get_db)):
     """Desktop calls this to start a login flow. Returns the session id and
-    nonce that the desktop encodes into a QR for the mobile app to scan."""
+    nonce that the desktop encodes into a QR for the mobile app to scan.
+
+    Unauthenticated by necessity (the desktop has no token yet), so it is
+    per-IP rate limited and opportunistically GC-sweeps long-dead rows to
+    bound table growth under abuse (PB-M2)."""
+    # 1) Per-IP rate limit. Proxy-aware IP (Cloud Run sits behind a proxy;
+    #    honours TRUST_PROXY). Fail closed if the limiter is unavailable.
+    from middleware.rate_limit import rate_limiter
+    from utils.security import get_client_ip
+
+    client_ip = get_client_ip(request)
+    rate_limiter.check_rate_limit(
+        identifier=f"qr_login_init:{client_ip}",
+        max_attempts=INIT_RATE_MAX_ATTEMPTS,
+        window_minutes=INIT_RATE_WINDOW_MINUTES,
+        lockout_minutes=INIT_RATE_LOCKOUT_MINUTES,
+    )
+
     now = datetime.utcnow()
+
+    # 2) Lazy GC: bulk-delete rows whose TTL lapsed ≥ grace ago. Bounded so a
+    #    hot /init stays fast. synchronize_session=False → no ORM identity-map
+    #    sync (there's nothing loaded to sync) and works on SQLite + Postgres.
+    #    A live desktop's row (TTL ≤ 120 s) is never in range, so polls are
+    #    unaffected. Best-effort: never let sweep failure break /init.
+    sweep_cutoff = now - timedelta(seconds=INIT_SWEEP_GRACE_SECONDS)
+    try:
+        stale_ids = [
+            r.id
+            for r in db.query(QrLoginSession.id)
+            .filter(QrLoginSession.expires_at < sweep_cutoff)
+            .limit(INIT_SWEEP_MAX_ROWS)
+            .all()
+        ]
+        if stale_ids:
+            db.query(QrLoginSession).filter(
+                QrLoginSession.id.in_(stale_ids)
+            ).delete(synchronize_session=False)
+            db.commit()
+    except Exception:
+        db.rollback()
+
     row = QrLoginSession(
         id=str(uuid.uuid4()),
         nonce=secrets.token_urlsafe(32),
         status="pending",
         created_at=now,
         expires_at=now + timedelta(seconds=SESSION_TTL_SECONDS),
-        requester_ip=request.client.host if request.client else None,
+        requester_ip=client_ip,
     )
     db.add(row)
     db.commit()

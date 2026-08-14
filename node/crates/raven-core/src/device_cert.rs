@@ -149,7 +149,9 @@ impl DeviceRegistry {
 
     pub fn lookup_by_ed_pub(&self, ed: &[u8; 32], now_ms: u64) -> Option<&DeviceCertificate> {
         self.certs.values().find(|c| {
-            &c.device_ed_pub == ed && !self.revoked.contains(&c.device_id) && c.verify(now_ms).is_ok()
+            &c.device_ed_pub == ed
+                && !self.revoked.contains(&c.device_id)
+                && c.verify(now_ms).is_ok()
         })
     }
 }
@@ -236,16 +238,9 @@ mod tests {
     fn expired_rejected() {
         let user = Identity::generate();
         let device = Identity::generate();
-        let cert = DeviceCertificate::issue(
-            &user,
-            device.public_key_bytes(),
-            [1u8; 32],
-            "old",
-            1,
-            50,
-            0,
-        )
-        .unwrap();
+        let cert =
+            DeviceCertificate::issue(&user, device.public_key_bytes(), [1u8; 32], "old", 1, 50, 0)
+                .unwrap();
         assert!(cert.verify(100).is_err());
     }
 
@@ -275,8 +270,10 @@ mod tests {
     fn shared_vector_bob_device1_signing_bytes() {
         // Parity with shared-vectors/rvn1/device_cert/bob_device1.json via records API.
         let sb = device_cert_signing_bytes(
-            &hex::decode("3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c").unwrap(),
-            &hex::decode("de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f").unwrap(),
+            &hex::decode("3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c")
+                .unwrap(),
+            &hex::decode("de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f")
+                .unwrap(),
             "bob-device-1",
             1700000000000,
             1731536000000,

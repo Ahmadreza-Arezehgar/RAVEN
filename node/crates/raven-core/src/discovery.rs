@@ -140,11 +140,19 @@ impl DiscoveryStore {
     pub fn len(&self) -> usize {
         self.peers.len()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.peers.is_empty()
+    }
 }
 
 /// Documented NAT / CGNAT status for checklist honesty.
 pub const NAT_STATUS: &str = "BLOCKED_HARDWARE: multi-NAT/CGNAT/DCUtR live matrix not run; \
 software substitutes: DiscoveryStore + internet_dial_smoke + lan_path_smoke";
+
+/// Capability bit used only in encode tests (mirrors internet CAP_INTERNET loosely).
+#[cfg(test)]
+const CAP_INTERNET_HINT: u32 = 1 << 1;
 
 #[cfg(test)]
 mod tests {
@@ -208,7 +216,3 @@ mod tests {
         back.verify(1).unwrap();
     }
 }
-
-/// Capability bit used only in encode tests (mirrors internet CAP_INTERNET loosely).
-#[cfg(test)]
-const CAP_INTERNET_HINT: u32 = 1 << 1;

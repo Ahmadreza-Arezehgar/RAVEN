@@ -176,10 +176,7 @@ pub fn derive_device_sync_key(user: &Identity) -> [u8; 32] {
 }
 
 /// Seal contact sync for another authorized device of the same user.
-pub fn seal_contact_sync(
-    user: &Identity,
-    plain: &ContactSyncPlaintext,
-) -> Result<Vec<u8>, String> {
+pub fn seal_contact_sync(user: &Identity, plain: &ContactSyncPlaintext) -> Result<Vec<u8>, String> {
     let key = derive_device_sync_key(user);
     let pt = serde_json::to_vec(plain).map_err(|e| e.to_string())?;
     let cipher = ChaCha20Poly1305::new((&key).into());
@@ -203,10 +200,7 @@ pub fn seal_contact_sync(
 }
 
 /// Unseal contact sync. Caller must ensure `from_device_id` is authorized.
-pub fn unseal_contact_sync(
-    user: &Identity,
-    wire: &[u8],
-) -> Result<ContactSyncPlaintext, String> {
+pub fn unseal_contact_sync(user: &Identity, wire: &[u8]) -> Result<ContactSyncPlaintext, String> {
     if wire.len() < 8 + 12 + 16 {
         return Err("truncated device sync".into());
     }
@@ -219,13 +213,7 @@ pub fn unseal_contact_sync(
     let aad = user.public_key_bytes();
     let cipher = ChaCha20Poly1305::new((&key).into());
     let pt = cipher
-        .decrypt(
-            nonce,
-            Payload {
-                msg: ct,
-                aad: &aad,
-            },
-        )
+        .decrypt(nonce, Payload { msg: ct, aad: &aad })
         .map_err(|_| "device sync unseal failed".to_string())?;
     serde_json::from_slice(&pt).map_err(|e| e.to_string())
 }
@@ -244,7 +232,11 @@ pub fn import_contact_sync(
     if plain.schema != 1 {
         return Err("SYNC_SCHEMA".into());
     }
-    Ok(plain.contacts.into_iter().map(SyncContact::migrate).collect())
+    Ok(plain
+        .contacts
+        .into_iter()
+        .map(SyncContact::migrate)
+        .collect())
 }
 
 /// Persist revocation store as JSON under data dir (OOB exchangeable).
@@ -442,7 +434,9 @@ mod tests {
         assert!(store.apply(rec.clone()).unwrap());
         store.push_into_registry(&mut fresh);
 
-        assert!(partition_lag_allows_stale_auth(&fresh, &lagging, "stolen", 70));
+        assert!(partition_lag_allows_stale_auth(
+            &fresh, &lagging, "stolen", 70
+        ));
 
         // Lagging eventually observes the record.
         let mut store_b = RevocationStore::default();

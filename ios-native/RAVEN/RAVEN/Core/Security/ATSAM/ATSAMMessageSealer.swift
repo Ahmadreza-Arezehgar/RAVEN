@@ -67,11 +67,26 @@
 //    - PQC: the root mixes X25519 + ML-KEM-768. An adversary must
 //      defeat BOTH to recover the root. HKDF's PRG property
 //      guarantees `K_msg` is uniform-random unless the root is.
-//    - Forward secrecy: the per-message nonce is freshly drawn for
-//      every send; reusing a (key, nonce) pair would catastrophically
-//      break ChaCha20-Poly1305, so we use `AES.GCM.SealedBox`
-//      semantics via CryptoKit's `ChaChaPoly` which generates a
-//      fresh nonce on each `seal(_:using:)` call.
+//    - Key/nonce uniqueness: `K_msg` is re-derived per message (msgId
+//      is in the HKDF info) AND CryptoKit draws a fresh 96-bit nonce
+//      on each `seal(_:using:)`, so a (key, nonce) collision would
+//      require both to repeat.
+//    - Forward secrecy (v2, 2026-07-19): message keys now come from a
+//      per-direction chain ratchet that advances after every message and
+//      destroys its predecessor, so a device compromised at index N cannot
+//      derive the keys for messages 0…N-1. See `ATSAMChainRatchet`.
+//      Out-of-order and late mesh delivery is handled by a bounded
+//      skipped-key cache; a message delayed beyond that window is
+//      permanently undecryptable, which is the deliberate trade for
+//      forward secrecy in a delay-tolerant network.
+//    - ⚠️ v1 frames (protocol byte 0x01) have NO forward secrecy: their
+//      `K_msg` is a deterministic function of the long-lived root. We
+//      still ACCEPT them so archived ciphertext stays readable, but we
+//      no longer EMIT them.
+//    - ⚠️ No post-compromise security. An adversary who extracts the
+//      pairing root can still derive all FUTURE chain state. Recovering
+//      from compromise needs a DH ratchet and a guaranteed round trip,
+//      which a delay-tolerant mesh cannot provide. Not claimed.
 //    - Replay: receiver's `MessageContentSealer.SealedReplayWindow`
 //      already gates duplicate `(peerPID, msgId)` deliveries. The
 //      ATSAM unseal path reuses that same window.
@@ -103,10 +118,23 @@ enum ATSAMMessageSealer {
     static let magic: Data = Data([0x52, 0x56, 0x4E, 0x41, 0x31, 0x00, 0x00, 0x00])
     static let magicLength: Int = 8
 
-    /// Protocol version + suite. v1 / suite-1 = ChaCha20-Poly1305
-    /// over ATSAM HKDF-derived 32-byte keys.
+    /// Protocol version + suite.
+    ///
+    /// v1 (0x01) — ChaCha20-Poly1305 under a key derived deterministically from
+    ///             the pairing root. No forward secrecy.
+    /// v2 (0x02) — same AEAD, key taken from a per-direction chain ratchet that
+    ///             advances and destroys its predecessor (ATSAMChainRatchet).
+    ///             Adds a 4-byte index to the header.
+    ///
+    /// We SEND v2 and ACCEPT BOTH. Accepting v1 keeps previously-archived
+    /// ciphertext readable; sending only v2 means every new message gets
+    /// forward secrecy without any migration step or re-pair.
     private static let protocolByte: UInt8 = 0x01
+    private static let protocolByteV2: UInt8 = 0x02
     private static let suiteByte: UInt8 = 0x01
+
+    /// Width of the v2 index field.
+    private static let indexBytes: Int = 4
 
     /// Hard cap on emitted wire bytes. Mirrors `MessageContentSealer`'s
     /// 256 KB cap so a malicious sender can't fan a multi-MB blob
@@ -164,30 +192,33 @@ enum ATSAMMessageSealer {
             return nil
         }
 
-        // Look up the peer's ATSAM root.
+        // A root must exist — its presence is what says "this peer is paired".
         guard let root = await ATSAMRootStorage.shared.root(for: recipientUserId) else {
             return nil
         }
-        let tree = ATSAMKeyTree(root: root)
 
-        // 🔴 ROUND 71 phase 3 follow-up #5 hardening (2026-05-24) —
-        // Task #61. Hacker agent #4 finding: a static K_msg per
-        // direction with random 96-bit nonce risks catastrophic
-        // ChaCha20-Poly1305 break on (key, nonce) collision —
-        // realistic threat under multi-device / backup-restore
-        // scenarios where two devices independently draw nonces.
+        // 🟢 v2 (2026-07-19) — forward secrecy. The key comes from a
+        // per-direction chain that advances after every message, so the
+        // material needed to decrypt this message ceases to exist once the
+        // chain moves on. See ATSAMChainRatchet for the construction and its
+        // honest limits.
         //
-        // Fix: rotate K_msg per message by mixing `msgId` into the
-        // HKDF info string. Sender and receiver both have the
-        // msgId on the wire (sender stamps it, receiver reads from
-        // request/envelope), so the derivation stays symmetric.
-        let key = deriveMessageKey(
-            tree: tree,
-            senderUserId: senderUserId,
-            recipientUserId: recipientUserId,
-            msgId: msgId
-        )
+        // Reserving the index and persisting the advanced chain happen in ONE
+        // non-suspending actor call. Splitting them would let two concurrent
+        // sends to the same peer both take the same index, and the receiver
+        // would silently drop the second — see `reserveSendStep`.
+        guard let step = try? await ATSAMRootStorage.shared.reserveSendStep(
+            peerUserId: recipientUserId,
+            selfUserId: senderUserId,
+            root: root
+        ) else {
+            return nil
+        }
+
         let aad = buildAAD(
+            proto: protocolByteV2,
+            suite: suiteByte,
+            index: step.index,
             senderUserId: senderUserId,
             recipientUserId: recipientUserId,
             msgId: msgId
@@ -196,21 +227,28 @@ enum ATSAMMessageSealer {
         let body = Data(plaintext.utf8)
         let sealed: ChaChaPoly.SealedBox
         do {
-            sealed = try ChaChaPoly.seal(body, using: key, authenticating: aad)
+            sealed = try ChaChaPoly.seal(body, using: step.key, authenticating: aad)
         } catch {
             // ChaChaPoly.seal can only fail on absurd input sizes
             // (>= 2^32 bytes). Treat as a soft fail so the caller
-            // falls back to Noise — never ship plaintext.
+            // falls back to Noise — never ship plaintext. Nothing is
+            // committed, so the index is simply reused next time.
             return nil
         }
 
         let nonce = Data(sealed.nonce)
         guard nonce.count == 12 else { return nil }
 
+        // The chain was already advanced and persisted by `reserveSendStep`
+        // before we got here, so this index can never be handed out twice —
+        // not by a concurrent send, and not after a relaunch.
+
         var wire = Data()
         wire.append(magic)
-        wire.append(protocolByte)
+        wire.append(protocolByteV2)
         wire.append(suiteByte)
+        var beIndex = step.index.bigEndian
+        withUnsafeBytes(of: &beIndex) { wire.append(contentsOf: $0) }
         wire.append(nonce)
         wire.append(sealed.ciphertext)
         wire.append(sealed.tag)
@@ -245,14 +283,28 @@ enum ATSAMMessageSealer {
         // but we re-check to fail safe.
         guard wire.prefix(magicLength) == magic else { return nil }
 
-        // Header: version + suite.
+        // Header: version + suite. v2 additionally carries a 4-byte chain index
+        // between the header and the nonce.
         let headerStart = magicLength
         let proto = wire[headerStart]
         let suite = wire[headerStart + 1]
-        guard proto == protocolByte, suite == suiteByte else { return nil }
+        guard suite == suiteByte else { return nil }
+        guard proto == protocolByte || proto == protocolByteV2 else { return nil }
+        let isV2 = (proto == protocolByteV2)
 
-        let nonceStart = headerStart + 2
+        var cursor = headerStart + 2
+        var chainIndex: UInt32 = 0
+        if isV2 {
+            guard wire.count >= cursor + indexBytes else { return nil }
+            chainIndex = wire.subdata(in: cursor..<(cursor + indexBytes)).withUnsafeBytes {
+                UInt32(bigEndian: $0.loadUnaligned(as: UInt32.self))
+            }
+            cursor += indexBytes
+        }
+
+        let nonceStart = cursor
         let nonceEnd = nonceStart + 12
+        guard wire.count >= nonceEnd else { return nil }
         let ctTagStart = nonceEnd
         let tagStart = wire.count - 16
         guard tagStart > ctTagStart else { return nil }
@@ -278,54 +330,64 @@ enum ATSAMMessageSealer {
         guard let root = await ATSAMRootStorage.shared.root(for: senderUserId) else {
             return nil
         }
-        let tree = ATSAMKeyTree(root: root)
 
-        // 🔴 ROUND 71 phase 3 follow-up #5 hardening (2026-05-24) —
-        // Task #61. Mix msgId into K_msg derivation (matching the
-        // seal path) so every message gets a fresh AEAD key. See
-        // seal() for the rationale.
+        // Bind what we PARSED off the wire, not the local constants —
+        // see `buildAAD`. For v2 the index is bound too, so a ciphertext cannot
+        // be relabelled onto a different chain position.
+        let aad = buildAAD(
+            proto: proto,
+            suite: suite,
+            index: isV2 ? chainIndex : nil,
+            senderUserId: senderUserId,
+            recipientUserId: recipientUserId,
+            msgId: msgId
+        )
+
+        // Pure, synchronous AEAD check. Shared by both versions, and passed to
+        // the actor for v2 so derive-verify-advance stays indivisible.
+        let openWith: (SymmetricKey) -> String? = { key in
+            guard let nonce = try? ChaChaPoly.Nonce(data: nonceBytes),
+                  let box = try? ChaChaPoly.SealedBox(
+                      nonce: nonce, ciphertext: ctBytes, tag: tagBytes),
+                  let pt = try? ChaChaPoly.open(box, using: key, authenticating: aad),
+                  let str = String(data: pt, encoding: .utf8)
+            else {
+                // Tampering, a wrong root (the peer re-paired since we cached),
+                // or ciphertext shipped under a magic the sender doesn't own.
+                return nil
+            }
+            return str
+        }
+
+        if isV2 {
+            // The receiving chain is read, the key derived, the AEAD verified,
+            // and the chain advanced — all inside ONE non-suspending actor
+            // call. Splitting those steps would both (a) advance the chain for
+            // frames that fail to verify, letting any peer destroy the keys for
+            // genuine messages still in flight, and (b) let two concurrent
+            // receives commit from the same snapshot, silently restoring a key
+            // one of them already consumed. See `consumeReceiveStep`.
+            guard let me = await KeychainService.shared.getUserId(), !me.isEmpty else {
+                return nil
+            }
+            return await ATSAMRootStorage.shared.consumeReceiveStep(
+                peerUserId: senderUserId,
+                selfUserId: me,
+                root: root,
+                index: chainIndex,
+                verify: openWith
+            )
+        }
+
+        // v1: legacy deterministic derivation, no chain state to advance.
+        let tree = ATSAMKeyTree(root: root)
         let key = deriveMessageKey(
             tree: tree,
             senderUserId: senderUserId,
             recipientUserId: recipientUserId,
             msgId: msgId
         )
-        let aad = buildAAD(
-            senderUserId: senderUserId,
-            recipientUserId: recipientUserId,
-            msgId: msgId
-        )
-
-        let nonce: ChaChaPoly.Nonce
-        do {
-            nonce = try ChaChaPoly.Nonce(data: nonceBytes)
-        } catch {
-            return nil
-        }
-
-        let sealed: ChaChaPoly.SealedBox
-        do {
-            sealed = try ChaChaPoly.SealedBox(
-                nonce: nonce,
-                ciphertext: ctBytes,
-                tag: tagBytes
-            )
-        } catch {
-            return nil
-        }
-
-        let pt: Data
-        do {
-            pt = try ChaChaPoly.open(sealed, using: key, authenticating: aad)
-        } catch {
-            // AEAD failure — either tampering, wrong root (peer
-            // re-paired since we cached), or someone tried to ship
-            // ciphertext under a magic they don't actually own.
-            return nil
-        }
-
-        guard let str = String(data: pt, encoding: .utf8) else { return nil }
-        return str
+        return openWith(key)
     }
 
     /// Cheap magic-prefix check the caller uses to decide whether
@@ -383,11 +445,53 @@ enum ATSAMMessageSealer {
     /// Build the AEAD AAD. SHA-256-hashed so the wire AAD is
     /// fixed-length regardless of userId encoding quirks (an
     /// attacker can't vary userId UTF-8 to manipulate AAD bytes).
-    private static func buildAAD(senderUserId: String,
+    ///
+    /// 🔴 2026-07-18 — the version bytes are now bound in.
+    ///
+    /// They ride the wire in the clear and were previously outside
+    /// both the AAD and the key derivation, so nothing cryptographic
+    /// committed to them: the moment the reserved `suite = 2` (PQ
+    /// AEAD) is accepted, an attacker could flip the byte to steer a
+    /// receiver onto the weaker suite with the AEAD still verifying.
+    ///
+    /// They are passed IN rather than read from the static constants:
+    /// the receiver must bind what it actually parsed off the wire
+    /// (`proto`/`suite` in `unseal`), not what this build happens to
+    /// emit. Hashing the constants here would be a no-op — today the
+    /// hard `guard proto == protocolByte` makes them trivially equal,
+    /// and once that guard is relaxed for a second suite the constants
+    /// would produce an IDENTICAL AAD for both suites, which is
+    /// exactly the downgrade this is meant to prevent.
+    ///
+    /// The v2 header bytes — protocol, suite and `index` — are bound for v2
+    /// frames only; a v1 frame hashes exactly the byte layout the shipped build
+    /// used, so archived v1 ciphertext still opens. Binding the index means a
+    /// v2 ciphertext cannot be replayed at a different chain position: move the
+    /// index and the tag check fails.
+    private static func buildAAD(proto: UInt8,
+                                 suite: UInt8,
+                                 index: UInt32?,
+                                 senderUserId: String,
                                  recipientUserId: String,
                                  msgId: String) -> Data {
         var hasher = SHA256()
         hasher.update(data: aadDomain)
+        hasher.update(data: Data([0x00]))
+        // 🔴 Version bytes are bound for v2 ONLY.
+        //
+        // Binding them unconditionally silently broke v1: the shipped build
+        // hashes no version bytes, so adding them here changed the v1 AAD and
+        // every already-emitted v1 frame — anything still in flight, and
+        // anything re-fetched from the server after a reinstall or DB reset —
+        // would fail its tag check and render as an undecryptable bubble. The
+        // downgrade protection these bytes provide is only meaningful for the
+        // format that can actually carry a second suite, so scope it to v2 and
+        // leave the v1 byte layout exactly as shipped.
+        if let index {
+            hasher.update(data: Data([proto, suite]))
+            var be = index.bigEndian
+            withUnsafeBytes(of: &be) { hasher.update(data: Data($0)) }
+        }
         hasher.update(data: Data([0x00]))
         hasher.update(data: Data(senderUserId.utf8))
         hasher.update(data: Data([0x00]))

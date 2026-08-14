@@ -141,10 +141,7 @@ mod tests {
         let packed = sample_packed();
         assert!(validate_opaque_rvn1(&packed));
         assert_eq!(select_ble_adapter(false), BleAdapterKind::MockTcp);
-        assert_eq!(
-            select_ble_adapter(true).transport(),
-            TransportKind::Ble
-        );
+        assert_eq!(select_ble_adapter(true).transport(), TransportKind::Ble);
     }
 
     #[test]

@@ -25,6 +25,13 @@ for the corresponding label constant in the shipping app, e.g.
 `K_route` is out of scope for this document, which only defines what happens
 to it once derived).
 
+The exact allocation of ATSAM directional route subkeys plus `epoch` and
+`counter` is session-profile-specific. The additive, production-disabled
+[`ATSAM_INDEXED_SESSION_PROFILE_V1.md`](ATSAM_INDEXED_SESSION_PROFILE_V1.md)
+freezes one allocation without changing this HMAC primitive. Implementations
+MUST NOT guess counters or reinterpret existing RVNA1 v2 sessions as that
+profile.
+
 **Vector:** `shared-vectors/rvn1/routing/tag_alice_bob_000.json` — fixed test
 `K_route` (`00 01 02 … 1f`), `epoch=1700000000`, `counter=0` →
 `tag_hex = 611432077911411fb5470eb80f1ff119`.

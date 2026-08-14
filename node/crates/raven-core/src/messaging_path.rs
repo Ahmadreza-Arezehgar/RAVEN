@@ -71,8 +71,7 @@ pub fn path_from_raven_envelope_flag(enabled: bool) -> MessagingPath {
 pub fn assert_no_silent_fastapi(path: MessagingPath) -> Result<(), String> {
     if path == MessagingPath::LegacyFastApi {
         return Err(
-            "REFUSE: serverless path must never silently use FastAPI for message delivery"
-                .into(),
+            "REFUSE: serverless path must never silently use FastAPI for message delivery".into(),
         );
     }
     Ok(())
@@ -80,10 +79,7 @@ pub fn assert_no_silent_fastapi(path: MessagingPath) -> Result<(), String> {
 
 fn env_truthy(name: &str) -> bool {
     match env::var(name) {
-        Ok(v) => matches!(
-            v.to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        ),
+        Ok(v) => matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"),
         Err(_) => false,
     }
 }

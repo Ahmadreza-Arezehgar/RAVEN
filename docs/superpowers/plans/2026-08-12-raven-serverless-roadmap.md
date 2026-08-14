@@ -40,12 +40,12 @@ Mission development-order steps → phases. ✅ = already done per audit, ◐ = 
 
 | Phase | Mission steps | Deliverable | Status / gate |
 |---|---|---|---|
-| **A. Protocol freeze** | 03–08 | THREAT_MODEL.md, 8 × `protocol/RAVEN_*_V1.md`, real `rvn1` test vectors | Plan: `2026-08-12-raven-phase-a-protocol-freeze.md` (this batch) |
-| **B. Rust core, two nodes** | 09–11 | `raven-core` crate: identity, envelope codec, seal (ATSAM-compatible), persistent encrypted queue, two-process direct messaging w/ static addresses, ACK, restart persistence | Plan written after A freezes formats. Gate: all `rvn1` vectors pass in Rust |
+| **A. Protocol freeze** | 03–08 | THREAT_MODEL.md, 8 × `protocol/RAVEN_*_V1.md`, real `rvn1` test vectors | **Closed** 2026-08-12 — closeout: `../specs/2026-08-12-phase-a-closeout-design.md`; mapping: `protocol/ATSAM_PRIMITIVE_MAPPING_V1.md`. Open binding: ATSAM KATs placeholders, userId→address migration, MeshEnvelope until Phase G |
+| **B. Rust core, two nodes** | 09–11 | `raven-core` crate: identity, envelope codec, seal (ATSAM-compatible), persistent encrypted queue, two-process direct messaging w/ static addresses, ACK, restart persistence | **In progress** under `node/`. Gate: all `rvn1` vectors pass in Rust |
 | **C. Daemon + `ash` CLI** | 12–15 | `raven-node` (launchd/systemd/Windows service, authenticated local IPC) + `ash` (Messages / Send / Contacts, direct command mode) | Gate: mission §119 steps 1–7 on Linux+macOS |
 | **D. Discovery** | 16–18 | Kademlia DHT, bootstrap config, signed alias records, `ash send @alias` | ◐ DHT client mode exists in Go bridge; alias layer is new |
-| **E. NAT traversal** | 19–21 | AutoNAT, Circuit Relay v2, DCUtR in the Rust node | ✅ proven in Go bridge (port, don't reinvent); Rust node also absorbs the `cmd/relay` infrastructure role (replacing its unsafe dev-seed identity) |
-| **F. Offline delivery** | 22–24 | Mailbox rendezvous tags, encrypted store nodes, replication ×3, TTL, ACK-driven cleanup | Milestone 5 of the bridge plan — **entirely unbuilt**; contract seeds: `ghost_route.py` + `bridge_envelopes` semantics. Gate: mission test 5 (recipient offline) |
+| **E. NAT traversal** | 19–21 | AutoNAT, Circuit Relay v2, DCUtR in the Rust node | ◐ Production-disabled Rust client profile composes bounded AutoNAT v2, Relay v2 and DCUtR with TCP/QUIC; real multi-NAT/CGNAT, relay policy, stable identity, and soak gates remain |
+| **F. Offline delivery** | 22–24 | Mailbox rendezvous tags, encrypted store nodes, replication ×3, TTL | ◐ Separate mailbox tags, strict opaque store, and gated libp2p PUT/GET survive sender disconnect + store restart; multi-store discovery/replication ×3 and live session-derived polling remain |
 | **G. BLE convergence** | 25 | BLE carries RavenEnvelopeV1; fix chunk-key (`Data.hashValue` → deterministic hash); retire premium-gated wire params | Gate: mission tests 6–8 (BLE, bridge both directions) |
 | **H. iOS interop** | 26–27 | iOS speaks RavenEnvelopeV1 end-to-end (Rust FFI or vector-gated Swift twin); Linux↔iPhone both ways | Gate: mission §119 full demo |
 | **I. Decentralized by default** | 28–31 | Adversarial tests, 1k-node simulation (build fresh — `simulation/` is a bot farm, not a simulator), external review, then central route demoted to legacy fallback | Gate: mission §118 security gate |

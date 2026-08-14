@@ -1,20 +1,12 @@
 //! Ed25519 identity — never log or print private keys.
 
+use crate::address::encode_address;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand::rngs::OsRng;
-use crate::address::encode_address;
 
 pub struct Identity {
     verifying: VerifyingKey,
     signing: SigningKey,
-}
-
-impl Drop for Identity {
-    fn drop(&mut self) {
-        // Best-effort: overwrite seed material via re-key from zeros when possible.
-        // SigningKey does not implement Zeroize in this dalek version; avoid logging it.
-        let _ = &mut self.signing;
-    }
 }
 
 impl Identity {

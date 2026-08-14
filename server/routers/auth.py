@@ -1233,6 +1233,24 @@ def verify_code(
         }
     
     # ==== EXISTING USER PURPOSES ====
+    # 🔒 SECURITY (audit C2 — CRITICAL account takeover):
+    # This endpoint returns a `full_access_token` (token_scope "full")
+    # on success. It must therefore ONLY accept purposes that are a
+    # genuine proof-of-identity for the *current* account owner —
+    # verify_email / verify_phone. A `reset_password` code must NEVER
+    # be exchanged for a session here: doing so let anyone holding a
+    # live reset OTP mint a full session as the victim with no password
+    # change (bypassing /reset-password's strength check + refresh
+    # revocation + tokens_invalidated_at stamp). Reset codes are
+    # consumed exclusively by /reset-password, which requires the new
+    # password before any session is issued.
+    if req.purpose not in ('verify_email', 'verify_phone'):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This verification purpose cannot be completed here. "
+                   "Password resets must go through /reset-password."
+        )
+
     # Verify the code
     user_id, error = verify_token(
         db=db,

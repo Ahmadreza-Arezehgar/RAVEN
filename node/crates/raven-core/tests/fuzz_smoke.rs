@@ -30,7 +30,7 @@ fn fuzz_smoke_envelope_and_frames() {
             corpus.push(m);
         }
         let mut big = s.to_vec();
-        big.extend(std::iter::repeat(0x41).take(4096));
+        big.extend(std::iter::repeat_n(0x41, 4096));
         corpus.push(big);
     }
     // Also mutate a well-formed framed payload.

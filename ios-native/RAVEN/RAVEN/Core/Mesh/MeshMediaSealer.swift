@@ -153,8 +153,13 @@ enum MeshMediaSealer {
             // Group path — AES-GCM with the cached group key.
             // recipientId for groups carries the group id.
             let groupId = envelope.recipientId
-            if let (cipherB64, _) = await GroupKeyService.shared.encrypt(jsonStr, groupId: groupId) {
+            if let (cipherB64, version) = await GroupKeyService.shared.encrypt(jsonStr, groupId: groupId) {
                 sealedB64 = cipherB64
+                // Stamp the key version so the receiver's `unseal` can look up
+                // the matching group key — without this, `unseal`'s group
+                // branch (which requires `envelope.groupKeyVersion`) never runs
+                // and all group media metadata is silently dropped on receive.
+                envelope.groupKeyVersion = version
             } else {
                 // No key available — fail-CLOSED rather than ship
                 // the metadata in cleartext. The outer enqueue path

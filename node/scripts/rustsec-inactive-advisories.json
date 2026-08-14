@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "inactive_vulnerability_exceptions": [
+    {
+      "advisory_id": "RUSTSEC-2026-0118",
+      "package": "hickory-proto",
+      "version": "0.25.2",
+      "review_by": "2026-10-31",
+      "reason": "Cargo.lock includes hickory-proto only through libp2p 0.56's optional mDNS feature. Raven does not expose mDNS, and cargo tree --workspace --target all --all-features proves this exact crate/version is absent from every Raven feature and target graph.",
+      "upstream": "https://rustsec.org/advisories/RUSTSEC-2026-0118.html"
+    },
+    {
+      "advisory_id": "RUSTSEC-2026-0119",
+      "package": "hickory-proto",
+      "version": "0.25.2",
+      "review_by": "2026-10-31",
+      "reason": "Cargo.lock includes hickory-proto only through libp2p 0.56's optional mDNS feature. Raven does not expose mDNS, and cargo tree --workspace --target all --all-features proves this exact crate/version is absent from every Raven feature and target graph.",
+      "upstream": "https://rustsec.org/advisories/RUSTSEC-2026-0119.html"
+    }
+  ]
+}
