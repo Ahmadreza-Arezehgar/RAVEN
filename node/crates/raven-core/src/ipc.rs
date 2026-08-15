@@ -30,6 +30,13 @@ pub enum IpcRequest {
         envelope_b64: String,
         peer_hint: Option<String>,
     },
+    /// Direct-dial a LAN peer over Noise XX and exchange already-sealed frames.
+    LanDial {
+        v: u16,
+        lan_dial: String,
+        expected_pub_hex: String,
+        frames_b64: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -48,6 +55,10 @@ pub enum IpcResponse {
     },
     Accepted {
         v: u16,
+    },
+    LanDialResult {
+        v: u16,
+        frames_b64: Vec<String>,
     },
     Error {
         v: u16,
@@ -80,7 +91,8 @@ pub fn decode_request(frame: &[u8]) -> Result<IpcRequest, String> {
         IpcRequest::Ping { v }
         | IpcRequest::Status { v }
         | IpcRequest::SetPolicy { v, .. }
-        | IpcRequest::EnqueueSealed { v, .. } => {
+        | IpcRequest::EnqueueSealed { v, .. }
+        | IpcRequest::LanDial { v, .. } => {
             if *v != IPC_VERSION {
                 return Err("ipc version".into());
             }
@@ -153,5 +165,23 @@ mod tests {
         frame.extend_from_slice(&(huge.len() as u32).to_be_bytes());
         frame.extend_from_slice(&huge);
         assert!(decode_request(&frame).is_err());
+    }
+
+    #[test]
+    fn roundtrip_lan_dial() {
+        let req = IpcRequest::LanDial {
+            v: IPC_VERSION,
+            lan_dial: "192.168.1.20:7420".into(),
+            expected_pub_hex: "ab".repeat(32),
+            frames_b64: vec!["QUJD".into()],
+        };
+        let f = encode_request(&req).unwrap();
+        assert_eq!(decode_request(&f).unwrap(), req);
+        let resp = IpcResponse::LanDialResult {
+            v: IPC_VERSION,
+            frames_b64: vec!["ZGVm".into()],
+        };
+        let rf = encode_response(&resp).unwrap();
+        assert_eq!(decode_response(&rf).unwrap(), resp);
     }
 }

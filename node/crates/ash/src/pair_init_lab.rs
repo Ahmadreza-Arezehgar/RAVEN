@@ -1,36 +1,29 @@
-//! Test A lab: PairInit over LAN OOB + IndexedSessionStore outbound.
+//! LAN-direct send: Noise-backed LanDial + PairInit + indexed message/ACK.
 //!
-//! Activated only when `RAVEN_LAB_TEST_A=1` (debug). Never uses
-//! `unsafe-demo-crypto` / public-key-derived `seal_message`.
+//! Never uses `unsafe-demo-crypto` / public-key-derived `seal_message`.
+//! Lab import files are optional leftovers; the live path uses RLB1 on the socket.
 
 use std::collections::HashMap;
-use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-use rand::rngs::OsRng;
-use rand::RngCore;
-use raven_core::address::encode_address;
-use raven_core::atsam_mlkem::{begin_hybrid_initiation, HybridKeypair};
-use raven_core::device_cert::{
-    load_device_registry, save_device_registry, DeviceCertificate, DeviceRegistry,
-};
+use raven_core::device_cert::{ensure_local_device_certificate, DeviceCertificate, DeviceRegistry};
+use raven_core::device_sync::RevocationStore;
+use raven_core::envelope::{EnvType, Envelope};
 use raven_core::identity::Identity;
 use raven_core::indexed_session_store::{
-    AuthorizedEndpointDevice, IndexedSessionRecordKey, IndexedSessionStore, LocalRole,
+    AuthorizedEndpointDevice, EndpointOutboundKind, IndexedSessionRecordKey, IndexedSessionStore,
 };
-use raven_core::internet::deframe_prefix;
 use raven_core::ipc::{default_socket_path, IpcRequest, IpcResponse, IPC_VERSION};
-use raven_core::pair_init::{
-    device_certificate_hash, encode_init, init_signing_bytes, prekey_bundle_hash, session_id,
-    transcript_hash, PairInit, PairInitTrust, PairResponse,
+use raven_core::lan_dispatch::{
+    cache_peer_bundle, create_initiator_pair_init, find_confirmed_peer_session, parse_peer_offer,
+    wrap_pair_init,
 };
-use raven_core::pair_init_lan_oob::{
-    classify_packed_envelope, wrap_oob_wire, PairInitOobClassify, PairInitOobKind,
-};
-use raven_core::prekey_bundle::PrekeyStore;
+use raven_core::pair_init::PairInit;
+use raven_core::pair_init_lan_oob::{classify_packed_envelope, PairInitOobClassify};
+use raven_core::paths::PRIMARY_DEVICE_ID;
 use raven_core::sanitize::sanitize_terminal_text;
 
 use super::trace_delivery;
@@ -40,9 +33,7 @@ const C_GREEN: &str = "\x1b[38;2;34;197;94m";
 const C_RESET: &str = "\x1b[0m";
 const C_BOLD: &str = "\x1b[1m";
 
-const DEVICE_ID: &str = "ash-lab-primary";
-const DEVICE_X_SECRET: &str = "lab_device_x25519.secret";
-const DEVICE_X_PUBLIC: &str = "lab_device_x25519.pub";
+const DEVICE_ID: &str = PRIMARY_DEVICE_ID;
 const PEER_CERT_CACHE: &str = "peer_device_certs.json";
 
 fn now_ms() -> u64 {
@@ -76,74 +67,11 @@ fn pending_inits() -> &'static Mutex<HashMap<[u8; 16], PendingLabInit>> {
     MAP.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn ensure_device_x25519(data_dir: &Path) -> Result<[u8; 32], String> {
-    let secret_path = data_dir.join(DEVICE_X_SECRET);
-    let public_path = data_dir.join(DEVICE_X_PUBLIC);
-    if secret_path.exists() && public_path.exists() {
-        let pub_raw = std::fs::read(&public_path).map_err(|e| e.to_string())?;
-        if pub_raw.len() != 32 {
-            return Err("device_x.pub length".into());
-        }
-        let mut out = [0u8; 32];
-        out.copy_from_slice(&pub_raw);
-        return Ok(out);
-    }
-    let mut kp = HybridKeypair::generate(&mut OsRng);
-    let secret = kp.x25519_secret;
-    let public = kp.x25519_public;
-    kp.x25519_secret = [0u8; 32];
-    std::fs::create_dir_all(data_dir).map_err(|e| e.to_string())?;
-    std::fs::write(&secret_path, secret).map_err(|e| e.to_string())?;
-    std::fs::write(&public_path, public).map_err(|e| e.to_string())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&secret_path, std::fs::Permissions::from_mode(0o600));
-    }
-    Ok(public)
-}
-
 fn ensure_local_device_cert(
     data_dir: &Path,
     id: &Identity,
 ) -> Result<(DeviceCertificate, DeviceRegistry), String> {
-    let mut reg = load_device_registry(data_dir);
-    let now = now_ms();
-    if let Some(existing) = reg.certs.get(DEVICE_ID).cloned() {
-        if existing.device_ed_pub == id.public_key_bytes() && existing.verify(now).is_ok() {
-            return Ok((existing, reg));
-        }
-    }
-    let x_pub = ensure_device_x25519(data_dir)?;
-    let cert = DeviceCertificate::issue(
-        id,
-        id.public_key_bytes(),
-        x_pub,
-        DEVICE_ID,
-        now.saturating_sub(60_000),
-        now.saturating_add(365 * 24 * 3600 * 1000),
-        0,
-    )?;
-    reg.add(cert.clone(), now)?;
-    save_device_registry(data_dir, &reg)?;
-    Ok((cert, reg))
-}
-
-fn load_peer_cert(data_dir: &Path, peer_pub: &[u8; 32]) -> Result<DeviceCertificate, String> {
-    let path = data_dir.join(PEER_CERT_CACHE);
-    if !path.exists() {
-        return Err(
-            "peer device cert missing — import with lab-import-peer-cert (peer_device_certs.json)"
-                .into(),
-        );
-    }
-    let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    let map: HashMap<String, DeviceCertificate> =
-        serde_json::from_str(&raw).map_err(|e| format!("peer cert cache: {e}"))?;
-    let key = hex::encode(peer_pub);
-    map.get(&key)
-        .cloned()
-        .ok_or_else(|| format!("no peer cert for {key}"))
+    ensure_local_device_certificate(data_dir, id, DEVICE_ID)
 }
 
 fn cache_peer_cert(
@@ -160,29 +88,44 @@ fn cache_peer_cert(
     };
     map.insert(hex::encode(peer_pub), cert.clone());
     let out = serde_json::to_string_pretty(&map).map_err(|e| e.to_string())?;
-    std::fs::write(path, out).map_err(|e| e.to_string())
+    raven_core::atomic_write_private(&path, out.as_bytes())
 }
 
-fn ipc_enqueue(data_dir: &Path, packed: &[u8], peer_hint: &str) -> Result<(), String> {
+fn ipc_lan_dial(
+    data_dir: &Path,
+    lan_dial: &str,
+    expected_pub_hex: &str,
+    frames: &[Vec<u8>],
+) -> Result<Vec<Vec<u8>>, String> {
     use base64::Engine;
     let sock = default_socket_path(data_dir);
     if !sock.exists() {
-        return Err("IPC socket missing — start Mac LAN daemon first".into());
+        return Err("IPC socket missing — start raven-node service first".into());
     }
-    let b64 = base64::engine::general_purpose::STANDARD.encode(packed);
-    let req = IpcRequest::EnqueueSealed {
+    if lan_dial.trim().is_empty()
+        || lan_dial.eq_ignore_ascii_case("local-listen")
+        || lan_dial.eq_ignore_ascii_case("local")
+    {
+        return Err("valid lan_dial host:port required (LocalListenQueue is disabled)".into());
+    }
+    let frames_b64 = frames
+        .iter()
+        .map(|f| base64::engine::general_purpose::STANDARD.encode(f))
+        .collect();
+    let req = IpcRequest::LanDial {
         v: IPC_VERSION,
-        envelope_b64: b64,
-        peer_hint: Some(peer_hint.to_string()),
+        lan_dial: lan_dial.to_string(),
+        expected_pub_hex: expected_pub_hex.to_string(),
+        frames_b64,
     };
     #[cfg(unix)]
     {
         use raven_core::ipc::{decode_response, encode_request};
+        use std::io::Read;
         use std::os::unix::net::UnixStream;
-        let mut stream =
-            UnixStream::connect(&sock).map_err(|e| format!("ipc connect: {e}"))?;
-        let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-        let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+        let mut stream = UnixStream::connect(&sock).map_err(|e| format!("ipc connect: {e}"))?;
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(50)));
+        let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
         let frame = encode_request(&req).map_err(|e| format!("ipc encode: {e}"))?;
         stream
             .write_all(&frame)
@@ -203,34 +146,61 @@ fn ipc_enqueue(data_dir: &Path, packed: &[u8], peer_hint: &str) -> Result<(), St
         resp_frame.extend_from_slice(&len_buf);
         resp_frame.extend_from_slice(&body);
         match decode_response(&resp_frame).map_err(|e| format!("ipc decode: {e}"))? {
-            IpcResponse::Accepted { .. } => Ok(()),
+            IpcResponse::LanDialResult { frames_b64, .. } => frames_b64
+                .iter()
+                .map(|s| {
+                    base64::engine::general_purpose::STANDARD
+                        .decode(s.trim())
+                        .or_else(|_| {
+                            base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(s.trim())
+                        })
+                        .map_err(|e| e.to_string())
+                })
+                .collect(),
             IpcResponse::Error { code, message, .. } => Err(format!("ipc {code}: {message}")),
             other => Err(format!("unexpected ipc: {other:?}")),
         }
     }
     #[cfg(not(unix))]
     {
-        let _ = (data_dir, packed, peer_hint, req);
+        let _ = (data_dir, lan_dial, expected_pub_hex, frames, req);
         Err("IPC UDS unavailable".into())
     }
 }
 
-pub fn ensure_lab_local_material(data_dir: &Path, id: &Identity) -> Result<(), String> {
-    let (_cert, _reg) = ensure_local_device_cert(data_dir, id)?;
-    let store = PrekeyStore::load(data_dir);
-    let now = now_ms();
-    if store
-        .fetch(&id.public_key_bytes(), now)
-        .ok()
-        .flatten()
-        .is_some()
-    {
-        return Ok(());
+fn first_pair_response(frames: &[Vec<u8>]) -> Option<raven_core::PairResponse> {
+    for packed in frames {
+        if let PairInitOobClassify::PairResponse(wire) = classify_packed_envelope(packed) {
+            if let Ok(response) = raven_core::pair_init::decode_response(&wire) {
+                return Some(response);
+            }
+        }
     }
-    Err("local prekey missing — run `ash prekey publish` before PairInit".into())
+    None
 }
 
-/// Create verified PairInit, enqueue on LAN, wait PairResponse, send indexed text.
+fn peer_ack_revoked(data_dir: &Path, peer_cert: &DeviceCertificate) -> Result<bool, String> {
+    Ok(RevocationStore::load_checked(data_dir)?
+        .is_revoked(&hex::encode(peer_cert.user_ed_pub), &peer_cert.device_id))
+}
+
+fn first_ack_frame(frames: &[Vec<u8>]) -> Option<&[u8]> {
+    for packed in frames {
+        if let Some(env) = Envelope::unpack(packed) {
+            if env.env_type == EnvType::Ack as u8 {
+                return Some(packed.as_slice());
+            }
+        }
+    }
+    None
+}
+
+pub fn ensure_lab_local_material(data_dir: &Path, id: &Identity) -> Result<(), String> {
+    let (_cert, _reg) = ensure_local_device_cert(data_dir, id)?;
+    raven_core::ensure_local_prekey(data_dir, id)
+}
+
+/// PairInit + indexed send over one-connection LanDial. No lab import files.
 pub fn run_pair_init_and_send(
     data_dir: &Path,
     id: &Identity,
@@ -241,150 +211,67 @@ pub fn run_pair_init_and_send(
     if !trace_delivery::live_pair_init_outbound_ready() {
         return Err(trace_delivery::production_gate_status().into());
     }
-    ensure_lab_local_material(data_dir, id)?;
-    let peer_pub = parse_pub_hex(peer_pub_hex)?;
-    let now = now_ms();
-
-    let (local_cert, registry) = ensure_local_device_cert(data_dir, id)?;
-    let peer_cert = load_peer_cert(data_dir, &peer_pub)?;
-
-    let prekey_store = PrekeyStore::load(data_dir);
-    let peer_prekey = prekey_store
-        .fetch(&peer_pub, now)?
-        .ok_or_else(|| {
-            "peer prekey missing — `ash prekey fetch` / OOB JSON into prekey store".to_string()
-        })?;
-
-    let trust = PairInitTrust {
-        initiator_certificate: &local_cert,
-        responder_certificate: &peer_cert,
-        responder_prekey: &peer_prekey,
-        initiator_revoked: false,
-        responder_revoked: false,
-    };
-
-    let mut rng = OsRng;
-    let mut eph = HybridKeypair::generate(&mut rng);
-    let selected_x = if peer_prekey.one_time_prekey_id != 0 {
-        peer_prekey
-            .one_time_x25519_pub
-            .ok_or("peer OTP missing")?
-    } else {
-        peer_prekey.x25519_pub
-    };
-    let pending = begin_hybrid_initiation(
-        &mut rng,
-        &eph.x25519_secret,
-        &selected_x,
-        &peer_prekey.mlkem768_ek,
-    )
-    .map_err(|e| format!("hybrid begin: {e}"))?;
-    let ciphertext = pending.ciphertext().to_vec();
-
-    let mut init_id = [0u8; 16];
-    rng.fill_bytes(&mut init_id);
-    let mut pairing_nonce = [0u8; 32];
-    rng.fill_bytes(&mut pairing_nonce);
-    let otp_pub = peer_prekey.one_time_x25519_pub.unwrap_or([0u8; 32]);
-
-    let created = now;
-    let expires = now.saturating_add(24 * 3600 * 1000);
-    let mut init = PairInit {
-        initiator_address: id.address(),
-        responder_address: encode_address(&peer_pub),
-        init_id,
-        pairing_nonce,
-        initiator_device_ed_pub: id.public_key_bytes(),
-        responder_device_ed_pub: peer_cert.device_ed_pub,
-        initiator_ephemeral_x25519_pub: eph.x25519_public,
-        responder_signed_x25519_pub: peer_prekey.x25519_pub,
-        responder_one_time_x25519_pub: otp_pub,
-        initiator_device_cert_hash: device_certificate_hash(&local_cert)
-            .map_err(|e| format!("{e:?}"))?,
-        responder_device_cert_hash: device_certificate_hash(&peer_cert)
-            .map_err(|e| format!("{e:?}"))?,
-        responder_prekey_bundle_hash: prekey_bundle_hash(&peer_prekey)
-            .map_err(|e| format!("{e:?}"))?,
-        signed_prekey_id: peer_prekey.signed_prekey_id,
-        one_time_prekey_id: peer_prekey.one_time_prekey_id,
-        responder_mlkem768_ek: peer_prekey.mlkem768_ek.clone(),
-        mlkem768_ciphertext: ciphertext,
-        created_at_ms: created,
-        expires_at_ms: expires,
-        signature: [0u8; 64],
-    };
-    let signing = init_signing_bytes(&init).map_err(|e| format!("{e:?}"))?;
-    init.signature = id.sign(&signing);
-    eph.x25519_secret = [0u8; 32];
-
-    let digest = transcript_hash(&init).map_err(|e| format!("{e:?}"))?;
-    let (_ct, root) = pending.finalize(&digest);
-
-    let mut store = IndexedSessionStore::open(data_dir).map_err(|e| e.redacted_display())?;
-    let record_key = store
-        .create_verified_pair_init_session(&init, &trust, now, LocalRole::Initiator, root)
-        .map_err(|e| e.redacted_display())?;
-
-    let init_wire = encode_init(&init).map_err(|e| format!("{e:?}"))?;
-    let mut tag = [0u8; 16];
-    rng.fill_bytes(&mut tag);
-    let packed = wrap_oob_wire(
-        &init_wire,
-        PairInitOobKind::PairInit,
-        id,
-        tag,
-        now,
-        &mut rng,
-    )?;
-
-    let hint = if peer.trim().is_empty()
+    if !peer.contains(':')
         || peer.eq_ignore_ascii_case("local-listen")
         || peer.eq_ignore_ascii_case("local")
     {
-        "local-listen"
-    } else {
-        peer
-    };
-    ipc_enqueue(data_dir, &packed, hint)?;
-    trace_delivery::trace_event(
-        "ash/pair_init_lab.rs:run_pair_init_and_send",
-        "TRACE_PAIR_INIT_ENQUEUED",
-        "WAITING_FOR_PAIR_RESPONSE",
-        Some(&hex::encode(&init_id[..4])),
-        Some("lan_oob_rvn1_wrap"),
-    );
-    println!(
-        "{C_GREEN}PairInit enqueued{C_RESET} init={}… → wait PairResponse (phone accept)",
-        &hex::encode(init_id)[..8]
-    );
-    println!(
-        "{C_DIM}sid{C_RESET} {}",
-        hex::encode(session_id(&init).map_err(|e| format!("{e:?}"))?)
-    );
-
-    {
-        let mut map = pending_inits().lock().map_err(|_| "pending lock")?;
-        map.insert(
-            init_id,
-            PendingLabInit {
-                init: init.clone(),
-                record_key: record_key.clone(),
-            },
+        return Err(
+            "valid lan_dial host:port required — refusing LocalListenQueue fallback".into(),
         );
     }
+    ensure_lab_local_material(data_dir, id)?;
+    let peer_pub = parse_pub_hex(peer_pub_hex)?;
+    let (local_cert, registry) = ensure_local_device_cert(data_dir, id)?;
 
-    let response = wait_pair_response(data_dir, &init, peer, 90)?;
-    store
-        .confirm_verified_pair_response(&record_key, &init, &response, now_ms())
-        .map_err(|e| e.redacted_display())?;
-    trace_delivery::trace_event(
-        "ash/pair_init_lab.rs:run_pair_init_and_send",
-        "TRACE_PAIR_RESPONSE_CONFIRMED",
-        "SESSION_CONFIRMED",
-        Some(&hex::encode(&init_id[..4])),
-        None,
-    );
-    println!("{C_GREEN}PairResponse confirmed{C_RESET} — sending indexed message");
+    let rlb1_replies = ipc_lan_dial(data_dir, peer, peer_pub_hex, &[])?;
+    let peer_bundle = rlb1_replies
+        .iter()
+        .find_map(|f| parse_peer_offer(f).ok())
+        .ok_or_else(|| "peer did not return an RLB1 bundle".to_string())?;
+    if peer_bundle.cert.user_ed_pub != peer_pub && peer_bundle.cert.device_ed_pub != peer_pub {
+        return Err("RLB1 identity does not match --peer-pub-hex / contact".into());
+    }
+    cache_peer_bundle(data_dir, &peer_bundle)?;
+
+    let record_key = if let Some(existing) =
+        find_confirmed_peer_session(data_dir, &peer_bundle.cert.device_ed_pub)?
+    {
+        existing
+    } else {
+        let (init, key) = create_initiator_pair_init(data_dir, id, &peer_bundle)?;
+        let init_frame = wrap_pair_init(id, &init)?;
+        let replies = ipc_lan_dial(data_dir, peer, peer_pub_hex, &[init_frame])?;
+        let response = first_pair_response(&replies).ok_or_else(|| {
+            let kinds: Vec<String> = replies
+                .iter()
+                .map(|f| {
+                    if parse_peer_offer(f).is_ok() {
+                        "rlb1".into()
+                    } else {
+                        format!("{:?}", classify_packed_envelope(f))
+                    }
+                })
+                .collect();
+            format!(
+                "WAITING_FOR_PAIR_RESPONSE: no PairResponse on LanDial ({} frames: {})",
+                replies.len(),
+                kinds.join(",")
+            )
+        })?;
+        let mut store = IndexedSessionStore::open(data_dir).map_err(|e| e.redacted_display())?;
+        store
+            .confirm_verified_pair_response(&key, &init, &response, now_ms())
+            .map_err(|e| e.redacted_display())?;
+        trace_delivery::trace_event(
+            "ash/pair_init_lab.rs:run_pair_init_and_send",
+            "TRACE_PAIR_RESPONSE_CONFIRMED",
+            "SESSION_CONFIRMED",
+            Some(&hex::encode(&init.init_id[..4])),
+            Some("lan_dial"),
+        );
+        println!("{C_GREEN}PairResponse confirmed{C_RESET} — sending indexed message");
+        key
+    };
 
     send_indexed_text(
         data_dir,
@@ -393,101 +280,13 @@ pub fn run_pair_init_and_send(
         &local_cert,
         &record_key,
         text,
-        hint,
+        peer,
+        peer_pub_hex,
+        &peer_bundle.cert,
     )
 }
 
-fn wait_pair_response(
-    data_dir: &Path,
-    init: &PairInit,
-    peer: &str,
-    timeout_secs: u64,
-) -> Result<PairResponse, String> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
-    let dial = if peer.contains(':')
-        && !peer.eq_ignore_ascii_case("local-listen")
-        && !peer.eq_ignore_ascii_case("local")
-    {
-        Some(peer.to_string())
-    } else {
-        None
-    };
-    while std::time::Instant::now() < deadline {
-        if let Some(ref addr) = dial {
-            if let Ok(frames) = pull_frames(addr, 2) {
-                for packed in frames {
-                    if let PairInitOobClassify::PairResponse(wire) =
-                        classify_packed_envelope(&packed)
-                    {
-                        if let Ok(response) = raven_core::pair_init::decode_response(&wire) {
-                            if response.init_id == init.init_id {
-                                return Ok(response);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        let drop = data_dir.join("lab_pair_response.rvpr1");
-        if drop.exists() {
-            if let Ok(wire) = std::fs::read(&drop) {
-                if let Ok(response) = raven_core::pair_init::decode_response(&wire) {
-                    if response.init_id == init.init_id {
-                        let _ = std::fs::remove_file(&drop);
-                        return Ok(response);
-                    }
-                }
-                if let PairInitOobClassify::PairResponse(wire) = classify_packed_envelope(&wire) {
-                    if let Ok(response) = raven_core::pair_init::decode_response(&wire) {
-                        if response.init_id == init.init_id {
-                            let _ = std::fs::remove_file(&drop);
-                            return Ok(response);
-                        }
-                    }
-                }
-            }
-        }
-        std::thread::sleep(Duration::from_millis(500));
-        print!(".");
-        let _ = std::io::stdout().flush();
-    }
-    println!();
-    Err("WAITING_FOR_PAIR_RESPONSE:timeout".into())
-}
-
-fn pull_frames(host_port: &str, seconds: u64) -> Result<Vec<Vec<u8>>, String> {
-    let mut stream =
-        TcpStream::connect(host_port).map_err(|e| format!("dial {host_port}: {e}"))?;
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(seconds)));
-    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
-    stream
-        .write_all(b"RVNP")
-        .map_err(|e| format!("pull hello: {e}"))?;
-    let mut buf = Vec::new();
-    let mut tmp = [0u8; 65536];
-    let start = std::time::Instant::now();
-    while start.elapsed() < Duration::from_secs(seconds) {
-        match stream.read(&mut tmp) {
-            Ok(0) => break,
-            Ok(n) => buf.extend_from_slice(&tmp[..n]),
-            Err(e)
-                if e.kind() == std::io::ErrorKind::WouldBlock
-                    || e.kind() == std::io::ErrorKind::TimedOut =>
-            {
-                break;
-            }
-            Err(e) => return Err(format!("pull read: {e}")),
-        }
-    }
-    let mut out = Vec::new();
-    let mut offset = 0usize;
-    while let Some((payload, next)) = deframe_prefix(&buf[offset..]) {
-        out.push(payload);
-        offset += next;
-    }
-    Ok(out)
-}
-
+#[allow(clippy::too_many_arguments)]
 fn send_indexed_text(
     data_dir: &Path,
     id: &Identity,
@@ -495,48 +294,477 @@ fn send_indexed_text(
     local_cert: &DeviceCertificate,
     record_key: &IndexedSessionRecordKey,
     text: &str,
-    peer_hint: &str,
+    lan_dial: &str,
+    peer_pub_hex: &str,
+    peer_cert: &DeviceCertificate,
 ) -> Result<(), String> {
+    if text.len() > raven_core::lan_noise::MAX_LAN_ENDPOINT_TEXT {
+        return Err(format!(
+            "message too large for LAN Noise (max {} bytes)",
+            raven_core::lan_noise::MAX_LAN_ENDPOINT_TEXT
+        ));
+    }
     let now = now_ms();
     let local_device = AuthorizedEndpointDevice::authorize(local_cert, id, registry, now)
         .map_err(|e| e.redacted_display())?;
     let mut store = IndexedSessionStore::open(data_dir).map_err(|e| e.redacted_display())?;
-    let mut rng = OsRng;
-    let mut queued: Option<([u8; 32], Vec<u8>)> = None;
-    let outbound = store
-        .send_message_envelope(
-            record_key,
-            text,
+    let session_expires = store
+        .session_expires_at(record_key)
+        .map_err(|e| e.redacted_display())?;
+    let expires = now.saturating_add(60 * 60 * 1000).min(session_expires);
+    if expires <= now {
+        return Err("session expired".into());
+    }
+    let mut rng = rand::rngs::OsRng;
+    let replies = std::cell::RefCell::new(Vec::<Vec<u8>>::new());
+    let dial_err = std::cell::RefCell::new(None::<String>);
+    let recipient = &peer_cert.device_ed_pub;
+    raven_core::reconcile_outbound_stage_history(data_dir)?;
+    let session_id = store
+        .session_id_for_record_key(record_key)
+        .map_err(|e| e.redacted_display())?;
+    // Compose text is only set for the *new* send. Retries reload body from the
+    // protected outbound stage written before ChatHistory on the first dial attempt.
+    let history_queue_text = std::cell::RefCell::new(None::<String>);
+    let dial_session = std::cell::RefCell::new(session_id);
+    let dial_expected_digest = std::cell::RefCell::new(None::<[u8; 32]>);
+    // Held from capacity preflight until stage write succeeds; dropped before network.
+    let stage_guard = std::cell::RefCell::new(None::<raven_core::OutboundStageSendGuard>);
+    // Exact binding observed in the dial callback when handoff fails.
+    let failed_binding = std::cell::RefCell::new(None::<([u8; 32], [u8; 32], [u8; 16])>);
+    let mut dial = |digest: &[u8; 32], bytes: &[u8]| {
+        if bytes.len() > raven_core::lan_noise::MAX_TRANSPORT_PLAINTEXT {
+            *dial_err.borrow_mut() = Some("packed envelope exceeds Noise transport limit".into());
+            return Err(());
+        }
+        if let Some(expected) = *dial_expected_digest.borrow() {
+            if expected != *digest {
+                *dial_err.borrow_mut() = Some("outbound object digest mismatch".into());
+                return Err(());
+            }
+        }
+        if let Some(env) = raven_core::Envelope::unpack(bytes) {
+            if env.env_type == raven_core::EnvType::Message as u8 {
+                let compose = history_queue_text.borrow();
+                let session = *dial_session.borrow();
+                *failed_binding.borrow_mut() = Some((session, *digest, env.message_id));
+                let stage_result = match stage_guard.borrow().as_ref() {
+                    Some(guard) => raven_core::ensure_outbound_queued_history_under_send_guard(
+                        guard,
+                        &peer_cert.device_ed_pub,
+                        &session,
+                        digest,
+                        &env.message_id,
+                        now,
+                        compose.as_deref(),
+                    ),
+                    None => raven_core::ensure_outbound_queued_history(
+                        data_dir,
+                        &peer_cert.device_ed_pub,
+                        &session,
+                        digest,
+                        &env.message_id,
+                        now,
+                        compose.as_deref(),
+                    ),
+                };
+                if let Err(e) = stage_result {
+                    *dial_err.borrow_mut() = Some(e);
+                    return Err(());
+                }
+                // Never hold BEGIN EXCLUSIVE across ipc_lan_dial (up to ~45s).
+                let _ = stage_guard.borrow_mut().take();
+            }
+        }
+        match ipc_lan_dial(data_dir, lan_dial, peer_pub_hex, &[bytes.to_vec()]) {
+            Ok(frames) => {
+                *replies.borrow_mut() = frames;
+                Ok(*digest)
+            }
+            Err(e) => {
+                *dial_err.borrow_mut() = Some(e);
+                Err(())
+            }
+        }
+    };
+    for pending in store
+        .pending_endpoint_outbound_for_recipient(Some(recipient))
+        .map_err(|e| e.redacted_display())?
+    {
+        if pending.kind != EndpointOutboundKind::Message {
+            continue;
+        }
+        let Some(pending_key) = store
+            .record_key_for_session_id(&pending.session_id)
+            .map_err(|e| e.redacted_display())?
+        else {
+            continue;
+        };
+        *dial_session.borrow_mut() = pending.session_id;
+        *dial_expected_digest.borrow_mut() = Some(pending.object_digest);
+        match store.retry_endpoint_outbound(
+            &pending_key,
+            &pending.object_digest,
             &local_device,
             now,
-            now.saturating_add(7 * 24 * 3600 * 1000),
-            now,
-            &mut rng,
-            &mut |digest: &[u8; 32], bytes: &[u8]| {
-                queued = Some((*digest, bytes.to_vec()));
-                Ok(*digest)
-            },
-        )
-        .map_err(|e| e.redacted_display())?;
-
-    let (digest, packed) = queued.ok_or("send_message_envelope produced no queue bytes")?;
-    if digest != outbound.object_digest {
-        return Err("queue digest mismatch".into());
+            &mut dial,
+        ) {
+            Ok(row) => {
+                let mid = hex::encode(&row.message_id[..4]);
+                let frames = replies.borrow();
+                if let Some(ack) = first_ack_frame(&frames) {
+                    let ack = ack.to_vec();
+                    drop(frames);
+                    finish_outbound_delivered(
+                        data_dir,
+                        &mut store,
+                        &pending_key,
+                        peer_cert,
+                        &pending.session_id,
+                        &pending.object_digest,
+                        &row.message_id,
+                        &ack,
+                        now,
+                    )?;
+                    println!("{C_GREEN}status{C_RESET} delivered (retried) mid={mid}…");
+                } else {
+                    return Err("WAITING_FOR_ENDPOINT_ACK: prior send has no ACK".into());
+                }
+            }
+            Err(raven_core::IndexedSessionStoreError::NotFound)
+            | Err(raven_core::IndexedSessionStoreError::BindingConflict) => continue,
+            Err(raven_core::IndexedSessionStoreError::EndpointNotCurrentlyValid) => {
+                store
+                    .abandon_undelivered_outbound(&pending_key, &pending.object_digest)
+                    .map_err(|e| e.redacted_display())?;
+                mark_outbound_failed(
+                    data_dir,
+                    &peer_cert.device_ed_pub,
+                    &pending.session_id,
+                    &pending.object_digest,
+                    &pending.message_id,
+                )?;
+                continue;
+            }
+            Err(e) => {
+                let detail = dial_err
+                    .borrow()
+                    .clone()
+                    .unwrap_or_else(|| e.redacted_display());
+                if stage_or_body_handoff_failure(&detail) {
+                    store
+                        .abandon_undelivered_outbound(&pending_key, &pending.object_digest)
+                        .map_err(|e| e.redacted_display())?;
+                    mark_outbound_failed(
+                        data_dir,
+                        &peer_cert.device_ed_pub,
+                        &pending.session_id,
+                        &pending.object_digest,
+                        &pending.message_id,
+                    )?;
+                }
+                return Err(detail);
+            }
+        }
     }
-    ipc_enqueue(data_dir, &packed, peer_hint)?;
+    for awaiting in store
+        .awaiting_ack_endpoint_outbound_for_recipient(Some(recipient))
+        .map_err(|e| e.redacted_display())?
+    {
+        if awaiting.kind != EndpointOutboundKind::Message {
+            continue;
+        }
+        let Some(await_key) = store
+            .record_key_for_session_id(&awaiting.session_id)
+            .map_err(|e| e.redacted_display())?
+        else {
+            continue;
+        };
+        *dial_session.borrow_mut() = awaiting.session_id;
+        *dial_expected_digest.borrow_mut() = Some(awaiting.object_digest);
+        match store.resend_queued_endpoint_outbound(
+            &await_key,
+            &awaiting.object_digest,
+            &local_device,
+            now,
+            &mut dial,
+        ) {
+            Ok(row) => {
+                let mid = hex::encode(&row.message_id[..4]);
+                let frames = replies.borrow();
+                if let Some(ack) = first_ack_frame(&frames) {
+                    let ack = ack.to_vec();
+                    drop(frames);
+                    finish_outbound_delivered(
+                        data_dir,
+                        &mut store,
+                        &await_key,
+                        peer_cert,
+                        &awaiting.session_id,
+                        &awaiting.object_digest,
+                        &row.message_id,
+                        &ack,
+                        now,
+                    )?;
+                    println!("{C_GREEN}status{C_RESET} delivered (ack-resend) mid={mid}…");
+                } else {
+                    return Err("WAITING_FOR_ENDPOINT_ACK: queued send still has no ACK".into());
+                }
+            }
+            Err(raven_core::IndexedSessionStoreError::NotFound)
+            | Err(raven_core::IndexedSessionStoreError::BindingConflict) => continue,
+            Err(raven_core::IndexedSessionStoreError::EndpointNotCurrentlyValid) => {
+                store
+                    .abandon_undelivered_outbound(&await_key, &awaiting.object_digest)
+                    .map_err(|e| e.redacted_display())?;
+                mark_outbound_failed(
+                    data_dir,
+                    &peer_cert.device_ed_pub,
+                    &awaiting.session_id,
+                    &awaiting.object_digest,
+                    &awaiting.message_id,
+                )?;
+                continue;
+            }
+            Err(e) => {
+                let detail = dial_err
+                    .borrow()
+                    .clone()
+                    .unwrap_or_else(|| e.redacted_display());
+                if stage_or_body_handoff_failure(&detail) {
+                    store
+                        .abandon_undelivered_outbound(&await_key, &awaiting.object_digest)
+                        .map_err(|e| e.redacted_display())?;
+                    mark_outbound_failed(
+                        data_dir,
+                        &peer_cert.device_ed_pub,
+                        &awaiting.session_id,
+                        &awaiting.object_digest,
+                        &awaiting.message_id,
+                    )?;
+                }
+                return Err(detail);
+            }
+        }
+    }
+    *history_queue_text.borrow_mut() = Some(text.to_string());
+    *dial_session.borrow_mut() = session_id;
+    *dial_expected_digest.borrow_mut() = None;
+    // Lock+capacity held until stage write inside dial (or send fails).
+    *stage_guard.borrow_mut() = Some(
+        raven_core::OutboundStageSendGuard::acquire(data_dir, text, now).map_err(|e| match e {
+            raven_core::ChatHistoryError::TooLarge => {
+                "outbound stage capacity exceeded".to_string()
+            }
+            other => other.to_string(),
+        })?,
+    );
+    let outbound = match store.send_message_envelope(
+        record_key,
+        text,
+        &local_device,
+        now,
+        expires,
+        now,
+        &mut rng,
+        &mut dial,
+    ) {
+        Ok(row) => {
+            let _ = stage_guard.borrow_mut().take();
+            row
+        }
+        Err(e) => {
+            let detail = dial_err
+                .borrow()
+                .clone()
+                .unwrap_or_else(|| e.redacted_display());
+            let binding = failed_binding.borrow_mut().take();
+            let _ = stage_guard.borrow_mut().take();
+            if stage_or_body_handoff_failure(&detail) {
+                if let Some((sid, digest, mid)) = binding {
+                    abandon_prepared_binding(
+                        data_dir,
+                        &mut store,
+                        &peer_cert.device_ed_pub,
+                        &sid,
+                        &digest,
+                        &mid,
+                    )?;
+                }
+            }
+            return Err(detail);
+        }
+    };
+
     let mid = hex::encode(&outbound.message_id[..4]);
     trace_delivery::trace_event(
         "ash/pair_init_lab.rs:send_indexed_text",
-        "TRACE_INDEXED_MESSAGE_ENQUEUED",
+        "TRACE_INDEXED_MESSAGE_DIALED",
         "WAITING_FOR_ENDPOINT_ACK",
         Some(&mid),
-        Some("send_message_envelope"),
+        Some("lan_dial"),
     );
     println!(
-        "{C_GREEN}indexed message enqueued{C_RESET} mid={mid}… peer={}",
-        sanitize_terminal_text(peer_hint)
+        "{C_GREEN}indexed message queued after dial{C_RESET} mid={mid}… peer={}",
+        sanitize_terminal_text(lan_dial)
     );
-    println!("{C_DIM}status{C_RESET} WAITING_FOR_ENDPOINT_ACK (not Sent until sealed ACK)");
+    if let Some(ack) = first_ack_frame(&replies.borrow()) {
+        finish_outbound_delivered(
+            data_dir,
+            &mut store,
+            record_key,
+            peer_cert,
+            &session_id,
+            &outbound.object_digest,
+            &outbound.message_id,
+            ack,
+            now,
+        )?;
+        println!("{C_GREEN}status{C_RESET} delivered");
+        trace_delivery::trace_event(
+            "ash/pair_init_lab.rs:send_indexed_text",
+            "TRACE_ENDPOINT_ACK_ACCEPTED",
+            "DELIVERED",
+            Some(&mid),
+            Some("accept_ack_envelope"),
+        );
+    } else {
+        return Err("WAITING_FOR_ENDPOINT_ACK: dial succeeded but no sealed ACK".into());
+    }
+    Ok(())
+}
+
+fn stage_or_body_handoff_failure(detail: &str) -> bool {
+    detail.contains("outbound body unavailable")
+        || detail.contains("binding mismatch")
+        || detail.contains("outbound stage capacity exceeded")
+}
+
+fn abandon_prepared_binding(
+    data_dir: &Path,
+    store: &mut IndexedSessionStore,
+    peer_pub: &[u8; 32],
+    session_id: &[u8; 32],
+    object_digest: &[u8; 32],
+    message_id: &[u8; 16],
+) -> Result<(), String> {
+    let Some(pending_key) = store
+        .record_key_for_session_id(session_id)
+        .map_err(|e| e.redacted_display())?
+    else {
+        return Ok(());
+    };
+    let pending = store
+        .pending_endpoint_outbound_for_recipient(Some(peer_pub))
+        .map_err(|e| e.redacted_display())?
+        .into_iter()
+        .find(|row| {
+            row.kind == EndpointOutboundKind::Message
+                && row.session_id == *session_id
+                && row.object_digest == *object_digest
+                && row.message_id == *message_id
+        });
+    let Some(pending) = pending else {
+        return Ok(());
+    };
+    store
+        .abandon_undelivered_outbound(&pending_key, &pending.object_digest)
+        .map_err(|e| e.redacted_display())?;
+    mark_outbound_failed(
+        data_dir,
+        peer_pub,
+        &pending.session_id,
+        &pending.object_digest,
+        &pending.message_id,
+    )?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_outbound_delivered(
+    data_dir: &Path,
+    store: &mut IndexedSessionStore,
+    record_key: &IndexedSessionRecordKey,
+    peer_cert: &DeviceCertificate,
+    session_id: &[u8; 32],
+    object_digest: &[u8; 32],
+    message_id: &[u8; 16],
+    ack: &[u8],
+    now: u64,
+) -> Result<(), String> {
+    // History body must exist before Delivered is committed.
+    raven_core::ensure_outbound_queued_history(
+        data_dir,
+        &peer_cert.device_ed_pub,
+        session_id,
+        object_digest,
+        message_id,
+        now,
+        None,
+    )?;
+    store
+        .accept_ack_envelope(
+            record_key,
+            ack,
+            peer_cert,
+            peer_ack_revoked(data_dir, peer_cert)?,
+            now_ms(),
+        )
+        .map_err(|e| e.redacted_display())?;
+    raven_core::mark_lan_chat_history_delivery(
+        data_dir,
+        "out",
+        &peer_cert.device_ed_pub,
+        message_id,
+        "delivered",
+    )?;
+    raven_core::clear_staged_outbound_body(data_dir, message_id).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn mark_outbound_failed(
+    data_dir: &Path,
+    peer_pub: &[u8; 32],
+    session_id: &[u8; 32],
+    object_digest: &[u8; 32],
+    message_id: &[u8; 16],
+) -> Result<(), String> {
+    if let Some(staged) =
+        raven_core::load_staged_outbound_body(data_dir, message_id).map_err(|e| e.to_string())?
+    {
+        if !staged
+            .peer_pub_hex
+            .eq_ignore_ascii_case(&hex::encode(peer_pub))
+            || !staged
+                .session_id_hex
+                .eq_ignore_ascii_case(&hex::encode(session_id))
+            || !staged
+                .object_digest_hex
+                .eq_ignore_ascii_case(&hex::encode(object_digest))
+            || !staged
+                .message_id_hex
+                .eq_ignore_ascii_case(&hex::encode(message_id))
+        {
+            return Err(format!(
+                "staged outbound binding mismatch on fail mid={}",
+                hex::encode(message_id)
+            ));
+        }
+        raven_core::persist_lan_chat_history(
+            data_dir,
+            "out",
+            peer_pub,
+            message_id,
+            staged.created_at_ms,
+            "failed",
+            staged.body.as_bytes(),
+        )?;
+    } else {
+        raven_core::mark_lan_chat_history_delivery(
+            data_dir, "out", peer_pub, message_id, "failed",
+        )?;
+    }
+    raven_core::clear_staged_outbound_body(data_dir, message_id).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -544,7 +772,7 @@ pub fn export_lab_device_cert(data_dir: &Path, id: &Identity) -> Result<(), Stri
     let (cert, _) = ensure_local_device_cert(data_dir, id)?;
     let path = data_dir.join("lab_device_cert.json");
     let json = serde_json::to_string_pretty(&cert).map_err(|e| e.to_string())?;
-    std::fs::write(&path, json).map_err(|e| e.to_string())?;
+    raven_core::atomic_write_private(&path, json.as_bytes())?;
     println!(
         "{C_BOLD}lab device cert{C_RESET} → {} (give peer; map key = your pub_hex)",
         path.display()
@@ -578,8 +806,7 @@ pub fn ingest_pair_response_packed(data_dir: &Path, packed: &[u8]) -> Result<(),
     let PairInitOobClassify::PairResponse(wire) = classify_packed_envelope(packed) else {
         return Err("not PairResponse OOB".into());
     };
-    let response =
-        raven_core::pair_init::decode_response(&wire).map_err(|e| format!("{e:?}"))?;
+    let response = raven_core::pair_init::decode_response(&wire).map_err(|e| format!("{e:?}"))?;
     let mut map = pending_inits().lock().map_err(|_| "pending lock")?;
     let Some(pending) = map.remove(&response.init_id) else {
         return Err("no pending PairInit for this response".into());
@@ -589,8 +816,7 @@ pub fn ingest_pair_response_packed(data_dir: &Path, packed: &[u8]) -> Result<(),
         .confirm_verified_pair_response(&pending.record_key, &pending.init, &response, now_ms())
         .map_err(|e| e.redacted_display())?;
     let path = data_dir.join("lab_pair_response.rvpr1");
-    std::fs::write(&path, wire).map_err(|e| e.to_string())?;
-    Ok(())
+    raven_core::atomic_write_private(&path, &wire)
 }
 
 #[allow(dead_code)]

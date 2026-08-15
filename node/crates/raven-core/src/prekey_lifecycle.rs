@@ -10,9 +10,7 @@
 //! backend. SQLite is used solely as a secret-free, cross-process writer lock.
 
 use std::fmt;
-use std::path::Path;
-#[cfg(windows)]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -427,7 +425,31 @@ trait ProtectedPrekeyBackend: Send + Sync {
     fn put(&self, account: &str, value: &[u8]) -> Result<(), PrekeyLifecycleError>;
 }
 
+fn force_locked_file_prekey_backend() -> bool {
+    for key in ["RAVEN_PREKEY_BACKEND", "RAVEN_IDENTITY_BACKEND"] {
+        if std::env::var_os(key).is_some_and(|v| v == "locked-file") {
+            return true;
+        }
+    }
+    false
+}
+
+fn locked_file_get(path: &Path) -> Result<Option<Vec<u8>>, PrekeyLifecycleError> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    std::fs::read(path)
+        .map(Some)
+        .map_err(|_| PrekeyLifecycleError::ProtectedStore)
+}
+
+fn locked_file_put(path: &Path, value: &[u8]) -> Result<(), PrekeyLifecycleError> {
+    crate::paths::atomic_write_private(path, value)
+        .map_err(|_| PrekeyLifecycleError::ProtectedStore)
+}
+
 struct PlatformProtectedPrekeyBackend {
+    locked_file: Option<PathBuf>,
     #[cfg(windows)]
     secret_dir: PathBuf,
 }
@@ -440,11 +462,16 @@ impl PlatformProtectedPrekeyBackend {
     ))]
     fn new(data_dir: &Path) -> Result<Self, PrekeyLifecycleError> {
         std::fs::create_dir_all(data_dir).map_err(|_| PrekeyLifecycleError::ProtectedStore)?;
+        let locked_file =
+            force_locked_file_prekey_backend().then(|| data_dir.join("prekey_lifecycle.protected"));
 
         #[cfg(all(target_os = "linux", target_env = "gnu"))]
-        ensure_secret_service_available()?;
+        if locked_file.is_none() {
+            ensure_secret_service_available()?;
+        }
 
         Ok(Self {
+            locked_file,
             #[cfg(windows)]
             secret_dir: data_dir.join("prekey-lifecycle-secrets"),
         })
@@ -455,7 +482,13 @@ impl PlatformProtectedPrekeyBackend {
         windows,
         all(target_os = "linux", target_env = "gnu")
     )))]
-    fn new(_data_dir: &Path) -> Result<Self, PrekeyLifecycleError> {
+    fn new(data_dir: &Path) -> Result<Self, PrekeyLifecycleError> {
+        if force_locked_file_prekey_backend() {
+            std::fs::create_dir_all(data_dir).map_err(|_| PrekeyLifecycleError::ProtectedStore)?;
+            return Ok(Self {
+                locked_file: Some(data_dir.join("prekey_lifecycle.protected")),
+            });
+        }
         Err(PrekeyLifecycleError::ProtectedStoreUnavailable)
     }
 }
@@ -467,11 +500,17 @@ impl PlatformProtectedPrekeyBackend {
 )))]
 impl ProtectedPrekeyBackend for PlatformProtectedPrekeyBackend {
     fn get(&self, _account: &str) -> Result<Option<Vec<u8>>, PrekeyLifecycleError> {
+        if let Some(path) = &self.locked_file {
+            return locked_file_get(path);
+        }
         let _ = PROTECTED_STORE_UNAVAILABLE;
         Err(PrekeyLifecycleError::ProtectedStoreUnavailable)
     }
 
     fn put(&self, _account: &str, _value: &[u8]) -> Result<(), PrekeyLifecycleError> {
+        if let Some(path) = &self.locked_file {
+            return locked_file_put(path, _value);
+        }
         let _ = PROTECTED_STORE_UNAVAILABLE;
         Err(PrekeyLifecycleError::ProtectedStoreUnavailable)
     }
@@ -480,6 +519,9 @@ impl ProtectedPrekeyBackend for PlatformProtectedPrekeyBackend {
 #[cfg(target_os = "macos")]
 impl ProtectedPrekeyBackend for PlatformProtectedPrekeyBackend {
     fn get(&self, account: &str) -> Result<Option<Vec<u8>>, PrekeyLifecycleError> {
+        if let Some(path) = &self.locked_file {
+            return locked_file_get(path);
+        }
         use security_framework::passwords::get_generic_password;
         match get_generic_password(PLATFORM_SERVICE, account) {
             Ok(value) => Ok(Some(value)),
@@ -489,6 +531,9 @@ impl ProtectedPrekeyBackend for PlatformProtectedPrekeyBackend {
     }
 
     fn put(&self, account: &str, value: &[u8]) -> Result<(), PrekeyLifecycleError> {
+        if let Some(path) = &self.locked_file {
+            return locked_file_put(path, value);
+        }
         use security_framework::passwords::set_generic_password;
         set_generic_password(PLATFORM_SERVICE, account, value)
             .map_err(|_| PrekeyLifecycleError::ProtectedStore)
@@ -514,6 +559,9 @@ fn ensure_secret_service_available() -> Result<(), PrekeyLifecycleError> {
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 impl ProtectedPrekeyBackend for PlatformProtectedPrekeyBackend {
     fn get(&self, account: &str) -> Result<Option<Vec<u8>>, PrekeyLifecycleError> {
+        if let Some(path) = &self.locked_file {
+            return locked_file_get(path);
+        }
         use secret_service::{EncryptionType, SecretService};
         let service = SecretService::new(EncryptionType::Dh)
             .map_err(|_| PrekeyLifecycleError::ProtectedStoreUnavailable)?;
@@ -537,6 +585,9 @@ impl ProtectedPrekeyBackend for PlatformProtectedPrekeyBackend {
     }
 
     fn put(&self, account: &str, value: &[u8]) -> Result<(), PrekeyLifecycleError> {
+        if let Some(path) = &self.locked_file {
+            return locked_file_put(path, value);
+        }
         use secret_service::{EncryptionType, SecretService};
         let service = SecretService::new(EncryptionType::Dh)
             .map_err(|_| PrekeyLifecycleError::ProtectedStoreUnavailable)?;
@@ -564,6 +615,9 @@ impl ProtectedPrekeyBackend for PlatformProtectedPrekeyBackend {
 #[cfg(windows)]
 impl ProtectedPrekeyBackend for PlatformProtectedPrekeyBackend {
     fn get(&self, account: &str) -> Result<Option<Vec<u8>>, PrekeyLifecycleError> {
+        if let Some(path) = &self.locked_file {
+            return locked_file_get(path);
+        }
         let path = self.secret_dir.join(format!("{account}.dpapi"));
         if !path.exists() {
             return Ok(None);
@@ -576,6 +630,9 @@ impl ProtectedPrekeyBackend for PlatformProtectedPrekeyBackend {
     }
 
     fn put(&self, account: &str, value: &[u8]) -> Result<(), PrekeyLifecycleError> {
+        if let Some(path) = &self.locked_file {
+            return locked_file_put(path, value);
+        }
         use std::io::Write;
 
         std::fs::create_dir_all(&self.secret_dir)

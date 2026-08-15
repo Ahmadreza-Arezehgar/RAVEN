@@ -14,7 +14,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 NODE_DIR="$REPO_ROOT/node"
 # Stable profile — NEVER mktemp (new identity every run breaks iPhone Peer pub).
-DATA_DIR="${ASH_DATA_DIR:-$HOME/.raven-ash}"
+DATA_DIR="${RAVEN_DATA_DIR:-${ASH_DATA_DIR:-$HOME/.raven}}"
 
 NO_RUN=0
 INIT_ONLY=0
@@ -27,7 +27,7 @@ for arg in "$@"; do
 ash_first_run.sh — portable Raven ash bootstrap
 
   Detects hybrid_messenger repo relative to this script (any username/home).
-  Builds ash + raven-node + raven-core, then launches ash with ~/.raven-ash
+  Builds ash + raven-node + raven-core, then launches ash with ~/.raven
   (stable identity — re-use the same Mac whoami on iPhone).
 
   --no-run      build only

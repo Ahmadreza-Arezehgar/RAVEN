@@ -7,7 +7,7 @@ mod ext;
 mod pair_init_lab;
 mod trace_delivery;
 
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::process::Command;
@@ -87,10 +87,7 @@ const C_PURPLE: &str = "\x1b[1m";
 const C_GREEN: &str = "\x1b[1m";
 
 fn default_ash_data_dir() -> PathBuf {
-    std::env::var_os("ASH_DATA_DIR")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".raven-ash")))
-        .unwrap_or_else(|| PathBuf::from("./raven-data"))
+    raven_core::default_raven_data_dir()
 }
 
 fn is_ephemeral_data_dir(p: &Path) -> bool {
@@ -119,10 +116,10 @@ fn resolve_data_dir(raw: &str) -> PathBuf {
         stable.display()
     );
     eprintln!(
-        "{C_DIM}FA:{C_RESET} mktemp هویت مک را هر بار عوض می‌کند و آیفون وصل نمی‌شود. از ~/.raven-ash استفاده می‌کنیم."
+        "{C_DIM}FA:{C_RESET} mktemp هویت مک را هر بار عوض می‌کند و آیفون وصل نمی‌شود. از ~/.raven استفاده می‌کنیم."
     );
     eprintln!(
-        "{C_DIM}EN:{C_RESET} Stop using DATA=$(mktemp -d). Using ~/.raven-ash so Mac whoami stays stable."
+        "{C_DIM}EN:{C_RESET} Stop using DATA=$(mktemp -d). Using ~/.raven so Mac whoami stays stable."
     );
     let _ = std::fs::create_dir_all(&stable);
     // Best-effort: bring contacts along once.
@@ -147,8 +144,9 @@ pub const LOGO_64_URL: &str = "https://raven-messager.com/raven_logo_64.png";
                   Never prints private keys. Brand: https://raven-messager.com/"
 )]
 struct Cli {
-    /// Stable local profile (default: ~/.raven-ash). Do NOT use mktemp — phone
-    /// must re-paste Mac whoami every time the identity changes.
+    /// Stable local profile (default: ~/.raven, or ~/.raven-ash if that legacy
+    /// tree already exists). Do NOT use mktemp — phone must re-paste Mac whoami
+    /// every time the identity changes.
     #[arg(long, global = true, default_value = "")]
     data_dir: String,
     #[command(subcommand)]
@@ -163,12 +161,15 @@ enum Commands {
     Whoami,
     /// Forward send to raven-node. Plaintext ONLY via stdin (never argv).
     Send {
-        #[arg(long)]
+        #[arg(long, default_value = "")]
         peer: String,
-        #[arg(long)]
+        #[arg(long, default_value = "")]
         peer_pub_hex: String,
         #[arg(long, default_value = "127.0.0.1:0")]
         listen: String,
+        /// Resolve `@tag` from contacts.json (pub_hex + lan_dial).
+        #[arg(long, default_value = "")]
+        contact: String,
         /// Read message body from stdin (required — argv plaintext is refused).
         #[arg(long, default_value_t = true)]
         stdin_text: bool,
@@ -176,6 +177,8 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         chat: bool,
     },
+    /// Show committed endpoint inbox (PairInit/LAN messages).
+    Inbox,
     /// Print welcome banner only (safe — no secrets).
     Banner,
     /// Show identity + Bridge/transports/forward queue (safe fields only).
@@ -382,7 +385,7 @@ enum AliasCommands {
 enum PrekeyCommands {
     /// Publish a signed prekey bundle (real X25519 + ML-KEM) into local store.
     Publish {
-        #[arg(long, default_value = "ash-device")]
+        #[arg(long, default_value = raven_core::PRIMARY_DEVICE_ID)]
         device_id: String,
         /// Optional path to write OOB JSON export (public fields only).
         #[arg(long)]
@@ -550,37 +553,32 @@ fn contacts_path(data_dir: &Path) -> PathBuf {
     data_dir.join("contacts.json")
 }
 
-fn load_contacts(data_dir: &Path) -> Vec<Contact> {
+fn load_contacts(data_dir: &Path) -> Result<Vec<Contact>, String> {
     let path = contacts_path(data_dir);
-    let Ok(raw) = std::fs::read_to_string(&path) else {
-        return Vec::new();
-    };
-    let list: Vec<Contact> = serde_json::from_str(&raw).unwrap_or_default();
-    list.into_iter().map(Contact::migrate).collect()
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let raw = std::fs::read_to_string(&path).map_err(|e| format!("contacts.json: {e}"))?;
+    let list: Vec<Contact> = serde_json::from_str(&raw)
+        .map_err(|e| format!("contacts.json corrupt — refusing empty book: {e}"))?;
+    Ok(list.into_iter().map(Contact::migrate).collect())
+}
+
+fn contacts_or_die(data_dir: &Path) -> Vec<Contact> {
+    match load_contacts(data_dir) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    }
 }
 
 fn save_contacts(data_dir: &Path, contacts: &[Contact]) -> Result<(), String> {
     std::fs::create_dir_all(data_dir).map_err(|e| e.to_string())?;
     let path = contacts_path(data_dir);
     let raw = serde_json::to_string_pretty(contacts).map_err(|e| e.to_string())?;
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&path)
-            .map_err(|e| e.to_string())?;
-        f.write_all(raw.as_bytes()).map_err(|e| e.to_string())?;
-    }
-    #[cfg(not(unix))]
-    {
-        std::fs::write(&path, raw).map_err(|e| e.to_string())?;
-    }
-    Ok(())
+    raven_core::atomic_write_private(&path, raw.as_bytes())
 }
 
 fn ensure_identity(data_dir: &Path) -> Identity {
@@ -909,7 +907,7 @@ fn looks_like_lan_dial(s: &str) -> bool {
         if host.is_empty() {
             return false;
         }
-        return port.parse::<u16>().is_ok();
+        return port.parse::<u16>().ok().is_some_and(|p| p != 0);
     }
     false
 }
@@ -920,7 +918,7 @@ fn update_contact_lan_dial(data_dir: &Path, pub_hex: &str, dial: &str) -> Result
         return Err("lan_dial must look like host:port (e.g. 192.168.1.20:7420)".into());
     }
     let want = pub_hex.trim().to_lowercase();
-    let mut contacts = load_contacts(data_dir);
+    let mut contacts = load_contacts(data_dir)?;
     let mut found = false;
     for c in contacts.iter_mut() {
         if c.pub_hex.eq_ignore_ascii_case(&want) {
@@ -940,8 +938,6 @@ fn update_contact_lan_dial(data_dir: &Path, pub_hex: &str, dial: &str) -> Result
 enum ResolvedLanPeer {
     /// Dial this `host:port` (saved, env, or discovered).
     Dial(String),
-    /// Product path: this Mac listens; message is queued locally (phone dials Mac).
-    LocalListenQueue,
 }
 
 fn env_peer_lan_dial() -> Option<String> {
@@ -1035,8 +1031,7 @@ fn resolve_lan_peer_parts(
     if let Some(e) = env_dial.map(str::trim).filter(|t| looks_like_lan_dial(t)) {
         return Some(ResolvedLanPeer::Dial(e.to_string()));
     }
-    // No peer IP from identity alone — Mac listens; phone dials (or env/saved dial above).
-    Some(ResolvedLanPeer::LocalListenQueue)
+    None
 }
 
 fn contact_fingerprint(c: &Contact) -> String {
@@ -1129,7 +1124,7 @@ fn load_profile_store(_data_dir: &Path, _now: u64) -> ProfileStore {
 
 fn build_discovery_ctx(data_dir: &Path) -> DiscoveryContext {
     let now = now_ms();
-    let contacts: Vec<LocalContactRow> = load_contacts(data_dir)
+    let contacts: Vec<LocalContactRow> = contacts_or_die(data_dir)
         .into_iter()
         .map(|c| LocalContactRow {
             raven_id: c.address.clone(),
@@ -1317,10 +1312,12 @@ fn cmd_nearby(data_dir: &Path) {
 /// bootstrap is PairInit (see `pair_init::PRODUCTION_ENABLED`), not rootless
 /// contact ciphertext.
 fn contact_session_transport_ready() -> bool {
-    // PairInit + prekey lifecycle + indexed session must all be production-live
-    // before contact/friendship wire is emitted. Do not treat Raven ID alone as
-    // readiness.
-    trace_delivery::live_pair_init_outbound_ready()
+    // Legacy RavenContactRequestV1 stays fail-closed until the four generic
+    // production tripwires flip. LAN-direct must not open this path.
+    raven_core::pair_init::live_enabled()
+        && raven_core::indexed_session_store::live_enabled()
+        && raven_core::prekey_lifecycle::live_enabled()
+        && raven_core::atsam_indexed_session::live_enabled()
 }
 
 fn refuse_unready_contact_session() -> ! {
@@ -1332,9 +1329,7 @@ fn refuse_unready_contact_session() -> ! {
         None,
         Some("legacy_contact_request_entry_fail_closed"),
     );
-    eprintln!(
-        "{C_PURPLE}status{C_RESET} {status}"
-    );
+    eprintln!("{C_PURPLE}status{C_RESET} {status}");
     eprintln!(
         "{C_PURPLE}security hold{C_RESET}: authenticated PairInit/ATSAM session required; no request or accept wire was created/opened"
     );
@@ -1718,7 +1713,7 @@ fn add_contact(
         pet = tag_clean.clone();
     }
 
-    let mut contacts = load_contacts(data_dir);
+    let mut contacts = load_contacts(data_dir)?;
 
     // Key-change warning: pinned row with same public_tag but different pub/address.
     if !tag_clean.is_empty() {
@@ -1842,7 +1837,7 @@ fn cmd_contact_list(data_dir: &Path) {
     let bold = s.bold;
     let dim = s.dim;
     let reset = s.reset;
-    let contacts = load_contacts(data_dir);
+    let contacts = contacts_or_die(data_dir);
     println!(
         "{bold}Contacts{reset} ({}) — petname first (Raven Tag V1)",
         contacts.len()
@@ -2164,7 +2159,7 @@ fn cmd_contact_add_interactive(data_dir: &Path) {
 }
 
 fn cmd_contact_resolve(data_dir: &Path, tag: &str) {
-    let contacts = load_contacts(data_dir);
+    let contacts = contacts_or_die(data_dir);
     let hits = resolve_tag_contacts(&contacts, tag);
     if hits.is_empty() {
         eprintln!("no local contacts for @{}", normalize_tag(tag));
@@ -2209,7 +2204,7 @@ fn cmd_contact_verify(
     petname: Option<&str>,
     address: Option<&str>,
 ) {
-    let contacts = load_contacts(data_dir);
+    let contacts = contacts_or_die(data_dir);
     let tag = tag.or(alias);
     let matches: Vec<&Contact> = if let Some(t) = tag {
         resolve_tag_contacts(&contacts, t)
@@ -2255,7 +2250,10 @@ fn cmd_contact_verify(
 
 fn cmd_prekey_publish(data_dir: &Path, device_id: &str, out: Option<&Path>) {
     let id = ensure_identity(data_dir);
-    ext::cmd_prekey_publish_real(data_dir, &id, device_id, out);
+    if let Err(e) = ext::cmd_prekey_publish_real(data_dir, &id, device_id, out) {
+        eprintln!("{e}");
+        std::process::exit(1);
+    }
 }
 
 fn cmd_prekey_fetch(data_dir: &Path, pub_hex: &str, file: Option<&Path>) {
@@ -2288,7 +2286,7 @@ fn cmd_prekey_fetch(data_dir: &Path, pub_hex: &str, file: Option<&Path>) {
             }
         }
     } else {
-        match PrekeyStore::load(data_dir).fetch(&ed, now) {
+        match PrekeyStore::load_checked(data_dir).and_then(|s| s.fetch(&ed, now)) {
             Ok(Some(b)) => b,
             Ok(None) => {
                 eprintln!("no bundle in local store for that pub (try --file OOB json)");
@@ -2309,16 +2307,9 @@ fn cmd_prekey_fetch(data_dir: &Path, pub_hex: &str, file: Option<&Path>) {
         return;
     }
     // Persist into local untrusted store so PairInit / lab send can fetch.
-    {
-        let mut store = PrekeyStore::load(data_dir);
-        if let Err(e) = store.publish(&bundle, now) {
-            eprintln!("store publish: {e}");
-            return;
-        }
-        if let Err(e) = store.save(data_dir) {
-            eprintln!("store save: {e}");
-            return;
-        }
+    if let Err(e) = raven_core::publish_prekey_bundle_checked(data_dir, &bundle, now) {
+        eprintln!("store publish: {e}");
+        return;
     }
     println!("{C_GREEN}prekey ok{C_RESET} (cached in prekey_store.json)");
     println!(
@@ -2381,6 +2372,14 @@ fn print_production_gate_matrix() {
         on(raven_core::PREKEY_LIFECYCLE_PRODUCTION_ENABLED)
     );
     println!(
+        "  {C_DIM}LAN_DIRECT_PRODUCTION_ENABLED{C_RESET}             {}",
+        on(raven_core::LAN_DIRECT_PRODUCTION_ENABLED)
+    );
+    println!(
+        "  {C_DIM}lan_direct_live_enabled{C_RESET}                   {}",
+        on(raven_core::lan_direct_live_enabled())
+    );
+    println!(
         "  {C_DIM}unsafe-demo-crypto feature{C_RESET}                {}",
         on(cfg!(feature = "unsafe-demo-crypto"))
     );
@@ -2419,7 +2418,7 @@ fn cmd_status(data_dir: &Path) {
             );
         }
     }
-    let contacts = load_contacts(data_dir);
+    let contacts = contacts_or_die(data_dir);
     println!("{C_DIM}contacts{C_RESET} {}", contacts.len());
 
     let policy = load_policy(data_dir);
@@ -2545,7 +2544,7 @@ fn cmd_send_interactive(data_dir: &Path) {
         }
     }
     let id = ensure_identity(data_dir);
-    let contacts = load_contacts(data_dir);
+    let contacts = contacts_or_die(data_dir);
 
     if contacts.is_empty() {
         println!("{bold}Send / Chat{reset}");
@@ -2720,14 +2719,8 @@ fn cmd_send_interactive(data_dir: &Path) {
         return;
     };
 
-    let peer = match &resolved_peer {
-        ResolvedLanPeer::Dial(d) => d.as_str(),
-        ResolvedLanPeer::LocalListenQueue => "local-listen",
-    };
-    let listen_bind = match &resolved_peer {
-        ResolvedLanPeer::Dial(_) => "127.0.0.1:0".to_string(),
-        ResolvedLanPeer::LocalListenQueue => format!("0.0.0.0:{DEFAULT_LAN_PORT}"),
-    };
+    let ResolvedLanPeer::Dial(peer) = &resolved_peer;
+    let listen_bind = "127.0.0.1:0".to_string();
 
     if open_chat {
         ext::cmd_chat_session(data_dir, &id, &petname, &tag, &peer_pub_hex, peer);
@@ -2764,14 +2757,10 @@ fn resolve_or_reuse_lan_dial(data_dir: &Path, c: &Contact) -> Option<ResolvedLan
     let env = env_peer_lan_dial();
     let had_saved = looks_like_lan_dial(&c.lan_dial);
     let ipc_up = ipc_daemon_up(data_dir);
-    let mut resolved = resolve_lan_peer_parts(&c.lan_dial, env.as_deref(), ipc_up);
-    if matches!(resolved, Some(ResolvedLanPeer::LocalListenQueue)) && !ipc_up {
-        println!("{dim}Starting Mac LAN listen (raven-node service :{DEFAULT_LAN_PORT})…{reset}");
-        if !ensure_mac_lan_service(data_dir) {
-            // Still allow LocalListenQueue tip path only if we somehow enqueue later; else fail clear.
-            print_lan_unresolved_hint(&c.primary_label());
-            resolved = None;
-        }
+    let resolved = resolve_lan_peer_parts(&c.lan_dial, env.as_deref(), ipc_up);
+    if resolved.is_none() && !ipc_up {
+        println!("{dim}Starting raven-node service so IPC LanDial can run…{reset}");
+        let _ = ensure_mac_lan_service(data_dir);
     }
 
     match &resolved {
@@ -2795,26 +2784,81 @@ fn resolve_or_reuse_lan_dial(data_dir: &Path, c: &Contact) -> Option<ResolvedLan
                 }
             }
         }
-        Some(ResolvedLanPeer::LocalListenQueue) => {
-            println!(
-                "{bold}Mac listens / صف محلی{reset} {dim}— no peer host:port (contact {}){reset}",
-                c.primary_label()
-            );
-            println!(
-                "{dim}EN:{reset} Message queued locally. iPhone Serverless LAN should point at this Mac (port {DEFAULT_LAN_PORT})."
-            );
-            println!(
-                "{dim}FA:{reset} پیام در صف محلی است. آیفون باید Host=آی‌پی مک و Port={DEFAULT_LAN_PORT} را بزند."
-            );
-            if let Some(ip) = local_lan_ipv4_tip() {
-                println!("{dim}Mac LAN IP ≈{reset} {bold}{ip}{reset}:{DEFAULT_LAN_PORT}");
-            }
-        }
         None => {
             print_lan_unresolved_hint(&c.primary_label());
+            return None;
         }
     }
     resolved
+}
+
+fn resolve_send_target(
+    data_dir: &Path,
+    contact: &str,
+    peer: &str,
+    peer_pub_hex: &str,
+    listen: &str,
+) -> Result<(String, String, String), String> {
+    if !contact.trim().is_empty() {
+        let contacts = load_contacts(data_dir)?;
+        let hits = resolve_tag_contacts(&contacts, contact);
+        if hits.is_empty() {
+            return Err(format!(
+                "no contact for {} — ash contact add … --tag … --lan-dial host:port",
+                sanitize_terminal_text(contact)
+            ));
+        }
+        if hits.len() > 1 {
+            return Err(format!(
+                "contact tag {} is ambiguous ({} matches)",
+                sanitize_terminal_text(contact),
+                hits.len()
+            ));
+        }
+        let c = hits[0];
+        if !looks_like_lan_dial(&c.lan_dial) {
+            return Err(format!(
+                "contact {} has no valid lan_dial — set host:port (not LocalListenQueue)",
+                c.primary_label()
+            ));
+        }
+        return Ok((c.lan_dial.clone(), c.pub_hex.clone(), listen.to_string()));
+    }
+    if peer_pub_hex.trim().is_empty() || !looks_like_lan_dial(peer) {
+        return Err("send requires --contact @tag or --peer host:port plus --peer-pub-hex".into());
+    }
+    Ok((
+        peer.to_string(),
+        peer_pub_hex.to_string(),
+        listen.to_string(),
+    ))
+}
+
+fn cmd_endpoint_inbox(data_dir: &Path) {
+    let mut store = match raven_core::IndexedSessionStore::open(data_dir) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("inbox: {}", e.redacted_display());
+            return;
+        }
+    };
+    match store.list_endpoint_inbox() {
+        Ok(rows) if rows.is_empty() => {
+            println!("{C_DIM}endpoint inbox empty{C_RESET}");
+        }
+        Ok(rows) => {
+            println!("{C_BOLD}inbox{C_RESET} ({})", rows.len());
+            for row in rows {
+                let preview = String::from_utf8_lossy(&row.plaintext);
+                println!(
+                    "  {C_DIM}{}{C_RESET} {}",
+                    hex::encode(&row.message_id[..4]),
+                    sanitize_terminal_text(&preview)
+                );
+            }
+        }
+        Err(e) => eprintln!("inbox: {}", e.redacted_display()),
+    }
 }
 
 fn run_send(data_dir: &Path, peer: &str, peer_pub_hex: &str, listen: &str, text: &str) {
@@ -2888,6 +2932,10 @@ pub fn run() {
                 device_fingerprint_v1(&id.public_key_bytes())
             );
             println!("pub_hex={}", hex::encode(id.public_key_bytes()));
+            if let Err(e) = raven_core::ensure_local_prekey(&data_dir, &id) {
+                eprintln!("prekey: {e}");
+                std::process::exit(1);
+            }
         }
         Some(Commands::Whoami) => {
             let id = try_load_identity(&data_dir).unwrap_or_else(|| {
@@ -2900,17 +2948,25 @@ pub fn run() {
             peer,
             peer_pub_hex,
             listen,
+            contact,
             stdin_text,
             chat,
         }) => {
             let _ = stdin_text;
-            // Refuse any leftover argv-style invocation that clap might have accepted historically.
             if std::env::args().any(|a| a == "--text" || (!a.starts_with('-') && false)) {
                 ext::refuse_argv_plaintext();
             }
             let id = ensure_identity(&data_dir);
+            let (peer, peer_pub_hex, listen) =
+                match resolve_send_target(&data_dir, &contact, &peer, &peer_pub_hex, &listen) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        eprintln!("{e}");
+                        std::process::exit(1);
+                    }
+                };
             if chat {
-                let contacts = load_contacts(&data_dir);
+                let contacts = contacts_or_die(&data_dir);
                 let c = contacts
                     .iter()
                     .find(|c| c.pub_hex.eq_ignore_ascii_case(&peer_pub_hex));
@@ -2918,8 +2974,10 @@ pub fn run() {
                 let tag = c.map(|c| normalize_tag(&c.public_tag)).unwrap_or_default();
                 ext::cmd_chat_session(&data_dir, &id, &pet, &tag, &peer_pub_hex, &peer);
             } else {
-                print!("message (stdin, never argv): ");
-                let _ = io::stdout().flush();
+                if io::stdin().is_terminal() {
+                    print!("message (stdin, never argv): ");
+                    let _ = io::stdout().flush();
+                }
                 let body = read_line();
                 if body.is_empty() {
                     eprintln!("empty message");
@@ -2928,6 +2986,7 @@ pub fn run() {
                 run_send(&data_dir, &peer, &peer_pub_hex, &listen, &body);
             }
         }
+        Some(Commands::Inbox) => cmd_endpoint_inbox(&data_dir),
         Some(Commands::Doctor) => cmd_doctor(&data_dir),
         Some(Commands::IpcPing) => cmd_ipc_ping(&data_dir),
         Some(Commands::Contact { cmd }) => match cmd {
@@ -3081,10 +3140,7 @@ pub fn run() {
                         std::process::exit(1);
                     }
                 }
-                LabCommands::ImportPeerCert {
-                    peer_pub_hex,
-                    file,
-                } => {
+                LabCommands::ImportPeerCert { peer_pub_hex, file } => {
                     if let Err(e) =
                         pair_init_lab::import_peer_device_cert(&data_dir, &peer_pub_hex, &file)
                     {
@@ -3092,10 +3148,7 @@ pub fn run() {
                         std::process::exit(1);
                     }
                 }
-                LabCommands::ImportPeerPrekey {
-                    peer_pub_hex,
-                    file,
-                } => {
+                LabCommands::ImportPeerPrekey { peer_pub_hex, file } => {
                     cmd_prekey_fetch(&data_dir, &peer_pub_hex, Some(&file));
                 }
                 LabCommands::Status => {
@@ -3105,7 +3158,7 @@ pub fn run() {
                     );
                 }
             }
-        },
+        }
     }
 }
 
@@ -3401,25 +3454,24 @@ pub_hex     d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a
     }
 
     #[test]
-    fn resolve_empty_dial_uses_env_then_local_queue_never_requires_stdin() {
+    fn resolve_empty_dial_uses_env_then_errors_without_local_queue() {
         let got = resolve_lan_peer_parts("", Some("192.168.1.50:7420"), false);
         assert_eq!(got, Some(ResolvedLanPeer::Dial("192.168.1.50:7420".into())));
-        let got = resolve_lan_peer_parts("", None, true);
-        assert_eq!(got, Some(ResolvedLanPeer::LocalListenQueue));
-        // Empty + no env → Mac-listens queue (daemon auto-start is caller's job).
-        assert_eq!(
-            resolve_lan_peer_parts("", None, false),
-            Some(ResolvedLanPeer::LocalListenQueue)
-        );
-        // Invalid saved dial treated as empty → local queue.
-        assert_eq!(
-            resolve_lan_peer_parts("not-a-dial", None, false),
-            Some(ResolvedLanPeer::LocalListenQueue)
-        );
+        assert_eq!(resolve_lan_peer_parts("", None, true), None);
+        assert_eq!(resolve_lan_peer_parts("", None, false), None);
+        assert_eq!(resolve_lan_peer_parts("not-a-dial", None, false), None);
         assert_eq!(
             resolve_lan_peer_parts("", Some("rvn1notadial"), false),
-            Some(ResolvedLanPeer::LocalListenQueue)
+            None
         );
+    }
+
+    #[test]
+    fn corrupt_contacts_json_errors_instead_of_empty_book() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("contacts.json"), "{not-json").unwrap();
+        let err = load_contacts(dir.path()).unwrap_err();
+        assert!(err.contains("corrupt"), "{err}");
     }
 
     #[test]

@@ -33,7 +33,9 @@ pub fn lab_test_a_enabled() -> bool {
     }
 }
 
-/// Live PairInit path may run when production is hard-enabled OR lab env is set.
+/// Generic PairInit live tripwire. LAN-direct must not flip this — it leaks
+/// into contact-request and other non-LAN CLIs. LAN send uses
+/// [`crate::lan_direct_live_enabled`] at the callsite instead.
 pub fn live_enabled() -> bool {
     PRODUCTION_ENABLED || lab_test_a_enabled()
 }

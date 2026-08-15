@@ -75,7 +75,7 @@ pub fn trace_event(
     let rendered = line.to_string();
     let path = default_log_path();
     let _ = append_line(&path, &rendered);
-    let _ = post_ingest(&rendered);
+    post_ingest(&rendered);
 }
 
 fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
@@ -110,9 +110,12 @@ fn post_ingest(body: &str) {
         .status();
 }
 
-/// True when every Rust live tripwire required for PairInit outbound is open
-/// (hard production OR `RAVEN_LAB_TEST_A=1` in debug).
+/// True when LAN-direct is live, or every generic PairInit tripwire is open.
+/// Contact-request must not use this — it would inherit the LAN slice gate.
 pub fn live_pair_init_outbound_ready() -> bool {
+    if raven_core::lan_direct_live_enabled() {
+        return true;
+    }
     raven_core::pair_init::live_enabled()
         && raven_core::indexed_session_store::live_enabled()
         && raven_core::prekey_lifecycle::live_enabled()
@@ -121,8 +124,7 @@ pub fn live_pair_init_outbound_ready() -> bool {
 
 pub fn production_gate_status() -> &'static str {
     if live_pair_init_outbound_ready() {
-        if raven_core::pair_init::lab_test_a_enabled()
-            && !raven_core::pair_init::PRODUCTION_ENABLED
+        if raven_core::pair_init::lab_test_a_enabled() && !raven_core::pair_init::PRODUCTION_ENABLED
         {
             "LAB_TEST_A_PAIR_INIT_READY"
         } else {

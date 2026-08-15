@@ -7,6 +7,7 @@ mod bridge_run;
 mod corebluetooth_exp;
 #[cfg(unix)]
 mod ipc_server;
+mod lan_direct;
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -177,11 +178,11 @@ enum Commands {
     /// Always-on daemon: bridge + IPC together (launchd/systemd target).
     #[cfg(unix)]
     Service {
-        #[arg(long, default_value = "./raven-data")]
+        #[arg(long, default_value_os_t = raven_core::default_raven_data_dir())]
         data_dir: PathBuf,
-        #[arg(long, default_value = "127.0.0.1:7420")]
+        #[arg(long, default_value = raven_core::DEFAULT_LAN_LISTEN)]
         lan_listen: String,
-        #[arg(long, default_value = "127.0.0.1:7421")]
+        #[arg(long, default_value = raven_core::DEFAULT_BLE_LISTEN)]
         ble_listen: String,
         #[arg(long, default_value_t = 0)]
         timeout_secs: u64,
@@ -1294,27 +1295,67 @@ async fn main() {
             drop(_warmup);
             let fwd = Some(fq);
             let data_ipc = data_dir.clone();
-            let ipc_task = tokio::spawn(async move {
+            let mut ipc_task = tokio::spawn(async move {
                 if let Err(e) = ipc_server::run_ipc_server(data_ipc, fwd).await {
                     eprintln!("ipc failed: {e}");
                 }
             });
-            // Brief yield so IPC bind wins before bridge opens the same DB.
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            let bridge_result = bridge_run::run_bridge_daemon(
-                data_dir,
-                lan_listen,
-                ble_listen,
-                None,
-                None,
-                None,
-                timeout_secs,
-            )
-            .await;
-            ipc_task.abort();
-            if let Err(e) = bridge_result {
-                eprintln!("service bridge failed: {e}");
+            let data_lan = data_dir.clone();
+            let mut lan_task =
+                tokio::spawn(async move { lan_direct::run_listener(data_lan, lan_listen).await });
+            for _ in 0..50 {
+                if lan_direct::listener_is_up() {
+                    break;
+                }
+                if lan_task.is_finished() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            if !lan_direct::listener_is_up() {
+                eprintln!("lan_direct failed to bind");
+                match lan_task.await {
+                    Ok(Err(e)) => eprintln!("lan_direct failed: {e}"),
+                    Ok(Ok(())) => {}
+                    Err(e) => eprintln!("lan_direct join: {e}"),
+                }
+                ipc_task.abort();
                 std::process::exit(1);
+            }
+            // Mock BLE stays on ble_listen. Do not fanout the production LAN port.
+            tokio::select! {
+                r = &mut lan_task => {
+                    match r {
+                        Ok(Err(e)) => eprintln!("lan_direct failed: {e}"),
+                        Ok(Ok(())) => eprintln!("lan_direct listener exited"),
+                        Err(e) => eprintln!("lan_direct join: {e}"),
+                    }
+                    ipc_task.abort();
+                    std::process::exit(1);
+                }
+                r = &mut ipc_task => {
+                    if let Err(e) = r {
+                        eprintln!("ipc join: {e}");
+                    }
+                    lan_task.abort();
+                    std::process::exit(1);
+                }
+                bridge_result = bridge_run::run_bridge_daemon(
+                    data_dir,
+                    "127.0.0.1:0".into(),
+                    ble_listen,
+                    None,
+                    None,
+                    None,
+                    timeout_secs,
+                ) => {
+                    ipc_task.abort();
+                    lan_task.abort();
+                    if let Err(e) = bridge_result {
+                        eprintln!("service bridge failed: {e}");
+                        std::process::exit(1);
+                    }
+                }
             }
         }
         Commands::BleStatus => {

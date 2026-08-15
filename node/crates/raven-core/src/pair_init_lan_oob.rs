@@ -110,8 +110,7 @@ mod tests {
     fn pair_init_wire() -> Vec<u8> {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../../shared-vectors/rvn1/atsam/pair_init_v1_001.json");
-        let vector: Value =
-            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let vector: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         hex::decode(vector["expected"]["pair_init_wire_hex"].as_str().unwrap()).unwrap()
     }
 

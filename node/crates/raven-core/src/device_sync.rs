@@ -244,27 +244,43 @@ pub fn revocation_store_path(data_dir: &std::path::Path) -> std::path::PathBuf {
     data_dir.join("revocations.json")
 }
 
-/// Merge revocation records: sticky denylist; higher epoch wins per device_id.
+/// Merge revocation records: sticky denylist; higher epoch wins per
+/// `(user_ed_pub, device_id)` so shared labels like `ash-primary` do not collide.
 #[derive(Debug, Default, Clone)]
 pub struct RevocationStore {
-    /// device_id → best (highest epoch) verified record
+    /// composite key → best (highest epoch) verified record
     by_device: HashMap<String, RevocationRecord>,
+}
+
+fn revocation_store_key(user_ed_pub_hex: &str, device_id: &str) -> String {
+    format!(
+        "{}:{}",
+        user_ed_pub_hex.trim().to_lowercase(),
+        device_id.trim()
+    )
 }
 
 impl RevocationStore {
     pub fn load(data_dir: &std::path::Path) -> Self {
+        Self::load_checked(data_dir).unwrap_or_default()
+    }
+
+    /// Missing file → empty store. Corrupt JSON / bad signature / epoch conflict
+    /// → error (fail-closed for policy).
+    pub fn load_checked(data_dir: &std::path::Path) -> Result<Self, String> {
         let path = revocation_store_path(data_dir);
-        let Ok(raw) = std::fs::read_to_string(&path) else {
-            return Self::default();
-        };
-        let Ok(recs): Result<Vec<RevocationRecord>, _> = serde_json::from_str(&raw) else {
-            return Self::default();
-        };
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+        let raw =
+            std::fs::read_to_string(&path).map_err(|e| format!("revocation store read: {e}"))?;
+        let recs: Vec<RevocationRecord> =
+            serde_json::from_str(&raw).map_err(|e| format!("revocation store corrupt: {e}"))?;
         let mut store = Self::default();
         for r in recs {
-            let _ = store.apply(r);
+            store.apply(r)?;
         }
-        store
+        Ok(store)
     }
 
     pub fn save(&self, data_dir: &std::path::Path) -> Result<(), String> {
@@ -272,29 +288,13 @@ impl RevocationStore {
         let path = revocation_store_path(data_dir);
         let recs: Vec<&RevocationRecord> = self.records().collect();
         let raw = serde_json::to_string_pretty(&recs).map_err(|e| e.to_string())?;
-        #[cfg(unix)]
-        {
-            use std::io::Write;
-            use std::os::unix::fs::OpenOptionsExt;
-            let mut f = std::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(&path)
-                .map_err(|e| e.to_string())?;
-            f.write_all(raw.as_bytes()).map_err(|e| e.to_string())?;
-        }
-        #[cfg(not(unix))]
-        {
-            std::fs::write(&path, raw).map_err(|e| e.to_string())?;
-        }
-        Ok(())
+        crate::paths::atomic_write_private(&path, raw.as_bytes())
     }
 
     pub fn apply(&mut self, rec: RevocationRecord) -> Result<bool, String> {
         rec.verify()?;
-        match self.by_device.get(&rec.device_id) {
+        let key = revocation_store_key(&rec.user_ed_pub_hex, &rec.device_id);
+        match self.by_device.get(&key) {
             Some(prev) if prev.epoch > rec.epoch => Ok(false),
             Some(prev) if prev.epoch == rec.epoch => {
                 // Same epoch: accept if identical; reject conflicting payloads.
@@ -305,24 +305,30 @@ impl RevocationStore {
                 }
             }
             _ => {
-                self.by_device.insert(rec.device_id.clone(), rec);
+                self.by_device.insert(key, rec);
                 Ok(true)
             }
         }
     }
 
-    pub fn is_revoked(&self, device_id: &str) -> bool {
-        self.by_device.contains_key(device_id)
+    pub fn is_revoked(&self, user_ed_pub_hex: &str, device_id: &str) -> bool {
+        self.by_device
+            .contains_key(&revocation_store_key(user_ed_pub_hex, device_id))
     }
 
-    pub fn epoch_of(&self, device_id: &str) -> Option<u64> {
-        self.by_device.get(device_id).map(|r| r.epoch)
+    pub fn epoch_of(&self, user_ed_pub_hex: &str, device_id: &str) -> Option<u64> {
+        self.by_device
+            .get(&revocation_store_key(user_ed_pub_hex, device_id))
+            .map(|r| r.epoch)
     }
 
-    /// Apply into a DeviceRegistry (local denylist).
-    pub fn push_into_registry(&self, reg: &mut DeviceRegistry) {
-        for id in self.by_device.keys() {
-            reg.revoke(id);
+    /// Apply into a DeviceRegistry (local denylist for this identity's devices).
+    pub fn push_into_registry(&self, user_ed_pub_hex: &str, reg: &mut DeviceRegistry) {
+        let want = user_ed_pub_hex.trim().to_lowercase();
+        for rec in self.by_device.values() {
+            if rec.user_ed_pub_hex.eq_ignore_ascii_case(&want) {
+                reg.revoke(&rec.device_id);
+            }
         }
     }
 
@@ -432,7 +438,7 @@ mod tests {
         let rec = RevocationRecord::issue(&user, "stolen", 2, 60, "lost").unwrap();
         let mut store = RevocationStore::default();
         assert!(store.apply(rec.clone()).unwrap());
-        store.push_into_registry(&mut fresh);
+        store.push_into_registry(&hex::encode(user.public_key_bytes()), &mut fresh);
 
         assert!(partition_lag_allows_stale_auth(
             &fresh, &lagging, "stolen", 70
@@ -444,11 +450,28 @@ mod tests {
         // Older epoch ignored
         let older = RevocationRecord::issue(&user, "stolen", 1, 55, "old").unwrap();
         assert!(!store_b.apply(older).unwrap());
-        store_b.push_into_registry(&mut lagging);
+        store_b.push_into_registry(&hex::encode(user.public_key_bytes()), &mut lagging);
         assert!(!partition_lag_allows_stale_auth(
             &fresh, &lagging, "stolen", 70
         ));
         assert!(!lagging.is_authorized("stolen", 70));
+        assert!(store_b.is_revoked(&hex::encode(user.public_key_bytes()), "stolen"));
+        let other = Identity::generate();
+        assert!(!store_b.is_revoked(&hex::encode(other.public_key_bytes()), "stolen"));
+    }
+
+    #[test]
+    fn load_checked_rejects_bad_signature() {
+        let user = Identity::generate();
+        let mut rec = RevocationRecord::issue(&user, "ash-primary", 1, 10, "lost").unwrap();
+        rec.signature_hex = "00".repeat(64);
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            revocation_store_path(dir.path()),
+            serde_json::to_string(&[rec]).unwrap(),
+        )
+        .unwrap();
+        assert!(RevocationStore::load_checked(dir.path()).is_err());
     }
 
     #[test]

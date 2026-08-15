@@ -92,6 +92,8 @@ jobs:
           python3 scripts/audit_active_dependencies.py
       - name: test raven-core + ash
         run: cargo test -p raven-core -p ash -p raven-node
+      - name: LAN direct two-node smoke
+        run: ./scripts/lan_direct_two_node.sh
       - name: bridge + fuzz smoke
         run: cargo test -p raven-core --test bridge_v1 --test fuzz_smoke
       - name: 10,000-message queue reliability gate

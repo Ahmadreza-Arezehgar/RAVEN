@@ -23,6 +23,7 @@ base64 = { workspace = true }
 ml-kem = { workspace = true, features = ["zeroize"] }
 rand_core = { workspace = true }
 zeroize = { workspace = true }
+snow = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "2"

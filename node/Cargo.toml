@@ -36,3 +36,4 @@ zeroize = { version = "1", features = ["derive"] }
 tempfile = "3"
 ml-kem = { version = "0.3", features = ["hazmat"] }
 rand_core = "0.6"
+snow = "0.9"

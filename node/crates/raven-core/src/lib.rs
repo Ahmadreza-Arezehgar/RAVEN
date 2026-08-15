@@ -32,12 +32,17 @@ pub mod indexed_session_store;
 pub mod internet;
 pub mod introduction;
 pub mod ipc;
+pub mod lan_dispatch;
+pub mod lan_gate;
+pub mod lan_noise;
+pub mod lan_rlb1;
 pub mod message_router;
 pub mod messaging_path;
 pub mod nearby;
 pub mod node_policy;
 pub mod pair_init;
 pub mod pair_init_lan_oob;
+pub mod paths;
 pub mod prekey_bundle;
 pub mod prekey_lifecycle;
 pub mod profile_record;
@@ -71,15 +76,18 @@ pub use bridge::{
     MultiRoleDisposition,
 };
 pub use chat_history::{
-    blocked_path, history_path, BlockList, ChatHistory, ChatHistoryEntry, ChatHistoryError,
+    blocked_path, clear_staged_outbound_body, history_path, list_staged_outbound_bodies,
+    load_staged_outbound_body, outbound_body_stage_path, stage_outbound_body, BlockList,
+    ChatHistory, ChatHistoryEntry, ChatHistoryError, OutboundStageSendGuard, StagedOutboundBody,
 };
 pub use contact_request::{
     ContactAcceptOutcome, ContactAcceptV1, ContactBinding, ContactRequestInbox,
     ContactRequestInner, PendingContactRequest, RavenContactRequestV1,
 };
 pub use device_cert::{
-    device_registry_path, load_device_registry, save_device_registry, DeviceCertificate,
-    DeviceRegistry,
+    device_registry_path, ensure_local_device_certificate, load_device_registry,
+    load_device_registry_checked, save_device_registry, with_device_registry_lock,
+    DeviceCertificate, DeviceRegistry, DEVICE_REGISTRY_LOCK,
 };
 pub use device_sync::{
     derive_device_sync_key, import_contact_sync, partition_lag_allows_stale_auth,
@@ -121,6 +129,19 @@ pub use ipc::{
     decode_request, decode_response, default_socket_path, encode_request, encode_response,
     IpcRequest, IpcResponse, IPC_VERSION, MAX_IPC_FRAME,
 };
+pub use lan_dispatch::{
+    cache_peer_bundle, create_initiator_pair_init, dispatch_frame, encode_local_offer,
+    ensure_local_prekey, ensure_outbound_queued_history,
+    ensure_outbound_queued_history_under_send_guard, find_confirmed_peer_session, lan_peer_blocked,
+    load_cached_peer_bundle, local_bundle, maintain_lan_durable_state,
+    mark_lan_chat_history_delivery, parse_peer_offer, peer_is_trusted, persist_lan_chat_history,
+    persist_trusted_peer_bundle, publish_prekey_bundle_checked, reconcile_outbound_stage_history,
+    remember_ephemeral_peer, rlb1_matches_noise_identity, with_prekey_store_lock, wrap_pair_init,
+};
+pub use lan_gate::{lan_direct_live_enabled, LAN_DIRECT_PRODUCTION_ENABLED};
+pub use lan_rlb1::{
+    decode_offer as decode_rlb1_offer, encode_offer as encode_rlb1_offer, LanBundle,
+};
 pub use message_router::{InboundEnvelope, MessageRouter, RouterOutcome};
 pub use messaging_path::{
     assert_no_silent_fastapi, path_from_raven_envelope_flag, resolve_terminal_messaging_path,
@@ -140,6 +161,10 @@ pub use pair_init::{
 pub use pair_init_lan_oob::{
     classify_message_ciphertext, classify_packed_envelope, wrap_oob_wire, PairInitOobClassify,
     PairInitOobKind, FLAG_PAIR_INIT_OOB,
+};
+pub use paths::{
+    atomic_write_private, default_raven_data_dir, resolve_raven_data_dir, DataDirLock,
+    DEFAULT_BLE_LISTEN, DEFAULT_LAN_LISTEN, PRIMARY_DEVICE_ID,
 };
 pub use prekey_bundle::{PrekeyBundle, PrekeyBundleJson, PrekeyStore, MLKEM768_EK_LEN};
 pub use prekey_lifecycle::{

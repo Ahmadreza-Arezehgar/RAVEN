@@ -205,6 +205,19 @@ fn decode_arr64(s: &str) -> Result<[u8; 64], String> {
     Ok(a)
 }
 
+fn prekey_bundle_exact_match(a: &PrekeyBundle, b: &PrekeyBundle) -> bool {
+    a.identity_ed25519_pub == b.identity_ed25519_pub
+        && a.device_id == b.device_id
+        && a.x25519_pub == b.x25519_pub
+        && a.mlkem768_ek == b.mlkem768_ek
+        && a.signed_prekey_id == b.signed_prekey_id
+        && a.one_time_prekey_id == b.one_time_prekey_id
+        && a.one_time_x25519_pub == b.one_time_x25519_pub
+        && a.created_at_ms == b.created_at_ms
+        && a.expires_at_ms == b.expires_at_ms
+        && a.signature == b.signature
+}
+
 /// Local untrusted prekey cache (file-backed DHT/store stand-in). Never FastAPI.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct PrekeyStore {
@@ -217,42 +230,69 @@ impl PrekeyStore {
         data_dir.join("prekey_store.json")
     }
 
+    /// Soft load: missing or unreadable → empty. Prefer [`Self::load_checked`].
     pub fn load(data_dir: &Path) -> Self {
-        let Ok(raw) = std::fs::read_to_string(Self::path(data_dir)) else {
-            return Self::default();
-        };
-        serde_json::from_str(&raw).unwrap_or_default()
+        Self::load_checked(data_dir).unwrap_or_default()
+    }
+
+    /// Missing file → empty. Corrupt JSON → error (fail-closed).
+    pub fn load_checked(data_dir: &Path) -> Result<Self, String> {
+        let path = Self::path(data_dir);
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+        let raw = std::fs::read_to_string(&path).map_err(|e| format!("prekey store read: {e}"))?;
+        serde_json::from_str(&raw).map_err(|e| format!("prekey store corrupt: {e}"))
     }
 
     pub fn save(&self, data_dir: &Path) -> Result<(), String> {
         std::fs::create_dir_all(data_dir).map_err(|e| e.to_string())?;
         let raw = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
-        let path = Self::path(data_dir);
-        #[cfg(unix)]
-        {
-            use std::io::Write;
-            use std::os::unix::fs::OpenOptionsExt;
-            let mut f = std::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(&path)
-                .map_err(|e| e.to_string())?;
-            f.write_all(raw.as_bytes()).map_err(|e| e.to_string())?;
-        }
-        #[cfg(not(unix))]
-        {
-            std::fs::write(&path, raw).map_err(|e| e.to_string())?;
-        }
-        Ok(())
+        crate::paths::atomic_write_private(&Self::path(data_dir), raw.as_bytes())
     }
 
     pub fn publish(&mut self, bundle: &PrekeyBundle, now_ms: u64) -> Result<(), String> {
         bundle.verify(now_ms)?;
         let key = hex::encode(PrekeyBundle::store_key(&bundle.identity_ed25519_pub));
+        if let Some(existing_j) = self.bundles.get(&key) {
+            let existing = PrekeyBundle::from_json(existing_j)?;
+            if bundle.signed_prekey_id < existing.signed_prekey_id {
+                return Err("PREKEY_ROLLBACK".into());
+            }
+            if bundle.signed_prekey_id > existing.signed_prekey_id {
+                // Higher generation must also be strictly newer in wall time.
+                if bundle.created_at_ms <= existing.created_at_ms {
+                    return Err("PREKEY_ROLLBACK".into());
+                }
+            } else {
+                // Same signed_prekey_id: only exact replay is allowed (anti-equivocation).
+                if !prekey_bundle_exact_match(bundle, &existing) {
+                    return Err("PREKEY_EQUIVOCATION".into());
+                }
+                return Ok(());
+            }
+        }
         self.bundles.insert(key, bundle.to_json());
         Ok(())
+    }
+
+    /// Drop bundles that fail verify at `now_ms` (expired / bad). Returns removed count.
+    pub fn retain_valid(&mut self, now_ms: u64) -> usize {
+        let before = self.bundles.len();
+        self.bundles.retain(|_, j| {
+            PrekeyBundle::from_json(j)
+                .and_then(|b| b.verify(now_ms).map(|_| ()))
+                .is_ok()
+        });
+        before.saturating_sub(self.bundles.len())
+    }
+
+    pub fn len(&self) -> usize {
+        self.bundles.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.bundles.is_empty()
     }
 
     pub fn fetch(&self, ed_pub: &[u8; 32], now_ms: u64) -> Result<Option<PrekeyBundle>, String> {
@@ -328,6 +368,78 @@ mod tests {
             .unwrap();
         assert_eq!(got.signed_prekey_id, 1);
         assert_eq!(got.device_id, "dev1");
+    }
+
+    #[test]
+    fn load_checked_rejects_corrupt_json() {
+        let dir = tempdir().unwrap();
+        std::fs::write(PrekeyStore::path(dir.path()), b"{bad").unwrap();
+        assert!(PrekeyStore::load_checked(dir.path())
+            .unwrap_err()
+            .contains("corrupt"));
+    }
+
+    #[test]
+    fn publish_rejects_signed_prekey_rollback() {
+        let dir = tempdir().unwrap();
+        let id = Identity::generate();
+        let newer = demo_bundle(&id).sign(&id).unwrap();
+        let mut older = demo_bundle(&id);
+        older.signed_prekey_id = 0;
+        older.created_at_ms = 500;
+        let older = older.sign(&id).unwrap();
+        let mut store = PrekeyStore::default();
+        store.publish(&newer, 2_000).unwrap();
+        let err = store.publish(&older, 2_000).unwrap_err();
+        assert_eq!(err, "PREKEY_ROLLBACK");
+        store.save(dir.path()).unwrap();
+        let loaded = PrekeyStore::load_checked(dir.path()).unwrap();
+        assert_eq!(
+            loaded
+                .fetch(&id.public_key_bytes(), 2_000)
+                .unwrap()
+                .unwrap()
+                .signed_prekey_id,
+            1
+        );
+    }
+
+    #[test]
+    fn publish_rejects_higher_id_with_older_created_at() {
+        let id = Identity::generate();
+        let mut first = demo_bundle(&id);
+        first.signed_prekey_id = 1;
+        first.created_at_ms = 5_000;
+        let first = first.sign(&id).unwrap();
+        let mut second = demo_bundle(&id);
+        second.signed_prekey_id = 2;
+        second.created_at_ms = 4_000;
+        second.x25519_pub = [8u8; 32];
+        let second = second.sign(&id).unwrap();
+        let mut store = PrekeyStore::default();
+        store.publish(&first, 6_000).unwrap();
+        assert_eq!(
+            store.publish(&second, 6_000).unwrap_err(),
+            "PREKEY_ROLLBACK"
+        );
+    }
+
+    #[test]
+    fn publish_rejects_same_id_key_equivocation() {
+        let id = Identity::generate();
+        let first = demo_bundle(&id).sign(&id).unwrap();
+        let mut twin = demo_bundle(&id);
+        twin.x25519_pub = [9u8; 32];
+        twin.created_at_ms = 2_000;
+        let twin = twin.sign(&id).unwrap();
+        let mut store = PrekeyStore::default();
+        store.publish(&first, 3_000).unwrap();
+        assert_eq!(
+            store.publish(&twin, 3_000).unwrap_err(),
+            "PREKEY_EQUIVOCATION"
+        );
+        // Exact replay is idempotent.
+        store.publish(&first, 3_000).unwrap();
     }
 
     #[test]

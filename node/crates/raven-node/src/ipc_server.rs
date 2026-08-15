@@ -15,6 +15,12 @@ use raven_core::forward_queue::{ForwardItem, ForwardQueue, ForwardState};
 use raven_core::ipc::{
     decode_request, default_socket_path, encode_response, IpcRequest, IpcResponse, IPC_VERSION,
 };
+use tokio::time::Duration;
+
+use crate::lan_direct;
+
+const IPC_IO_TIMEOUT: Duration = Duration::from_secs(10);
+const LAN_DIAL_TIMEOUT: Duration = Duration::from_secs(45);
 use raven_core::node_policy::{load_policy, save_policy};
 use raven_core::queue::{DeliveryState, OutgoingQueue, QueueItem};
 use raven_core::transport::TransportKind;
@@ -88,22 +94,27 @@ fn peer_uid_matches_self(stream: &UnixStream) -> bool {
 }
 
 async fn read_frame(stream: &mut UnixStream) -> Result<Vec<u8>, String> {
-    let mut len_buf = [0u8; 4];
-    stream
-        .read_exact(&mut len_buf)
+    let read = async {
+        let mut len_buf = [0u8; 4];
+        stream
+            .read_exact(&mut len_buf)
+            .await
+            .map_err(|e| e.to_string())?;
+        let n = u32::from_be_bytes(len_buf) as usize;
+        if n == 0 || n > raven_core::MAX_IPC_FRAME {
+            return Err("IPC_FRAME".into());
+        }
+        let mut buf = vec![0u8; 4 + n];
+        buf[0..4].copy_from_slice(&len_buf);
+        stream
+            .read_exact(&mut buf[4..])
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(buf)
+    };
+    tokio::time::timeout(IPC_IO_TIMEOUT, read)
         .await
-        .map_err(|e| e.to_string())?;
-    let n = u32::from_be_bytes(len_buf) as usize;
-    if n == 0 || n > raven_core::MAX_IPC_FRAME {
-        return Err("IPC_FRAME".into());
-    }
-    let mut buf = vec![0u8; 4 + n];
-    buf[0..4].copy_from_slice(&len_buf);
-    stream
-        .read_exact(&mut buf[4..])
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(buf)
+        .map_err(|_| "ipc read timeout".to_string())?
 }
 
 fn handle_req(req: IpcRequest, data_dir: &Path, forward: &Option<ForwardQueue>) -> IpcResponse {
@@ -114,6 +125,9 @@ fn handle_req(req: IpcRequest, data_dir: &Path, forward: &Option<ForwardQueue>) 
             let (pending, caps) = match forward {
                 Some(q) => (q.count_pending().unwrap_or(0) as u64, {
                     let mut c = vec!["ipc".into()];
+                    if crate::lan_direct::listener_is_up() {
+                        c.push("lan_direct".into());
+                    }
                     if policy.bridge {
                         c.push("bridge".into());
                     }
@@ -254,6 +268,62 @@ fn handle_req(req: IpcRequest, data_dir: &Path, forward: &Option<ForwardQueue>) 
             }
             IpcResponse::Accepted { v }
         }
+        IpcRequest::LanDial { v, .. } => IpcResponse::Error {
+            v,
+            code: "INTERNAL".into(),
+            message: "LanDial must be handled asynchronously".into(),
+        },
+    }
+}
+
+fn b64_encode(bytes: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+async fn handle_lan_dial(data_dir: &Path, req: IpcRequest) -> IpcResponse {
+    let IpcRequest::LanDial {
+        v,
+        lan_dial,
+        expected_pub_hex,
+        frames_b64,
+    } = req
+    else {
+        return IpcResponse::Error {
+            v: IPC_VERSION,
+            code: "INTERNAL".into(),
+            message: "not LanDial".into(),
+        };
+    };
+    let mut frames = Vec::new();
+    for item in frames_b64 {
+        match base64_decode(&item) {
+            Ok(b) => frames.push(b),
+            Err(e) => {
+                return IpcResponse::Error {
+                    v,
+                    code: "IPC_BAD_B64".into(),
+                    message: e,
+                };
+            }
+        }
+    }
+    let work = lan_direct::dial(data_dir, &lan_dial, &expected_pub_hex, &frames);
+    match tokio::time::timeout(LAN_DIAL_TIMEOUT, work).await {
+        Ok(Ok(replies)) => IpcResponse::LanDialResult {
+            v,
+            frames_b64: replies.iter().map(|f| b64_encode(f)).collect(),
+        },
+        Ok(Err(e)) => IpcResponse::Error {
+            v,
+            code: "LAN_DIAL".into(),
+            message: e,
+        },
+        Err(_) => IpcResponse::Error {
+            v,
+            code: "LAN_DIAL_TIMEOUT".into(),
+            message: "lan dial exceeded 45s".into(),
+        },
     }
 }
 
@@ -279,9 +349,12 @@ async fn serve_one(
         Ok(f) => f,
         Err(_) => return,
     };
-    let fwd = forward.lock().await;
     let resp = match decode_request(&frame) {
-        Ok(req) => handle_req(req, &data_dir, &fwd),
+        Ok(req @ IpcRequest::LanDial { .. }) => handle_lan_dial(&data_dir, req).await,
+        Ok(req) => {
+            let fwd = forward.lock().await;
+            handle_req(req, &data_dir, &fwd)
+        }
         Err(e) => {
             let code = if e.contains("forbidden") {
                 "IPC_FORBIDDEN_FIELD"
@@ -297,10 +370,13 @@ async fn serve_one(
             }
         }
     };
-    drop(fwd);
     if let Ok(out) = encode_response(&resp) {
-        let _ = stream.write_all(&out).await;
-        let _ = stream.flush().await;
+        let _ = tokio::time::timeout(IPC_IO_TIMEOUT, async {
+            stream.write_all(&out).await.ok()?;
+            stream.flush().await.ok()?;
+            Some(())
+        })
+        .await;
     }
 }
 

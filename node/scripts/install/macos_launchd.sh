@@ -3,7 +3,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 BIN_DIR="${RAVEN_BIN_DIR:-$HOME/.local/bin}"
-DATA_DIR="${RAVEN_DATA_DIR:-$HOME/.raven-node}"
+DATA_DIR="${RAVEN_DATA_DIR:-$HOME/.raven}"
 LABEL="com.raven.raven-node"
 PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
 
@@ -32,7 +32,7 @@ cat >"$PLIST" <<EOF
     <string>--data-dir</string>
     <string>${DATA_DIR}</string>
     <string>--lan-listen</string>
-    <string>127.0.0.1:7420</string>
+    <string>0.0.0.0:7420</string>
     <string>--ble-listen</string>
     <string>127.0.0.1:7421</string>
     <string>--timeout-secs</string>
@@ -46,9 +46,13 @@ cat >"$PLIST" <<EOF
 </plist>
 EOF
 
+# Identity + prekey must exist before LAN preflight will keep the service up.
+"${BIN_DIR}/raven" --data-dir "${DATA_DIR}" init
+
 launchctl bootout "gui/$(id -u)/${LABEL}" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
 echo "installed launchd agent ${LABEL}"
 echo "data-dir=${DATA_DIR}"
-echo "IPC sock: ${DATA_DIR}/raven-node.sock (service = bridge + ipc)"
+echo "IPC sock: ${DATA_DIR}/raven-node.sock (service = lan_direct + ipc)"
+echo "Firewall: allow inbound TCP 7420 on the LAN (System Settings → Network → Firewall)."
 echo "PATH tip: export PATH=\"${BIN_DIR}:\$PATH\""

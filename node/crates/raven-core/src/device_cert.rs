@@ -6,10 +6,12 @@
 //! record type is frozen).
 
 use crate::identity::Identity;
+use crate::paths::PRIMARY_DEVICE_ID;
 use crate::records::device_cert_signing_bytes;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
 
 fn ser_32<S: Serializer>(v: &[u8; 32], s: S) -> Result<S::Ok, S::Error> {
     s.serialize_str(&hex::encode(v))
@@ -137,6 +139,10 @@ impl DeviceRegistry {
         true
     }
 
+    pub fn is_revoked(&self, device_id: &str) -> bool {
+        self.revoked.contains(device_id)
+    }
+
     pub fn is_authorized(&self, device_id: &str, now_ms: u64) -> bool {
         if self.revoked.contains(device_id) {
             return false;
@@ -160,36 +166,121 @@ pub fn device_registry_path(data_dir: &Path) -> PathBuf {
     data_dir.join("device_registry.json")
 }
 
+/// Soft load for display helpers. Prefer [`load_device_registry_checked`].
 pub fn load_device_registry(data_dir: &Path) -> DeviceRegistry {
+    load_device_registry_checked(data_dir).unwrap_or_default()
+}
+
+/// Missing file → empty. Corrupt JSON → error (fail-closed; never wipe revocation).
+pub fn load_device_registry_checked(data_dir: &Path) -> Result<DeviceRegistry, String> {
     let path = device_registry_path(data_dir);
-    let Ok(raw) = std::fs::read_to_string(&path) else {
-        return DeviceRegistry::default();
-    };
-    serde_json::from_str(&raw).unwrap_or_default()
+    if !path.exists() {
+        return Ok(DeviceRegistry::default());
+    }
+    let raw = std::fs::read_to_string(&path).map_err(|e| format!("device registry read: {e}"))?;
+    serde_json::from_str(&raw).map_err(|e| format!("device registry corrupt: {e}"))
+}
+
+const DEVICE_X_SECRET: &str = "device_x25519.secret";
+const DEVICE_X_PUBLIC: &str = "device_x25519.pub";
+const LEGACY_X_SECRET: &str = "lab_device_x25519.secret";
+const LEGACY_X_PUBLIC: &str = "lab_device_x25519.pub";
+pub const DEVICE_REGISTRY_LOCK: &str = ".device_registry.lock.sqlite";
+
+/// Serialize all device-registry readers/writers (ensure, revoke, …).
+pub fn with_device_registry_lock<F, T>(data_dir: &Path, f: F) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, String>,
+{
+    let _lock = crate::paths::DataDirLock::acquire(data_dir, DEVICE_REGISTRY_LOCK)?;
+    f()
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn load_or_create_device_x25519(data_dir: &Path) -> Result<[u8; 32], String> {
+    for (secret_name, public_name) in [
+        (DEVICE_X_SECRET, DEVICE_X_PUBLIC),
+        (LEGACY_X_SECRET, LEGACY_X_PUBLIC),
+    ] {
+        let secret_path = data_dir.join(secret_name);
+        let public_path = data_dir.join(public_name);
+        if secret_path.exists() && public_path.exists() {
+            let secret_raw = std::fs::read(&secret_path).map_err(|e| e.to_string())?;
+            let pub_raw = std::fs::read(&public_path).map_err(|e| e.to_string())?;
+            if secret_raw.len() != 32 || pub_raw.len() != 32 {
+                return Err(format!(
+                    "{secret_name}/{public_name}: expected 32-byte secret and public"
+                ));
+            }
+            let mut secret_bytes = [0u8; 32];
+            secret_bytes.copy_from_slice(&secret_raw);
+            let mut claimed_pub = [0u8; 32];
+            claimed_pub.copy_from_slice(&pub_raw);
+            let secret = StaticSecret::from(secret_bytes);
+            let derived = X25519PublicKey::from(&secret).to_bytes();
+            if derived != claimed_pub {
+                return Err(format!(
+                    "{secret_name}/{public_name}: public key does not match secret"
+                ));
+            }
+            return Ok(derived);
+        }
+    }
+    let secret = StaticSecret::random_from_rng(rand::rngs::OsRng);
+    let public = X25519PublicKey::from(&secret).to_bytes();
+    std::fs::create_dir_all(data_dir).map_err(|e| e.to_string())?;
+    let secret_path = data_dir.join(DEVICE_X_SECRET);
+    let public_path = data_dir.join(DEVICE_X_PUBLIC);
+    crate::paths::atomic_write_private(&secret_path, &secret.to_bytes())?;
+    crate::paths::atomic_write_private(&public_path, &public)?;
+    Ok(public)
+}
+
+/// Issue or reuse the local primary device certificate for this identity.
+pub fn ensure_local_device_certificate(
+    data_dir: &Path,
+    id: &Identity,
+    device_id: &str,
+) -> Result<(DeviceCertificate, DeviceRegistry), String> {
+    with_device_registry_lock(data_dir, || {
+        let device_id = if device_id.is_empty() {
+            PRIMARY_DEVICE_ID
+        } else {
+            device_id
+        };
+        let mut reg = load_device_registry_checked(data_dir)?;
+        let now = now_ms();
+        if let Some(existing) = reg.certs.get(device_id).cloned() {
+            if existing.device_ed_pub == id.public_key_bytes() && existing.verify(now).is_ok() {
+                return Ok((existing, reg));
+            }
+        }
+        let x_pub = load_or_create_device_x25519(data_dir)?;
+        let cert = DeviceCertificate::issue(
+            id,
+            id.public_key_bytes(),
+            x_pub,
+            device_id,
+            now.saturating_sub(60_000),
+            now.saturating_add(365 * 24 * 3600 * 1000),
+            0,
+        )?;
+        reg.add(cert.clone(), now)?;
+        save_device_registry(data_dir, &reg)?;
+        Ok((cert, reg))
+    })
 }
 
 pub fn save_device_registry(data_dir: &Path, reg: &DeviceRegistry) -> Result<(), String> {
     std::fs::create_dir_all(data_dir).map_err(|e| e.to_string())?;
-    let path = device_registry_path(data_dir);
     let raw = serde_json::to_string_pretty(reg).map_err(|e| e.to_string())?;
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&path)
-            .map_err(|e| e.to_string())?;
-        f.write_all(raw.as_bytes()).map_err(|e| e.to_string())?;
-    }
-    #[cfg(not(unix))]
-    {
-        std::fs::write(&path, raw).map_err(|e| e.to_string())?;
-    }
-    Ok(())
+    crate::paths::atomic_write_private(&device_registry_path(data_dir), raw.as_bytes())
 }
 
 #[cfg(test)]
@@ -284,5 +375,31 @@ mod tests {
             hex::encode(&sb),
             "72766e312f6465766365727400203d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c0020de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f000c626f622d6465766963652d310000018bcfe5680000000193279694000000000000000007"
         );
+    }
+
+    #[test]
+    fn device_registry_checked_rejects_corrupt() {
+        let dir = tempdir().unwrap();
+        std::fs::write(device_registry_path(dir.path()), b"{bad").unwrap();
+        let err = load_device_registry_checked(dir.path()).unwrap_err();
+        assert!(err.contains("corrupt"));
+        // Soft load still defaults — ensure_local must not use that path.
+        assert!(load_device_registry(dir.path()).certs.is_empty());
+    }
+
+    #[test]
+    fn device_x25519_rejects_mismatched_public() {
+        let dir = tempdir().unwrap();
+        let secret = StaticSecret::random_from_rng(rand::rngs::OsRng);
+        let good_pub = X25519PublicKey::from(&secret).to_bytes();
+        crate::paths::atomic_write_private(&dir.path().join(DEVICE_X_SECRET), &secret.to_bytes())
+            .unwrap();
+        crate::paths::atomic_write_private(&dir.path().join(DEVICE_X_PUBLIC), &good_pub).unwrap();
+        assert_eq!(load_or_create_device_x25519(dir.path()).unwrap(), good_pub);
+
+        let tampered = [0xAAu8; 32];
+        crate::paths::atomic_write_private(&dir.path().join(DEVICE_X_PUBLIC), &tampered).unwrap();
+        let err = load_or_create_device_x25519(dir.path()).unwrap_err();
+        assert!(err.contains("does not match"));
     }
 }

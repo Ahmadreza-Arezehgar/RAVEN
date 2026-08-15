@@ -22,11 +22,9 @@
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::fmt;
-use std::path::Path;
-#[cfg(any(windows, test))]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, Nonce};
@@ -116,6 +114,13 @@ struct AckReceiptIdentity {
     outer_message_id: [u8; 16],
     remote_device: [u8; 32],
     acked_message_id: [u8; 16],
+}
+
+fn wall_clock_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 fn endpoint_time_window_valid(created_at_ms: u64, expires_at_ms: u64, now_ms: u64) -> bool {
@@ -891,6 +896,63 @@ fn maybe_injected_endpoint_fault(
 trait ProtectedSessionBackend: Send + Sync {
     fn get(&self, account: &str) -> Result<Option<Vec<u8>>, IndexedSessionStoreError>;
     fn put(&self, account: &str, value: &[u8]) -> Result<(), IndexedSessionStoreError>;
+    fn delete(&self, account: &str) -> Result<(), IndexedSessionStoreError>;
+}
+
+fn force_locked_file_session_backend() -> bool {
+    for key in ["RAVEN_SESSION_BACKEND", "RAVEN_IDENTITY_BACKEND"] {
+        if std::env::var_os(key).is_some_and(|v| v == "locked-file") {
+            return true;
+        }
+    }
+    false
+}
+
+struct LockedFileSessionBackend {
+    dir: PathBuf,
+}
+
+impl LockedFileSessionBackend {
+    fn new(data_dir: &Path) -> Result<Self, IndexedSessionStoreError> {
+        let dir = data_dir.join("indexed-session-secrets");
+        std::fs::create_dir_all(&dir)
+            .map_err(|error| IndexedSessionStoreError::ProtectedStore(error.to_string()))?;
+        Ok(Self { dir })
+    }
+
+    fn path(&self, account: &str) -> PathBuf {
+        let safe: String = account
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect();
+        self.dir.join(format!("{safe}.bin"))
+    }
+}
+
+impl ProtectedSessionBackend for LockedFileSessionBackend {
+    fn get(&self, account: &str) -> Result<Option<Vec<u8>>, IndexedSessionStoreError> {
+        let path = self.path(account);
+        if !path.exists() {
+            return Ok(None);
+        }
+        std::fs::read(path)
+            .map(Some)
+            .map_err(|error| IndexedSessionStoreError::ProtectedStore(error.to_string()))
+    }
+
+    fn put(&self, account: &str, value: &[u8]) -> Result<(), IndexedSessionStoreError> {
+        crate::paths::atomic_write_private(&self.path(account), value)
+            .map_err(IndexedSessionStoreError::ProtectedStore)
+    }
+
+    fn delete(&self, account: &str) -> Result<(), IndexedSessionStoreError> {
+        let path = self.path(account);
+        if path.exists() {
+            std::fs::remove_file(&path)
+                .map_err(|error| IndexedSessionStoreError::ProtectedStore(error.to_string()))?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(not(any(
@@ -989,6 +1051,10 @@ impl ProtectedSessionBackend for PlatformProtectedSessionBackend {
     fn put(&self, _account: &str, _value: &[u8]) -> Result<(), IndexedSessionStoreError> {
         Err(unsupported_protected_store_error())
     }
+
+    fn delete(&self, _account: &str) -> Result<(), IndexedSessionStoreError> {
+        Err(unsupported_protected_store_error())
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -1011,6 +1077,17 @@ impl ProtectedSessionBackend for PlatformProtectedSessionBackend {
                 IndexedSessionStoreError::ProtectedStore(format!("keychain update failed: {error}"))
             },
         )
+    }
+
+    fn delete(&self, account: &str) -> Result<(), IndexedSessionStoreError> {
+        use security_framework::passwords::delete_generic_password;
+        match delete_generic_password(PLATFORM_SERVICE, &self.scoped_account(account)) {
+            Ok(()) => Ok(()),
+            Err(error) if error.code() == -25_300 => Ok(()),
+            Err(error) => Err(IndexedSessionStoreError::ProtectedStore(format!(
+                "keychain delete failed: {error}"
+            ))),
+        }
     }
 }
 
@@ -1089,6 +1166,46 @@ impl ProtectedSessionBackend for PlatformProtectedSessionBackend {
             })?;
         Ok(())
     }
+
+    fn delete(&self, account: &str) -> Result<(), IndexedSessionStoreError> {
+        use secret_service::{EncryptionType, SecretService};
+        let service = SecretService::new(EncryptionType::Dh).map_err(|error| {
+            IndexedSessionStoreError::ProtectedStore(format!(
+                "secret-service connection failed: {error}"
+            ))
+        })?;
+        let collection = service.get_default_collection().map_err(|error| {
+            IndexedSessionStoreError::ProtectedStore(format!(
+                "secret-service collection failed: {error}"
+            ))
+        })?;
+        if collection.is_locked() {
+            collection.unlock().map_err(|error| {
+                IndexedSessionStoreError::ProtectedStore(format!(
+                    "secret-service unlock failed: {error}"
+                ))
+            })?;
+        }
+        let scoped = self.scoped_account(account);
+        let items = collection
+            .search_items(vec![
+                ("service", PLATFORM_SERVICE),
+                ("account", scoped.as_str()),
+            ])
+            .map_err(|error| {
+                IndexedSessionStoreError::ProtectedStore(format!(
+                    "secret-service search failed: {error}"
+                ))
+            })?;
+        for item in items {
+            item.delete().map_err(|error| {
+                IndexedSessionStoreError::ProtectedStore(format!(
+                    "secret-service delete failed: {error}"
+                ))
+            })?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(windows)]
@@ -1130,6 +1247,15 @@ impl ProtectedSessionBackend for PlatformProtectedSessionBackend {
             let _ = std::fs::remove_file(&temp);
         }
         result
+    }
+
+    fn delete(&self, account: &str) -> Result<(), IndexedSessionStoreError> {
+        let path = self.secret_dir.join(format!("{account}.dpapi"));
+        if path.exists() {
+            std::fs::remove_file(&path)
+                .map_err(|error| IndexedSessionStoreError::ProtectedStore(error.to_string()))?;
+        }
+        Ok(())
     }
 }
 
@@ -1253,6 +1379,10 @@ impl IndexedSessionStore {
     /// Opens the platform implementation. GNU/Linux requires Secret Service;
     /// unsupported platforms fail closed. There is no plaintext file fallback.
     pub fn open(data_dir: &Path) -> Result<Self, IndexedSessionStoreError> {
+        if force_locked_file_session_backend() {
+            let backend = Arc::new(LockedFileSessionBackend::new(data_dir)?);
+            return Self::open_with_backend(&data_dir.join(INDEXED_SESSION_METADATA_FILE), backend);
+        }
         let backend = Arc::new(PlatformProtectedSessionBackend::new(data_dir)?);
         Self::open_with_backend(&data_dir.join(INDEXED_SESSION_METADATA_FILE), backend)
     }
@@ -2095,28 +2225,159 @@ impl IndexedSessionStore {
     pub fn pending_endpoint_outbound(
         &self,
     ) -> Result<Vec<EndpointOutbound>, IndexedSessionStoreError> {
+        self.pending_endpoint_outbound_for_recipient(None)
+    }
+
+    /// Like [`Self::pending_endpoint_outbound`], optionally limited to one
+    /// recipient device so a send to Bob cannot dial Carol's ciphertext.
+    pub fn pending_endpoint_outbound_for_recipient(
+        &self,
+        recipient_device: Option<&[u8; 32]>,
+    ) -> Result<Vec<EndpointOutbound>, IndexedSessionStoreError> {
         let mut statement = self.conn.prepare(
             "SELECT session_id, object_digest, kind, message_id, recipient_device,
                     ratchet_index, state, immutable_envelope_bytes
-             FROM endpoint_outbox WHERE state = 0 ORDER BY rowid ASC",
+             FROM endpoint_outbox WHERE state = 0
+               AND (?1 IS NULL OR recipient_device = ?1)
+             ORDER BY rowid ASC",
         )?;
-        let rows = statement.query_map([], |row| -> rusqlite::Result<EndpointOutboxDbRow> {
-            Ok((
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
-                row.get(4)?,
-                row.get(5)?,
-                row.get(6)?,
-                row.get(7)?,
-            ))
-        })?;
+        let bind = recipient_device.map(|d| d.as_slice());
+        let rows = statement.query_map(
+            params![bind],
+            |row| -> rusqlite::Result<EndpointOutboxDbRow> {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                ))
+            },
+        )?;
         let mut result = Vec::new();
         for row in rows {
             result.push(decode_endpoint_outbound_row(row?)?);
         }
         Ok(result)
+    }
+
+    /// Queued message envelopes whose outstanding delivery is still `Sent`
+    /// (transport handoff happened, application ACK not yet accepted).
+    pub fn awaiting_ack_endpoint_outbound(
+        &self,
+    ) -> Result<Vec<EndpointOutbound>, IndexedSessionStoreError> {
+        self.awaiting_ack_endpoint_outbound_for_recipient(None)
+    }
+
+    /// Like [`Self::awaiting_ack_endpoint_outbound`], optionally limited to one
+    /// recipient device.
+    pub fn awaiting_ack_endpoint_outbound_for_recipient(
+        &self,
+        recipient_device: Option<&[u8; 32]>,
+    ) -> Result<Vec<EndpointOutbound>, IndexedSessionStoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT o.session_id, o.object_digest, o.kind, o.message_id, o.recipient_device,
+                    o.ratchet_index, o.state, o.immutable_envelope_bytes
+             FROM endpoint_outbox o
+             JOIN endpoint_outstanding_messages m
+               ON m.session_id = o.session_id
+              AND m.message_id = o.message_id
+              AND m.recipient_device = o.recipient_device
+             WHERE o.state = 1 AND o.kind = 1 AND m.delivery_state = 0
+               AND (?1 IS NULL OR o.recipient_device = ?1)
+             ORDER BY o.rowid ASC",
+        )?;
+        let bind = recipient_device.map(|d| d.as_slice());
+        let rows = statement.query_map(
+            params![bind],
+            |row| -> rusqlite::Result<EndpointOutboxDbRow> {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                ))
+            },
+        )?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(decode_endpoint_outbound_row(row?)?);
+        }
+        Ok(result)
+    }
+
+    /// Re-invokes the durable queue/dial callback for an already-Queued message
+    /// without changing outbox state. Used when the peer ACK was lost after a
+    /// successful transport handoff.
+    pub fn resend_queued_endpoint_outbound<F>(
+        &mut self,
+        key: &IndexedSessionRecordKey,
+        object_digest: &[u8; 32],
+        local_device: &AuthorizedEndpointDevice<'_>,
+        now_ms: u64,
+        enqueue_idempotently: &mut F,
+    ) -> Result<EndpointOutbound, IndexedSessionStoreError>
+    where
+        F: FnMut(&[u8; 32], &[u8]) -> Result<[u8; 32], ()>,
+    {
+        self.recover_pending_for_key(key)?;
+        let record_key = record_key_digest(key)?;
+        let account = hex::encode(record_key);
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let state = load_and_reconcile(&tx, self.backend.as_ref(), &account, &record_key)?;
+        if &state.binding.key != key {
+            return Err(IndexedSessionStoreError::BindingConflict);
+        }
+        let row = endpoint_outbound_by_object(&tx, &state.binding.session_id, object_digest)?
+            .ok_or(IndexedSessionStoreError::NotFound)?;
+        if row.state != EndpointOutboxState::Queued || row.kind != EndpointOutboundKind::Message {
+            return Err(IndexedSessionStoreError::NotFound);
+        }
+        validate_committed_outbound(&tx, &state, &row)?;
+        let envelope = Envelope::unpack(&row.immutable_envelope_bytes)
+            .ok_or(IndexedSessionStoreError::InvalidEndpointEnvelope)?;
+        if !endpoint_time_window_valid(envelope.created_at, envelope.expires_at, now_ms)
+            || now_ms >= state.binding.expires_at_ms
+        {
+            tx.commit()?;
+            return Err(IndexedSessionStoreError::EndpointNotCurrentlyValid);
+        }
+        validate_outbound_session_and_signer(
+            &state,
+            key,
+            local_device,
+            row.kind,
+            row.ratchet_index,
+            envelope.created_at,
+            envelope.expires_at,
+            now_ms,
+        )?;
+        let delivery = self_delivery_state_in_connection(
+            &tx,
+            &state.binding.session_id,
+            &row.message_id,
+            &row.recipient_device,
+        )?;
+        if delivery != Some(EndpointDeliveryState::Sent) {
+            tx.commit()?;
+            return Ok(row);
+        }
+        tx.commit()?;
+        let persisted = enqueue_idempotently(object_digest, &row.immutable_envelope_bytes)
+            .map_err(|_| IndexedSessionStoreError::OutboundQueueHandoff)?;
+        if persisted != *object_digest {
+            return Err(IndexedSessionStoreError::OutboundQueueHandoff);
+        }
+        Ok(row)
     }
 
     fn handoff_endpoint_outbound<F>(
@@ -2502,6 +2763,490 @@ impl IndexedSessionStore {
         }))
     }
 
+    /// Resolve the public PairInit record key for a durable `session_id`.
+    pub fn record_key_for_session_id(
+        &self,
+        session_id: &[u8; 32],
+    ) -> Result<Option<IndexedSessionRecordKey>, IndexedSessionStoreError> {
+        type HeadRow = (Vec<u8>, String, String, Vec<u8>, Vec<u8>, Vec<u8>);
+        let raw: Option<HeadRow> = self
+            .conn
+            .query_row(
+                "SELECT profile_id, initiator_address, responder_address,
+                        initiator_device, responder_device, init_id
+                 FROM indexed_session_heads WHERE session_id = ?1",
+                params![session_id.as_slice()],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((profile_id, ia, ra, id, rd, init_id)) = raw else {
+            return Ok(None);
+        };
+        Ok(Some(IndexedSessionRecordKey {
+            profile_id,
+            initiator_address: ia,
+            responder_address: ra,
+            initiator_device_ed25519: exact_array(&id)?,
+            responder_device_ed25519: exact_array(&rd)?,
+            init_id: exact_array(&init_id)?,
+        }))
+    }
+
+    /// Drop an undeliverable outbound message (Prepared dial-failure leftover or
+    /// Queued envelope that can no longer be resent). Removes outstanding Sent
+    /// rows and the outbox ciphertext so later sends are not wedged.
+    ///
+    /// Callers decide policy (expired dial vs handoff failure). This API does
+    /// not re-check envelope expiry — that belongs at the send/retry boundary.
+    pub fn abandon_undelivered_outbound(
+        &mut self,
+        key: &IndexedSessionRecordKey,
+        object_digest: &[u8; 32],
+    ) -> Result<bool, IndexedSessionStoreError> {
+        self.recover_pending_for_key(key)?;
+        let record_key = record_key_digest(key)?;
+        let account = hex::encode(record_key);
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let state = load_and_reconcile(&tx, self.backend.as_ref(), &account, &record_key)?;
+        if &state.binding.key != key {
+            return Err(IndexedSessionStoreError::BindingConflict);
+        }
+        let row = endpoint_outbound_by_object(&tx, &state.binding.session_id, object_digest)?
+            .ok_or(IndexedSessionStoreError::NotFound)?;
+        if row.kind != EndpointOutboundKind::Message {
+            return Ok(false);
+        }
+        if row.state != EndpointOutboxState::Prepared && row.state != EndpointOutboxState::Queued {
+            return Ok(false);
+        }
+        let _ = tx.execute(
+            "DELETE FROM endpoint_outstanding_messages
+             WHERE session_id = ?1 AND message_id = ?2 AND recipient_device = ?3
+               AND delivery_state = 0",
+            params![
+                state.binding.session_id.as_slice(),
+                row.message_id.as_slice(),
+                row.recipient_device.as_slice()
+            ],
+        )?;
+        let changed = tx.execute(
+            "DELETE FROM endpoint_outbox
+             WHERE session_id = ?1 AND object_digest = ?2 AND kind = 1
+               AND state IN (0, 1)",
+            params![
+                state.binding.session_id.as_slice(),
+                object_digest.as_slice()
+            ],
+        )?;
+        tx.commit()?;
+        Ok(changed > 0)
+    }
+
+    pub fn list_record_keys(
+        &self,
+    ) -> Result<Vec<IndexedSessionRecordKey>, IndexedSessionStoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT profile_id, initiator_address, responder_address,
+                    initiator_device, responder_device, init_id
+             FROM indexed_session_heads
+             ORDER BY created_at_ms ASC",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, Vec<u8>>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Vec<u8>>(3)?,
+                row.get::<_, Vec<u8>>(4)?,
+                row.get::<_, Vec<u8>>(5)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (profile_id, initiator_address, responder_address, init_dev, resp_dev, init_id) =
+                row?;
+            out.push(IndexedSessionRecordKey {
+                profile_id,
+                initiator_address,
+                responder_address,
+                initiator_device_ed25519: exact_array(&init_dev)?,
+                responder_device_ed25519: exact_array(&resp_dev)?,
+                init_id: exact_array(&init_id)?,
+            });
+        }
+        Ok(out)
+    }
+
+    pub fn session_lifecycle(
+        &mut self,
+        key: &IndexedSessionRecordKey,
+    ) -> Result<SessionLifecycle, IndexedSessionStoreError> {
+        self.recover_pending_for_key(key)?;
+        let record_key = record_key_digest(key)?;
+        let account = hex::encode(record_key);
+        let backend = Arc::clone(&self.backend);
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let state = load_and_reconcile(&tx, backend.as_ref(), &account, &record_key)?;
+        let lifecycle = state.binding.lifecycle;
+        tx.commit()?;
+        Ok(lifecycle)
+    }
+
+    pub fn session_expires_at(
+        &mut self,
+        key: &IndexedSessionRecordKey,
+    ) -> Result<u64, IndexedSessionStoreError> {
+        self.recover_pending_for_key(key)?;
+        let record_key = record_key_digest(key)?;
+        let account = hex::encode(record_key);
+        let backend = Arc::clone(&self.backend);
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let state = load_and_reconcile(&tx, backend.as_ref(), &account, &record_key)?;
+        let expires = state.binding.expires_at_ms;
+        tx.commit()?;
+        Ok(expires)
+    }
+
+    /// Expiry from SQLite metadata only — does not load protected secrets.
+    /// Safe after a crash that deleted the secret but left the head row.
+    pub fn head_expires_at_ms(
+        &self,
+        key: &IndexedSessionRecordKey,
+    ) -> Result<u64, IndexedSessionStoreError> {
+        let expires: i64 = self.conn.query_row(
+            "SELECT expires_at_ms FROM indexed_session_heads
+             WHERE profile_id = ?1 AND initiator_address = ?2 AND responder_address = ?3
+               AND initiator_device = ?4 AND responder_device = ?5 AND init_id = ?6",
+            params![
+                key.profile_id.as_slice(),
+                key.initiator_address,
+                key.responder_address,
+                key.initiator_device_ed25519.as_slice(),
+                key.responder_device_ed25519.as_slice(),
+                key.init_id.as_slice(),
+            ],
+            |row| row.get(0),
+        )?;
+        Ok(expires as u64)
+    }
+
+    pub fn find_confirmed_session_for_peer(
+        &mut self,
+        peer_device: &[u8; 32],
+    ) -> Result<Option<IndexedSessionRecordKey>, IndexedSessionStoreError> {
+        self.find_confirmed_session_for_peer_at(peer_device, wall_clock_ms())
+    }
+
+    /// Newest non-expired Confirmed session for `peer_device`, if any.
+    pub fn find_confirmed_session_for_peer_at(
+        &mut self,
+        peer_device: &[u8; 32],
+        now_ms: u64,
+    ) -> Result<Option<IndexedSessionRecordKey>, IndexedSessionStoreError> {
+        let keys = self.list_record_keys()?;
+        let mut found = None;
+        for key in keys {
+            if key.initiator_device_ed25519 != *peer_device
+                && key.responder_device_ed25519 != *peer_device
+            {
+                continue;
+            }
+            if self.session_lifecycle(&key)? != SessionLifecycle::Confirmed {
+                continue;
+            }
+            if self.session_expires_at(&key)? <= now_ms {
+                continue;
+            }
+            found = Some(key);
+        }
+        Ok(found)
+    }
+
+    /// init_ids for sessions that are still within their expires_at window.
+    pub fn live_init_ids(
+        &mut self,
+        now_ms: u64,
+    ) -> Result<std::collections::HashSet<[u8; 16]>, IndexedSessionStoreError> {
+        let mut live = std::collections::HashSet::new();
+        for key in self.list_record_keys()? {
+            let expires: i64 = self.conn.query_row(
+                "SELECT expires_at_ms FROM indexed_session_heads WHERE init_id = ?1",
+                params![key.init_id.as_slice()],
+                |row| row.get(0),
+            )?;
+            if (expires as u64) > now_ms {
+                live.insert(key.init_id);
+            }
+        }
+        Ok(live)
+    }
+
+    /// Delete expired session metadata + protected blobs. Returns removed head count.
+    ///
+    /// Order: delete protected secret first, then SQLite metadata. This avoids
+    /// orphan Keychain/Secret Service blobs after metadata is gone. A crash after
+    /// secret delete still leaves metadata that a later prune can finish (delete
+    /// is idempotent when the secret is already absent). Callers must archive
+    /// inbox plaintext to ChatHistory before invoking this.
+    pub fn prune_expired_sessions(
+        &mut self,
+        now_ms: u64,
+    ) -> Result<usize, IndexedSessionStoreError> {
+        type ExpiredRow = (Vec<u8>, Vec<u8>, Vec<u8>);
+        let rows: Vec<ExpiredRow> = {
+            let mut statement = self.conn.prepare(
+                "SELECT record_key, session_id, init_id FROM indexed_session_heads
+                 WHERE expires_at_ms <= ?1",
+            )?;
+            let mapped = statement.query_map(params![now_ms as i64], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?;
+            let mut out = Vec::new();
+            for row in mapped {
+                out.push(row?);
+            }
+            out
+        };
+        let mut removed = 0usize;
+        for (record_key, session_id, _init_id) in rows {
+            let account = hex::encode(&record_key);
+            // Protected secret first — never leave a Keychain blob after metadata is gone.
+            self.backend.delete(&account)?;
+
+            let tx = self
+                .conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let _ = tx.execute(
+                "DELETE FROM endpoint_outbox WHERE session_id = ?1",
+                params![session_id.as_slice()],
+            )?;
+            let _ = tx.execute(
+                "DELETE FROM endpoint_ack_receipts WHERE session_id = ?1",
+                params![session_id.as_slice()],
+            )?;
+            let _ = tx.execute(
+                "DELETE FROM endpoint_outstanding_messages WHERE session_id = ?1",
+                params![session_id.as_slice()],
+            )?;
+            let _ = tx.execute(
+                "DELETE FROM endpoint_ack_intents WHERE session_id = ?1",
+                params![session_id.as_slice()],
+            )?;
+            let _ = tx.execute(
+                "DELETE FROM endpoint_inbox WHERE session_id = ?1",
+                params![session_id.as_slice()],
+            )?;
+            let _ = tx.execute(
+                "DELETE FROM endpoint_receipts WHERE session_id = ?1",
+                params![session_id.as_slice()],
+            )?;
+            let _ = tx.execute(
+                "DELETE FROM indexed_session_heads WHERE session_id = ?1",
+                params![session_id.as_slice()],
+            )?;
+            tx.commit()?;
+            removed += 1;
+        }
+        Ok(removed)
+    }
+
+    /// Inbox rows for one record key (decrypts sealed local rows).
+    pub fn list_endpoint_inbox_for_record(
+        &mut self,
+        key: &IndexedSessionRecordKey,
+    ) -> Result<Vec<EndpointInboxRow>, IndexedSessionStoreError> {
+        let digests: Vec<[u8; 32]> = {
+            let record_key = record_key_digest(key)?;
+            let account = hex::encode(record_key);
+            let tx = self
+                .conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let state = load_and_reconcile(&tx, self.backend.as_ref(), &account, &record_key)?;
+            if &state.binding.key != key {
+                return Err(IndexedSessionStoreError::BindingConflict);
+            }
+            let mut statement = tx.prepare(
+                "SELECT object_digest FROM endpoint_inbox WHERE session_id = ?1
+                 ORDER BY received_at_ms ASC",
+            )?;
+            let rows = statement
+                .query_map(params![state.binding.session_id.as_slice()], |row| {
+                    row.get::<_, Vec<u8>>(0)
+                })?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(exact_array::<32>(&row?)?);
+            }
+            drop(statement);
+            tx.commit()?;
+            out
+        };
+        let mut inbox = Vec::new();
+        for digest in digests {
+            if let Some(row) = self.load_endpoint_inbox(key, &digest)? {
+                inbox.push(row);
+            }
+        }
+        Ok(inbox)
+    }
+
+    pub fn list_endpoint_inbox(
+        &mut self,
+    ) -> Result<Vec<EndpointInboxRow>, IndexedSessionStoreError> {
+        self.list_endpoint_inbox_filtered(None)
+    }
+
+    /// Like [`Self::list_endpoint_inbox`], limited to one sender device.
+    pub fn list_endpoint_inbox_for_sender(
+        &mut self,
+        sender_device: &[u8; 32],
+    ) -> Result<Vec<EndpointInboxRow>, IndexedSessionStoreError> {
+        self.list_endpoint_inbox_filtered(Some(sender_device))
+    }
+
+    /// Like [`Self::list_endpoint_inbox_for_sender`], but only rows strictly after
+    /// `(after_received_at_ms, after_message_id)` with a hard `limit` (decrypt budget).
+    pub fn list_endpoint_inbox_for_sender_after(
+        &mut self,
+        sender_device: &[u8; 32],
+        after_received_at_ms: u64,
+        after_message_id: Option<&[u8; 16]>,
+        limit: usize,
+    ) -> Result<Vec<EndpointInboxRow>, IndexedSessionStoreError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let after_mid = after_message_id.map(|m| m.as_slice());
+        let mut statement = self.conn.prepare(
+            "SELECT h.profile_id, h.initiator_address, h.responder_address,
+                    h.initiator_device, h.responder_device, h.init_id,
+                    i.object_digest
+             FROM endpoint_inbox i
+             JOIN indexed_session_heads h ON h.session_id = i.session_id
+             WHERE i.sender_device = ?1
+               AND (
+                 i.received_at_ms > ?2
+                 OR (?3 IS NULL AND i.received_at_ms >= ?2)
+                 OR (?3 IS NOT NULL AND i.received_at_ms = ?2 AND i.message_id > ?3)
+               )
+             ORDER BY i.received_at_ms ASC, i.message_id ASC
+             LIMIT ?4",
+        )?;
+        let pending = {
+            let rows = statement.query_map(
+                params![
+                    sender_device.as_slice(),
+                    after_received_at_ms as i64,
+                    after_mid,
+                    limit as i64
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, Vec<u8>>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Vec<u8>>(3)?,
+                        row.get::<_, Vec<u8>>(4)?,
+                        row.get::<_, Vec<u8>>(5)?,
+                        row.get::<_, Vec<u8>>(6)?,
+                    ))
+                },
+            )?;
+            let mut pending = Vec::new();
+            for row in rows {
+                let (profile_id, ia, ra, id, rd, init_id, digest) = row?;
+                pending.push((
+                    IndexedSessionRecordKey {
+                        profile_id,
+                        initiator_address: ia,
+                        responder_address: ra,
+                        initiator_device_ed25519: exact_array(&id)?,
+                        responder_device_ed25519: exact_array(&rd)?,
+                        init_id: exact_array(&init_id)?,
+                    },
+                    exact_array::<32>(&digest)?,
+                ));
+            }
+            pending
+        };
+        drop(statement);
+        let mut out = Vec::new();
+        for (key, digest) in pending {
+            if let Some(row) = self.load_endpoint_inbox(&key, &digest)? {
+                out.push(row);
+            }
+        }
+        Ok(out)
+    }
+
+    fn list_endpoint_inbox_filtered(
+        &mut self,
+        sender_device: Option<&[u8; 32]>,
+    ) -> Result<Vec<EndpointInboxRow>, IndexedSessionStoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT h.profile_id, h.initiator_address, h.responder_address,
+                    h.initiator_device, h.responder_device, h.init_id,
+                    i.object_digest
+             FROM endpoint_inbox i
+             JOIN indexed_session_heads h ON h.session_id = i.session_id
+             WHERE (?1 IS NULL OR i.sender_device = ?1)
+             ORDER BY i.received_at_ms ASC",
+        )?;
+        let bind = sender_device.map(|d| d.as_slice());
+        let pending = {
+            let rows = statement.query_map(params![bind], |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Vec<u8>>(3)?,
+                    row.get::<_, Vec<u8>>(4)?,
+                    row.get::<_, Vec<u8>>(5)?,
+                    row.get::<_, Vec<u8>>(6)?,
+                ))
+            })?;
+            let mut pending = Vec::new();
+            for row in rows {
+                let (profile_id, ia, ra, id, rd, init_id, digest) = row?;
+                pending.push((
+                    IndexedSessionRecordKey {
+                        profile_id,
+                        initiator_address: ia,
+                        responder_address: ra,
+                        initiator_device_ed25519: exact_array(&id)?,
+                        responder_device_ed25519: exact_array(&rd)?,
+                        init_id: exact_array(&init_id)?,
+                    },
+                    exact_array::<32>(&digest)?,
+                ));
+            }
+            pending
+        };
+        drop(statement);
+        let mut out = Vec::new();
+        for (key, digest) in pending {
+            if let Some(row) = self.load_endpoint_inbox(&key, &digest)? {
+                out.push(row);
+            }
+        }
+        Ok(out)
+    }
+
     /// Returns only ACK intents in a committed SQLite transaction.
     pub fn pending_endpoint_ack_intents(
         &self,
@@ -2655,6 +3400,26 @@ impl IndexedSessionStore {
         )?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// Session id for a confirmed/provisional record (loads protected head).
+    pub fn session_id_for_record_key(
+        &mut self,
+        key: &IndexedSessionRecordKey,
+    ) -> Result<[u8; 32], IndexedSessionStoreError> {
+        self.recover_pending_for_key(key)?;
+        let record_key = record_key_digest(key)?;
+        let account = hex::encode(record_key);
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let state = load_and_reconcile(&tx, self.backend.as_ref(), &account, &record_key)?;
+        if &state.binding.key != key {
+            return Err(IndexedSessionStoreError::BindingConflict);
+        }
+        let session_id = state.binding.session_id;
+        tx.commit()?;
+        Ok(session_id)
     }
 
     pub fn outstanding_delivery_state(
@@ -5494,6 +6259,14 @@ mod tests {
                 .insert(account.to_owned(), value.to_vec());
             Ok(())
         }
+
+        fn delete(&self, account: &str) -> Result<(), IndexedSessionStoreError> {
+            self.values
+                .lock()
+                .map_err(|_| IndexedSessionStoreError::ProtectedStore("test lock poisoned".into()))?
+                .remove(account);
+            Ok(())
+        }
     }
 
     fn session_id(init_hash: &[u8; 32]) -> [u8; 32] {
@@ -7287,6 +8060,227 @@ mod tests {
         assert!(!protected
             .windows(b"outbound exact text".len())
             .any(|window| window == b"outbound exact text"));
+    }
+
+    #[test]
+    fn awaiting_ack_resend_uses_session_key_and_abandon_clears_expired() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("sessions.sqlite");
+        let backend = Arc::new(MemoryProtectedBackend::default());
+        let fixture = endpoint_fixture();
+        let local_device = authorized_local_device(&fixture);
+        let mut store = open_test_store(&path, backend);
+        store
+            .create_session(fixture.binding.clone(), fixture.root)
+            .unwrap();
+        let mut rng = StdRng::from_seed([0x62; 32]);
+        let mut dials = 0u32;
+        let outbound = store
+            .send_message_envelope(
+                &fixture.key,
+                "awaiting ack",
+                &local_device,
+                fixture.now_ms,
+                fixture.now_ms + 60_000,
+                fixture.now_ms,
+                &mut rng,
+                &mut |digest, bytes| {
+                    dials += 1;
+                    assert!(!bytes.is_empty());
+                    Ok(*digest)
+                },
+            )
+            .unwrap();
+        assert_eq!(dials, 1);
+        let awaiting = store.awaiting_ack_endpoint_outbound().unwrap();
+        assert_eq!(awaiting.len(), 1);
+        assert_eq!(awaiting[0].object_digest, outbound.object_digest);
+        let resolved = store
+            .record_key_for_session_id(&awaiting[0].session_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolved, fixture.key);
+
+        let resent = store
+            .resend_queued_endpoint_outbound(
+                &resolved,
+                &outbound.object_digest,
+                &local_device,
+                fixture.now_ms,
+                &mut |digest, bytes| {
+                    dials += 1;
+                    assert_eq!(bytes, outbound.immutable_envelope_bytes.as_slice());
+                    Ok(*digest)
+                },
+            )
+            .unwrap();
+        assert_eq!(dials, 2);
+        assert_eq!(
+            resent.immutable_envelope_bytes,
+            outbound.immutable_envelope_bytes
+        );
+
+        assert!(matches!(
+            store.resend_queued_endpoint_outbound(
+                &fixture.key,
+                &outbound.object_digest,
+                &local_device,
+                fixture.now_ms + 120_000,
+                &mut |digest, _| Ok(*digest),
+            ),
+            Err(IndexedSessionStoreError::EndpointNotCurrentlyValid)
+        ));
+        assert!(store
+            .abandon_undelivered_outbound(&fixture.key, &outbound.object_digest)
+            .unwrap());
+        assert!(store.awaiting_ack_endpoint_outbound().unwrap().is_empty());
+        assert!(store.pending_endpoint_outbound().unwrap().is_empty());
+        let conn = Connection::open(&path).unwrap();
+        let outbox_left: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM endpoint_outbox WHERE object_digest = ?1",
+                params![outbound.object_digest.as_slice()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(outbox_left, 0);
+        assert_eq!(
+            store
+                .outstanding_delivery_state(
+                    &fixture.binding.session_id,
+                    &outbound.message_id,
+                    &fixture.key.responder_device_ed25519,
+                )
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn pending_outbound_filter_is_recipient_scoped() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("sessions.sqlite");
+        let backend = Arc::new(MemoryProtectedBackend::default());
+        let fixture = endpoint_fixture();
+        let local_device = authorized_local_device(&fixture);
+        let mut store = open_test_store(&path, backend);
+        store
+            .create_session(fixture.binding.clone(), fixture.root)
+            .unwrap();
+        let mut rng = StdRng::from_seed([0x63; 32]);
+        let mut fail_queue = |_digest: &[u8; 32], _bytes: &[u8]| Err(());
+        assert!(matches!(
+            store.send_message_envelope(
+                &fixture.key,
+                "bob pending",
+                &local_device,
+                fixture.now_ms,
+                fixture.now_ms + 60_000,
+                fixture.now_ms,
+                &mut rng,
+                &mut fail_queue,
+            ),
+            Err(IndexedSessionStoreError::OutboundQueueHandoff)
+        ));
+        let bob = fixture.key.responder_device_ed25519;
+        let carol = [0xCAu8; 32];
+        assert_eq!(
+            store
+                .pending_endpoint_outbound_for_recipient(Some(&bob))
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(store
+            .pending_endpoint_outbound_for_recipient(Some(&carol))
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn abandon_prepared_outbound_unblocks_next_send() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("sessions.sqlite");
+        let backend = Arc::new(MemoryProtectedBackend::default());
+        let fixture = endpoint_fixture();
+        let local_device = authorized_local_device(&fixture);
+        let mut store = open_test_store(&path, backend);
+        store
+            .create_session(fixture.binding.clone(), fixture.root)
+            .unwrap();
+        let mut rng = StdRng::from_seed([0x64; 32]);
+        let mut fail_queue = |_digest: &[u8; 32], _bytes: &[u8]| Err(());
+        assert!(matches!(
+            store.send_message_envelope(
+                &fixture.key,
+                "prepared leftover",
+                &local_device,
+                fixture.now_ms,
+                fixture.now_ms + 60_000,
+                fixture.now_ms,
+                &mut rng,
+                &mut fail_queue,
+            ),
+            Err(IndexedSessionStoreError::OutboundQueueHandoff)
+        ));
+        let pending = store.pending_endpoint_outbound().unwrap().remove(0);
+        assert_eq!(pending.state, EndpointOutboxState::Prepared);
+        assert!(store
+            .abandon_undelivered_outbound(&fixture.key, &pending.object_digest)
+            .unwrap());
+        assert!(store.pending_endpoint_outbound().unwrap().is_empty());
+        let mut ok_queue = |digest: &[u8; 32], _bytes: &[u8]| Ok(*digest);
+        let next = store
+            .send_message_envelope(
+                &fixture.key,
+                "after abandon",
+                &local_device,
+                fixture.now_ms,
+                fixture.now_ms + 60_000,
+                fixture.now_ms,
+                &mut rng,
+                &mut ok_queue,
+            )
+            .unwrap();
+        assert_eq!(next.state, EndpointOutboxState::Queued);
+        assert_ne!(next.object_digest, pending.object_digest);
+    }
+
+    #[test]
+    fn abandon_propagates_protected_corruption() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("sessions.sqlite");
+        let backend = Arc::new(MemoryProtectedBackend::default());
+        let fixture = endpoint_fixture();
+        let local_device = authorized_local_device(&fixture);
+        let mut store = open_test_store(&path, Arc::clone(&backend));
+        store
+            .create_session(fixture.binding.clone(), fixture.root)
+            .unwrap();
+        let mut rng = StdRng::from_seed([0x65; 32]);
+        let mut fail_queue = |_digest: &[u8; 32], _bytes: &[u8]| Err(());
+        assert!(matches!(
+            store.send_message_envelope(
+                &fixture.key,
+                "corrupt abandon",
+                &local_device,
+                fixture.now_ms,
+                fixture.now_ms + 60_000,
+                fixture.now_ms,
+                &mut rng,
+                &mut fail_queue,
+            ),
+            Err(IndexedSessionStoreError::OutboundQueueHandoff)
+        ));
+        let pending = store.pending_endpoint_outbound().unwrap().remove(0);
+        let account = hex::encode(record_key_digest(&fixture.key).unwrap());
+        backend.corrupt(&account);
+        assert!(matches!(
+            store.abandon_undelivered_outbound(&fixture.key, &pending.object_digest),
+            Err(IndexedSessionStoreError::CorruptProtectedState)
+                | Err(IndexedSessionStoreError::ProtectedStore(_))
+                | Err(IndexedSessionStoreError::AuthenticationFailed)
+        ));
     }
 
     #[test]
