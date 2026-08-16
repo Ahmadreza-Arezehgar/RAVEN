@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/raven-core",
+    "crates/raven-mlkem768-incremental-ffi",
     "crates/raven-node",
     "crates/raven-swarm",
     "crates/ash",

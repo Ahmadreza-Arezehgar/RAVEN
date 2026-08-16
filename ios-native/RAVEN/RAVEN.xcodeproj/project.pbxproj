@@ -464,6 +464,8 @@
 		WAK1234567890ABCDEEEE0006 /* WatchAuthKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = WAK2234567890ABCDEEEE0006 /* WatchAuthKeyStore.swift */; };
 		WAW1234567890ABCDEEEE0007 /* WatchAuthKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = WAW2234567890ABCDEEEE0007 /* WatchAuthKeyStore.swift */; };
 		ZH_STRINGS_BUILD_001 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = ZH_STRINGS_FILEREF_001 /* Localizable.strings */; };
+		A9B8C7D6E5F4012345678904 /* ATSAMMlKem768IncrementalLab.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9B8C7D6E5F4012345678903 /* ATSAMMlKem768IncrementalLab.swift */; };
+		A9B8C7D6E5F4012345678902 /* ATSAMMlKem768IncrementalLabTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9B8C7D6E5F4012345678901 /* ATSAMMlKem768IncrementalLabTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -1004,6 +1006,8 @@
 		WAK2234567890ABCDEEEE0006 /* WatchAuthKeyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchAuthKeyStore.swift; sourceTree = "<group>"; };
 		WAW2234567890ABCDEEEE0007 /* WatchAuthKeyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchAuthKeyStore.swift; sourceTree = "<group>"; };
 		ZH_STRINGS_FILEREF_001 /* Localizable.strings */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.strings; path = Localizable.strings; sourceTree = "<group>"; };
+		A9B8C7D6E5F4012345678903 /* ATSAMMlKem768IncrementalLab.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMMlKem768IncrementalLab.swift; sourceTree = "<group>"; };
+		A9B8C7D6E5F4012345678901 /* ATSAMMlKem768IncrementalLabTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMMlKem768IncrementalLabTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -1213,6 +1217,8 @@
 				F1A2B3C4D5E6F708192A3B12 /* ATSAMLabTrustStore.swift */,
 				F1A2B3C4D5E6F708192A3B14 /* ATSAMPairInitAcceptService.swift */,
 				F1A2B3C4D5E6F708192A3B16 /* ATSAMLabEndpointHost.swift */,
+				A9B8C7D6E5F4012345678903 /* ATSAMMlKem768IncrementalLab.swift */,
+				A9B8C7D6E5F4012345678901 /* ATSAMMlKem768IncrementalLabTests.swift */,
 				C8A813500000000000000001 /* ATSAMPairInitV1.swift */,
 				B2F7E2B1C3D4E5F6A7B8C9D1 /* ATSAMRootStorage.swift */,
 				4BCE3D6E55D175EBB9274E9D /* Online */,
@@ -2998,6 +3004,8 @@
 				F1A2B3C4D5E6F708192A3B11 /* ATSAMLabTrustStore.swift in Sources */,
 				F1A2B3C4D5E6F708192A3B13 /* ATSAMPairInitAcceptService.swift in Sources */,
 				F1A2B3C4D5E6F708192A3B15 /* ATSAMLabEndpointHost.swift in Sources */,
+				A9B8C7D6E5F4012345678904 /* ATSAMMlKem768IncrementalLab.swift in Sources */,
+				A9B8C7D6E5F4012345678902 /* ATSAMMlKem768IncrementalLabTests.swift in Sources */,
 				C8A813500000000000000002 /* ATSAMPairInitV1.swift in Sources */,
 				A2E6F1A2B2C3D4E5F6A7B8CA /* ATSAMRootStorage.swift in Sources */,
 				7D59216EFDE247D377539852 /* ATSAMHybridPairing.swift in Sources */,

@@ -198,6 +198,162 @@ jobs:
           path: node/target/sbom/
           if-no-files-found: error
 
+  mlkem768-incremental-portable:
+    name: ML-KEM-768 incremental (portable)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: node
+    env:
+      CARGO_TARGET_DIR: target/libcrux-portable
+      LIBCRUX_DISABLE_SIMD128: "1"
+      LIBCRUX_DISABLE_SIMD256: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test portable incremental ML-KEM-768
+        run: cargo test -p raven-core --features mlkem768-incremental-lab --lib mlkem768_incremental
+      - name: Dump portable Encaps1 state
+        env:
+          RAVEN_DUMP_ENCAPS1_STATE: "1"
+          RAVEN_DUMP_ENCAPS1_STATE_PATH: ${{ github.workspace }}/node/target/libcrux-portable/mlkem768-encaps1-state.hex
+        run: |
+          set -euo pipefail
+          rm -f "$RAVEN_DUMP_ENCAPS1_STATE_PATH"
+          cargo test -p raven-core --features mlkem768-incremental-lab \
+            --lib mlkem768_incremental::feature_smoke::dump_mlkem768_incremental_encaps1_state \
+            -- --exact --ignored
+          test -s "$RAVEN_DUMP_ENCAPS1_STATE_PATH"
+      - name: Upload portable Encaps1 state
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlkem768-encaps1-portable
+          path: node/target/libcrux-portable/mlkem768-encaps1-state.hex
+          if-no-files-found: error
+      - name: Guard against libcrux from_seed expansion
+        run: |
+          set -euo pipefail
+          if grep -Fq -- \
+            "KeyPairCompressedBytes::from_seed" \
+            crates/raven-core/src/mlkem768_incremental.rs; then
+            echo "forbidden KeyPairCompressedBytes::from_seed path found" >&2
+            exit 1
+          fi
+      - name: Check incremental ML-KEM-768 fixture
+        working-directory: ${{ github.workspace }}
+        run: |
+          python3 -m pip install -q -r protocol/reference/requirements.txt
+          python3 -m pytest protocol/reference/tests/test_mlkem768_incremental_check.py -q
+      - name: Build incremental ML-KEM-768 FFI (debug)
+        run: cargo build -p raven-mlkem768-incremental-ffi
+      - name: Release incremental ML-KEM-768 feature gate
+        run: |
+          set -euo pipefail
+          log="$(mktemp)"
+          if cargo build --release -p raven-core \
+            --features mlkem768-incremental-lab >"$log" 2>&1; then
+            echo "mlkem768-incremental-lab unexpectedly built in release mode" >&2
+            rm -f "$log"
+            exit 1
+          fi
+          if ! grep -Fq -- \
+            "mlkem768-incremental-lab is forbidden in release builds" "$log"; then
+            echo "mlkem768-incremental-lab release gate failed for an unrelated reason" >&2
+            tail -n 80 "$log" >&2
+            rm -f "$log"
+            exit 1
+          fi
+          rm -f "$log"
+
+  mlkem768-incremental-avx2:
+    name: ML-KEM-768 incremental (AVX2)
+    runs-on: ubuntu-latest
+    needs: mlkem768-incremental-portable
+    defaults:
+      run:
+        working-directory: node
+    env:
+      CARGO_TARGET_DIR: target/libcrux-avx2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Confirm AVX2 available
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = x86_64
+          if ! grep -qw avx2 /proc/cpuinfo; then
+            echo "AVX2 CPU feature required for this job; x86_64 alone is insufficient" >&2
+            exit 1
+          fi
+      - name: Assert Rust runtime AVX2 detection
+        env:
+          RAVEN_REQUIRE_AVX2: "1"
+        run: |
+          cargo test -p raven-core --features mlkem768-incremental-lab \
+            --lib mlkem768_incremental::feature_smoke::require_avx2_when_gated \
+            -- --exact --nocapture
+      - name: Test AVX2 incremental ML-KEM-768
+        run: cargo test -p raven-core --features mlkem768-incremental-lab --lib mlkem768_incremental
+      - name: Dump AVX2 Encaps1 state
+        env:
+          RAVEN_DUMP_ENCAPS1_STATE: "1"
+          RAVEN_DUMP_ENCAPS1_STATE_PATH: ${{ github.workspace }}/node/target/libcrux-avx2/mlkem768-encaps1-state.hex
+        run: |
+          set -euo pipefail
+          rm -f "$RAVEN_DUMP_ENCAPS1_STATE_PATH"
+          cargo test -p raven-core --features mlkem768-incremental-lab \
+            --lib mlkem768_incremental::feature_smoke::dump_mlkem768_incremental_encaps1_state \
+            -- --exact --ignored
+          test -s "$RAVEN_DUMP_ENCAPS1_STATE_PATH"
+      - name: Download portable Encaps1 state
+        uses: actions/download-artifact@v4
+        with:
+          name: mlkem768-encaps1-portable
+          path: node/target/libcrux-portable
+      - name: Compare portable and AVX2 Encaps1 states
+        run: |
+          diff -u \
+            target/libcrux-portable/mlkem768-encaps1-state.hex \
+            target/libcrux-avx2/mlkem768-encaps1-state.hex
+
+  mlkem768-incremental-neon:
+    name: ML-KEM-768 incremental (NEON)
+    runs-on: macos-14
+    needs: mlkem768-incremental-portable
+    defaults:
+      run:
+        working-directory: node
+    env:
+      CARGO_TARGET_DIR: target/libcrux-neon
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Confirm arm64 runner
+        run: test "$(uname -m)" = arm64
+      - name: Test NEON incremental ML-KEM-768
+        run: cargo test -p raven-core --features mlkem768-incremental-lab --lib mlkem768_incremental
+      - name: Dump NEON Encaps1 state
+        env:
+          RAVEN_DUMP_ENCAPS1_STATE: "1"
+          RAVEN_DUMP_ENCAPS1_STATE_PATH: ${{ github.workspace }}/node/target/libcrux-neon/mlkem768-encaps1-state.hex
+        run: |
+          set -euo pipefail
+          rm -f "$RAVEN_DUMP_ENCAPS1_STATE_PATH"
+          cargo test -p raven-core --features mlkem768-incremental-lab \
+            --lib mlkem768_incremental::feature_smoke::dump_mlkem768_incremental_encaps1_state \
+            -- --exact --ignored
+          test -s "$RAVEN_DUMP_ENCAPS1_STATE_PATH"
+      - name: Download portable Encaps1 state
+        uses: actions/download-artifact@v4
+        with:
+          name: mlkem768-encaps1-portable
+          path: node/target/libcrux-portable
+      - name: Compare portable and NEON Encaps1 states
+        run: |
+          diff -u \
+            target/libcrux-portable/mlkem768-encaps1-state.hex \
+            target/libcrux-neon/mlkem768-encaps1-state.hex
+
   rust-macos:
     name: Rust (macOS)
     runs-on: macos-latest

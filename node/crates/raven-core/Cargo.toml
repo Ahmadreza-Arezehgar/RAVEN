@@ -21,6 +21,7 @@ rand = { workspace = true }
 rusqlite = { workspace = true }
 base64 = { workspace = true }
 ml-kem = { workspace = true, features = ["zeroize"] }
+libcrux-ml-kem = { version = "=0.0.10", optional = true, default-features = false, features = ["mlkem768", "incremental"] }
 rand_core = { workspace = true }
 zeroize = { workspace = true }
 snow = { workspace = true }
@@ -40,6 +41,7 @@ windows-sys = { version = "0.59", features = [
 secret-service = "2.0"
 
 [dev-dependencies]
+sha3 = "0.12.0"
 tempfile = { workspace = true }
 
 [features]
@@ -49,3 +51,5 @@ test-helpers = []
 # derives its key from public identity material and therefore provides no
 # confidentiality.  Production/default builds must never enable it.
 unsafe-demo-crypto = []
+# Lab-only ML-KEM-768 incremental encapsulation via libcrux. Not for production.
+mlkem768-incremental-lab = ["dep:libcrux-ml-kem"]

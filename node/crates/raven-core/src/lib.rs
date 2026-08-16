@@ -36,6 +36,8 @@ pub mod lan_dispatch;
 pub mod lan_gate;
 pub mod lan_noise;
 pub mod lan_rlb1;
+#[cfg(feature = "mlkem768-incremental-lab")]
+pub mod mlkem768_incremental;
 pub mod message_router;
 pub mod messaging_path;
 pub mod nearby;

@@ -1,0 +1,13 @@
+[package]
+name = "raven-mlkem768-incremental-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Lab-only C ABI for RAVEN incremental ML-KEM-768"
+publish = false
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+raven-core = { path = "../raven-core", features = ["mlkem768-incremental-lab"] }
