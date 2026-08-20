@@ -17,6 +17,9 @@ path = "src/bin/raven.rs"
 default = []
 # Explicit lab opt-in for the publicly-derivable pre-ATSAM demo cipher.
 unsafe-demo-crypto = ["raven-core/unsafe-demo-crypto"]
+# Local TRACE_* file logging only (requires RAVEN_TRACE_LOG). No ingest/curl.
+# Forbidden in Release: compile_error! with exact diagnostic in trace_delivery.rs.
+debug-trace-delivery = []
 
 [dependencies]
 raven-core = { workspace = true }
