@@ -1,0 +1,41 @@
+{
+  "description": "PENDING \u2192 SQL receipt/dedup \u2192 FINALIZE head; never finalize before SQL",
+  "deterministic": true,
+  "name": "Inbound receive commit order",
+  "negatives": [
+    "FINALIZE_before_sql"
+  ],
+  "production_enabled": false,
+  "profile": "ATSAM/hybrid-ratchet/v2",
+  "protocol_version": "rvn1",
+  "steps": [
+    {
+      "action": "clone_candidate",
+      "id": 1
+    },
+    {
+      "action": "derive_keys_on_candidate",
+      "id": 2
+    },
+    {
+      "action": "aead_ok",
+      "id": 3
+    },
+    {
+      "action": "write_PENDING_inbound",
+      "id": 4
+    },
+    {
+      "action": "sql_commit_receipt_dedup",
+      "id": 5
+    },
+    {
+      "action": "FINALIZE_head",
+      "id": 6
+    },
+    {
+      "action": "clear_PENDING",
+      "id": 7
+    }
+  ]
+}

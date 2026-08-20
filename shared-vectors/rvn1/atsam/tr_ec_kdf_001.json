@@ -1,0 +1,18 @@
+{
+  "description": "info=EC_RK_INFO; HMAC 0x01/0x02",
+  "deterministic": true,
+  "expected": {
+    "ck_hex": "eaac9f63c2e749e9ea2ce8b86a807f3bbe0940095aad12b3b7800c093a4137bb",
+    "ck_next_hex": "17bb5aec3f5d2403c4ee290e1d1668632c222b69ccdbb58789f45983063a98da",
+    "mk_hex": "6f56e01da188878b6cb80c63ff2cf549fdf97c567e2b01acc79698c60a560800",
+    "rk_next_hex": "cd1a3ca61e186d32dd996a1469e8b00ae818c8875a046f2ee1af90882495048d"
+  },
+  "inputs": {
+    "dh_out_hex": "7eafa620d8cf5cc1de63f3bafa47bd670141f3ddf2ecb60cc7e67fb01565a323",
+    "rk_hex": "8a7e10a8eb9608595e17f4c2a618107e1d9d9a0de9552a26adcc646d2d00ac74"
+  },
+  "name": "EC KDF_RK / KDF_CK",
+  "production_enabled": false,
+  "profile": "ATSAM/hybrid-ratchet/v2",
+  "protocol_version": "rvn1"
+}

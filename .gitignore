@@ -193,3 +193,5 @@ node/proof_artifacts/**
 
 # Unsigned release layouts (local only)
 dist/
+
+.superpowers/

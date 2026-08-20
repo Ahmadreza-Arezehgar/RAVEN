@@ -265,6 +265,135 @@ jobs:
           fi
           rm -f "$log"
 
+  full-braid-lab:
+    name: Full Braid Slice 2 lab
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: node
+    env:
+      CARGO_TARGET_DIR: target/full-braid-lab
+      LIBCRUX_DISABLE_SIMD128: "1"
+      LIBCRUX_DISABLE_SIMD256: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: node
+          prefix-key: full-braid-lab
+      - name: Test Full Braid (Rust)
+        run: |
+          cargo test -p raven-core --features full-braid-lab --lib hybrid_ratchet_v2_full_braid
+          cargo test -p raven-fb-ffi --lib
+      - name: Clippy Full Braid
+        run: |
+          cargo clippy -p raven-core --features full-braid-lab --all-targets -- -D warnings
+          cargo clippy -p raven-fb-ffi --all-targets -- -D warnings
+      - name: rustfmt Full Braid
+        run: |
+          rustfmt --check crates/raven-core/src/hybrid_ratchet_v2_full_braid/*.rs
+          rustfmt --check crates/raven-fb-ffi/src/lib.rs
+      - name: Python Full Braid reference
+        working-directory: ${{ github.workspace }}
+        run: |
+          python3 -m pip install -q -r protocol/reference/requirements.txt
+          python3 -m pytest protocol/reference/tests/test_full_braid.py -q
+      - name: Build Full Braid FFI (debug)
+        run: cargo build -p raven-fb-ffi
+      - name: Release Full Braid feature gate
+        run: |
+          set -euo pipefail
+          core_log="$(mktemp)"
+          if cargo build --release -p raven-core \
+            --features full-braid-lab >"$core_log" 2>&1; then
+            echo "full-braid-lab unexpectedly built in release mode" >&2
+            rm -f "$core_log"
+            exit 1
+          fi
+          if ! grep -Fq -- \
+            "mlkem768-incremental-lab is forbidden in release builds" \
+            "$core_log"; then
+            echo "raven-core full-braid-lab release gate missed exact diagnostic" >&2
+            tail -n 80 "$core_log" >&2
+            rm -f "$core_log"
+            exit 1
+          fi
+          rm -f "$core_log"
+
+          ffi_log="$(mktemp)"
+          if cargo build --release -p raven-fb-ffi --no-default-features >"$ffi_log" 2>&1; then
+            echo "raven-fb-ffi unexpectedly built in release mode" >&2
+            rm -f "$ffi_log"
+            exit 1
+          fi
+          if ! grep -Fq -- \
+            "raven-fb-ffi is lab-only and must not be linked in Release/App Store builds" \
+            "$ffi_log"; then
+            echo "raven-fb-ffi release gate missed exact diagnostic" >&2
+            tail -n 80 "$ffi_log" >&2
+            rm -f "$ffi_log"
+            exit 1
+          fi
+          rm -f "$ffi_log"
+      - name: Production remains off (vectors + no app callsites)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path(".")
+          for name in (
+              "full_braid_sm_round_001.json",
+              "full_braid_full_exchange_2pq_2dh_001.json",
+          ):
+              vector = root / "shared-vectors/rvn1/atsam" / name
+              data = json.loads(vector.read_text())
+              assert data.get("production_enabled") is False, (name, data.get("production_enabled"))
+              assert data.get("lab_only") is True, (name, data.get("lab_only"))
+          exchange = json.loads(
+              (root / "shared-vectors/rvn1/atsam/full_braid_full_exchange_2pq_2dh_001.json").read_text()
+          )
+          assert len(exchange.get("aead_checkpoints") or []) == 4, "expected 4 AEAD checkpoints"
+          app = root / "ios-native/RAVEN/RAVEN"
+          hits = []
+          for path in app.rglob("*.swift"):
+              text = path.read_text(errors="ignore")
+              if "ATSAMFullBraid" in text or "raven_fb_" in text or "RAVEN_FULL_BRAID_FFI" in text:
+                  hits.append(str(path))
+          if hits:
+              raise SystemExit(f"Full Braid production callsites: {hits}")
+          print("production_off OK")
+          PY
+
+  full-braid-lab-ios:
+    name: Full Braid Slice 2 lab (iOS)
+    runs-on: macos-14
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/node/target/full-braid-ios-lab
+      LIBCRUX_DISABLE_SIMD128: "1"
+      LIBCRUX_DISABLE_SIMD256: "1"
+      IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: node
+          prefix-key: full-braid-lab-ios
+      - name: Ensure ripgrep
+        run: |
+          if ! command -v rg >/dev/null 2>&1; then
+            brew install ripgrep
+          fi
+      - name: Full Braid Swift FFI lab gate
+        run: bash ./node/scripts/ios_full_braid_lab_gate.sh
+
   mlkem768-incremental-avx2:
     name: ML-KEM-768 incremental (AVX2)
     runs-on: ubuntu-latest

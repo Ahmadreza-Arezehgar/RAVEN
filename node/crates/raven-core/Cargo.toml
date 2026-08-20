@@ -22,6 +22,8 @@ rusqlite = { workspace = true }
 base64 = { workspace = true }
 ml-kem = { workspace = true, features = ["zeroize"] }
 libcrux-ml-kem = { version = "=0.0.10", optional = true, default-features = false, features = ["mlkem768", "incremental"] }
+# Pinned Signal SPQR for Full Braid Encode/Decode only (Task 0 audit). AGPL-3.0-only.
+spqr = { git = "https://github.com/signalapp/SparsePostQuantumRatchet", rev = "fd320484dcec89004021e6fdc7481825f5f261fa", optional = true, default-features = false, features = ["test-utils"] }
 rand_core = { workspace = true }
 zeroize = { workspace = true }
 snow = { workspace = true }
@@ -53,3 +55,6 @@ test-helpers = []
 unsafe-demo-crypto = []
 # Lab-only ML-KEM-768 incremental encapsulation via libcrux. Not for production.
 mlkem768-incremental-lab = ["dep:libcrux-ml-kem"]
+# Lab-only Full Braid Slice 2. Requires Slice 1 KEM + git-pinned spqr Encode/Decode.
+# Not for production; companion Hybrid Ratchet V2 remains NOT YET APPROVED.
+full-braid-lab = ["mlkem768-incremental-lab", "dep:spqr"]

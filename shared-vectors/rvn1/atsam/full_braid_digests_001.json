@@ -1,0 +1,52 @@
+{
+  "description": "Domain-separated digests + empty RVBO1 + domain catalog",
+  "deterministic": true,
+  "expected": {
+    "binding_digest_hex": "da2bc055c3b448170bc18f73cd0f7634cc49cf57f858f437b8efa3bc00b232f8",
+    "braid_object_digest_hex": "dc6b70b58aa08dc6b11c141c966a680ca93faa49de7ba20a529adb5eb7f14913",
+    "domains": {
+      "DOMAIN_BRAID_CHUNK": "415453414d2f76322f62726169642d6368756e6b",
+      "DOMAIN_BRAID_OBJECT": "415453414d2f76322f62726169642d6f626a656374",
+      "DOMAIN_EXECUTION": "415453414d2f76322f66756c6c2d62726169642f657865637574696f6e",
+      "DOMAIN_INPUT": "415453414d2f76322f66756c6c2d62726169642f696e707574",
+      "DOMAIN_OUTPUT": "415453414d2f76322f66756c6c2d62726169642f6f7574707574",
+      "DOMAIN_SEND_SOURCE": "415453414d2f76322f62726169642d73656e642d736f75726365",
+      "DOMAIN_STATE": "415453414d2f76322f66756c6c2d62726169642f7374617465",
+      "DOMAIN_TRANSITION_ID": "415453414d2f76322f66756c6c2d62726169642f7472616e736974696f6e2d6964",
+      "EMPTY_RVBO1_LEN": "14",
+      "RVBE1_SCHEMA": "0002"
+    },
+    "empty_rvbo1_hex": "5256424f31000000000100000000",
+    "empty_rvbo1_len": 14,
+    "execution_digest_hex": "4391d8a0c0575efa88bacaf2ecaf4a734d17611f0035250586576661a0ebf074",
+    "input_digest_hex": "3524d54686d42f89f51b9685d0390656251d8f44214d8a81c8ce6de04dc989f3",
+    "object_digest_hex": "86aff3038b1e528310e163faae2af4cd998f157b1716d2cf93de58b202f61130",
+    "output_digest_empty_rvbo1_hex": "c862167e6d400fc73a32c42520e47bdee8be616a99cfb332e84a0f8d13ecb4b5",
+    "send_source_digest_hex": "55bef782b5748bfb23f1af0b4794e9ea6a34a8355652d49dabcecfa2ff7bbcba",
+    "state_digest_hex": "7c9c910a9601eac52714d6c45ad3cb4223f9449a21cca7809616a673f1344ff4",
+    "transition_id_digest_hex": "1ba89ee9aaf3836997d5c83b0b54630f8a0283a0457bcfa8edff3d905ba274ea"
+  },
+  "inputs": {
+    "before_state_digest_hex": "4444444444444444444444444444444444444444444444444444444444444444",
+    "chunk_epoch": 1,
+    "chunk_index": 0,
+    "chunk_payload_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+    "chunk_type": 1,
+    "direction": 0,
+    "endpoint_object_hex": "656e64706f696e742d6f626a656374",
+    "generation": 0,
+    "role": 0,
+    "rvbe_stub_hex": "72766265",
+    "rvbi_stub_hex": "72766269",
+    "rvfb1_stub_hex": "72766662312d626f6479",
+    "schema_rev": 1,
+    "session_id_hex": "5555555555555555555555555555555555555555555555555555555555555555",
+    "source_bytes_hex": "66756c6c2d62726169642d73656e642d736f757263652d7631",
+    "source_kind": 1
+  },
+  "lab_only": true,
+  "name": "Full Braid digests \u00a72.3",
+  "production_enabled": false,
+  "profile": "ATSAM/hybrid-ratchet/v2/full-braid",
+  "protocol_version": "rvn1"
+}

@@ -1,0 +1,44 @@
+{
+  "description": "Hybrid keys bind EC mk + SCKA mk after dual ratchet progress",
+  "deterministic": true,
+  "expected": {
+    "dh_epochs": 2,
+    "final_alice_ec_fp_hex": "7b5a77348139801dd8325f51899cf1066c15ade07d1d2d1426e4ca23f4d1ca5f",
+    "final_bob_ec_fp_hex": "953d52ba8fb661e4f0ca00f60b84617bb19491d53c6ae5ae7b78309d023e2c02",
+    "scka_epochs": 2,
+    "session_id_hex": "dfc99c74f376127a4c4a1c5130f97ea435939e04ff086aba7d23c545dad2a8c3",
+    "steps": [
+      {
+        "hybrid_key_hex": "97c59577715a5be5597442a501815541e52f90597a9b53f619c689b667e5a0b7",
+        "phase": "ec0_ooo"
+      },
+      {
+        "alice_send_equals_bob_recv": true,
+        "phase": "scka1",
+        "rk_hex": "7d837d7f2e793a1bfe5c266e3130d0d3c5d21126dc897bcdbd6e5b10c0a83e45"
+      },
+      {
+        "alice_dh_pub1_hex": "85135218dfc856c4376d2a2a699ff10555fa5bbc64ad28ae33a9210195a8b241",
+        "bob_dh_pub1_hex": "41346377c1b562f4b2d3f4140b6611ada8f4897ee01f28ffb2984693bc04cf0d",
+        "bob_send_equals_alice_recv": true,
+        "hybrid_key_hex": "3f950fe22299a4b53cab070e70858285e7e0a93acf83fb66d461ddd1b4c06dd5",
+        "phase": "ec1_scka2"
+      }
+    ]
+  },
+  "inputs": {
+    "alice_priv0_hex": "aa7fe00c664cd03956fb6aae1b9773579f91a5a697cba1fee60466383bb43924",
+    "alice_priv1_hex": "a24e9e984578336c72a094790c8349d55dfade4c3e8efe09fa6d4e4d70d93ff7",
+    "bob_priv0_hex": "2abebec35adde27e7376e19bc534adbb714015c7182bafbfd5c870fc2fcd552b",
+    "bob_priv1_hex": "248b69ced5521c459a143bc7e1d8dcbc7b9d01961c53660c477ca25be7ed77db",
+    "session_id_hex": "dfc99c74f376127a4c4a1c5130f97ea435939e04ff086aba7d23c545dad2a8c3",
+    "sk_ec_hex": "8a7e10a8eb9608595e17f4c2a618107e1d9d9a0de9552a26adcc646d2d00ac74",
+    "sk_scka_hex": "e964d0298c9859983182ddd928bb9021de281b590e720006e50d516c12974393",
+    "ss_scka1_hex": "e3cf6117f7bf7faee2b60d479b4979d7c54f2be5ec813cbfcf1331d046571133",
+    "ss_scka2_hex": "78042f6c2501c34802f33fcde984ff8ff1dd1e8f070e07e782ee098bb70f271f"
+  },
+  "name": "Combined multi-message TR across \u22652 DH and \u22652 SCKA epochs",
+  "production_enabled": false,
+  "profile": "ATSAM/hybrid-ratchet/v2",
+  "protocol_version": "rvn1"
+}

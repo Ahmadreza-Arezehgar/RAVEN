@@ -1,0 +1,46 @@
+{
+  "description": "Epoch promote on candidate; durable only after SQL + commit_epoch_with_finalize",
+  "deterministic": true,
+  "name": "SCKA epoch promotion with SQL then finalize",
+  "negatives": [
+    "promote_epoch_before_sql",
+    "FINALIZE_before_sql"
+  ],
+  "production_enabled": false,
+  "profile": "ATSAM/hybrid-ratchet/v2",
+  "protocol_version": "rvn1",
+  "steps": [
+    {
+      "action": "clone_candidate",
+      "id": 1
+    },
+    {
+      "action": "derive_keys_on_candidate",
+      "id": 2
+    },
+    {
+      "action": "promote_scka_epoch_on_candidate",
+      "id": 3
+    },
+    {
+      "action": "aead_ok",
+      "id": 4
+    },
+    {
+      "action": "write_PENDING_inbound",
+      "id": 5
+    },
+    {
+      "action": "sql_commit_receipt_dedup",
+      "id": 6
+    },
+    {
+      "action": "commit_epoch_with_finalize",
+      "id": 7
+    },
+    {
+      "action": "clear_PENDING",
+      "id": 8
+    }
+  ]
+}

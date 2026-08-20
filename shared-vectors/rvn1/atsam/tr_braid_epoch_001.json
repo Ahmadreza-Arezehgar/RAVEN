@@ -1,0 +1,34 @@
+{
+  "description": "Alice initiates e0\u2192e1; Bob initiates e1\u2192e2; matching mk both ways",
+  "deterministic": true,
+  "expected": {
+    "directions_reordered": true,
+    "epoch1": {
+      "alice_ck_send_hex": "11a8d16b54d73099cbafb6490ddfcccc619194a0dd3abc251eabdfd98cc86fc8",
+      "alice_send_equals_bob_recv": true,
+      "alice_sending_epoch": 1,
+      "bob_ck_recv_hex": "11a8d16b54d73099cbafb6490ddfcccc619194a0dd3abc251eabdfd98cc86fc8",
+      "bob_receiving_epoch": 1,
+      "mk_hex": "e303e6fbdc218e3455f3d0fcd3210c3b293d4b95beaa33d07af72af0597dd31f",
+      "rk_hex": "7d837d7f2e793a1bfe5c266e3130d0d3c5d21126dc897bcdbd6e5b10c0a83e45"
+    },
+    "epoch2": {
+      "alice_ck_recv_hex": "19a56829ab8dcc74eec104bb8bb6c22aae45b03ce307594fdd2f908882b5da8c",
+      "alice_receiving_epoch": 1,
+      "bob_ck_send_hex": "19a56829ab8dcc74eec104bb8bb6c22aae45b03ce307594fdd2f908882b5da8c",
+      "bob_send_equals_alice_recv": true,
+      "bob_sending_epoch": 1,
+      "mk_hex": "63920d9bfea58d40f1772cf7e837e0140d32e99ac62bc635fa0ec389ee4b1cdc",
+      "rk_hex": "5bd7ddccc78cef62b8cc893e0e8d7394874f2c04638fd41de12be565076ab703"
+    }
+  },
+  "inputs": {
+    "sk_scka_hex": "e964d0298c9859983182ddd928bb9021de281b590e720006e50d516c12974393",
+    "ss_epoch1_hex": "e3cf6117f7bf7faee2b60d479b4979d7c54f2be5ec813cbfcf1331d046571133",
+    "ss_epoch2_hex": "26fcf1f9daa2113fcfba9c948bbf75d90a8f905163c4577d2d0d57179b4983ca"
+  },
+  "name": "SCKA/Braid epoch promote + bidirectional CK reorder",
+  "production_enabled": false,
+  "profile": "ATSAM/hybrid-ratchet/v2",
+  "protocol_version": "rvn1"
+}

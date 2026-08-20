@@ -1,0 +1,95 @@
+{
+  "description": "Exact wire length; type/u16 encode; index/byte caps; binding not MAC",
+  "deterministic": true,
+  "expected": {
+    "braid_digest_len": 32,
+    "braid_header_len": 23,
+    "braid_max_chunks": 64,
+    "braid_max_payload": 8192,
+    "braid_max_total_bytes": 8192,
+    "cases": [
+      {
+        "name": "truncated_plen",
+        "reason": "short braid chunk",
+        "result": "reject"
+      },
+      {
+        "name": "trailing_bytes",
+        "reason": "braid chunk length mismatch",
+        "result": "reject"
+      },
+      {
+        "name": "oversized_plen_field",
+        "reason": "braid chunk length mismatch",
+        "result": "reject"
+      },
+      {
+        "name": "encode_unknown_type",
+        "reason": "unknown braid chunk type",
+        "result": "reject"
+      },
+      {
+        "name": "encode_payload_gt_max",
+        "reason": "braid payload exceeds max",
+        "result": "reject"
+      },
+      {
+        "name": "session_id_bad_len",
+        "reason": "session_id must be 32 bytes",
+        "result": "reject"
+      },
+      {
+        "name": "empty_type_nonempty_payload",
+        "reason": "braid empty-type payload must be empty",
+        "result": "reject"
+      },
+      {
+        "name": "data_type_empty_payload",
+        "reason": "braid data-type payload must be non-empty",
+        "result": "reject"
+      },
+      {
+        "name": "empty_type_nonzero_index",
+        "reason": "braid empty-type chunk_index must be 0",
+        "result": "reject"
+      },
+      {
+        "name": "ingest_index_oob",
+        "result": "index_out_of_range"
+      },
+      {
+        "name": "ingest_byte_cap",
+        "result": "byte_cap_exceeded"
+      },
+      {
+        "name": "binding_digest_role",
+        "note": "auth via outer signature then AEAD; SHA-256 binding is not a MAC",
+        "result": "canonical_binding_only"
+      },
+      {
+        "name": "epoch_width_policy",
+        "note": "EPOCH_TYPE=u64; ToBytes=big-endian; MUST NOT wrap on increment",
+        "result": "u64be_no_wrap"
+      },
+      {
+        "name": "mkskipped_global_cap",
+        "reason": "MAX_MKSKIPPED_RETAINED exceeded",
+        "result": "reject"
+      }
+    ],
+    "epoch_type": "u64",
+    "max_mkskipped_retained": 2000,
+    "mlkem768_ct1_size": 960,
+    "mlkem768_ct2_size": 128,
+    "mlkem768_ek_fips_size": 1184,
+    "mlkem768_ek_vector_size": 1152,
+    "mlkem768_header_size": 64
+  },
+  "inputs": {
+    "session_id_hex": "dfc99c74f376127a4c4a1c5130f97ea435939e04ff086aba7d23c545dad2a8c3"
+  },
+  "name": "Strict braid codec negatives + reassembly/MKSKIPPED caps",
+  "production_enabled": false,
+  "profile": "ATSAM/hybrid-ratchet/v2",
+  "protocol_version": "rvn1"
+}

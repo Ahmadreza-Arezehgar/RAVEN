@@ -1,0 +1,57 @@
+{
+  "description": "K_route[d] stable; catch-up covers full TTL not yesterday-only",
+  "deterministic": true,
+  "expected": {
+    "catchup": {
+      "always_repoll_days": [
+        19678,
+        19679,
+        19680,
+        19681,
+        19682,
+        19683,
+        19684,
+        19685
+      ],
+      "historical_days": [
+        19674,
+        19675,
+        19676,
+        19677,
+        19678,
+        19679,
+        19680,
+        19681,
+        19682,
+        19683,
+        19684
+      ],
+      "historical_span": 11,
+      "late_arrival_floor": 19678,
+      "today": 19685,
+      "ttl_horizon": 19655
+    },
+    "day_epoch": 19685,
+    "k_route_0_hex": "3faa9ad64bfefafb65fa1fffccfe3ead7a27fc85146de9b468d46cc90d3e21c4",
+    "k_route_1_hex": "155ef7458ef0afb5ff7ef4a3f1da28e29578408aeae932a24f90fc56f59fc0c8",
+    "mailbox_tag_d0_hex": "8858bea255d7f9156074e8f31f6d4427",
+    "routing_tag_d0_hex": "d95aedfdeaa6c9a2f80323b2df4d138b",
+    "routing_tag_d1_hex": "0e52d2565b6cf5706d7fb0452ef00658",
+    "store_tag_d0_hex": "863ceefe40ada613b28971fdde2b6c95",
+    "tags_differ_by_direction": true
+  },
+  "inputs": {
+    "app_type": 1,
+    "catchup_cursor_day": 19673,
+    "created_at_ms": 1700000005000,
+    "k_route_master_hex": "86eb98ea13b55ce60dabce40deca3d0704ec2f49dd3ab1bb16727e8c49fd4c0b",
+    "mailbox_ttl_days": 30,
+    "n": 7,
+    "now_ms": 1700864000000,
+    "session_id_hex": "dfc99c74f376127a4c4a1c5130f97ea435939e04ff086aba7d23c545dad2a8c3"
+  },
+  "name": "Directional route tags, day epoch, mailbox catch-up TTL horizon",
+  "production_enabled": false,
+  "profile": "ATSAM/hybrid-ratchet/v2",
+  "protocol_version": "rvn1"
+}

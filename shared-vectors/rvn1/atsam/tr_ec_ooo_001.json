@@ -1,0 +1,35 @@
+{
+  "description": "Receive order 0,3,1,2 recovers sender mks without loss",
+  "deterministic": true,
+  "expected": {
+    "final_n": 4,
+    "final_skipped_count": 0,
+    "ooo_ok": true,
+    "receive_order": [
+      0,
+      3,
+      1,
+      2
+    ],
+    "recovered_mks_hex": [
+      "6f56e01da188878b6cb80c63ff2cf549fdf97c567e2b01acc79698c60a560800",
+      "3358b67e6aefa5f8942f7bb050218095c23dfe4951ad8285db5faf7fac738ea1",
+      "13f7364c944e644bb01f46aca35828ff82a57bd8fa8b4929ff024e1c32b26ec4",
+      "81fe14545fd6b596c7d6f83458de7729974fecbc7050d627e7c7cc72d0ddc060"
+    ],
+    "send_mks_hex": [
+      "6f56e01da188878b6cb80c63ff2cf549fdf97c567e2b01acc79698c60a560800",
+      "13f7364c944e644bb01f46aca35828ff82a57bd8fa8b4929ff024e1c32b26ec4",
+      "81fe14545fd6b596c7d6f83458de7729974fecbc7050d627e7c7cc72d0ddc060",
+      "3358b67e6aefa5f8942f7bb050218095c23dfe4951ad8285db5faf7fac738ea1"
+    ]
+  },
+  "inputs": {
+    "ck_hex": "eaac9f63c2e749e9ea2ce8b86a807f3bbe0940095aad12b3b7800c093a4137bb",
+    "dh_pub_hex": "d19b2d0e43c3f73ad3530249463a0491064a3a633d571f32d1784374f134dc65"
+  },
+  "name": "EC out-of-order + skipped-key recovery",
+  "production_enabled": false,
+  "profile": "ATSAM/hybrid-ratchet/v2",
+  "protocol_version": "rvn1"
+}
