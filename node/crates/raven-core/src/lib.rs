@@ -20,6 +20,8 @@ pub mod canon;
 pub mod chat_history;
 pub mod contact_request;
 pub mod device_cert;
+pub mod device_revocation;
+pub mod device_revocation_conformance;
 #[cfg(feature = "full-braid-lab")]
 pub mod hybrid_ratchet_v2;
 #[cfg(feature = "full-braid-lab")]
@@ -42,6 +44,7 @@ pub mod lan_dispatch;
 pub mod lan_gate;
 pub mod lan_noise;
 pub mod lan_rlb1;
+pub mod lan_vectors;
 #[cfg(feature = "mlkem768-incremental-lab")]
 pub mod mlkem768_incremental;
 #[cfg(feature = "full-braid-lab")]

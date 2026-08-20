@@ -1,0 +1,14 @@
+{
+  "description": "Device signing seed HKDF-SHA256 to Noise XX static key",
+  "deterministic": true,
+  "expected": {
+    "noise_static_pub_hex": "949ca75c2a4fc7eb72eb91ae1aa4c8a39b172f7739f040afd0c591ea9fef5c5d"
+  },
+  "inputs": {
+    "device_seed_hex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+    "hkdf_info": "static-x25519",
+    "hkdf_salt": "rvn1/lan-noise/v1"
+  },
+  "name": "LAN Noise static X25519 derive",
+  "protocol_version": "rvn1"
+}

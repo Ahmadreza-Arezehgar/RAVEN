@@ -15,6 +15,7 @@ on:
       - "ios-native/RAVEN/RAVEN/Core/Transport/**"
       - "ios-native/RAVEN/RAVEN/Core/Messaging/**"
       - "ios-native/RAVEN/RAVEN/Core/Security/ATSAM/**"
+      - "ios-native/RAVEN/RAVEN/Core/Security/LAN/**"
       - "ios-native/RAVEN/RAVEN/Core/Security/MessageContentSealer.swift"
       - "ios-native/RAVEN/RAVEN.xcodeproj/**"
       - "ios-native/RAVEN/RAVEN/App/**"
@@ -22,6 +23,8 @@ on:
       - "ios-native/RAVEN/RAVEN/Features/QRCode/**"
       - "ios-native/RAVEN/RAVEN/Features/Settings/RavenServerlessLanSettingsView.swift"
       - "ios-native/RAVEN/RAVENTests/**"
+      - "node/scripts/ios_lan_kat.sh"
+      - "node/scripts/ios_lan_lab_checklist.md"
       - "scripts/secret_history_scan.sh"
       - "docs/MIGRATION_SERVERLESS_V1.md"
       - ".github/workflows/raven-serverless.yml"
@@ -37,6 +40,7 @@ on:
       - "ios-native/RAVEN/RAVEN/Core/Transport/**"
       - "ios-native/RAVEN/RAVEN/Core/Messaging/**"
       - "ios-native/RAVEN/RAVEN/Core/Security/ATSAM/**"
+      - "ios-native/RAVEN/RAVEN/Core/Security/LAN/**"
       - "ios-native/RAVEN/RAVEN/Core/Security/MessageContentSealer.swift"
       - "ios-native/RAVEN/RAVEN.xcodeproj/**"
       - "ios-native/RAVEN/RAVEN/App/**"
@@ -44,6 +48,8 @@ on:
       - "ios-native/RAVEN/RAVEN/Features/QRCode/**"
       - "ios-native/RAVEN/RAVEN/Features/Settings/RavenServerlessLanSettingsView.swift"
       - "ios-native/RAVEN/RAVENTests/**"
+      - "node/scripts/ios_lan_kat.sh"
+      - "node/scripts/ios_lan_lab_checklist.md"
       - "scripts/secret_history_scan.sh"
       - "docs/MIGRATION_SERVERLESS_V1.md"
       - ".github/workflows/raven-serverless.yml"
@@ -92,6 +98,8 @@ jobs:
           python3 scripts/audit_active_dependencies.py
       - name: test raven-core + ash
         run: cargo test -p raven-core -p ash -p raven-node
+      - name: LAN handshake KAT (shared vectors, no live network)
+        run: cargo test -p raven-core --lib lan_
       - name: LAN direct two-node smoke
         run: ./scripts/lan_direct_two_node.sh
       - name: bridge + fuzz smoke
@@ -498,6 +506,7 @@ jobs:
       - name: test raven-core + ash + swarm build
         run: |
           cargo test -p raven-core -p ash -p raven-node
+          cargo test -p raven-core --lib lan_
           cargo build -p raven-swarm -p raven-node
           cargo build --release -p raven-core -p raven-node -p ash
       - name: libp2p swarm smoke
@@ -607,6 +616,10 @@ jobs:
             -only-testing:RAVENTests/RavenContactRequestV1Tests \
             -only-testing:RAVENTests/ContactRequestInboxTests \
             -only-testing:RAVENTests/RavenServerlessLanSettingsTests
+      - name: LAN handshake KAT + Release lab gate (scripted)
+        run: bash ../../node/scripts/ios_lan_kat.sh
+        env:
+          DEVICE_ID: ${{ steps.simulator.outputs.device_id }}
       - name: Prove XCTest host stayed offline
         run: |
           set -euo pipefail

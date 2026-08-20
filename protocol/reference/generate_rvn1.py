@@ -10,6 +10,8 @@ from raven_protocol import (
     alias,
     capabilities,
     device_cert,
+    device_revocation,
+    device_revocation_conformance as rev_conf,
     envelope,
     fingerprint,
     indexed_session,
@@ -30,6 +32,8 @@ ALICE_ED_PUB  = bytes.fromhex("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325a
 BOB_ED_PRIV   = bytes.fromhex("4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb")
 BOB_ED_PUB    = bytes.fromhex("3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c")
 BOB_X_PUB     = bytes.fromhex("de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f")
+CAROL_ED_PUB  = bytes.fromhex("fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025")
+CAROL_X_PUB   = bytes.fromhex("05ee18184ed593900f639b87b8d99a7a5c5c00cc0aaac5629c45f8869c602907")
 # dave: SHA-256(edPub)[:9] base64 contains '/', so its device fingerprint hits the
 # strip-shortens-to-11-chars branch — the ~31% path no clean-key vector exercises.
 DAVE_ED_PUB   = bytes.fromhex("e61a185bcef2613a6c7cb79763ce945d3b245d76114dd440bcf5f2dc1aa57057")
@@ -781,6 +785,783 @@ def main():
     })
 
     copy_integrity_pinned_vector(out, MLKEM_INTEROP_VECTOR, MLKEM_INTEROP_SHA256)
+
+    # ---- RavenDeviceRevocationV1 (vector freeze) ----
+    alice_addr = address.encode(ALICE_ED_PUB)
+    bob_cert = device_cert.DeviceCert(
+        device_ed_pub=BOB_ED_PUB,
+        device_x_pub=BOB_X_PUB,
+        device_id="bob-device-1",
+        not_before=EPOCH_MS,
+        not_after=EPOCH_MS + 365 * 86400 * 1000,
+        capabilities=0,
+    )
+    bob_cert.signature = Ed25519PrivateKey.from_private_bytes(ALICE_ED_PRIV).sign(
+        device_cert.signing_bytes(bob_cert)
+    )
+    cert_hash = pair_init.device_certificate_hash(
+        ALICE_ED_PUB, device_cert.signing_bytes(bob_cert), bob_cert.signature
+    )
+    device_id_b = b"bob-device-1"
+    issuer_id_b = b"alice-primary"
+    rev_id = bytes(range(1, 17))
+    rec = device_revocation.DeviceRevocationV1(
+        identity_address=alice_addr,
+        device_id=device_id_b,
+        device_ed_pub=BOB_ED_PUB,
+        device_x_pub=BOB_X_PUB,
+        device_cert_hash=cert_hash,
+        issuer_device_id=issuer_id_b,
+        issuer_seq=1,
+        revocation_id=rev_id,
+        reason_code=1,
+        created_at_ms=EPOCH_MS,
+    )
+    rec = device_revocation.sign(rec, ALICE_ED_PRIV)
+    wire = device_revocation.encode(rec)
+    offsets = device_revocation.wire_offsets(device_id_b, issuer_id_b)
+    cd = device_revocation.claim_digest(wire)
+    write(
+        out,
+        "device_revocation/valid_001.json",
+        vec(
+            "RavenDeviceRevocationV1 valid wire",
+            "Alice revokes bob-device-1 lineage; bare RVDR1 packaging",
+            {
+                "identity_ed_priv_hex": ALICE_ED_PRIV.hex(),
+                "identity_ed_pub_hex": ALICE_ED_PUB.hex(),
+                "identity_address": alice_addr,
+                "device_id_utf8": "bob-device-1",
+                "device_ed_pub_hex": BOB_ED_PUB.hex(),
+                "device_x_pub_hex": BOB_X_PUB.hex(),
+                "device_cert_signing_bytes_hex": device_cert.signing_bytes(bob_cert).hex(),
+                "device_cert_signature_hex": bob_cert.signature.hex(),
+                "device_cert_hash_hex": cert_hash.hex(),
+                "issuer_device_id_utf8": "alice-primary",
+                "issuer_seq": 1,
+                "revocation_id_hex": rev_id.hex(),
+                "reason_code": 1,
+                "created_at_ms": EPOCH_MS,
+            },
+            {
+                "wire_hex": wire.hex(),
+                "wire_len": len(wire),
+                "signing_bytes_hex": device_revocation.signing_bytes(rec).hex(),
+                "signature_hex": rec.signature.hex(),
+                "claim_digest_hex": cd.hex(),
+                "object_digest_hex": cd.hex(),
+                "offsets": offsets,
+                "verify": True,
+            },
+        ),
+    )
+
+    # wrong signer (bob signs alice identity address — verify must fail)
+    bad = device_revocation.DeviceRevocationV1(
+        identity_address=alice_addr,
+        device_id=device_id_b,
+        device_ed_pub=BOB_ED_PUB,
+        device_x_pub=BOB_X_PUB,
+        device_cert_hash=cert_hash,
+        issuer_device_id=issuer_id_b,
+        issuer_seq=1,
+        revocation_id=rev_id,
+        reason_code=1,
+        created_at_ms=EPOCH_MS,
+        signature=Ed25519PrivateKey.from_private_bytes(BOB_ED_PRIV).sign(
+            device_revocation.signing_bytes(rec)
+        ),
+    )
+    bad_wire = device_revocation.encode(bad)
+    write(
+        out,
+        "negative/device_revocation_wrong_signer.json",
+        vec(
+            "Revocation signed by non-identity key must fail verify",
+            "bob signs alice-addressed RVDR1",
+            {
+                "wire_hex": bad_wire.hex(),
+                "claimed_identity_ed_pub_hex": ALICE_ED_PUB.hex(),
+            },
+            {"verify_result": "reject"},
+        ),
+    )
+
+    # store hash: one claim
+    claims = [device_revocation.StoreClaim(exact_record_bytes=wire)]
+    snap = device_revocation.canonical_store_snapshot(1, claims, [], [])
+    sh = device_revocation.revocation_store_hash(1, claims, [], [])
+    write(
+        out,
+        "device_revocation/store_hash_001.json",
+        vec(
+            "Canonical revocation_store_hash with one claim",
+            "generation=1; empty exhausted/corrupt",
+            {
+                "generation": 1,
+                "claims_wire_hex": [wire.hex()],
+                "exhausted": [],
+                "corrupt": [],
+            },
+            {
+                "canonical_snapshot_hex": snap.hex(),
+                "revocation_store_hash_hex": sh.hex(),
+            },
+        ),
+    )
+
+    # exhausted marker in snapshot (claim not in claims list)
+    exh = device_revocation.ExhaustedMarker(
+        identity_address=alice_addr,
+        claim_digest=cd,
+        exact_record_bytes=wire,
+    )
+    snap2 = device_revocation.canonical_store_snapshot(2, [], [exh], [])
+    sh2 = device_revocation.revocation_store_hash(2, [], [exh], [])
+    write(
+        out,
+        "device_revocation/store_hash_exhausted_001.json",
+        vec(
+            "Store hash with IDENTITY_REVOKE_EXHAUSTED blob only",
+            "generation=2; claim deferred",
+            {
+                "generation": 2,
+                "claims_wire_hex": [],
+                "exhausted": [
+                    {
+                        "identity_address": alice_addr,
+                        "claim_digest_hex": cd.hex(),
+                        "exact_record_bytes_hex": wire.hex(),
+                    }
+                ],
+                "corrupt": [],
+            },
+            {
+                "canonical_snapshot_hex": snap2.hex(),
+                "revocation_store_hash_hex": sh2.hex(),
+            },
+        ),
+    )
+
+    # crash-state ordering for expand replay (documentary + hash chain)
+    # After successful apply: claims=[wire], exhausted=[], generation=3
+    claims_after = [device_revocation.StoreClaim(exact_record_bytes=wire)]
+    sh3 = device_revocation.revocation_store_hash(3, claims_after, [], [])
+    write(
+        out,
+        "device_revocation/crash_replay_order_001.json",
+        {
+            "name": "Exhausted expand replay crash order",
+            "description": (
+                "Under lease: re-verify EXHAUSTED journal bytes; convert "
+                "PENDING_REVOKE_EXHAUSTED→PENDING_REVOKE (same exact bytes); "
+                "SQL atomic: insert claim + delete exhausted marker + bump gen; "
+                "FINALIZED_REVOKE_ANCHOR; clear PENDING_REVOKE. "
+                "Helper accepts only PENDING_REVOKE."
+            ),
+            "protocol_version": "rvn1",
+            "deterministic": True,
+            "steps": [
+                {
+                    "id": 1,
+                    "state": "PENDING_REVOKE_EXHAUSTED+IDENTITY_REVOKE_EXHAUSTED",
+                    "generation": 2,
+                    "store_hash_hex": sh2.hex(),
+                },
+                {
+                    "id": 2,
+                    "action": "reverify_exact_bytes",
+                    "source": "PENDING_REVOKE_EXHAUSTED",
+                },
+                {
+                    "id": 3,
+                    "action": "journal_convert",
+                    "from": "PENDING_REVOKE_EXHAUSTED",
+                    "to": "PENDING_REVOKE",
+                    "same_exact_bytes": True,
+                },
+                {
+                    "id": 4,
+                    "action": "sql_atomic",
+                    "ops": [
+                        "insert_claim",
+                        "append_revoked_targets",
+                        "delete_IDENTITY_REVOKE_EXHAUSTED",
+                        "upsert_cleanup",
+                        "bump_generation",
+                    ],
+                },
+                {
+                    "id": 5,
+                    "action": "write_FINALIZED_REVOKE_ANCHOR",
+                    "generation": 3,
+                    "store_hash_hex": sh3.hex(),
+                },
+                {"id": 6, "action": "clear_PENDING_REVOKE"},
+            ],
+            "expected_after": {
+                "generation": 3,
+                "claims_wire_hex": [wire.hex()],
+                "exhausted": [],
+                "revocation_store_hash_hex": sh3.hex(),
+            },
+        },
+    )
+
+    # ---- Revocation conformance fixtures (union / collision / quota / corrupt / gates) ----
+    def mint_device_cert(ed_pub, x_pub, device_id: str):
+        c = device_cert.DeviceCert(
+            device_ed_pub=ed_pub,
+            device_x_pub=x_pub,
+            device_id=device_id,
+            not_before=EPOCH_MS,
+            not_after=EPOCH_MS + 365 * 86400 * 1000,
+            capabilities=0,
+        )
+        c.signature = Ed25519PrivateKey.from_private_bytes(ALICE_ED_PRIV).sign(
+            device_cert.signing_bytes(c)
+        )
+        ch = pair_init.device_certificate_hash(
+            ALICE_ED_PUB, device_cert.signing_bytes(c), c.signature
+        )
+        return c, ch
+
+    def mint_revoke(
+        *,
+        device_id: bytes,
+        ed_pub: bytes,
+        x_pub: bytes,
+        cert_hash: bytes,
+        issuer_seq: int,
+        revocation_id: bytes,
+        reason_code: int = 1,
+    ):
+        r = device_revocation.DeviceRevocationV1(
+            identity_address=alice_addr,
+            device_id=device_id,
+            device_ed_pub=ed_pub,
+            device_x_pub=x_pub,
+            device_cert_hash=cert_hash,
+            issuer_device_id=issuer_id_b,
+            issuer_seq=issuer_seq,
+            revocation_id=revocation_id,
+            reason_code=reason_code,
+            created_at_ms=EPOCH_MS,
+        )
+        r = device_revocation.sign(r, ALICE_ED_PRIV)
+        w = device_revocation.encode(r)
+        return r, w
+
+    carol_cert, carol_cert_hash = mint_device_cert(CAROL_ED_PUB, CAROL_X_PUB, "carol-device-1")
+    rev_id_bob = bytes(range(1, 17))
+    rev_id_carol = bytes(range(17, 33))
+    _, wire_bob = mint_revoke(
+        device_id=b"bob-device-1",
+        ed_pub=BOB_ED_PUB,
+        x_pub=BOB_X_PUB,
+        cert_hash=cert_hash,
+        issuer_seq=1,
+        revocation_id=rev_id_bob,
+    )
+    _, wire_carol = mint_revoke(
+        device_id=b"carol-device-1",
+        ed_pub=CAROL_ED_PUB,
+        x_pub=CAROL_X_PUB,
+        cert_hash=carol_cert_hash,
+        issuer_seq=2,
+        revocation_id=rev_id_carol,
+    )
+    # Same revocation_id, different target (collision / equivocation)
+    _, wire_carol_collision = mint_revoke(
+        device_id=b"carol-device-1",
+        ed_pub=CAROL_ED_PUB,
+        x_pub=CAROL_X_PUB,
+        cert_hash=carol_cert_hash,
+        issuer_seq=3,
+        revocation_id=rev_id_bob,  # collide with bob's id
+    )
+
+    # union_001: apply bob then carol
+    store_u = rev_conf.ConformanceStore(identity_address=alice_addr, max_claims=10_000)
+    a1 = rev_conf.apply_verified_claim(store_u, wire_bob, ALICE_ED_PUB)
+    a2 = rev_conf.apply_verified_claim(store_u, wire_carol, ALICE_ED_PUB)
+    write(
+        out,
+        "device_revocation/union_001.json",
+        vec(
+            "Append-only union of two distinct claims",
+            "bob then carol; both digests and all lineage keys denied",
+            {
+                "identity_ed_pub_hex": ALICE_ED_PUB.hex(),
+                "identity_address": alice_addr,
+                "claims_wire_hex": [wire_bob.hex(), wire_carol.hex()],
+                "apply_order": ["bob", "carol"],
+            },
+            {
+                "apply_results": [a1["result"], a2["result"]],
+                "store": store_u.snapshot_dict(),
+                "revocation_id_collisions": [],
+            },
+        ),
+    )
+
+    # revocation_id collision
+    store_c = rev_conf.ConformanceStore(identity_address=alice_addr, max_claims=10_000)
+    c1 = rev_conf.apply_verified_claim(store_c, wire_bob, ALICE_ED_PUB)
+    c2 = rev_conf.apply_verified_claim(store_c, wire_carol_collision, ALICE_ED_PUB)
+    write(
+        out,
+        "device_revocation/collision_revocation_id_001.json",
+        vec(
+            "Same revocation_id different bytes — union both",
+            "equivocation recorded; neither target left trusted",
+            {
+                "identity_ed_pub_hex": ALICE_ED_PUB.hex(),
+                "identity_address": alice_addr,
+                "claims_wire_hex": [wire_bob.hex(), wire_carol_collision.hex()],
+                "shared_revocation_id_hex": rev_id_bob.hex(),
+            },
+            {
+                "apply_results": [c1["result"], c2["result"]],
+                "store": store_c.snapshot_dict(),
+                "must_union_apply_both": True,
+            },
+        ),
+    )
+
+    # quota state machine (test profile max_claims=1)
+    store_q = rev_conf.ConformanceStore(identity_address=alice_addr, max_claims=1)
+    steps_q = []
+    q1 = rev_conf.apply_verified_claim(store_q, wire_bob, ALICE_ED_PUB)
+    steps_q.append(
+        {
+            "id": 1,
+            "action": "apply",
+            "label": "bob",
+            "result": q1["result"],
+            "store_hash_hex": store_q.store_hash().hex(),
+            "generation": store_q.generation,
+            "claims_count": len(store_q.claims),
+        }
+    )
+    q2 = rev_conf.apply_verified_claim(store_q, wire_carol, ALICE_ED_PUB)
+    steps_q.append(
+        {
+            "id": 2,
+            "action": "apply",
+            "label": "carol_hits_quota",
+            "result": q2["result"],
+            "journal_kind": store_q.journal["kind"] if store_q.journal else None,
+            "store_hash_hex": store_q.store_hash().hex(),
+            "generation": store_q.generation,
+            "exhausted_count": len(store_q.exhausted),
+            "claims_count": len(store_q.claims),
+        }
+    )
+    # crash window: exhausted anchored, claim not inserted
+    steps_q.append(
+        {
+            "id": 3,
+            "state": "PENDING_REVOKE_EXHAUSTED+IDENTITY_REVOKE_EXHAUSTED",
+            "note": "MUST NOT auto-retry apply; fail-closed auth for identity",
+            "store_hash_hex": store_q.store_hash().hex(),
+            "journal_kind": store_q.journal["kind"],
+            "exhausted_count": len(store_q.exhausted),
+            "claims_count": len(store_q.claims),
+        }
+    )
+    # no-auto-retry: helper must reject direct EXHAUSTED consumption
+    no_retry_err = None
+    try:
+        rev_conf.apply_verified_claim(
+            store_q, wire_carol, ALICE_ED_PUB, pending_already_written=True
+        )
+    except ValueError as e:
+        no_retry_err = str(e)
+    if no_retry_err != "direct_exhausted_consumption":
+        raise AssertionError(no_retry_err)
+    steps_q.append(
+        {
+            "id": 3.1,
+            "action": "no_auto_retry_apply",
+            "expected_error": "direct_exhausted_consumption",
+            "store_hash_hex": store_q.store_hash().hex(),
+        }
+    )
+    exh_auth = [
+        rev_conf.authorize_device(
+            store_q,
+            device_id=b"carol-device-1",
+            device_ed_pub=CAROL_ED_PUB,
+            device_x_pub=CAROL_X_PUB,
+            device_cert_hash=carol_cert_hash,
+            surface=s,
+        )
+        for s in rev_conf.SURFACES
+    ]
+    steps_q.append(
+        {
+            "id": 3.2,
+            "action": "authorize_under_exhausted",
+            "gates": exh_auth,
+            "all_unauthorized": True,
+        }
+    )
+    rev_conf.expand_quota(store_q, 2)
+    steps_q.append({"id": 4, "action": "expand_quota", "max_claims": 2})
+    # reverify exhausted journal
+    rv = rev_conf.reverify_journal(store_q, ALICE_ED_PUB)
+    steps_q.append({"id": 5, "action": "reverify_exact_bytes", "result": rv["result"]})
+    rev_conf.convert_exhausted_journal_to_pending(store_q)
+    steps_q.append(
+        {
+            "id": 6,
+            "action": "journal_convert",
+            "from": "PENDING_REVOKE_EXHAUSTED",
+            "to": "PENDING_REVOKE",
+            "same_exact_bytes": True,
+        }
+    )
+    q3 = rev_conf.apply_verified_claim(
+        store_q, wire_carol, ALICE_ED_PUB, pending_already_written=True
+    )
+    steps_q.append(
+        {
+            "id": 7,
+            "action": "sql_atomic_apply_pending",
+            "result": q3["result"],
+            "ops": [
+                "insert_claim",
+                "append_revoked_targets",
+                "delete_IDENTITY_REVOKE_EXHAUSTED",
+                "upsert_cleanup",
+                "bump_generation",
+            ],
+            "store_hash_hex": store_q.store_hash().hex(),
+            "generation": store_q.generation,
+        }
+    )
+    steps_q.append(
+        {
+            "id": 8,
+            "action": "write_FINALIZED_REVOKE_ANCHOR",
+            "generation": store_q.generation,
+            "store_hash_hex": store_q.store_hash().hex(),
+        }
+    )
+    steps_q.append({"id": 9, "action": "clear_PENDING_REVOKE"})
+    write(
+        out,
+        "device_revocation/quota_machine_001.json",
+        {
+            "name": "Quota exhaustion → expand → replay",
+            "description": (
+                "Test profile max_claims=1. Second claim becomes EXHAUSTED; "
+                "expand to 2; convert journal; apply under lease; anchor."
+            ),
+            "protocol_version": "rvn1",
+            "deterministic": True,
+            "inputs": {
+                "identity_ed_pub_hex": ALICE_ED_PUB.hex(),
+                "identity_address": alice_addr,
+                "max_claims_initial": 1,
+                "max_claims_after_expand": 2,
+                "wire_bob_hex": wire_bob.hex(),
+                "wire_carol_hex": wire_carol.hex(),
+            },
+            "steps": steps_q,
+            "expected_after": store_q.snapshot_dict(),
+        },
+    )
+
+    # corrupt-journal fixtures
+    def corrupt_fixture(name, rel, desc, mutate_journal):
+        st = rev_conf.ConformanceStore(identity_address=alice_addr, max_claims=10_000)
+        st.journal = {
+            "kind": "PENDING_REVOKE",
+            "claim_digest_hex": device_revocation.claim_digest(wire_bob).hex(),
+            "exact_record_bytes_hex": wire_bob.hex(),
+        }
+        mutate_journal(st)
+        journal_before = dict(st.journal)
+        out_rv = rev_conf.reverify_journal(st, ALICE_ED_PUB)
+        write(
+            out,
+            rel,
+            vec(
+                name,
+                desc,
+                {
+                    "identity_ed_pub_hex": ALICE_ED_PUB.hex(),
+                    "identity_address": alice_addr,
+                    "journal_before": journal_before,
+                },
+                {
+                    "reverify_result": out_rv["result"],
+                    "reason": out_rv.get("reason"),
+                    "reason_code": out_rv.get("reason_code"),
+                    "store": out_rv["store"],
+                    "must_fail_closed": True,
+                    "must_not_clear_without_corrupt_marker": True,
+                },
+            ),
+        )
+    def trunc(st):
+        st.journal["exact_record_bytes_hex"] = wire_bob[:40].hex()
+
+    def dig_mis(st):
+        st.journal["claim_digest_hex"] = ("00" * 32)
+
+    def bad_sig(st):
+        # Flip last signature byte
+        w = bytearray(wire_bob)
+        w[-1] ^= 0xFF
+        st.journal["exact_record_bytes_hex"] = bytes(w).hex()
+        st.journal["claim_digest_hex"] = device_revocation.claim_digest(bytes(w)).hex()
+
+    corrupt_fixture(
+        "Corrupt journal truncated",
+        "device_revocation/corrupt_journal_truncated_001.json",
+        "Short journal bytes → REVOCATION_STORE_CORRUPT then clear journal",
+        trunc,
+    )
+    corrupt_fixture(
+        "Corrupt journal digest mismatch",
+        "device_revocation/corrupt_journal_digest_mismatch_001.json",
+        "Journal claim_digest ≠ SHA-256(exact_bytes)",
+        dig_mis,
+    )
+    corrupt_fixture(
+        "Corrupt journal bad signature",
+        "device_revocation/corrupt_journal_bad_signature_001.json",
+        "Parseable wire with invalid identity signature",
+        bad_sig,
+    )
+
+    # recovery: after corrupt marker, all gates fail closed
+    store_bad = rev_conf.ConformanceStore(identity_address=alice_addr, max_claims=10_000)
+    store_bad.corrupt.append(
+        device_revocation.CorruptMarker(
+            scope=alice_addr, reason_code=rev_conf.CORRUPT_BAD_SIGNATURE
+        )
+    )
+    store_bad.generation = 1
+    gates_corrupt = [
+        rev_conf.authorize_device(
+            store_bad,
+            device_id=b"bob-device-1",
+            device_ed_pub=BOB_ED_PUB,
+            device_x_pub=BOB_X_PUB,
+            device_cert_hash=cert_hash,
+            surface=s,
+        )
+        for s in rev_conf.SURFACES
+    ]
+    write(
+        out,
+        "device_revocation/corrupt_journal_recovery_001.json",
+        vec(
+            "Corrupt marker fail-closed authorization",
+            "Until explicit repair, every surface denies",
+            {
+                "identity_address": alice_addr,
+                "corrupt": [{"scope": alice_addr, "reason_code": 3}],
+                "peer": {
+                    "device_id_utf8": "bob-device-1",
+                    "device_ed_pub_hex": BOB_ED_PUB.hex(),
+                    "device_x_pub_hex": BOB_X_PUB.hex(),
+                    "device_cert_hash_hex": cert_hash.hex(),
+                },
+            },
+            {
+                "gates": gates_corrupt,
+                "all_unauthorized": True,
+            },
+        ),
+    )
+
+    # apply gates: bob revoked, carol not
+    store_g = rev_conf.ConformanceStore(identity_address=alice_addr, max_claims=10_000)
+    rev_conf.apply_verified_claim(store_g, wire_bob, ALICE_ED_PUB)
+    bob_gates = [
+        rev_conf.authorize_device(
+            store_g,
+            device_id=b"bob-device-1",
+            device_ed_pub=BOB_ED_PUB,
+            device_x_pub=BOB_X_PUB,
+            device_cert_hash=cert_hash,
+            surface=s,
+        )
+        for s in rev_conf.SURFACES
+    ]
+    carol_gates = [
+        rev_conf.authorize_device(
+            store_g,
+            device_id=b"carol-device-1",
+            device_ed_pub=CAROL_ED_PUB,
+            device_x_pub=CAROL_X_PUB,
+            device_cert_hash=carol_cert_hash,
+            surface=s,
+        )
+        for s in rev_conf.SURFACES
+    ]
+    # exhausted identity: even unrevoked device denied
+    store_ex = rev_conf.ConformanceStore(identity_address=alice_addr, max_claims=1)
+    rev_conf.apply_verified_claim(store_ex, wire_bob, ALICE_ED_PUB)
+    rev_conf.apply_verified_claim(store_ex, wire_carol, ALICE_ED_PUB)
+    exh_gates = [
+        rev_conf.authorize_device(
+            store_ex,
+            device_id=b"carol-device-1",
+            device_ed_pub=CAROL_ED_PUB,
+            device_x_pub=CAROL_X_PUB,
+            device_cert_hash=carol_cert_hash,
+            surface=s,
+        )
+        for s in rev_conf.SURFACES
+    ]
+    write(
+        out,
+        "device_revocation/apply_gates_001.json",
+        vec(
+            "Apply gates for PairInit/Session/Message/ACK/Noise bind",
+            "Revoked bob denied on all surfaces; carol allowed; exhausted denies carol",
+            {
+                "identity_ed_pub_hex": ALICE_ED_PUB.hex(),
+                "identity_address": alice_addr,
+                "revoked_wire_hex": wire_bob.hex(),
+                "carol_wire_hex": wire_carol.hex(),
+                "bob_peer": {
+                    "device_id_utf8": "bob-device-1",
+                    "device_ed_pub_hex": BOB_ED_PUB.hex(),
+                    "device_x_pub_hex": BOB_X_PUB.hex(),
+                    "device_cert_hash_hex": cert_hash.hex(),
+                },
+                "carol_peer": {
+                    "device_id_utf8": "carol-device-1",
+                    "device_ed_pub_hex": CAROL_ED_PUB.hex(),
+                    "device_x_pub_hex": CAROL_X_PUB.hex(),
+                    "device_cert_hash_hex": carol_cert_hash.hex(),
+                },
+                "surfaces": list(rev_conf.SURFACES),
+            },
+            {
+                "bob_revoked_gates": bob_gates,
+                "carol_unrevoked_gates": carol_gates,
+                "carol_under_exhausted_gates": exh_gates,
+                "bob_all_denied": True,
+                "carol_all_allowed": True,
+                "exhausted_all_denied": True,
+            },
+        ),
+    )
+
+    write(
+        out,
+        "device_revocation/corrupt_journal_recovery_001.json",
+        vec(
+            "Corrupt marker fail-closed authorization",
+            "Until explicit repair, every surface denies",
+            {
+                "identity_address": alice_addr,
+                "identity_ed_pub_hex": ALICE_ED_PUB.hex(),
+                "corrupt": [{"scope": alice_addr, "reason_code": 3}],
+                "peer": {
+                    "device_id_utf8": "bob-device-1",
+                    "device_ed_pub_hex": BOB_ED_PUB.hex(),
+                    "device_x_pub_hex": BOB_X_PUB.hex(),
+                    "device_cert_hash_hex": cert_hash.hex(),
+                },
+                "surfaces": list(rev_conf.SURFACES),
+            },
+            {
+                "gates": gates_corrupt,
+                "all_unauthorized": True,
+            },
+        ),
+    )
+
+    def _pending_neg(case_id, desc, journal, wire_apply, expect_error):
+        st = rev_conf.ConformanceStore(identity_address=alice_addr, max_claims=10_000)
+        st.journal = journal
+        err = None
+        try:
+            rev_conf.apply_verified_claim(
+                st, wire_apply, ALICE_ED_PUB, pending_already_written=True
+            )
+        except ValueError as e:
+            err = str(e)
+        if err != expect_error:
+            raise AssertionError(f"{case_id}: got {err!r} want {expect_error!r}")
+        return {
+            "id": case_id,
+            "description": desc,
+            "journal_before": None if journal is None else dict(journal),
+            "apply_wire_hex": wire_apply.hex(),
+            "expected_error": expect_error,
+        }
+
+    pending_cases = [
+        _pending_neg(
+            "missing_pending",
+            "pending_already_written with no journal",
+            None,
+            wire_bob,
+            "missing_pending",
+        ),
+        _pending_neg(
+            "wrong_bytes",
+            "PENDING_REVOKE holds bob; apply carol bytes",
+            {
+                "kind": "PENDING_REVOKE",
+                "claim_digest_hex": device_revocation.claim_digest(wire_bob).hex(),
+                "exact_record_bytes_hex": wire_bob.hex(),
+            },
+            wire_carol,
+            "pending_bytes_mismatch",
+        ),
+        _pending_neg(
+            "wrong_digest",
+            "PENDING_REVOKE bytes match but claim_digest wrong",
+            {
+                "kind": "PENDING_REVOKE",
+                "claim_digest_hex": "00" * 32,
+                "exact_record_bytes_hex": wire_bob.hex(),
+            },
+            wire_bob,
+            "pending_digest_mismatch",
+        ),
+        _pending_neg(
+            "direct_exhausted",
+            "Helper must not consume PENDING_REVOKE_EXHAUSTED directly",
+            {
+                "kind": "PENDING_REVOKE_EXHAUSTED",
+                "claim_digest_hex": device_revocation.claim_digest(wire_carol).hex(),
+                "exact_record_bytes_hex": wire_carol.hex(),
+            },
+            wire_carol,
+            "direct_exhausted_consumption",
+        ),
+    ]
+    write(
+        out,
+        "device_revocation/pending_binding_negatives_001.json",
+        {
+            "name": "pending_already_written binding negatives",
+            "description": (
+                "Helper with pending_already_written=true requires PENDING_REVOKE "
+                "and exact bytes + claim_digest match; rejects EXHAUSTED direct use"
+            ),
+            "protocol_version": "rvn1",
+            "deterministic": True,
+            "inputs": {
+                "identity_ed_pub_hex": ALICE_ED_PUB.hex(),
+                "identity_address": alice_addr,
+            },
+            "cases": pending_cases,
+        },
+    )
+
 
 if __name__ == "__main__":
     main()

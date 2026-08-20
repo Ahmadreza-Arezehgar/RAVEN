@@ -689,4 +689,27 @@ extension DeviceIdentityService {
         guard let key else { return nil }
         return try body(key)
     }
+
+    #if DEBUG
+    /// Install a deterministic signing identity for Swift↔Rust LAN integration tests.
+    func installDeterministicIdentityForLabIntegration(seed: Data) throws {
+        precondition(seed.count == 32)
+        let privateKey = try Curve25519.Signing.PrivateKey(rawRepresentation: seed)
+        let publicKey = privateKey.publicKey
+        try storeKey(
+            privateKey.rawRepresentation,
+            tag: privateKeyTag,
+            accessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        )
+        try storeKey(
+            publicKey.rawRepresentation,
+            tag: publicKeyTag,
+            accessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        )
+        updateCachedKeys(privateKey: privateKey, publicKey: publicKey)
+        if cachedAgreementPrivateKey == nil {
+            try generateAgreementKeypair()
+        }
+    }
+    #endif
 }

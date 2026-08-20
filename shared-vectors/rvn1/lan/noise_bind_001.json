@@ -1,0 +1,15 @@
+{
+  "description": "ed25519_pub || sig(rvn1/lan-noise/v1 || noise_static_pub)",
+  "deterministic": true,
+  "expected": {
+    "bind_hex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511aa0c0dae14bed7b82ead2bbd201a6c95af7c7248331074e776f224814b85973a123318dd9af208f7b0ec04543ac108eeab3f86b75791ad605504d33c1260aa90e",
+    "bind_len": 96
+  },
+  "inputs": {
+    "bind_domain": "rvn1/lan-noise/v1",
+    "device_seed_hex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+    "noise_static_pub_hex": "949ca75c2a4fc7eb72eb91ae1aa4c8a39b172f7739f040afd0c591ea9fef5c5d"
+  },
+  "name": "LAN Noise identity bind",
+  "protocol_version": "rvn1"
+}

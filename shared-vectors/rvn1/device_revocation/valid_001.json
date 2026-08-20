@@ -1,0 +1,50 @@
+{
+  "description": "Alice revokes bob-device-1 lineage; bare RVDR1 packaging",
+  "deterministic": true,
+  "expected": {
+    "claim_digest_hex": "a0441bb28b380bf3d834ebfba05a8d5d753559a5d325cfcf60a18a35c53064bd",
+    "object_digest_hex": "a0441bb28b380bf3d834ebfba05a8d5d753559a5d325cfcf60a18a35c53064bd",
+    "offsets": {
+      "created_at_ms": 204,
+      "device_cert_hash": 132,
+      "device_ed_pub": 68,
+      "device_id": 56,
+      "device_id_len": 54,
+      "device_x_pub": 100,
+      "identity_address": 10,
+      "issuer_device_id": 166,
+      "issuer_device_id_len": 164,
+      "issuer_seq": 179,
+      "magic": 0,
+      "reason_code": 203,
+      "revocation_id": 187,
+      "signature": 212,
+      "suite": 9,
+      "total_len": 276,
+      "version": 8
+    },
+    "signature_hex": "d25bac212192c5807ceded9142bee895a08359ebccfbfd65f5c5ee98d8ca7a111377eb2827e3ab7990bcc263fbb0fe5d730f8d1e8f903194022a45d416761508",
+    "signing_bytes_hex": "72766e312f6465766963652d7265766f636174696f6e010172766e317179736c7576776c353932327963747a643075396770723036676e336b376c6466766563756c6530000c626f622d6465766963652d313d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660cde9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4fb6c42a759334231f85bcca4134233c0491ecd7e08c01de7728ed6ee4df15eddd000d616c6963652d7072696d61727900000000000000010102030405060708090a0b0c0d0e0f10010000018bcfe56800",
+    "verify": true,
+    "wire_hex": "5256445231000000010172766e317179736c7576776c353932327963747a643075396770723036676e336b376c6466766563756c6530000c626f622d6465766963652d313d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660cde9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4fb6c42a759334231f85bcca4134233c0491ecd7e08c01de7728ed6ee4df15eddd000d616c6963652d7072696d61727900000000000000010102030405060708090a0b0c0d0e0f10010000018bcfe56800d25bac212192c5807ceded9142bee895a08359ebccfbfd65f5c5ee98d8ca7a111377eb2827e3ab7990bcc263fbb0fe5d730f8d1e8f903194022a45d416761508",
+    "wire_len": 276
+  },
+  "inputs": {
+    "created_at_ms": 1700000000000,
+    "device_cert_hash_hex": "b6c42a759334231f85bcca4134233c0491ecd7e08c01de7728ed6ee4df15eddd",
+    "device_cert_signature_hex": "fd3e36d4e355dbd754c2a8b56fd62489098c35538e4b5344c8279cb9af2bac7a20d3a68dd8818abd8e329545365db6c5b29e6f1dbf5a195018f4186da3bc910e",
+    "device_cert_signing_bytes_hex": "72766e312f6465766365727400203d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c0020de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f000c626f622d6465766963652d310000018bcfe5680000000193279694000000000000000000",
+    "device_ed_pub_hex": "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
+    "device_id_utf8": "bob-device-1",
+    "device_x_pub_hex": "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f",
+    "identity_address": "rvn1qysluvwl5922yctzd0u9gpr06gn3k7ldfvecule0",
+    "identity_ed_priv_hex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+    "identity_ed_pub_hex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+    "issuer_device_id_utf8": "alice-primary",
+    "issuer_seq": 1,
+    "reason_code": 1,
+    "revocation_id_hex": "0102030405060708090a0b0c0d0e0f10"
+  },
+  "name": "RavenDeviceRevocationV1 valid wire",
+  "protocol_version": "rvn1"
+}

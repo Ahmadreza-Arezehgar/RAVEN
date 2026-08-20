@@ -34,7 +34,11 @@ final class ATSAMEndpointTransactionV1Tests: XCTestCase {
         func pendingSessionIDs() throws -> [Data] {
             if failLoad { throw HarnessFailure.injected }
             return states.values
-                .filter { $0.pendingAcceptance != nil || $0.pendingAckAcceptance != nil }
+                .filter {
+                    $0.pendingAcceptance != nil
+                        || $0.pendingAckAcceptance != nil
+                        || $0.pendingOutbound != nil
+                }
                 .map(\.sessionID)
         }
 
@@ -59,6 +63,8 @@ final class ATSAMEndpointTransactionV1Tests: XCTestCase {
                 state.pendingAcceptance = nil
             } else if state.pendingAckAcceptance?.receiptKey.objectDigest == objectDigest {
                 state.pendingAckAcceptance = nil
+            } else if state.pendingOutbound?.objectDigest == objectDigest {
+                state.pendingOutbound = nil
             } else {
                 throw HarnessFailure.injected
             }
@@ -67,13 +73,14 @@ final class ATSAMEndpointTransactionV1Tests: XCTestCase {
         }
     }
 
-    private final class MemoryDatabase: Endpoint.AcceptanceDatabase {
+    private final class MemoryDatabase: Endpoint.OutboundDatabase {
         var receipts: [Endpoint.ReceiptKey: Endpoint.CommittedReceipt] = [:]
         var logicalObjects: [Endpoint.LogicalMessageKey: Data] = [:]
         var ackIntents: [Endpoint.ReceiptKey: Endpoint.AckIntent] = [:]
         var ackReceipts: [Endpoint.ReceiptKey: Endpoint.AckReceipt] = [:]
         var ackNonceObjects: [Data: Data] = [:]
         var outstanding: [Endpoint.OutstandingMessageKey: Endpoint.DeliveryState] = [:]
+        var outbox: Set<Data> = []
         var failBegin = false
         var failCommit = false
         var failStage = false
@@ -81,13 +88,33 @@ final class ATSAMEndpointTransactionV1Tests: XCTestCase {
         private(set) var rollbackCount = 0
         private(set) var commitCount = 0
 
+        func hasOutboxRow(sessionID: Data, objectDigest: Data) throws -> Bool {
+            var key = Data()
+            key.append(sessionID)
+            key.append(objectDigest)
+            return outbox.contains(key)
+        }
+
         func beginImmediate() throws -> any Endpoint.AcceptanceDatabaseTransaction {
             if failBegin { throw HarnessFailure.injected }
             return Transaction(database: self)
         }
 
         func nextUnqueuedAckIntent() throws -> Endpoint.AckIntent? {
-            ackIntents.values.first { !$0.isQueued }
+            ackIntents.values.first { !$0.isQueued && !$0.isAbandoned }
+        }
+
+        func allAckIntents() throws -> [Endpoint.AckIntent] {
+            Array(ackIntents.values)
+        }
+
+        func markAckAbandoned(receiptKey: Endpoint.ReceiptKey) throws {
+            guard var intent = ackIntents[receiptKey] else {
+                throw TxError.noPendingAck
+            }
+            intent.isAbandoned = true
+            intent.isQueued = false
+            ackIntents[receiptKey] = intent
         }
 
         func stageAckEnvelope(
@@ -126,10 +153,16 @@ final class ATSAMEndpointTransactionV1Tests: XCTestCase {
             ackIntents[receiptKey] = intent
         }
 
-        private final class Transaction: Endpoint.AcceptanceDatabaseTransaction {
+        private final class Transaction: Endpoint.OutboundDatabaseTransaction {
             private unowned let database: MemoryDatabase
             private var pending: Endpoint.PendingAcceptance?
             private var pendingAck: Endpoint.PendingAckAcceptance?
+            private var pendingOutbound: Endpoint.PendingOutbound?
+            private var pendingAckMaterialization: (
+                receiptKey: Endpoint.ReceiptKey,
+                packedEnvelope: Data,
+                ackObjectDigest: Data
+            )?
             private var active = true
 
             init(database: MemoryDatabase) {
@@ -256,6 +289,33 @@ final class ATSAMEndpointTransactionV1Tests: XCTestCase {
                 return .inserted(receipt: receipt, deliveryState: resulting)
             }
 
+            func insertPreparedOutbound(_ pending: Endpoint.PendingOutbound) throws {
+                guard active else { throw HarnessFailure.injected }
+                guard self.pendingOutbound == nil else {
+                    throw TxError.receiptCollision
+                }
+                self.pendingOutbound = pending
+            }
+
+            func insertAckMaterialization(
+                pending: Endpoint.PendingOutbound,
+                intentReceiptKey: Endpoint.ReceiptKey,
+                packedEnvelope: Data,
+                ackObjectDigest: Data
+            ) throws {
+                guard active else { throw HarnessFailure.injected }
+                guard pendingOutbound == nil, pendingAckMaterialization == nil else {
+                    throw TxError.receiptCollision
+                }
+                guard pending.objectDigest == ackObjectDigest,
+                      pending.immutableEnvelopeBytes == packedEnvelope,
+                      pending.sourceAckIntent == intentReceiptKey.objectDigest else {
+                    throw TxError.stagedAckCollision
+                }
+                pendingOutbound = pending
+                pendingAckMaterialization = (intentReceiptKey, packedEnvelope, ackObjectDigest)
+            }
+
             func commitAndFsync() throws {
                 guard active else { throw HarnessFailure.injected }
                 if database.failCommit { throw HarnessFailure.injected }
@@ -275,6 +335,22 @@ final class ATSAMEndpointTransactionV1Tests: XCTestCase {
                         throw TxError.receiptCollision
                     }
                     database.ackIntents[value.receiptKey] = value.ackIntent
+                }
+                if let outbound = pendingOutbound {
+                    var key = Data()
+                    key.append(outbound.sessionID)
+                    key.append(outbound.objectDigest)
+                    database.outbox.insert(key)
+                    if let materialization = pendingAckMaterialization {
+                        guard var intent = database.ackIntents[materialization.receiptKey],
+                              !intent.isQueued,
+                              !intent.isAbandoned else {
+                            throw TxError.noPendingAck
+                        }
+                        intent.stagedEnvelope = materialization.packedEnvelope
+                        intent.queueObjectID = materialization.ackObjectDigest
+                        database.ackIntents[materialization.receiptKey] = intent
+                    }
                 }
                 if let value = pendingAck {
                     let receipt = Self.ackReceipt(from: value)
@@ -314,6 +390,8 @@ final class ATSAMEndpointTransactionV1Tests: XCTestCase {
                 active = false
                 pending = nil
                 pendingAck = nil
+                pendingOutbound = nil
+                pendingAckMaterialization = nil
             }
 
             private static func receipt(
@@ -401,6 +479,23 @@ final class ATSAMEndpointTransactionV1Tests: XCTestCase {
             }
             objects[objectID] = packedEnvelope
         }
+
+        func contains(objectID: Data) throws -> Bool {
+            objects[objectID] != nil
+        }
+
+        @discardableResult
+        func deleteIfPresent(objectID: Data) throws -> Bool {
+            objects.removeValue(forKey: objectID) != nil
+        }
+    }
+
+    private final class CountingAckDialer: Endpoint.AckDialer {
+        private(set) var callCount = 0
+
+        func dial(packedEnvelope: Data, ackObjectDigest: Data) throws {
+            callCount += 1
+        }
     }
 
     private final class RealAckMaterializer: Endpoint.AckMaterializer {
@@ -411,16 +506,35 @@ final class ATSAMEndpointTransactionV1Tests: XCTestCase {
             self.fixture = fixture
         }
 
-        func materializeCommittedAck(_ intent: Endpoint.AckIntent) throws -> Data {
+        func prepareCommittedAck(
+            intent: Endpoint.AckIntent,
+            session: Endpoint.BoundSession,
+            state: Endpoint.ProtectedSessionState,
+            createdAtMs: UInt64,
+            expiresAtMs: UInt64
+        ) throws -> Endpoint.PreparedAckOutbound {
             calls += 1
-            let createdAt = fixture.nowMs + 1
+            let direction = ATSAMIndexedSessionProfile.Direction.responderToInitiator
+            let pair = try ATSAMIndexedSessionProfile.endpoints(
+                initiatorAddress: fixture.initiatorAddress,
+                responderAddress: fixture.responderAddress,
+                direction: direction
+            )
+            let index = state.nextAckSendIndex
+            var chainKey = state.ackSendChainKey
+            _ = try ATSAMIndexedSessionProfile.laneMessageKey(
+                chainKey: chainKey,
+                sender: pair.sender,
+                recipient: pair.recipient
+            )
+            chainKey = try ATSAMIndexedSessionProfile.advanceChainKey(chainKey)
             let outerMessageID = Data(repeating: 0xD4, count: 16)
             let innerNonce = Data(repeating: 0x39, count: 12)
             var signedAck = ATSAMIndexedSessionProfile.SignedAck(
                 ackedMessageId: intent.ackedMessageID,
                 status: intent.status.rawValue,
                 ackNonce: innerNonce,
-                createdAtMs: createdAt,
+                createdAtMs: createdAtMs,
                 signature: Data(repeating: 0, count: 64)
             )
             let signature = try fixture.responderSigningKey.signature(
@@ -430,25 +544,24 @@ final class ATSAMEndpointTransactionV1Tests: XCTestCase {
                 ackedMessageId: intent.ackedMessageID,
                 status: intent.status.rawValue,
                 ackNonce: innerNonce,
-                createdAtMs: createdAt,
+                createdAtMs: createdAtMs,
                 signature: Data(signature)
             )
             let plaintext = try ATSAMIndexedSessionProfile.encodeSignedAck(signedAck)
-            let direction = ATSAMIndexedSessionProfile.Direction.responderToInitiator
             let sealed = try ATSAMIndexedSessionProfile.sealAck(
                 root: fixture.rootKey,
                 initiatorAddress: fixture.initiatorAddress,
                 responderAddress: fixture.responderAddress,
                 direction: direction,
-                index: 0,
+                index: index,
                 outerMessageId: outerMessageID,
                 plaintext: plaintext,
                 nonce: Data(repeating: 0x71, count: 12)
             )
             let route = try ATSAMIndexedSessionProfile.deriveRouteTag(
                 root: fixture.rootKey,
-                createdAtMs: createdAt,
-                index: 0,
+                createdAtMs: createdAtMs,
+                index: index,
                 envelopeType: RavenEnvelopeV1.EnvType.ack.rawValue,
                 direction: direction
             )
@@ -458,14 +571,36 @@ final class ATSAMEndpointTransactionV1Tests: XCTestCase {
                 messageId: outerMessageID,
                 routingTag: route,
                 destDeviceHint: 0,
-                createdAtMs: createdAt,
-                expiresAtMs: createdAt + 60_000,
+                createdAtMs: createdAtMs,
+                expiresAtMs: expiresAtMs,
                 antiReplayNonce: Data(repeating: 0x53, count: 12),
                 messageCiphertext: sealed,
                 senderAuthentication: Data(repeating: 0, count: 64)
             )
             envelope.sign(with: fixture.responderSigningKey)
-            return envelope.pack()
+            let packed = envelope.pack()
+            let ackObjectDigest = envelope.relayObjectDigest()
+            let generation = state.generation + 1
+            let pendingOutbound = Endpoint.PendingOutbound(
+                sessionID: session.sessionID,
+                objectDigest: ackObjectDigest,
+                messageID: outerMessageID,
+                recipientDevice: intent.expectedRemoteDeviceID,
+                ratchetIndex: index,
+                immutableEnvelopeBytes: packed,
+                sessionGeneration: generation,
+                sourceAckIntent: intent.receiptKey.objectDigest
+            )
+            return Endpoint.PreparedAckOutbound(
+                sourceMessageDigest: intent.receiptKey.objectDigest,
+                ackObjectDigest: ackObjectDigest,
+                messageID: outerMessageID,
+                packedEnvelope: packed,
+                advancedAckSendChainKey: chainKey,
+                advancedNextAckSendIndex: index + 1,
+                committedGeneration: generation,
+                pendingOutbound: pendingOutbound
+            )
         }
     }
 
@@ -546,6 +681,8 @@ final class ATSAMEndpointTransactionV1Tests: XCTestCase {
             hint: UInt64? = nil,
             accepted: Bool = true,
             revoked: Bool = false,
+            contactAllowed: Bool? = nil,
+            sessionConfirmed: Bool = true,
             signingPublicKey: Data? = nil,
             certificate: ATSAMPairInitV1.SignedDeviceCertificate? = nil,
             certificateHash: Data? = nil,
@@ -575,7 +712,9 @@ final class ATSAMEndpointTransactionV1Tests: XCTestCase {
                 sessionExpiresAtMs: nowMs + 8 * 86_400_000,
                 senderDeviceAccepted: accepted,
                 senderDeviceRevoked: revoked,
-                publicGeneration: generation
+                publicGeneration: generation,
+                senderContactAllowed: contactAllowed,
+                sessionConfirmed: sessionConfirmed
             )
         }
 
@@ -624,6 +763,20 @@ final class ATSAMEndpointTransactionV1Tests: XCTestCase {
                 ),
                 nextReceiveIndex: 0,
                 skippedMessageKeys: [:],
+                sendChainKey: try ATSAMIndexedSessionProfile.initialChainKey(
+                    root: rootKey,
+                    sender: pair.recipient,
+                    recipient: pair.sender
+                ),
+                nextSendIndex: 0,
+                ackSendChainKey: try ATSAMIndexedSessionProfile.ackChainKeyAtIndex(
+                    root: rootKey,
+                    initiatorAddress: initiatorAddress,
+                    responderAddress: responderAddress,
+                    direction: .responderToInitiator,
+                    index: 0
+                ),
+                nextAckSendIndex: 0,
                 ackReceiveChainKey: try ATSAMIndexedSessionProfile.ackChainKeyAtIndex(
                     root: rootKey,
                     initiatorAddress: initiatorAddress,
@@ -635,6 +788,7 @@ final class ATSAMEndpointTransactionV1Tests: XCTestCase {
                 skippedAckKeys: [:],
                 pendingAcceptance: nil,
                 pendingAckAcceptance: nil,
+                pendingOutbound: nil,
                 generation: generation
             )
         }
@@ -798,9 +952,21 @@ final class ATSAMEndpointTransactionV1Tests: XCTestCase {
             nonceSource = IncrementingNonceSource()
         }
 
-        func session() -> Endpoint.BoundSession {
+        func session(
+            contactAllowed: Bool? = nil,
+            sessionConfirmed: Bool = true,
+            accepted: Bool = true,
+            revoked: Bool = false
+        ) -> Endpoint.BoundSession {
             let generation = protectedStore.states[fixture.sessionID]?.generation ?? 7
-            return fixture.session(direction: direction, generation: generation)
+            return fixture.session(
+                direction: direction,
+                accepted: accepted,
+                revoked: revoked,
+                contactAllowed: contactAllowed,
+                sessionConfirmed: sessionConfirmed,
+                generation: generation
+            )
         }
 
         func registerOutstanding(
@@ -833,6 +999,23 @@ final class ATSAMEndpointTransactionV1Tests: XCTestCase {
                 nonceSource: overrideNonce ?? nonceSource,
                 faults: faults
             )
+        }
+
+        func ackWorker(
+            queue: MemoryQueue,
+            materializer: RealAckMaterializer,
+            dialer: CountingAckDialer = CountingAckDialer(),
+            faults: any Endpoint.FaultInjector = Endpoint.NoFaults()
+        ) -> (Endpoint.AckWorker, CountingAckDialer) {
+            let worker = Endpoint.AckWorker(
+                protectedStore: protectedStore,
+                database: database,
+                queue: queue,
+                materializer: materializer,
+                dialer: dialer,
+                faults: faults
+            )
+            return (worker, dialer)
         }
     }
 
@@ -1349,45 +1532,67 @@ final class ATSAMEndpointTransactionV1Tests: XCTestCase {
         tamperedAEAD.messageCiphertext[50] ^= 0x01
         tamperedAEAD.sign(with: fixture.responderSigningKey)
 
-        let cases: [(String, Data, TxError, Bool)] = [
-            ("wrong route", wrongRoute.pack(), .wrongRouteTag, true),
+        var wrongType = try XCTUnwrap(RavenEnvelopeV1.unpack(
+            try fixture.ackEnvelope(ackedMessageID: messageID)
+        ))
+        wrongType.envType = RavenEnvelopeV1.EnvType.message.rawValue
+        wrongType.sign(with: fixture.responderSigningKey)
+
+        let cases: [(String, Data, TxError, Bool, Endpoint.BoundSession?)] = [
+            ("wrong route", wrongRoute.pack(), .wrongRouteTag, true, nil),
             ("wrong hint", try fixture.ackEnvelope(
                 ackedMessageID: messageID,
                 hint: 9
-            ), .wrongDeviceHint, true),
+            ), .wrongDeviceHint, true, nil),
             ("bad outer signature", try fixture.ackEnvelope(
                 ackedMessageID: messageID,
                 outerSigner: wrongKey
-            ), .invalidOuterSignature, true),
-            ("tampered AEAD", tamperedAEAD.pack(), .authenticationFailed, true),
+            ), .invalidOuterSignature, true, nil),
+            ("tampered AEAD", tamperedAEAD.pack(), .authenticationFailed, true, nil),
             ("wrong AAD", try fixture.ackEnvelope(
                 ackedMessageID: messageID,
                 aadMessageID: Data(repeating: 0xC1, count: 16)
-            ), .authenticationFailed, true),
+            ), .authenticationFailed, true, nil),
             ("bad inner signature", try fixture.ackEnvelope(
                 ackedMessageID: messageID,
                 innerSigner: wrongKey
-            ), .ackInnerSignatureInvalid, true),
+            ), .ackInnerSignatureInvalid, true, nil),
             ("inner timestamp mismatch", try fixture.ackEnvelope(
                 ackedMessageID: messageID,
                 innerCreatedAt: fixture.nowMs - 1
-            ), .ackTimestampMismatch, true),
+            ), .ackTimestampMismatch, true, nil),
             ("not outstanding", try fixture.ackEnvelope(
                 ackedMessageID: Data(repeating: 0xB2, count: 16)
-            ), .ackOutstandingMismatch, false),
+            ), .ackOutstandingMismatch, false, nil),
             ("jump 257", try fixture.ackEnvelope(
                 index: 257,
                 ackedMessageID: messageID
-            ), .indexJumpTooLarge, true)
+            ), .indexJumpTooLarge, true, nil),
+            ("wrong envelope type", wrongType.pack(), .wrongEnvelopeType, true, nil),
+            ("revoked device", try fixture.ackEnvelope(
+                ackedMessageID: messageID
+            ), .revokedDevice, true, nil),
+            ("unaccepted device", try fixture.ackEnvelope(
+                ackedMessageID: messageID
+            ), .unacceptedDevice, true, nil)
         ]
 
-        for (label, packed, expected, register) in cases {
+        for (label, packed, expected, register, boundOverride) in cases {
             let harness = try Harness(direction: .responderToInitiator)
             if register { harness.registerOutstanding(messageID: messageID) }
+            let bound: Endpoint.BoundSession
+            if label == "revoked device" {
+                bound = harness.session(revoked: true)
+            } else if label == "unaccepted device" {
+                bound = harness.session(accepted: false)
+            } else {
+                bound = boundOverride ?? harness.session()
+            }
             await assertAckRejected(
                 packed,
                 expected: expected,
                 harness: harness,
+                session: bound,
                 label: label
             )
             XCTAssertEqual(harness.database.ackReceipts.count, 0, label)
@@ -1401,6 +1606,105 @@ final class ATSAMEndpointTransactionV1Tests: XCTestCase {
                 XCTAssertEqual(harness.outstandingState(messageID: messageID), .sent, label)
             }
         }
+    }
+
+    func testOriginAckContactGateAndSessionConfirmedRefuseWithoutDeliveryChange() async throws {
+        let messageID = Data(repeating: 0xE1, count: 16)
+        let packed = try Fixture().ackEnvelope(ackedMessageID: messageID)
+
+        do {
+            let harness = try Harness(direction: .responderToInitiator)
+            harness.registerOutstanding(messageID: messageID)
+            await assertAckRejected(
+                packed,
+                expected: .contactBlocked,
+                harness: harness,
+                session: harness.session(contactAllowed: false),
+                label: "contact gate blocked"
+            )
+        }
+
+        do {
+            let harness = try Harness(direction: .responderToInitiator)
+            harness.registerOutstanding(messageID: messageID)
+            await assertAckRejected(
+                packed,
+                expected: .sessionNotConfirmed,
+                harness: harness,
+                session: harness.session(sessionConfirmed: false),
+                label: "provisional session"
+            )
+        }
+
+        do {
+            let harness = try Harness(direction: .responderToInitiator)
+            harness.registerOutstanding(messageID: messageID)
+            var state = try XCTUnwrap(harness.protectedStore.states[harness.fixture.sessionID])
+            state.pendingAckAcceptance = Endpoint.PendingAckAcceptance(
+                receiptKey: Endpoint.ReceiptKey(
+                    sessionID: harness.fixture.sessionID,
+                    objectDigest: Data(repeating: 0xF0, count: 32)
+                ),
+                outerMessageID: Data(repeating: 0xF1, count: 16),
+                remoteDeviceID: harness.session().remoteDeviceEd25519PublicKey,
+                ackedMessageID: messageID,
+                status: .delivered,
+                ackNonce: Data(repeating: 0xF2, count: 12),
+                createdAtMs: harness.fixture.nowMs,
+                sessionGeneration: state.generation
+            )
+            state.pendingOutbound = Endpoint.PendingOutbound(
+                sessionID: harness.fixture.sessionID,
+                objectDigest: Data(repeating: 0xF3, count: 32),
+                messageID: Data(repeating: 0xF4, count: 16),
+                recipientDevice: harness.session().remoteDeviceEd25519PublicKey,
+                ratchetIndex: 0,
+                immutableEnvelopeBytes: Data(repeating: 0xF5, count: 96),
+                sessionGeneration: state.generation,
+                sourceAckIntent: nil
+            )
+            harness.protectedStore.states[harness.fixture.sessionID] = state
+            await assertAckRejected(
+                packed,
+                expected: .invalidProtectedState,
+                harness: harness,
+                label: "corrupt dual pending journals"
+            )
+        }
+    }
+
+    func testOriginAckDuplicateObjectDigestConflictFailsClosed() async throws {
+        let harness = try Harness(direction: .responderToInitiator)
+        let messageID = Data(repeating: 0xE2, count: 16)
+        harness.registerOutstanding(messageID: messageID)
+        let packed = try harness.fixture.ackEnvelope(ackedMessageID: messageID)
+        guard let envelope = RavenEnvelopeV1.unpack(packed) else {
+            return XCTFail("expected valid ACK envelope")
+        }
+        let objectDigest = envelope.relayObjectDigest()
+        let receiptKey = Endpoint.ReceiptKey(
+            sessionID: harness.fixture.sessionID,
+            objectDigest: objectDigest
+        )
+        harness.database.ackReceipts[receiptKey] = Endpoint.AckReceipt(
+            receiptKey: receiptKey,
+            outerMessageID: Data(repeating: 0xE3, count: 16),
+            remoteDeviceID: harness.session().remoteDeviceEd25519PublicKey,
+            ackedMessageID: messageID,
+            status: .delivered,
+            ackNonce: Data(repeating: 0x39, count: 12),
+            createdAtMs: harness.fixture.nowMs,
+            sessionGeneration: 8
+        )
+
+        await assertAckRejected(
+            packed,
+            expected: .receiptCollision,
+            harness: harness,
+            label: "digest identity conflict"
+        )
+        XCTAssertEqual(harness.database.ackReceipts.count, 1)
+        XCTAssertEqual(harness.outstandingState(messageID: messageID), .sent)
     }
 
     func testOriginAckNonceConflictAndConsumedIndexReplayFailClosed() async throws {
@@ -1567,14 +1871,16 @@ final class ATSAMEndpointTransactionV1Tests: XCTestCase {
             )
             let queue = MemoryQueue()
             let materializer = RealAckMaterializer(fixture: harness.fixture)
-            let worker = Endpoint.AckWorker(
-                database: harness.database,
+            let (worker, _) = harness.ackWorker(
                 queue: queue,
                 materializer: materializer,
                 faults: OneShotFaults(point)
             )
             do {
-                _ = try await worker.enqueueOneCommittedAck()
+                _ = try await worker.enqueueOneCommittedAck(
+                    session: harness.session(),
+                    nowMs: harness.fixture.nowMs
+                )
                 XCTFail("expected ACK worker crash at \(point.rawValue)")
             } catch let error as TxError {
                 XCTAssertEqual(error, .simulatedCrash(point))
@@ -1595,12 +1901,14 @@ final class ATSAMEndpointTransactionV1Tests: XCTestCase {
                 XCTAssertEqual(queue.objects.count, 1)
             }
 
-            let retryWorker = Endpoint.AckWorker(
-                database: harness.database,
+            let retryWorker = harness.ackWorker(
                 queue: queue,
                 materializer: materializer
+            ).0
+            let retried = try await retryWorker.enqueueOneCommittedAck(
+                session: harness.session(),
+                nowMs: harness.fixture.nowMs
             )
-            let retried = try await retryWorker.enqueueOneCommittedAck()
             if point == .afterAckQueuedMark {
                 XCTAssertFalse(retried)
             } else {
@@ -1623,13 +1931,12 @@ final class ATSAMEndpointTransactionV1Tests: XCTestCase {
         let queue = MemoryQueue()
         queue.failEnqueue = true
         let materializer = RealAckMaterializer(fixture: harness.fixture)
-        let worker = Endpoint.AckWorker(
-            database: harness.database,
-            queue: queue,
-            materializer: materializer
-        )
+        let (worker, _) = harness.ackWorker(queue: queue, materializer: materializer)
         do {
-            _ = try await worker.enqueueOneCommittedAck()
+            _ = try await worker.enqueueOneCommittedAck(
+                session: harness.session(),
+                nowMs: harness.fixture.nowMs
+            )
             XCTFail("expected queue failure")
         } catch is HarnessFailure {}
         XCTAssertFalse(try XCTUnwrap(harness.database.ackIntents.values.first).isQueued)
@@ -1638,18 +1945,139 @@ final class ATSAMEndpointTransactionV1Tests: XCTestCase {
         queue.failEnqueue = false
         harness.database.failMark = true
         do {
-            _ = try await worker.enqueueOneCommittedAck()
+            _ = try await worker.enqueueOneCommittedAck(
+                session: harness.session(),
+                nowMs: harness.fixture.nowMs
+            )
             XCTFail("expected queued-mark failure")
         } catch is HarnessFailure {}
         XCTAssertFalse(try XCTUnwrap(harness.database.ackIntents.values.first).isQueued)
         XCTAssertEqual(queue.objects.count, 1)
 
         harness.database.failMark = false
-        let queued = try await worker.enqueueOneCommittedAck()
+        let queued = try await worker.enqueueOneCommittedAck(
+            session: harness.session(),
+            nowMs: harness.fixture.nowMs
+        )
         XCTAssertTrue(queued)
         XCTAssertTrue(try XCTUnwrap(harness.database.ackIntents.values.first).isQueued)
         XCTAssertEqual(queue.objects.count, 1)
         XCTAssertEqual(materializer.calls, 1)
+    }
+
+    func testAckResumeStopsAtEnqueueNotDial() async throws {
+        let harness = try Harness()
+        _ = try await harness.receiver().receive(
+            packedEnvelope: try harness.fixture.envelope(),
+            session: harness.session(),
+            nowMs: harness.fixture.nowMs
+        )
+        let intent = try XCTUnwrap(harness.database.ackIntents.values.first)
+        let materializer = RealAckMaterializer(fixture: harness.fixture)
+        let prepared = try materializer.prepareCommittedAck(
+            intent: intent,
+            session: harness.session(),
+            state: try XCTUnwrap(harness.protectedStore.states[harness.fixture.sessionID]),
+            createdAtMs: harness.fixture.nowMs + 1,
+            expiresAtMs: harness.fixture.nowMs + 60_000
+        )
+        var staged = intent
+        staged.stagedEnvelope = prepared.packedEnvelope
+        staged.queueObjectID = prepared.ackObjectDigest
+        harness.database.ackIntents[intent.receiptKey] = staged
+        var outboxKey = Data()
+        outboxKey.append(harness.fixture.sessionID)
+        outboxKey.append(prepared.ackObjectDigest)
+        harness.database.outbox.insert(outboxKey)
+        XCTAssertTrue(
+            try harness.database.hasOutboxRow(
+                sessionID: harness.fixture.sessionID,
+                objectDigest: prepared.ackObjectDigest
+            )
+        )
+
+        let queue = MemoryQueue()
+        let dialer = CountingAckDialer()
+        let (worker, trackedDialer) = harness.ackWorker(
+            queue: queue,
+            materializer: materializer,
+            dialer: dialer
+        )
+        let action = try await worker.resumeOneCommittedAck(
+            session: harness.session(),
+            nowMs: harness.fixture.nowMs,
+            allowDial: true
+        )
+        switch action {
+        case .enqueued, .queuedMarked:
+            break
+        default:
+            XCTFail("expected enqueue or queued-mark, got \(action)")
+        }
+        XCTAssertEqual(trackedDialer.callCount, 0)
+        XCTAssertEqual(queue.objects.count, 1)
+    }
+
+    func testAckQueueDeletedAfterExpiry() async throws {
+        let harness = try Harness()
+        _ = try await harness.receiver().receive(
+            packedEnvelope: try harness.fixture.envelope(),
+            session: harness.session(),
+            nowMs: harness.fixture.nowMs
+        )
+        let intent = try XCTUnwrap(harness.database.ackIntents.values.first)
+        let materializer = RealAckMaterializer(fixture: harness.fixture)
+        let prepared = try materializer.prepareCommittedAck(
+            intent: intent,
+            session: harness.session(),
+            state: try XCTUnwrap(harness.protectedStore.states[harness.fixture.sessionID]),
+            createdAtMs: harness.fixture.nowMs + 1,
+            expiresAtMs: harness.fixture.nowMs + 1_000
+        )
+        var staged = intent
+        staged.stagedEnvelope = prepared.packedEnvelope
+        staged.queueObjectID = prepared.ackObjectDigest
+        harness.database.ackIntents[intent.receiptKey] = staged
+
+        let queue = MemoryQueue()
+        try queue.enqueueImmutable(objectID: prepared.ackObjectDigest, packedEnvelope: prepared.packedEnvelope)
+        let (worker, _) = harness.ackWorker(queue: queue, materializer: materializer)
+        let abandoned = try await worker.expireSweep(
+            session: harness.session(),
+            nowMs: harness.fixture.nowMs + 2_000
+        )
+        XCTAssertEqual(abandoned, 1)
+        XCTAssertTrue(try !queue.contains(objectID: prepared.ackObjectDigest))
+        XCTAssertTrue(try XCTUnwrap(harness.database.ackIntents[intent.receiptKey]).isAbandoned)
+    }
+
+    func testSourceMessageDigestDistinctFromAckObjectDigest() async throws {
+        let harness = try Harness()
+        _ = try await harness.receiver().receive(
+            packedEnvelope: try harness.fixture.envelope(),
+            session: harness.session(),
+            nowMs: harness.fixture.nowMs
+        )
+        let intent = try XCTUnwrap(harness.database.ackIntents.values.first)
+        let queue = MemoryQueue()
+        let materializer = RealAckMaterializer(fixture: harness.fixture)
+        let (worker, _) = harness.ackWorker(queue: queue, materializer: materializer)
+        let action = try await worker.resumeOneCommittedAck(
+            session: harness.session(),
+            nowMs: harness.fixture.nowMs,
+            allowDial: false
+        )
+        guard case let .materialized(source, ack) = action else {
+            return XCTFail("expected materialized action, got \(action)")
+        }
+        XCTAssertEqual(source, intent.receiptKey.objectDigest)
+        XCTAssertNotEqual(source, ack)
+        XCTAssertEqual(
+            ack,
+            Endpoint.AckWorker.ackObjectDigest(
+                for: try XCTUnwrap(harness.database.ackIntents[intent.receiptKey]?.stagedEnvelope)
+            )
+        )
     }
 
     // MARK: - Assertions
@@ -1702,6 +2130,7 @@ final class ATSAMEndpointTransactionV1Tests: XCTestCase {
         _ packed: Data,
         expected: TxError,
         harness: Harness,
+        session: Endpoint.BoundSession? = nil,
         label: String = "",
         file: StaticString = #filePath,
         line: UInt = #line
@@ -1709,7 +2138,7 @@ final class ATSAMEndpointTransactionV1Tests: XCTestCase {
         do {
             _ = try await harness.receiver().acceptAck(
                 packedEnvelope: packed,
-                session: harness.session(),
+                session: session ?? harness.session(),
                 nowMs: harness.fixture.nowMs
             )
             XCTFail("expected ACK rejection \(label)", file: file, line: line)

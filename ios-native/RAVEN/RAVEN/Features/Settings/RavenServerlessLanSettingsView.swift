@@ -20,8 +20,10 @@ struct RavenServerlessLanSettingsView: View {
     @State private var statusMessage: String?
     @State private var localFingerprint: String = ""
     @State private var localPubHex: String = ""
+    @State private var localDevicePubHex: String = ""
     @State private var localRavenAddress: String = ""
     @State private var copiedLocalPub = false
+    @State private var copiedDevicePub = false
     @State private var copiedWhoami = false
 
     var body: some View {
@@ -79,7 +81,7 @@ struct RavenServerlessLanSettingsView: View {
                 }
                 if !localPubHex.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Ed25519 pub (hex) — paste into raven-node --peer-pub-hex")
+                        Text("User Ed25519 pub (hex) — identity / whoami")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Text(localPubHex)
@@ -94,7 +96,7 @@ struct RavenServerlessLanSettingsView: View {
                                 }
                             } label: {
                                 Label(
-                                    copiedLocalPub ? "Copied" : "Copy pub hex",
+                                    copiedLocalPub ? "Copied" : "Copy user pub",
                                     systemImage: copiedLocalPub ? "checkmark.circle.fill" : "doc.on.doc"
                                 )
                             }
@@ -115,10 +117,32 @@ struct RavenServerlessLanSettingsView: View {
                         }
                     }
                 }
+                if !localDevicePubHex.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Device Ed25519 pub (hex) — Terminal contacts.json pub_hex (§6.3.1)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(localDevicePubHex)
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                        Button {
+                            SecurePasteboard.copy(localDevicePubHex)
+                            copiedDevicePub = true
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                                copiedDevicePub = false
+                            }
+                        } label: {
+                            Label(
+                                copiedDevicePub ? "Copied" : "Copy device pub for Terminal",
+                                systemImage: copiedDevicePub ? "checkmark.circle.fill" : "key.horizontal"
+                            )
+                        }
+                    }
+                }
             } header: {
                 Text("This device (public only)")
             } footer: {
-                Text("Never share seeds or private keys. For Mac Terminal: Copy whoami for ash, then in ash menu 3 → a paste that block (not cargo / cd).\n\nTo receive Mac→phone messages: leave Raven open with this Host/Port saved — the app pulls the Mac queue over Wi‑Fi.")
+                Text("Never share seeds or private keys. Terminal `contacts.json` `pub_hex` must be the iPhone **device_ed_pub** above (not user pub when they differ). Enable Lab Test A (`RAVEN_LAB_TEST_A=1` or `-ravenLabTestA`) — never Release.")
             }
 
             Section {
@@ -190,7 +214,8 @@ struct RavenServerlessLanSettingsView: View {
                 Button("Ensure lab cert + prekey") {
                     do {
                         _ = try ATSAMLabTrustStore.ensureLocalMaterial()
-                        statusMessage = "Lab cert + prekey ready (Keychain)."
+                        localDevicePubHex = try ATSAMLabTrustStore.localDeviceEdPubHex()
+                        statusMessage = "Lab cert + prekey ready (Keychain). Device pub for Terminal contacts.json copied below."
                     } catch {
                         statusMessage = "Lab material failed: \(error.localizedDescription)"
                     }
@@ -217,15 +242,117 @@ struct RavenServerlessLanSettingsView: View {
                     let clip = UIPasteboard.general.string ?? ""
                     do {
                         try ATSAMLabTrustStore.importPeerCertJSON(clip)
-                        statusMessage = "Imported Mac device cert."
+                        statusMessage = "Imported Mac device cert — device_ed_pub stored for Noise expected_pub."
                     } catch {
                         statusMessage = "Import cert failed: \(error.localizedDescription)"
+                    }
+                }
+                Button("Paste Mac prekey JSON from clipboard") {
+                    let clip = UIPasteboard.general.string ?? ""
+                    do {
+                        try ATSAMLabTrustStore.importPeerPrekeyJSON(clip)
+                        statusMessage = "Imported Mac prekey bundle for PairInit dial."
+                    } catch {
+                        statusMessage = "Import prekey failed: \(error.localizedDescription)"
+                    }
+                }
+                Button("Block saved peer (lab Secure LAN)") {
+                    do {
+                        let hex = peerPubHex.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                        guard let pub = Data(ravenHex: hex), pub.count == 32 else {
+                            statusMessage = "Block needs a valid 32-byte peer pub hex."
+                            return
+                        }
+                        try ATSAMLabTrustStore.blockPeer(deviceEd: pub, identityPub: pub, noiseEd: pub)
+                        let short = String(hex.prefix(16))
+                        statusMessage = "Lab-blocked peer \(Self.fingerprint(ofPubHex: hex) ?? short)."
+                    } catch {
+                        statusMessage = "Block failed: \(error.localizedDescription)"
+                    }
+                }
+                Button("Unblock saved peer (lab)") {
+                    do {
+                        let hex = peerPubHex.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                        guard let pub = Data(ravenHex: hex), pub.count == 32 else {
+                            statusMessage = "Unblock needs a valid 32-byte peer pub hex."
+                            return
+                        }
+                        try ATSAMLabTrustStore.unblockPeer(deviceEd: pub, identityPub: pub, noiseEd: pub)
+                        statusMessage = "Lab BlockList cleared for peer (revocation denies stay sticky)."
+                    } catch {
+                        statusMessage = "Unblock failed: \(error.localizedDescription)"
+                    }
+                }
+                Button("Paste RVDR1 revocation (sticky deny)") {
+                    let clip = UIPasteboard.general.string ?? ""
+                    do {
+                        let trimmed = clip.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let wire: Data
+                        if let b64 = Data(base64Encoded: trimmed), !b64.isEmpty {
+                            wire = b64
+                        } else if let hex = Data(ravenHex: trimmed), !hex.isEmpty {
+                            wire = hex
+                        } else {
+                            statusMessage = "Revocation paste needs base64 or hex RVDR1 bytes."
+                            return
+                        }
+                        let peerHex = peerPubHex.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                        guard let peerDev = Data(ravenHex: peerHex), peerDev.count == 32 else {
+                            statusMessage = "Import Mac cert first / set peer pub hex (signer identity)."
+                            return
+                        }
+                        let peerCert = try ATSAMLabTrustStore.peerCertificate(forDeviceEd: peerDev)
+                        let rec = try ATSAMLabTrustStore.applyImportedRevocation(
+                            wire: wire,
+                            identityEdPub: peerCert.identityEd25519PublicKey
+                        )
+                        statusMessage = "Sticky revocation deny for device \(rec.deviceEdPub.ravenHex.prefix(16))…"
+                    } catch {
+                        statusMessage = "Revocation apply failed: \(error.localizedDescription)"
                     }
                 }
             } header: {
                 Text("Test A trust OOB (paste)")
             } footer: {
-                Text("Exchange public cert + prekey JSON over the same Wi‑Fi lab only. Never paste private keys. After Accept, PairResponse uplinks to Mac:7420 automatically.")
+                Text("Exchange device cert + prekey JSON over Wi‑Fi lab only. Paste Mac **device cert JSON** so Noise expected_pub uses Mac device_ed_pub. Terminal contacts.json pub_hex = iPhone device_ed_pub. Block/Unblock and RVDR1 paste drive Secure LAN admission. Never paste private keys.")
+            }
+
+            if ATSAMLabGate.isEnabled, RavenServerlessLanConfig.stored != nil {
+                Section {
+                    LabeledContent("Lab endpoint") {
+                        Text(ATSAMLabEndpointHost.shared.lastLabStatus)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                    if let sqlErr = ATSAMLabEndpointHost.shared.acceptanceDBErrorDescription {
+                        Text("SQLCipher: unavailable — \(sqlErr)")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                    Button("Dial PairInit to Mac (secure)") {
+                        Task {
+                            do {
+                                statusMessage = try await ATSAMLabEndpointHost.shared.dialPairInitToMac()
+                            } catch {
+                                statusMessage = "PairInit dial failed: \(error.localizedDescription)"
+                            }
+                        }
+                    }
+                    Button("Send lab indexed text") {
+                        Task {
+                            do {
+                                statusMessage = try await ATSAMLabEndpointHost.shared.sendLabIndexedMessage("lab ping \(Int(Date().timeIntervalSince1970))")
+                            } catch {
+                                statusMessage = "Lab send failed: \(error.localizedDescription)"
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Test A live endpoint (Task 18)")
+                } footer: {
+                    Text("Secure dial only — never RavenServerlessLanPath. PairInit expects Mac prekey imported. Send requires an installed lab session.")
+                }
             }
             #endif
 
@@ -286,6 +413,9 @@ struct RavenServerlessLanSettingsView: View {
         .navigationTitle("Serverless LAN")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: load)
+        .onDisappear {
+            // Foreground-only secure listen stops when leaving lab screen if endpoint host idle.
+        }
     }
 
     private var canSave: Bool {
@@ -324,6 +454,22 @@ struct RavenServerlessLanSettingsView: View {
             localPubHex = ""
             localRavenAddress = ""
         }
+        #if DEBUG
+        if ATSAMLabGate.isEnabled {
+            localDevicePubHex = (try? ATSAMLabTrustStore.localDeviceEdPubHex()) ?? localPubHex
+        } else {
+            localDevicePubHex = localPubHex
+        }
+        #else
+        localDevicePubHex = localPubHex
+        #endif
+        refreshSecureListenIfLabEnabled()
+    }
+
+    private func refreshSecureListenIfLabEnabled() {
+        guard ATSAMLabGate.isEnabled,
+              FeatureFlag.isRavenEnvelopeV1Enabled else { return }
+        ATSAMLabEndpointHost.shared.refreshSecureListen()
     }
 
     private func saveConfig() {
@@ -346,11 +492,13 @@ struct RavenServerlessLanSettingsView: View {
         peerPubHex = hex
         let peerFp = Self.fingerprint(ofPubHex: hex) ?? "—"
         let phoneIp = Self.wifiIPv4() ?? "?"
-        statusMessage = "Saved Mac \(trimmedHost):\(port) · phone listens :\(listenPort) · this IP \(phoneIp) · peer \(peerFp). Allow Local Network if asked."
+        statusMessage = "Saved Mac \(trimmedHost):\(port) · phone secure listen :\(listenPort) · this IP \(phoneIp) · peer \(peerFp). Allow Local Network if asked."
         RavenEnvelopeBridgeService.shared.stop()
         RavenEnvelopeBridgeService.shared.start()
         if FeatureFlag.isRavenEnvelopeV1Enabled {
             RavenEnvelopeChatWire.shared.start()
+            ATSAMLabEndpointHost.shared.start()
+            refreshSecureListenIfLabEnabled()
         }
     }
 

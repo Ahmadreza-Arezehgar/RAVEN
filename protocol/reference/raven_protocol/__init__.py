@@ -8,6 +8,8 @@ __all__ = [
     "bech32m", "address", "fingerprint", "envelope",
     "ack", "alias", "routing_tag", "device_cert", "capabilities",
     "prekey", "store_tags", "indexed_session", "pair_init",
+    "device_revocation",
+    "device_revocation_conformance",
     "pair_init_v2",
     "hybrid_ratchet_v2",
     "hybrid_ratchet_v2_state",

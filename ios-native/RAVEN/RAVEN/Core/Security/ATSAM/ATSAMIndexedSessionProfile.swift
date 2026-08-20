@@ -17,7 +17,7 @@ enum ATSAMIndexedSessionProfile {
     /// Tripwire: Release always false. DEBUG lab via RAVEN_LAB_TEST_A.
     static var productionEnabled: Bool {
         #if DEBUG
-        ATSAMEndpointDurableAdapters.labTestAEnabled
+        ATSAMLabGate.isEnabled
         #else
         false
         #endif

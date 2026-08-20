@@ -10,6 +10,10 @@ use crate::prekey_bundle::{PrekeyBundle, PrekeyBundleJson};
 pub const RLB1_MAGIC: &[u8; 4] = b"RLB1";
 pub const RLB1_VERSION: u8 = 1;
 pub const RLB1_KIND_OFFER: u8 = 2;
+/// `6 + u32 cert_len + u32 prekey_len` header bytes before JSON payloads.
+pub const RLB1_HEADER_LEN: usize = 14;
+/// Whole offer must fit in one Noise transport plaintext (`65535 − 16` tag).
+pub const MAX_OFFER_WIRE: usize = 65519;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LanBundle {
@@ -24,7 +28,10 @@ pub fn encode_offer(bundle: &LanBundle) -> Result<Vec<u8>, String> {
     if cert.len() > 64 * 1024 || prekey.len() > 64 * 1024 {
         return Err("rlb1 offer too large".into());
     }
-    let mut out = Vec::with_capacity(6 + 8 + cert.len() + prekey.len());
+    if RLB1_HEADER_LEN + cert.len() + prekey.len() > MAX_OFFER_WIRE {
+        return Err("rlb1 offer exceeds transport plaintext".into());
+    }
+    let mut out = Vec::with_capacity(RLB1_HEADER_LEN + cert.len() + prekey.len());
     out.extend_from_slice(RLB1_MAGIC);
     out.push(RLB1_VERSION);
     out.push(RLB1_KIND_OFFER);
@@ -44,6 +51,9 @@ pub fn decode_offer(bytes: &[u8]) -> Result<LanBundle, String> {
     }
     if bytes[5] != RLB1_KIND_OFFER {
         return Err("rlb1 kind".into());
+    }
+    if bytes.len() > MAX_OFFER_WIRE {
+        return Err("rlb1 offer exceeds transport plaintext".into());
     }
     let cert_len = u32::from_be_bytes(bytes[6..10].try_into().unwrap()) as usize;
     let cert_start: usize = 10;
@@ -136,5 +146,70 @@ mod tests {
         let back = decode_offer(&wire).unwrap();
         assert_eq!(back.cert, offer.cert);
         assert_eq!(back.prekey, offer.prekey);
+    }
+
+    #[test]
+    fn combined_offer_cap_rejects_oversize() {
+        let user = Identity::from_seed(&[0x51; 32]);
+        let now = 1_700_000_000_000u64;
+        let huge_id = "x".repeat(60_000);
+        let cert = crate::device_cert::DeviceCertificate::issue(
+            &user,
+            user.public_key_bytes(),
+            [0x61; 32],
+            &huge_id,
+            now - 60_000,
+            now + 86_400_000,
+            0,
+        )
+        .unwrap();
+        let prekey = PrekeyBundle::from_hybrid_public(
+            &huge_id,
+            [0x61; 32],
+            vec![0x02; crate::prekey_bundle::MLKEM768_EK_LEN],
+            1,
+            now,
+            now + 86_400_000,
+        )
+        .unwrap()
+        .sign(&user)
+        .unwrap();
+        let offer = LanBundle { cert, prekey };
+        let cert_json = serde_json::to_vec(&offer.cert).unwrap();
+        let prekey_json = serde_json::to_vec(&offer.prekey.to_json()).unwrap();
+        assert!(RLB1_HEADER_LEN + cert_json.len() + prekey_json.len() > MAX_OFFER_WIRE);
+        assert_eq!(
+            encode_offer(&offer),
+            Err("rlb1 offer exceeds transport plaintext".into())
+        );
+        let mut wire = encode_offer(&LanBundle {
+            cert: crate::device_cert::DeviceCertificate::issue(
+                &user,
+                user.public_key_bytes(),
+                [0x61; 32],
+                "ok-device",
+                now - 60_000,
+                now + 86_400_000,
+                0,
+            )
+            .unwrap(),
+            prekey: PrekeyBundle::from_hybrid_public(
+                "ok-device",
+                [0x61; 32],
+                vec![0x02; crate::prekey_bundle::MLKEM768_EK_LEN],
+                1,
+                now,
+                now + 86_400_000,
+            )
+            .unwrap()
+            .sign(&user)
+            .unwrap(),
+        })
+        .unwrap();
+        wire.resize(MAX_OFFER_WIRE + 1, 0);
+        assert_eq!(
+            decode_offer(&wire),
+            Err("rlb1 offer exceeds transport plaintext".into())
+        );
     }
 }

@@ -9,6 +9,13 @@ import CryptoKit
 import Foundation
 import Security
 
+private let labTrustPeerCertAccountPrefix = "lab.peer.cert."
+private let labBlockDevicePrefix = "lab.block.v1.dev."
+private let labBlockIdentityPrefix = "lab.block.v1.id."
+private let labBlockNoisePrefix = "lab.block.v1.noise."
+private let labRevokedDevicePrefix = "lab.revoked.v1.dev."
+private let labRevokedIdentityPrefix = "lab.revoked.v1.id."
+
 @MainActor
 enum ATSAMLabTrustStore {
 
@@ -16,7 +23,8 @@ enum ATSAMLabTrustStore {
     private static let certAccount = "lab.local.device_cert"
     private static let prekeyPrivAccount = "lab.local.prekey_hybrid_secret"
     private static let prekeyPubAccount = "lab.local.prekey_bundle_json"
-    private static let peerCertAccountPrefix = "lab.peer.cert."
+    private static let peerCertAccountPrefix = labTrustPeerCertAccountPrefix
+    private static let peerPrekeyAccountPrefix = "lab.peer.prekey."
     private static let service = "app.raven.ios.atsam.lab.trust"
 
     struct LabCertJSON: Codable {
@@ -87,6 +95,45 @@ enum ATSAMLabTrustStore {
         let cert = try loadOrIssueLocalCert(identityPub: idPub)
         let (prekey, xSecret, mlkemSeed) = try loadOrPublishLocalPrekey(identityPub: idPub)
         return (cert, prekey, xSecret, mlkemSeed)
+    }
+
+    /// §6.3.1 — Terminal `contacts.json` `pub_hex` must be this device Ed25519 (32-byte hex).
+    static func localDeviceEdPubHex() throws -> String {
+        let (cert, _, _, _) = try ensureLocalMaterial()
+        return try parseCertFields(cert).deviceEd.ravenHex
+    }
+
+    static func localUserEdPubHex() throws -> String {
+        let cert = try localCertificate()
+        return cert.identityEd25519PublicKey.ravenHex
+    }
+
+    /// Peer device Ed25519 from imported lab cert (Noise `expected_pub` source).
+    static func peerDeviceEdPub(forIdentityPub identityPub: Data) throws -> Data {
+        let dto = try peerCertDTO(forIdentityPub: identityPub)
+        return try LabHex.data(dto.device_ed_pub)
+    }
+
+    static func peerDeviceEdPubHex(forIdentityPub identityPub: Data) throws -> String {
+        try peerDeviceEdPub(forIdentityPub: identityPub).ravenHex
+    }
+
+    static func importedPeerDeviceEdPubs() throws -> [Data] {
+        guard ATSAMEndpointDurableAdapters.labTestAEnabled else { return [] }
+        let entries = try listPeerCertDTOs()
+        return try entries.map { try LabHex.data($0.device_ed_pub) }
+    }
+
+    static func removeImportedPeer(deviceEd: Data) throws {
+        let devKey = peerCertAccountPrefix + "dev." + deviceEd.ravenHex
+        if let raw = try readKeychain(account: devKey),
+           let dto = try? JSONDecoder().decode(LabCertJSON.self, from: raw) {
+            let userKey = peerCertAccountPrefix + dto.user_ed_pub
+            try deleteKeychain(account: devKey)
+            try deleteKeychain(account: userKey)
+        } else {
+            try deleteKeychain(account: devKey)
+        }
     }
 
     static func exportLocalCertJSON() throws -> String {
@@ -161,6 +208,89 @@ enum ATSAMLabTrustStore {
         )
     }
 
+    static func importPeerPrekeyJSON(_ json: String) throws {
+        guard let data = json.data(using: .utf8) else { throw TrustError.badJSON }
+        let dto = try JSONDecoder().decode(LabPrekeyJSON.self, from: data)
+        _ = try prekeyFromDTO(dto)
+        let identity = try LabHex.data(dto.identity_ed25519_pub_hex)
+        let deviceEd: Data
+        if let cert = try? peerCertificate(forIdentityPub: identity) {
+            deviceEd = try labCertFields(cert).deviceEd
+        } else if let resolved = try? peerDeviceEdForPrekeyImport(dto: dto) {
+            deviceEd = resolved
+        } else {
+            deviceEd = identity
+        }
+        let key = peerPrekeyAccountPrefix + deviceEd.ravenHex
+        try writeKeychain(account: key, data: data)
+    }
+
+    static func peerSignedPrekey(forDeviceEd deviceEd: Data) throws -> ATSAMPairInitV1.SignedPrekeyBundle {
+        let key = peerPrekeyAccountPrefix + deviceEd.ravenHex
+        guard let raw = try readKeychain(account: key) else { throw TrustError.peerCertMissing }
+        let dto = try JSONDecoder().decode(LabPrekeyJSON.self, from: raw)
+        return try prekeyFromDTO(dto)
+    }
+
+    struct LabCertFields {
+        var deviceEd: Data
+        var deviceX: Data
+        var deviceID: String
+        var notBefore: UInt64
+        var notAfter: UInt64
+        var capabilities: UInt64
+    }
+
+    struct LabPrekeyFields {
+        var identity: Data
+        var deviceID: String
+        var xPub: Data
+        var mlkemEK: Data
+        var signedPrekeyID: UInt32
+        var oneTimePrekeyID: UInt32
+        var oneTimeX: Data?
+        var createdAt: UInt64
+        var expiresAt: UInt64
+    }
+
+    static func labCertFields(_ cert: ATSAMPairInitV1.SignedDeviceCertificate) throws -> LabCertFields {
+        let parsed = try parseCertFields(cert)
+        return LabCertFields(
+            deviceEd: parsed.deviceEd,
+            deviceX: parsed.deviceX,
+            deviceID: parsed.deviceID,
+            notBefore: parsed.notBefore,
+            notAfter: parsed.notAfter,
+            capabilities: parsed.capabilities
+        )
+    }
+
+    static func labPrekeyFields(_ prekey: ATSAMPairInitV1.SignedPrekeyBundle) throws -> LabPrekeyFields {
+        let parsed = try parsePrekeyFields(prekey)
+        return LabPrekeyFields(
+            identity: parsed.identity,
+            deviceID: parsed.deviceID,
+            xPub: parsed.xPub,
+            mlkemEK: parsed.mlkemEK,
+            signedPrekeyID: parsed.signedPrekeyID,
+            oneTimePrekeyID: parsed.oneTimePrekeyID,
+            oneTimeX: parsed.oneTimeX,
+            createdAt: parsed.createdAt,
+            expiresAt: parsed.expiresAt
+        )
+    }
+
+    private static func peerDeviceEdForPrekeyImport(dto: LabPrekeyJSON) throws -> Data {
+        let certs = try listPeerCertDTOs()
+        if let match = certs.first(where: { $0.device_id == dto.device_id }) {
+            return try LabHex.data(match.device_ed_pub)
+        }
+        if certs.count == 1, let only = certs.first {
+            return try LabHex.data(only.device_ed_pub)
+        }
+        throw TrustError.peerCertMissing
+    }
+
     static func peerCertificate(forIdentityPub identityPub: Data) throws
         -> ATSAMPairInitV1.SignedDeviceCertificate {
         let key = peerCertAccountPrefix + identityPub.ravenHex
@@ -178,8 +308,123 @@ enum ATSAMLabTrustStore {
            let dto = try? JSONDecoder().decode(LabCertJSON.self, from: raw) {
             return try certFromDTO(dto)
         }
-        // Fallback: scan identity-keyed entries is not available; require paste keyed by user.
+        // Lab exports often set device_ed == user_ed; accept identity-keyed paste too.
+        if let cert = try? peerCertificate(forIdentityPub: deviceEd) {
+            return cert
+        }
         throw TrustError.peerCertMissing
+    }
+
+    /// §4.9 contact gate — durable peer cert import counts as local contact trust.
+    /// Revoked / blocked peers are never trusted even if a cert blob remains.
+    /// Keychain probe errors fail closed (not trusted).
+    nonisolated static func peerIsTrusted(deviceEd: Data) -> Bool {
+        guard ATSAMEndpointDurableAdapters.labTestAEnabled else { return false }
+        if isAdmissionDenied(deviceEd: deviceEd, identityPub: nil, noiseEd: nil) {
+            return false
+        }
+        let key = labTrustPeerCertAccountPrefix + "dev." + deviceEd.ravenHex
+        switch ATSAMLabTrustKeychain.probe(account: key) {
+        case .present: return true
+        case .absent, .error: return false
+        }
+    }
+
+    nonisolated static func peerIsTrusted(identityPub: Data) -> Bool {
+        guard ATSAMEndpointDurableAdapters.labTestAEnabled else { return false }
+        if isAdmissionDenied(deviceEd: nil, identityPub: identityPub, noiseEd: nil) {
+            return false
+        }
+        let key = labTrustPeerCertAccountPrefix + identityPub.ravenHex
+        switch ATSAMLabTrustKeychain.probe(account: key) {
+        case .present: return true
+        case .absent, .error: return false
+        }
+    }
+
+    // MARK: - Lab block list + sticky revocation deny (Secure LAN admission)
+
+    /// Explicit lab block (BlockList). Survives relaunch via Keychain.
+    /// Does **not** clear sticky revocation markers.
+    static func blockPeer(deviceEd: Data? = nil, identityPub: Data? = nil, noiseEd: Data? = nil) throws {
+        guard ATSAMEndpointDurableAdapters.labTestAEnabled else { throw TrustError.persistFailed }
+        if let deviceEd, !deviceEd.isEmpty {
+            try writeKeychain(account: labBlockDevicePrefix + deviceEd.ravenHex, data: Data([0x01]))
+        }
+        if let identityPub, !identityPub.isEmpty {
+            try writeKeychain(account: labBlockIdentityPrefix + identityPub.ravenHex, data: Data([0x01]))
+        }
+        if let noiseEd, !noiseEd.isEmpty {
+            try writeKeychain(account: labBlockNoisePrefix + noiseEd.ravenHex, data: Data([0x01]))
+        }
+    }
+
+    /// Removes lab BlockList entries only. Sticky revocation denies are retained.
+    static func unblockPeer(deviceEd: Data? = nil, identityPub: Data? = nil, noiseEd: Data? = nil) throws {
+        guard ATSAMEndpointDurableAdapters.labTestAEnabled else { throw TrustError.persistFailed }
+        if let deviceEd, !deviceEd.isEmpty {
+            try deleteKeychain(account: labBlockDevicePrefix + deviceEd.ravenHex)
+        }
+        if let identityPub, !identityPub.isEmpty {
+            try deleteKeychain(account: labBlockIdentityPrefix + identityPub.ravenHex)
+        }
+        if let noiseEd, !noiseEd.isEmpty {
+            try deleteKeychain(account: labBlockNoisePrefix + noiseEd.ravenHex)
+        }
+    }
+
+    /// Sticky deny after an accepted `RavenDeviceRevocationV1` for a device lineage.
+    static func recordRevocationDeny(deviceEd: Data, identityPub: Data) throws {
+        guard ATSAMEndpointDurableAdapters.labTestAEnabled else { throw TrustError.persistFailed }
+        guard !deviceEd.isEmpty, !identityPub.isEmpty else { throw TrustError.badHex }
+        try writeKeychain(account: labRevokedDevicePrefix + deviceEd.ravenHex, data: Data([0x01]))
+        try writeKeychain(account: labRevokedIdentityPrefix + identityPub.ravenHex, data: Data([0x01]))
+    }
+
+    /// Verify + apply an imported RVDR1 wire into sticky Secure LAN denial.
+    /// Callsite for lab Settings / host after a successful revocation paste.
+    @discardableResult
+    static func applyImportedRevocation(wire: Data, identityEdPub: Data) throws
+        -> RavenDeviceRevocationV1.Record {
+        guard ATSAMEndpointDurableAdapters.labTestAEnabled else { throw TrustError.persistFailed }
+        let rec = try RavenDeviceRevocationV1.decode(wire)
+        try RavenDeviceRevocationV1.verify(rec, identityEdPub: identityEdPub)
+        try recordRevocationDeny(deviceEd: rec.deviceEdPub, identityPub: identityEdPub)
+        return rec
+    }
+
+    /// BlockList **or** sticky revocation deny for Secure LAN / PairInit admission.
+    /// Any Keychain probe `.error` fails closed as denied.
+    nonisolated static func isAdmissionDenied(
+        deviceEd: Data?,
+        identityPub: Data?,
+        noiseEd: Data?
+    ) -> Bool {
+        guard ATSAMEndpointDurableAdapters.labTestAEnabled else { return false }
+        func denied(_ account: String) -> Bool {
+            switch ATSAMLabTrustKeychain.probe(account: account) {
+            case .present, .error: return true
+            case .absent: return false
+            }
+        }
+        if let deviceEd, !deviceEd.isEmpty {
+            let hex = deviceEd.ravenHex
+            if denied(labBlockDevicePrefix + hex) || denied(labRevokedDevicePrefix + hex) {
+                return true
+            }
+        }
+        if let identityPub, !identityPub.isEmpty {
+            let hex = identityPub.ravenHex
+            if denied(labBlockIdentityPrefix + hex) || denied(labRevokedIdentityPrefix + hex) {
+                return true
+            }
+        }
+        if let noiseEd, !noiseEd.isEmpty {
+            if denied(labBlockNoisePrefix + noiseEd.ravenHex) {
+                return true
+            }
+        }
+        return false
     }
 
     static func localSignedPrekey() throws -> ATSAMPairInitV1.SignedPrekeyBundle {
@@ -195,14 +440,134 @@ enum ATSAMLabTrustStore {
         try ensureLocalMaterial().cert
     }
 
+    /// RLB1 offer wire bytes for secure LAN session (parity with encode_local_offer).
+    static func encodeLocalRlb1Offer() throws -> Data {
+        let cert = try localCertificate()
+        let prekey = try localSignedPrekey()
+        let bundle = try rlb1BundleFromLabMaterial(cert: cert, prekey: prekey)
+        return try RavenSecureLanRlb1V1.encodeOffer(bundle)
+    }
+
+    static func rlb1BundleFromLabMaterial(
+        cert: ATSAMPairInitV1.SignedDeviceCertificate,
+        prekey: ATSAMPairInitV1.SignedPrekeyBundle
+    ) throws -> RavenSecureLanRlb1V1.LanBundle {
+        let certFields = try parseCertFields(cert)
+        let prekeyFields = try parsePrekeyFields(prekey)
+        let lanCert = RavenSecureLanRlb1V1.LanDeviceCertificate(
+            deviceEdPub: certFields.deviceEd,
+            deviceXPub: certFields.deviceX,
+            deviceID: certFields.deviceID,
+            notBeforeMs: certFields.notBefore,
+            notAfterMs: certFields.notAfter,
+            capabilities: certFields.capabilities,
+            signature: cert.signature,
+            userEdPub: cert.identityEd25519PublicKey
+        )
+        let lanPrekey = RavenSecureLanRlb1V1.LanPrekeyBundle(
+            version: 1,
+            identityEd25519Pub: prekeyFields.identity,
+            deviceID: prekeyFields.deviceID,
+            x25519Pub: prekeyFields.xPub,
+            mlkem768EK: prekeyFields.mlkemEK,
+            signedPrekeyID: prekeyFields.signedPrekeyID,
+            oneTimePrekeyID: prekeyFields.oneTimePrekeyID,
+            oneTimeX25519Pub: prekeyFields.oneTimeX,
+            createdAtMs: prekeyFields.createdAt,
+            expiresAtMs: prekeyFields.expiresAt,
+            signature: prekey.signature
+        )
+        let bundle = RavenSecureLanRlb1V1.LanBundle(cert: lanCert, prekey: lanPrekey)
+        try RavenSecureLanRlb1V1.requireIdentityBound(bundle)
+        return bundle
+    }
+
     // MARK: - Private
+
+    private static func peerCertDTO(forIdentityPub identityPub: Data) throws -> LabCertJSON {
+        let key = peerCertAccountPrefix + identityPub.ravenHex
+        guard let raw = try readKeychain(account: key),
+              let dto = try? JSONDecoder().decode(LabCertJSON.self, from: raw) else {
+            throw TrustError.peerCertMissing
+        }
+        return dto
+    }
+
+    private static func listPeerCertDTOs() throws -> [LabCertJSON] {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecReturnAttributes as String: true,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitAll,
+        ]
+        var items: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &items)
+        if status == errSecItemNotFound { return [] }
+        guard status == errSecSuccess,
+              let entries = items as? [[String: Any]] else {
+            throw TrustError.persistFailed
+        }
+        var out: [LabCertJSON] = []
+        var seenDevice: Set<String> = []
+        for entry in entries {
+            guard let account = entry[kSecAttrAccount as String] as? String,
+                  account.hasPrefix(peerCertAccountPrefix + "dev."),
+                  let raw = entry[kSecValueData as String] as? Data,
+                  let dto = try? JSONDecoder().decode(LabCertJSON.self, from: raw) else { continue }
+            guard seenDevice.insert(dto.device_ed_pub).inserted else { continue }
+            out.append(dto)
+        }
+        return out
+    }
+
+    private static func deleteKeychain(account: String) throws {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw TrustError.persistFailed
+        }
+    }
+
+    private static func cachedLocalCertMatchesIdentity(_ dto: LabCertJSON, identityPub: Data) -> Bool {
+        let identityHex = identityPub.ravenHex
+        guard dto.user_ed_pub == identityHex || dto.device_ed_pub == identityHex else {
+            return false
+        }
+        let now = UInt64(Date().timeIntervalSince1970 * 1_000)
+        return dto.not_before_ms <= now && now < dto.not_after_ms
+    }
+
+    private static func discardLocalCertIfPresent() throws {
+        try deleteKeychain(account: certAccount)
+    }
+
+    private static func discardLocalPrekeyIfPresent() throws {
+        try deleteKeychain(account: prekeyPrivAccount)
+        try deleteKeychain(account: prekeyPubAccount)
+    }
+
+    #if DEBUG
+    /// Drop cached lab cert/prekey so the next `ensureLocalMaterial()` re-issues for the current identity.
+    static func resetLocalMaterialForLabIntegration() throws {
+        guard ATSAMEndpointDurableAdapters.labTestAEnabled else { return }
+        try discardLocalCertIfPresent()
+        try discardLocalPrekeyIfPresent()
+    }
+    #endif
 
     private static func loadOrIssueLocalCert(identityPub: Data) throws
         -> ATSAMPairInitV1.SignedDeviceCertificate {
         if let raw = try readKeychain(account: certAccount),
-           let dto = try? JSONDecoder().decode(LabCertJSON.self, from: raw) {
+           let dto = try? JSONDecoder().decode(LabCertJSON.self, from: raw),
+           cachedLocalCertMatchesIdentity(dto, identityPub: identityPub) {
             return try certFromDTO(dto)
         }
+        try discardLocalCertIfPresent()
         let agreementPub = DeviceIdentityService.shared.agreementPublicKeyData
             ?? Curve25519.KeyAgreement.PrivateKey().publicKey.rawRepresentation
         let now = UInt64(Date().timeIntervalSince1970 * 1000)
@@ -244,10 +609,15 @@ enum ATSAMLabTrustStore {
         if let priv = try readKeychain(account: prekeyPrivAccount),
            priv.count == 96,
            let pubRaw = try readKeychain(account: prekeyPubAccount),
-           let dto = try? JSONDecoder().decode(LabPrekeyJSON.self, from: pubRaw) {
-            let prekey = try prekeyFromDTO(dto)
-            return (prekey, Data(priv.prefix(32)), Data(priv.suffix(64)))
+           let dto = try? JSONDecoder().decode(LabPrekeyJSON.self, from: pubRaw),
+           dto.identity_ed25519_pub_hex == identityPub.ravenHex {
+            let now = UInt64(Date().timeIntervalSince1970 * 1_000)
+            if dto.created_at_ms <= now && now < dto.expires_at_ms {
+                let prekey = try prekeyFromDTO(dto)
+                return (prekey, Data(priv.prefix(32)), Data(priv.suffix(64)))
+            }
         }
+        try discardLocalPrekeyIfPresent()
         let (ek, seed) = try ATSAMMLKem.keyGen()
         let xPriv = Curve25519.KeyAgreement.PrivateKey()
         let xPub = xPriv.publicKey.rawRepresentation
@@ -422,6 +792,40 @@ enum ATSAMLabTrustStore {
         throw TrustError.badJSON
     }
 
+    #if DEBUG
+    static func removeImportedPeerCertsForTesting() throws {
+        try removeKeychainAccounts(withPrefix: peerCertAccountPrefix)
+    }
+
+    static func removeImportedPeerPrekeysForTesting() throws {
+        try removeKeychainAccounts(withPrefix: peerPrekeyAccountPrefix)
+    }
+
+    private static func removeKeychainAccounts(withPrefix prefix: String) throws {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitAll,
+        ]
+        var items: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &items)
+        if status == errSecItemNotFound { return }
+        guard status == errSecSuccess,
+              let entries = items as? [[String: Any]] else { return }
+        for entry in entries {
+            guard let account = entry[kSecAttrAccount as String] as? String,
+                  account.hasPrefix(prefix) else { continue }
+            let deleteQuery: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: service,
+                kSecAttrAccount as String: account,
+            ]
+            SecItemDelete(deleteQuery as CFDictionary)
+        }
+    }
+    #endif
+
     private static func readKeychain(account: String) throws -> Data? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -455,6 +859,14 @@ enum ATSAMLabTrustStore {
         }
         guard status == errSecSuccess else { throw TrustError.persistFailed }
     }
+
+    #if DEBUG
+    /// Test-only: remove sticky revocation Keychain markers (production has no clear API).
+    static func debugClearRevocationMarkers(deviceEd: Data, identityPub: Data) throws {
+        try deleteKeychain(account: labRevokedDevicePrefix + deviceEd.ravenHex)
+        try deleteKeychain(account: labRevokedIdentityPrefix + identityPub.ravenHex)
+    }
+    #endif
 }
 
 private extension UInt64 {
@@ -467,5 +879,94 @@ private enum LabHex {
     static func data(_ hex: String) throws -> Data {
         guard let d = Data(ravenHex: hex) else { throw ATSAMLabTrustStore.TrustError.badHex }
         return d
+    }
+}
+
+/// Nonisolated Keychain probes for dispatch contact book (§6.3.1).
+private enum ATSAMLabTrustKeychain {
+    static let service = "app.raven.ios.atsam.lab.trust"
+
+    enum Probe: Equatable {
+        case present
+        case absent
+        case error
+    }
+
+    #if DEBUG
+    /// Test hook: force probe outcomes (nil restores SecItem).
+    nonisolated(unsafe) static var debugForcedProbe: ((String) -> Probe)?
+    #endif
+
+    nonisolated static func probe(account: String) -> Probe {
+        #if DEBUG
+        if let forced = debugForcedProbe {
+            return forced(account)
+        }
+        #endif
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: false,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        let status = SecItemCopyMatching(query as CFDictionary, nil)
+        switch status {
+        case errSecSuccess:
+            return .present
+        case errSecItemNotFound:
+            return .absent
+        default:
+            return .error
+        }
+    }
+}
+
+#if DEBUG
+/// Test-visible Keychain probe control for admission fail-closed coverage.
+enum ATSAMLabTrustStoreDebugKeychain {
+    enum Probe: Equatable {
+        case present
+        case absent
+        case error
+    }
+
+    static func reset() {
+        ATSAMLabTrustKeychain.debugForcedProbe = nil
+    }
+
+    static func forceAll(_ probe: Probe) {
+        let mapped: ATSAMLabTrustKeychain.Probe
+        switch probe {
+        case .present: mapped = .present
+        case .absent: mapped = .absent
+        case .error: mapped = .error
+        }
+        ATSAMLabTrustKeychain.debugForcedProbe = { _ in mapped }
+    }
+
+    /// Lab-test only: clears sticky revocation markers so negative apply paths can assert absence.
+    @MainActor
+    static func clearRevocationMarkers(deviceEd: Data, identityPub: Data) throws {
+        try ATSAMLabTrustStore.debugClearRevocationMarkers(deviceEd: deviceEd, identityPub: identityPub)
+    }
+}
+#endif
+
+// MARK: - Secure LAN contact book (lab trust store → dispatch)
+
+/// Durable lab contact book backed by imported device certs (§6.3.1 / §7).
+final class RavenSecureLanLabTrustContactBook: RavenSecureLanContactBook {
+    func isLocalContact(deviceEdPub: Data, userEdPub: Data) -> Bool {
+        ATSAMLabTrustStore.peerIsTrusted(deviceEd: deviceEdPub)
+            || ATSAMLabTrustStore.peerIsTrusted(identityPub: userEdPub)
+    }
+
+    func isBlocked(deviceEdPub: Data, userEdPub: Data, noiseEdPub: Data) -> Bool {
+        ATSAMLabTrustStore.isAdmissionDenied(
+            deviceEd: deviceEdPub,
+            identityPub: userEdPub,
+            noiseEd: noiseEdPub
+        )
     }
 }

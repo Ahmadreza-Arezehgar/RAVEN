@@ -351,9 +351,40 @@
 		E9A713500000000000000001 /* ATSAMEndpointTransactionV1.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9A713500000000000000002 /* ATSAMEndpointTransactionV1.swift */; };
 		F1A2B3C4D5E6F708192A3B01 /* RavenPairInitLanOob.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1A2B3C4D5E6F708192A3B02 /* RavenPairInitLanOob.swift */; };
 		F1A2B3C4D5E6F708192A3B03 /* ATSAMEndpointDurableAdapters.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1A2B3C4D5E6F708192A3B04 /* ATSAMEndpointDurableAdapters.swift */; };
+		B2C3D4E5F6A708192A3B06 /* ATSAMLabGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2C3D4E5F6A708192A3B05 /* ATSAMLabGate.swift */; };
+		RVDR1SRCBUILD000000001 /* RavenDeviceRevocationV1.swift in Sources */ = {isa = PBXBuildFile; fileRef = RVDR1SRCFILE000000001 /* RavenDeviceRevocationV1.swift */; };
+		RVDR1TESTBUILD00000001 /* RavenDeviceRevocationV1Tests.swift in Sources */ = {isa = PBXBuildFile; fileRef = RVDR1TESTFILE00000001 /* RavenDeviceRevocationV1Tests.swift */; };
+		RVDR1CONFBUILD00000001 /* RavenDeviceRevocationConformance.swift in Sources */ = {isa = PBXBuildFile; fileRef = RVDR1CONFFILE00000001 /* RavenDeviceRevocationConformance.swift */; };
+		RVDR1CONFTESTBUILD0001 /* RavenDeviceRevocationConformanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = RVDR1CONFTESTFILE0001 /* RavenDeviceRevocationConformanceTests.swift */; };
+		LANB2S001LANB2S002BUILD /* LanBlake2s.swift in Sources */ = {isa = PBXBuildFile; fileRef = LANB2S002LANB2S001FILE /* LanBlake2s.swift */; };
+		LANDETED25519BUILD000001 /* LanDeterministicEd25519.swift in Sources */ = {isa = PBXBuildFile; fileRef = LANDETED25519FILE000001 /* LanDeterministicEd25519.swift */; };
+		LANNOISE01LANNOISE02BUILD /* RavenSecureLanNoiseV1.swift in Sources */ = {isa = PBXBuildFile; fileRef = LANNOISE02LANNOISE01FILE /* RavenSecureLanNoiseV1.swift */; };
+		LANNOISE03LANNOISE04BUILD /* RavenSecureLanNoiseTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = LANNOISE04LANNOISE03FILE /* RavenSecureLanNoiseTests.swift */; };
+		LANRLB1BUILD0000000001 /* RavenSecureLanRlb1V1.swift in Sources */ = {isa = PBXBuildFile; fileRef = LANRLB1FILE00000000001 /* RavenSecureLanRlb1V1.swift */; };
+		LANRLB1TESTBUILD0000001 /* RavenSecureLanRlb1Tests.swift in Sources */ = {isa = PBXBuildFile; fileRef = LANRLB1TESTFILE0000001 /* RavenSecureLanRlb1Tests.swift */; };
+		LANTRANS01BUILD00000001 /* RavenSecureLanTransportV1.swift in Sources */ = {isa = PBXBuildFile; fileRef = LANTRANS01FILE00000001 /* RavenSecureLanTransportV1.swift */; };
+		LANEPHEM01BUILD00000001 /* RavenSecureLanEphemeralPeers.swift in Sources */ = {isa = PBXBuildFile; fileRef = LANEPHEM01FILE00000001 /* RavenSecureLanEphemeralPeers.swift */; };
+		LANDISP01BUILD000000001 /* RavenSecureLanDispatchV1.swift in Sources */ = {isa = PBXBuildFile; fileRef = LANDISP01FILE000000001 /* RavenSecureLanDispatchV1.swift */; };
+		LANSESS01BUILD000000001 /* RavenSecureLanSessionV1.swift in Sources */ = {isa = PBXBuildFile; fileRef = LANSESS01FILE000000001 /* RavenSecureLanSessionV1.swift */; };
+		LANDIAL01BUILD000000001 /* RavenSecureLanDialerV1.swift in Sources */ = {isa = PBXBuildFile; fileRef = LANDIAL01FILE000000001 /* RavenSecureLanDialerV1.swift */; };
+		LANLOOPTEST01BUILD00001 /* RavenSecureLanLoopbackIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = LANLOOPTEST01FILE00001 /* RavenSecureLanLoopbackIntegrationTests.swift */; };
+		LANA2GATE01BUILD000001 /* RavenSecureLanA2GateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = LANA2GATE01FILE000001 /* RavenSecureLanA2GateTests.swift */; };
+		LANTRANSTEST01BUILD0001 /* RavenSecureLanTransportLimitsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = LANTRANSTEST01FILE0001 /* RavenSecureLanTransportLimitsTests.swift */; };
+		LANEPHEMTEST01BUILD0001 /* RavenSecureLanEphemeralPeersTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = LANEPHEMTEST01FILE0001 /* RavenSecureLanEphemeralPeersTests.swift */; };
+		LANDISPTEST01BUILD00001 /* RavenSecureLanDispatchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = LANDISPTEST01FILE00001 /* RavenSecureLanDispatchTests.swift */; };
+		LABTASK14TESTBUILD00001 /* ATSAMLabTask14Tests.swift in Sources */ = {isa = PBXBuildFile; fileRef = LABTASK14TESTFILE00001 /* ATSAMLabTask14Tests.swift */; };
+		LABTASK18TESTBUILD00001 /* ATSAMLabTask18Tests.swift in Sources */ = {isa = PBXBuildFile; fileRef = LABTASK18TESTFILE00001 /* ATSAMLabTask18Tests.swift */; };
+		LABTASK18RUSTTESTBUILD001 /* RavenSecureLanRustIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = LABTASK18RUSTTESTFILE001 /* RavenSecureLanRustIntegrationTests.swift */; };
+		LABTASK18METABUILD000001 /* ATSAMLabSessionMetaStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = LABTASK18METAFILE000001 /* ATSAMLabSessionMetaStore.swift */; };
+		LABTASK18PAIRBUILD000001 /* ATSAMLabPairInitBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = LABTASK18PAIRFILE000001 /* ATSAMLabPairInitBuilder.swift */; };
+		C3D4E5F6A708192A3B4C02 /* ATSAMSessionMutationLease.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3D4E5F6A708192A3B4C01 /* ATSAMSessionMutationLease.swift */; };
+		D4E5F6A708192A3B4C5D7 /* ATSAMOutboundBodyStage.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4E5F6A708192A3B4C5D6 /* ATSAMOutboundBodyStage.swift */; };
 		F1A2B3C4D5E6F708192A3B11 /* ATSAMLabTrustStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1A2B3C4D5E6F708192A3B12 /* ATSAMLabTrustStore.swift */; };
 		F1A2B3C4D5E6F708192A3B13 /* ATSAMPairInitAcceptService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1A2B3C4D5E6F708192A3B14 /* ATSAMPairInitAcceptService.swift */; };
 		F1A2B3C4D5E6F708192A3B15 /* ATSAMLabEndpointHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1A2B3C4D5E6F708192A3B16 /* ATSAMLabEndpointHost.swift */; };
+		E8F9A0B1C2D3E4F5A6B7C8D9 /* ATSAMPairResponseCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8F9A0B1C2D3E4F5A6B7C8DA /* ATSAMPairResponseCache.swift */; };
+		E8F9A0B1C2D3E4F5A6B7C8DB /* ATSAMPrekeyLifecycleStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8F9A0B1C2D3E4F5A6B7C8DC /* ATSAMPrekeyLifecycleStore.swift */; };
+		E8F9A0B1C2D3E4F5A6B7C8DD /* ATSAMPrekeyLifecycleStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8F9A0B1C2D3E4F5A6B7C8DE /* ATSAMPrekeyLifecycleStoreTests.swift */; };
 		C8A813500000000000000002 /* ATSAMPairInitV1.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8A813500000000000000001 /* ATSAMPairInitV1.swift */; };
 		ED2BCE86767953D0D35B26F2 /* KeyBackupServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12FD2A1C31D0CBB45A5E1464 /* KeyBackupServiceTests.swift */; };
 		F6A4B3CD5D0CBB45A5E1C002 /* MeshImpersonationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6A4B3CD5D0CBB45A5E1C001 /* MeshImpersonationTests.swift */; };
@@ -389,7 +420,19 @@
 		E7A1B2C3D4E5F60718293C02 /* RavenEnvelopeSenderResolverTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293C01 /* RavenEnvelopeSenderResolverTests.swift */; };
 		D4E2F1AB3B0CBB45A5E1A004 /* ATSAMChainRatchetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4E2F1AB3B0CBB45A5E1A003 /* ATSAMChainRatchetTests.swift */; };
 		A71D3E0F8A1346C9B2760003 /* ATSAMIndexedSessionProfileTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A71D3E0F8A1346C9B2760004 /* ATSAMIndexedSessionProfileTests.swift */; };
+		B2C3D4E5F6A708192A3B08 /* ATSAMLabGateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2C3D4E5F6A708192A3B07 /* ATSAMLabGateTests.swift */; };
+		B2C3D4E5F6A708192A3B0A /* ATSAMLabGateReleaseVerificationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2C3D4E5F6A708192A3B09 /* ATSAMLabGateReleaseVerificationTests.swift */; };
+		C3D4E5F6A708192A3B4C04 /* ATSAMEndpointDurabilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3D4E5F6A708192A3B4C03 /* ATSAMEndpointDurabilityTests.swift */; };
+		A1C2R3A4S5H6M7A8T9R0IX02 /* ATSAMA1CrashMatrixCoverageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1C2R3A4S5H6M7A8T9R0IX01 /* ATSAMA1CrashMatrixCoverageTests.swift */; };
+		P0R3C0V3T3STS000000002 /* ATSAMA1P0RecoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = P0R3C0V3T3STS000000001 /* ATSAMA1P0RecoveryTests.swift */; };
+		D4E5F6A708192A3B4C5D06 /* ATSAMEndpointSQLCipherTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4E5F6A708192A3B4C5D05 /* ATSAMEndpointSQLCipherTests.swift */; };
 		E9A713500000000000000003 /* ATSAMEndpointTransactionV1Tests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9A713500000000000000004 /* ATSAMEndpointTransactionV1Tests.swift */; };
+		A9B8C7D6E5F4012345678904 /* ATSAMMlKem768IncrementalLab.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9B8C7D6E5F4012345678903 /* ATSAMMlKem768IncrementalLab.swift */; };
+		A9B8C7D6E5F4012345678902 /* ATSAMMlKem768IncrementalLabTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9B8C7D6E5F4012345678901 /* ATSAMMlKem768IncrementalLabTests.swift */; };
+		A9B8C7D6E5F4012345678912 /* ATSAMFullBraidLab.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9B8C7D6E5F4012345678911 /* ATSAMFullBraidLab.swift */; };
+		A9B8C7D6E5F4012345678914 /* ATSAMFullBraidLabTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9B8C7D6E5F4012345678913 /* ATSAMFullBraidLabTests.swift */; };
+		LABTRUSTADMTESTFILE00001 /* ATSAMLabTrustAdmissionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMLabTrustAdmissionTests.swift; sourceTree = "<group>"; };
+		LABTRUSTADMTESTBUILD0001 /* ATSAMLabTrustAdmissionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = LABTRUSTADMTESTFILE00001 /* ATSAMLabTrustAdmissionTests.swift */; };
 		C8A813500000000000000004 /* ATSAMPairInitV1Tests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8A813500000000000000003 /* ATSAMPairInitV1Tests.swift */; };
 		B7A1C0DE1F0CBB45A5E17182 /* ATSAMPairingRootAgreementTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7A1C0DE1F0CBB45A5E17181 /* ATSAMPairingRootAgreementTests.swift */; };
 		EDBF4EC6E4871DC1C55318C0 /* RelayReceipt.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3397C365AA11ECF59A599C8 /* RelayReceipt.swift */; };
@@ -464,10 +507,6 @@
 		WAK1234567890ABCDEEEE0006 /* WatchAuthKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = WAK2234567890ABCDEEEE0006 /* WatchAuthKeyStore.swift */; };
 		WAW1234567890ABCDEEEE0007 /* WatchAuthKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = WAW2234567890ABCDEEEE0007 /* WatchAuthKeyStore.swift */; };
 		ZH_STRINGS_BUILD_001 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = ZH_STRINGS_FILEREF_001 /* Localizable.strings */; };
-		A9B8C7D6E5F4012345678904 /* ATSAMMlKem768IncrementalLab.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9B8C7D6E5F4012345678903 /* ATSAMMlKem768IncrementalLab.swift */; };
-		A9B8C7D6E5F4012345678902 /* ATSAMMlKem768IncrementalLabTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9B8C7D6E5F4012345678901 /* ATSAMMlKem768IncrementalLabTests.swift */; };
-		A9B8C7D6E5F4012345678912 /* ATSAMFullBraidLab.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9B8C7D6E5F4012345678911 /* ATSAMFullBraidLab.swift */; };
-		A9B8C7D6E5F4012345678914 /* ATSAMFullBraidLabTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9B8C7D6E5F4012345678913 /* ATSAMFullBraidLabTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -598,16 +637,57 @@
 		E9A713500000000000000002 /* ATSAMEndpointTransactionV1.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMEndpointTransactionV1.swift; sourceTree = "<group>"; };
 		F1A2B3C4D5E6F708192A3B02 /* RavenPairInitLanOob.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RavenPairInitLanOob.swift; path = RAVEN/Core/Protocol/RavenPairInitLanOob.swift; sourceTree = "<group>"; };
 		F1A2B3C4D5E6F708192A3B04 /* ATSAMEndpointDurableAdapters.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMEndpointDurableAdapters.swift; sourceTree = "<group>"; };
+		B2C3D4E5F6A708192A3B05 /* ATSAMLabGate.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMLabGate.swift; sourceTree = "<group>"; };
+		RVDR1SRCFILE000000001 /* RavenDeviceRevocationV1.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RavenDeviceRevocationV1.swift; sourceTree = "<group>"; };
+		RVDR1TESTFILE00000001 /* RavenDeviceRevocationV1Tests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RavenDeviceRevocationV1Tests.swift; sourceTree = "<group>"; };
+		RVDR1CONFFILE00000001 /* RavenDeviceRevocationConformance.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RavenDeviceRevocationConformance.swift; sourceTree = "<group>"; };
+		RVDR1CONFTESTFILE0001 /* RavenDeviceRevocationConformanceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RavenDeviceRevocationConformanceTests.swift; sourceTree = "<group>"; };
+		LANB2S002LANB2S001FILE /* LanBlake2s.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = LanBlake2s.swift; sourceTree = "<group>"; };
+		LANDETED25519FILE000001 /* LanDeterministicEd25519.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = LanDeterministicEd25519.swift; sourceTree = "<group>"; };
+		LANNOISE02LANNOISE01FILE /* RavenSecureLanNoiseV1.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RavenSecureLanNoiseV1.swift; sourceTree = "<group>"; };
+		LANNOISE04LANNOISE03FILE /* RavenSecureLanNoiseTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RavenSecureLanNoiseTests.swift; sourceTree = "<group>"; };
+		LANRLB1FILE00000000001 /* RavenSecureLanRlb1V1.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RavenSecureLanRlb1V1.swift; sourceTree = "<group>"; };
+		LANRLB1TESTFILE0000001 /* RavenSecureLanRlb1Tests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RavenSecureLanRlb1Tests.swift; sourceTree = "<group>"; };
+		LANTRANS01FILE00000001 /* RavenSecureLanTransportV1.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RavenSecureLanTransportV1.swift; sourceTree = "<group>"; };
+		LANEPHEM01FILE00000001 /* RavenSecureLanEphemeralPeers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RavenSecureLanEphemeralPeers.swift; sourceTree = "<group>"; };
+		LANDISP01FILE000000001 /* RavenSecureLanDispatchV1.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RavenSecureLanDispatchV1.swift; sourceTree = "<group>"; };
+		LANSESS01FILE000000001 /* RavenSecureLanSessionV1.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RavenSecureLanSessionV1.swift; sourceTree = "<group>"; };
+		LANDIAL01FILE000000001 /* RavenSecureLanDialerV1.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RavenSecureLanDialerV1.swift; sourceTree = "<group>"; };
+		LANLOOPTEST01FILE00001 /* RavenSecureLanLoopbackIntegrationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RavenSecureLanLoopbackIntegrationTests.swift; sourceTree = "<group>"; };
+		LANA2GATE01FILE000001 /* RavenSecureLanA2GateTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RavenSecureLanA2GateTests.swift; sourceTree = "<group>"; };
+		LANTRANSTEST01FILE0001 /* RavenSecureLanTransportLimitsTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RavenSecureLanTransportLimitsTests.swift; sourceTree = "<group>"; };
+		LANEPHEMTEST01FILE0001 /* RavenSecureLanEphemeralPeersTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RavenSecureLanEphemeralPeersTests.swift; sourceTree = "<group>"; };
+		LANDISPTEST01FILE00001 /* RavenSecureLanDispatchTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RavenSecureLanDispatchTests.swift; sourceTree = "<group>"; };
+		LABTASK14TESTFILE00001 /* ATSAMLabTask14Tests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMLabTask14Tests.swift; sourceTree = "<group>"; };
+		LABTASK18TESTFILE00001 /* ATSAMLabTask18Tests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMLabTask18Tests.swift; sourceTree = "<group>"; };
+		LABTASK18RUSTTESTFILE001 /* RavenSecureLanRustIntegrationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RavenSecureLanRustIntegrationTests.swift; sourceTree = "<group>"; };
+		LABTASK18METAFILE000001 /* ATSAMLabSessionMetaStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMLabSessionMetaStore.swift; sourceTree = "<group>"; };
+		LABTASK18PAIRFILE000001 /* ATSAMLabPairInitBuilder.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMLabPairInitBuilder.swift; sourceTree = "<group>"; };
+		C3D4E5F6A708192A3B4C01 /* ATSAMSessionMutationLease.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMSessionMutationLease.swift; sourceTree = "<group>"; };
+		D4E5F6A708192A3B4C5D6 /* ATSAMOutboundBodyStage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMOutboundBodyStage.swift; sourceTree = "<group>"; };
 		F1A2B3C4D5E6F708192A3B12 /* ATSAMLabTrustStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMLabTrustStore.swift; sourceTree = "<group>"; };
 		F1A2B3C4D5E6F708192A3B14 /* ATSAMPairInitAcceptService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMPairInitAcceptService.swift; sourceTree = "<group>"; };
 		F1A2B3C4D5E6F708192A3B16 /* ATSAMLabEndpointHost.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMLabEndpointHost.swift; sourceTree = "<group>"; };
+		E8F9A0B1C2D3E4F5A6B7C8DA /* ATSAMPairResponseCache.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMPairResponseCache.swift; sourceTree = "<group>"; };
+		E8F9A0B1C2D3E4F5A6B7C8DC /* ATSAMPrekeyLifecycleStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMPrekeyLifecycleStore.swift; sourceTree = "<group>"; };
+		E8F9A0B1C2D3E4F5A6B7C8DE /* ATSAMPrekeyLifecycleStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMPrekeyLifecycleStoreTests.swift; sourceTree = "<group>"; };
 		C8A813500000000000000001 /* ATSAMPairInitV1.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMPairInitV1.swift; sourceTree = "<group>"; };
 		12FD2A1C31D0CBB45A5E1464 /* KeyBackupServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KeyBackupServiceTests.swift; sourceTree = "<group>"; };
 		F6A4B3CD5D0CBB45A5E1C001 /* MeshImpersonationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MeshImpersonationTests.swift; sourceTree = "<group>"; };
 		E5F3A2BC4C0CBB45A5E1B001 /* MeshRelayIntegrityTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MeshRelayIntegrityTests.swift; sourceTree = "<group>"; };
 		D4E2F1AB3B0CBB45A5E1A003 /* ATSAMChainRatchetTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMChainRatchetTests.swift; sourceTree = "<group>"; };
 		A71D3E0F8A1346C9B2760004 /* ATSAMIndexedSessionProfileTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMIndexedSessionProfileTests.swift; sourceTree = "<group>"; };
+		B2C3D4E5F6A708192A3B07 /* ATSAMLabGateTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMLabGateTests.swift; sourceTree = "<group>"; };
+		B2C3D4E5F6A708192A3B09 /* ATSAMLabGateReleaseVerificationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMLabGateReleaseVerificationTests.swift; sourceTree = "<group>"; };
+		C3D4E5F6A708192A3B4C03 /* ATSAMEndpointDurabilityTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMEndpointDurabilityTests.swift; sourceTree = "<group>"; };
+		A1C2R3A4S5H6M7A8T9R0IX01 /* ATSAMA1CrashMatrixCoverageTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMA1CrashMatrixCoverageTests.swift; sourceTree = "<group>"; };
+		P0R3C0V3T3STS000000001 /* ATSAMA1P0RecoveryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMA1P0RecoveryTests.swift; sourceTree = "<group>"; };
+		D4E5F6A708192A3B4C5D05 /* ATSAMEndpointSQLCipherTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMEndpointSQLCipherTests.swift; sourceTree = "<group>"; };
 		E9A713500000000000000004 /* ATSAMEndpointTransactionV1Tests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMEndpointTransactionV1Tests.swift; sourceTree = "<group>"; };
+		A9B8C7D6E5F4012345678903 /* ATSAMMlKem768IncrementalLab.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMMlKem768IncrementalLab.swift; sourceTree = "<group>"; };
+		A9B8C7D6E5F4012345678901 /* ATSAMMlKem768IncrementalLabTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMMlKem768IncrementalLabTests.swift; sourceTree = "<group>"; };
+		A9B8C7D6E5F4012345678911 /* ATSAMFullBraidLab.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMFullBraidLab.swift; sourceTree = "<group>"; };
+		A9B8C7D6E5F4012345678913 /* ATSAMFullBraidLabTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMFullBraidLabTests.swift; sourceTree = "<group>"; };
 		C8A813500000000000000003 /* ATSAMPairInitV1Tests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMPairInitV1Tests.swift; sourceTree = "<group>"; };
 		B7A1C0DE1F0CBB45A5E17181 /* ATSAMPairingRootAgreementTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMPairingRootAgreementTests.swift; sourceTree = "<group>"; };
 		1457CBC83D6BDD5AA559E7FD /* InboxView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = InboxView.swift; sourceTree = "<group>"; };
@@ -1008,10 +1088,6 @@
 		WAK2234567890ABCDEEEE0006 /* WatchAuthKeyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchAuthKeyStore.swift; sourceTree = "<group>"; };
 		WAW2234567890ABCDEEEE0007 /* WatchAuthKeyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchAuthKeyStore.swift; sourceTree = "<group>"; };
 		ZH_STRINGS_FILEREF_001 /* Localizable.strings */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.strings; path = Localizable.strings; sourceTree = "<group>"; };
-		A9B8C7D6E5F4012345678903 /* ATSAMMlKem768IncrementalLab.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMMlKem768IncrementalLab.swift; sourceTree = "<group>"; };
-		A9B8C7D6E5F4012345678901 /* ATSAMMlKem768IncrementalLabTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMMlKem768IncrementalLabTests.swift; sourceTree = "<group>"; };
-		A9B8C7D6E5F4012345678911 /* ATSAMFullBraidLab.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMFullBraidLab.swift; sourceTree = "<group>"; };
-		A9B8C7D6E5F4012345678913 /* ATSAMFullBraidLabTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMFullBraidLabTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -1218,13 +1294,18 @@
 				A71D3E0F8A1346C9B2760002 /* ATSAMIndexedSessionProfile.swift */,
 				E9A713500000000000000002 /* ATSAMEndpointTransactionV1.swift */,
 				F1A2B3C4D5E6F708192A3B04 /* ATSAMEndpointDurableAdapters.swift */,
+				B2C3D4E5F6A708192A3B05 /* ATSAMLabGate.swift */,
+				RVDR1SRCFILE000000001 /* RavenDeviceRevocationV1.swift */,
+				RVDR1CONFFILE00000001 /* RavenDeviceRevocationConformance.swift */,
+				C3D4E5F6A708192A3B4C01 /* ATSAMSessionMutationLease.swift */,
+				D4E5F6A708192A3B4C5D6 /* ATSAMOutboundBodyStage.swift */,
 				F1A2B3C4D5E6F708192A3B12 /* ATSAMLabTrustStore.swift */,
 				F1A2B3C4D5E6F708192A3B14 /* ATSAMPairInitAcceptService.swift */,
+				E8F9A0B1C2D3E4F5A6B7C8DA /* ATSAMPairResponseCache.swift */,
+				E8F9A0B1C2D3E4F5A6B7C8DC /* ATSAMPrekeyLifecycleStore.swift */,
 				F1A2B3C4D5E6F708192A3B16 /* ATSAMLabEndpointHost.swift */,
-				A9B8C7D6E5F4012345678903 /* ATSAMMlKem768IncrementalLab.swift */,
-				A9B8C7D6E5F4012345678901 /* ATSAMMlKem768IncrementalLabTests.swift */,
-				A9B8C7D6E5F4012345678911 /* ATSAMFullBraidLab.swift */,
-				A9B8C7D6E5F4012345678913 /* ATSAMFullBraidLabTests.swift */,
+				LABTASK18METAFILE000001 /* ATSAMLabSessionMetaStore.swift */,
+				LABTASK18PAIRFILE000001 /* ATSAMLabPairInitBuilder.swift */,
 				C8A813500000000000000001 /* ATSAMPairInitV1.swift */,
 				B2F7E2B1C3D4E5F6A7B8C9D1 /* ATSAMRootStorage.swift */,
 				4BCE3D6E55D175EBB9274E9D /* Online */,
@@ -1573,6 +1654,7 @@
 		5157BB532F2EDA76003B3AB7 /* Security */ = {
 			isa = PBXGroup;
 			children = (
+				LANNOISE05LANSGROUP000001 /* LAN */,
 				5157BB522F2EDA76003B3AB7 /* DeviceIdentityService.swift */,
 				IRS2234567890ABCD12345678 /* IdentityRotationService.swift */,
 				AA2B3C4D5E6FAA2B3C4D5E6F /* NoiseSession.swift */,
@@ -1598,6 +1680,22 @@
 				1A85D03EEE86554162FE88FE /* AppAttestService.swift */,
 			);
 			path = Security;
+			sourceTree = "<group>";
+		};
+		LANNOISE05LANSGROUP000001 /* LAN */ = {
+			isa = PBXGroup;
+			children = (
+				LANB2S002LANB2S001FILE /* LanBlake2s.swift */,
+				LANDETED25519FILE000001 /* LanDeterministicEd25519.swift */,
+				LANNOISE02LANNOISE01FILE /* RavenSecureLanNoiseV1.swift */,
+				LANRLB1FILE00000000001 /* RavenSecureLanRlb1V1.swift */,
+				LANTRANS01FILE00000001 /* RavenSecureLanTransportV1.swift */,
+				LANEPHEM01FILE00000001 /* RavenSecureLanEphemeralPeers.swift */,
+				LANDISP01FILE000000001 /* RavenSecureLanDispatchV1.swift */,
+				LANSESS01FILE000000001 /* RavenSecureLanSessionV1.swift */,
+				LANDIAL01FILE000000001 /* RavenSecureLanDialerV1.swift */,
+			);
+			path = LAN;
 			sourceTree = "<group>";
 		};
 		51B94B45036CC77C69E0C8EA /* Onboarding */ = {
@@ -1778,8 +1876,32 @@
 				B7A1C0DE1F0CBB45A5E17181 /* ATSAMPairingRootAgreementTests.swift */,
 				D4E2F1AB3B0CBB45A5E1A003 /* ATSAMChainRatchetTests.swift */,
 				A71D3E0F8A1346C9B2760004 /* ATSAMIndexedSessionProfileTests.swift */,
+				B2C3D4E5F6A708192A3B07 /* ATSAMLabGateTests.swift */,
+				RVDR1TESTFILE00000001 /* RavenDeviceRevocationV1Tests.swift */,
+				RVDR1CONFTESTFILE0001 /* RavenDeviceRevocationConformanceTests.swift */,
+				LANNOISE04LANNOISE03FILE /* RavenSecureLanNoiseTests.swift */,
+				LANRLB1TESTFILE0000001 /* RavenSecureLanRlb1Tests.swift */,
+				LANTRANSTEST01FILE0001 /* RavenSecureLanTransportLimitsTests.swift */,
+				LANLOOPTEST01FILE00001 /* RavenSecureLanLoopbackIntegrationTests.swift */,
+				LANA2GATE01FILE000001 /* RavenSecureLanA2GateTests.swift */,
+				LANEPHEMTEST01FILE0001 /* RavenSecureLanEphemeralPeersTests.swift */,
+				LANDISPTEST01FILE00001 /* RavenSecureLanDispatchTests.swift */,
+				LABTASK14TESTFILE00001 /* ATSAMLabTask14Tests.swift */,
+				LABTASK18TESTFILE00001 /* ATSAMLabTask18Tests.swift */,
+				LABTASK18RUSTTESTFILE001 /* RavenSecureLanRustIntegrationTests.swift */,
+				B2C3D4E5F6A708192A3B09 /* ATSAMLabGateReleaseVerificationTests.swift */,
+				C3D4E5F6A708192A3B4C03 /* ATSAMEndpointDurabilityTests.swift */,
+				A1C2R3A4S5H6M7A8T9R0IX01 /* ATSAMA1CrashMatrixCoverageTests.swift */,
+				P0R3C0V3T3STS000000001 /* ATSAMA1P0RecoveryTests.swift */,
+				D4E5F6A708192A3B4C5D05 /* ATSAMEndpointSQLCipherTests.swift */,
 				E9A713500000000000000004 /* ATSAMEndpointTransactionV1Tests.swift */,
+				A9B8C7D6E5F4012345678903 /* ATSAMMlKem768IncrementalLab.swift */,
+				A9B8C7D6E5F4012345678901 /* ATSAMMlKem768IncrementalLabTests.swift */,
+				A9B8C7D6E5F4012345678911 /* ATSAMFullBraidLab.swift */,
+				A9B8C7D6E5F4012345678913 /* ATSAMFullBraidLabTests.swift */,
+				LABTRUSTADMTESTFILE00001 /* ATSAMLabTrustAdmissionTests.swift */,
 				C8A813500000000000000003 /* ATSAMPairInitV1Tests.swift */,
+				E8F9A0B1C2D3E4F5A6B7C8DE /* ATSAMPrekeyLifecycleStoreTests.swift */,
 				E5F3A2BC4C0CBB45A5E1B001 /* MeshRelayIntegrityTests.swift */,
 				F6A4B3CD5D0CBB45A5E1C001 /* MeshImpersonationTests.swift */,
 				E7A1B2C3D4E5F60718293A03 /* RavenEnvelopeV1VectorsTests.swift */,
@@ -3007,13 +3129,27 @@
 				E9A713500000000000000001 /* ATSAMEndpointTransactionV1.swift in Sources */,
 				F1A2B3C4D5E6F708192A3B01 /* RavenPairInitLanOob.swift in Sources */,
 				F1A2B3C4D5E6F708192A3B03 /* ATSAMEndpointDurableAdapters.swift in Sources */,
+				B2C3D4E5F6A708192A3B06 /* ATSAMLabGate.swift in Sources */,
+				RVDR1SRCBUILD000000001 /* RavenDeviceRevocationV1.swift in Sources */,
+				RVDR1CONFBUILD00000001 /* RavenDeviceRevocationConformance.swift in Sources */,
+				LANB2S001LANB2S002BUILD /* LanBlake2s.swift in Sources */,
+				LANDETED25519BUILD000001 /* LanDeterministicEd25519.swift in Sources */,
+				LANNOISE01LANNOISE02BUILD /* RavenSecureLanNoiseV1.swift in Sources */,
+				LANRLB1BUILD0000000001 /* RavenSecureLanRlb1V1.swift in Sources */,
+				LANTRANS01BUILD00000001 /* RavenSecureLanTransportV1.swift in Sources */,
+				LANEPHEM01BUILD00000001 /* RavenSecureLanEphemeralPeers.swift in Sources */,
+				LANDISP01BUILD000000001 /* RavenSecureLanDispatchV1.swift in Sources */,
+				LANSESS01BUILD000000001 /* RavenSecureLanSessionV1.swift in Sources */,
+				LANDIAL01BUILD000000001 /* RavenSecureLanDialerV1.swift in Sources */,
+				C3D4E5F6A708192A3B4C02 /* ATSAMSessionMutationLease.swift in Sources */,
+				D4E5F6A708192A3B4C5D7 /* ATSAMOutboundBodyStage.swift in Sources */,
 				F1A2B3C4D5E6F708192A3B11 /* ATSAMLabTrustStore.swift in Sources */,
 				F1A2B3C4D5E6F708192A3B13 /* ATSAMPairInitAcceptService.swift in Sources */,
+				E8F9A0B1C2D3E4F5A6B7C8D9 /* ATSAMPairResponseCache.swift in Sources */,
+				E8F9A0B1C2D3E4F5A6B7C8DB /* ATSAMPrekeyLifecycleStore.swift in Sources */,
 				F1A2B3C4D5E6F708192A3B15 /* ATSAMLabEndpointHost.swift in Sources */,
-				A9B8C7D6E5F4012345678904 /* ATSAMMlKem768IncrementalLab.swift in Sources */,
-				A9B8C7D6E5F4012345678902 /* ATSAMMlKem768IncrementalLabTests.swift in Sources */,
-				A9B8C7D6E5F4012345678912 /* ATSAMFullBraidLab.swift in Sources */,
-				A9B8C7D6E5F4012345678914 /* ATSAMFullBraidLabTests.swift in Sources */,
+				LABTASK18METABUILD000001 /* ATSAMLabSessionMetaStore.swift in Sources */,
+				LABTASK18PAIRBUILD000001 /* ATSAMLabPairInitBuilder.swift in Sources */,
 				C8A813500000000000000002 /* ATSAMPairInitV1.swift in Sources */,
 				A2E6F1A2B2C3D4E5F6A7B8CA /* ATSAMRootStorage.swift in Sources */,
 				7D59216EFDE247D377539852 /* ATSAMHybridPairing.swift in Sources */,
@@ -3103,8 +3239,32 @@
 				B7A1C0DE1F0CBB45A5E17182 /* ATSAMPairingRootAgreementTests.swift in Sources */,
 				D4E2F1AB3B0CBB45A5E1A004 /* ATSAMChainRatchetTests.swift in Sources */,
 				A71D3E0F8A1346C9B2760003 /* ATSAMIndexedSessionProfileTests.swift in Sources */,
+				B2C3D4E5F6A708192A3B08 /* ATSAMLabGateTests.swift in Sources */,
+				RVDR1TESTBUILD00000001 /* RavenDeviceRevocationV1Tests.swift in Sources */,
+				RVDR1CONFTESTBUILD0001 /* RavenDeviceRevocationConformanceTests.swift in Sources */,
+				LANNOISE03LANNOISE04BUILD /* RavenSecureLanNoiseTests.swift in Sources */,
+				LANRLB1TESTBUILD0000001 /* RavenSecureLanRlb1Tests.swift in Sources */,
+				LANTRANSTEST01BUILD0001 /* RavenSecureLanTransportLimitsTests.swift in Sources */,
+				LANLOOPTEST01BUILD00001 /* RavenSecureLanLoopbackIntegrationTests.swift in Sources */,
+				LANA2GATE01BUILD000001 /* RavenSecureLanA2GateTests.swift in Sources */,
+				LANEPHEMTEST01BUILD0001 /* RavenSecureLanEphemeralPeersTests.swift in Sources */,
+				LANDISPTEST01BUILD00001 /* RavenSecureLanDispatchTests.swift in Sources */,
+				LABTASK14TESTBUILD00001 /* ATSAMLabTask14Tests.swift in Sources */,
+				LABTASK18TESTBUILD00001 /* ATSAMLabTask18Tests.swift in Sources */,
+				LABTASK18RUSTTESTBUILD001 /* RavenSecureLanRustIntegrationTests.swift in Sources */,
+				B2C3D4E5F6A708192A3B0A /* ATSAMLabGateReleaseVerificationTests.swift in Sources */,
+				C3D4E5F6A708192A3B4C04 /* ATSAMEndpointDurabilityTests.swift in Sources */,
+				A1C2R3A4S5H6M7A8T9R0IX02 /* ATSAMA1CrashMatrixCoverageTests.swift in Sources */,
+				P0R3C0V3T3STS000000002 /* ATSAMA1P0RecoveryTests.swift in Sources */,
+				D4E5F6A708192A3B4C5D06 /* ATSAMEndpointSQLCipherTests.swift in Sources */,
 				E9A713500000000000000003 /* ATSAMEndpointTransactionV1Tests.swift in Sources */,
+				A9B8C7D6E5F4012345678904 /* ATSAMMlKem768IncrementalLab.swift in Sources */,
+				A9B8C7D6E5F4012345678902 /* ATSAMMlKem768IncrementalLabTests.swift in Sources */,
+				A9B8C7D6E5F4012345678912 /* ATSAMFullBraidLab.swift in Sources */,
+				A9B8C7D6E5F4012345678914 /* ATSAMFullBraidLabTests.swift in Sources */,
+				LABTRUSTADMTESTBUILD0001 /* ATSAMLabTrustAdmissionTests.swift in Sources */,
 				C8A813500000000000000004 /* ATSAMPairInitV1Tests.swift in Sources */,
+				E8F9A0B1C2D3E4F5A6B7C8DD /* ATSAMPrekeyLifecycleStoreTests.swift in Sources */,
 				E5F3A2BC4C0CBB45A5E1B002 /* MeshRelayIntegrityTests.swift in Sources */,
 				F6A4B3CD5D0CBB45A5E1C002 /* MeshImpersonationTests.swift in Sources */,
 				E7A1B2C3D4E5F60718293A04 /* RavenEnvelopeV1VectorsTests.swift in Sources */,
@@ -3304,6 +3464,7 @@
 				CURRENT_PROJECT_VERSION = 2026072401;
 				DEVELOPMENT_TEAM = 72QQ5Q324C;
 				ENABLE_PREVIEWS = YES;
+				ENABLE_TESTABILITY = YES;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/Libp2pBridge",

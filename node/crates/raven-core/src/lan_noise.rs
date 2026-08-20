@@ -17,8 +17,8 @@ use crate::identity::Identity;
 pub const NOISE_PATTERN: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
 pub const BIND_DOMAIN: &[u8] = b"rvn1/lan-noise/v1";
 pub const BIND_LEN: usize = 32 + 64;
-const HKDF_SALT: &[u8] = b"rvn1/lan-noise/v1";
-const HKDF_INFO: &[u8] = b"static-x25519";
+pub const HKDF_SALT: &[u8] = b"rvn1/lan-noise/v1";
+pub const HKDF_INFO: &[u8] = b"static-x25519";
 const MAX_NOISE_MSG: usize = 65535;
 /// ChaChaPoly tag is 16 bytes; snow rejects larger transport plaintexts.
 pub const MAX_TRANSPORT_PLAINTEXT: usize = MAX_NOISE_MSG - 16;
@@ -97,23 +97,51 @@ pub fn verify_bind(
     Ok(ed)
 }
 
-fn builder(static_priv: &[u8; 32]) -> Result<Builder<'_>, LanNoiseError> {
+fn builder_with_ephemeral<'a>(
+    static_priv: &'a [u8; 32],
+    fixed_ephemeral: Option<&'a [u8; 32]>,
+) -> Result<Builder<'a>, LanNoiseError> {
     let params = NOISE_PATTERN
         .parse()
         .map_err(|_| LanNoiseError::Handshake)?;
-    Ok(Builder::new(params).local_private_key(static_priv))
+    let mut b = Builder::new(params).local_private_key(static_priv);
+    if let Some(eph) = fixed_ephemeral {
+        b = b.fixed_ephemeral_key_for_testing_only(eph);
+    }
+    Ok(b)
 }
 
 pub fn build_initiator(static_priv: &[u8; 32]) -> Result<HandshakeState, LanNoiseError> {
-    builder(static_priv)?
+    build_initiator_with_ephemeral(static_priv, None)
+}
+
+pub fn build_responder(static_priv: &[u8; 32]) -> Result<HandshakeState, LanNoiseError> {
+    build_responder_with_ephemeral(static_priv, None)
+}
+
+pub fn build_initiator_with_ephemeral(
+    static_priv: &[u8; 32],
+    fixed_ephemeral: Option<&[u8; 32]>,
+) -> Result<HandshakeState, LanNoiseError> {
+    builder_with_ephemeral(static_priv, fixed_ephemeral)?
         .build_initiator()
         .map_err(|_| LanNoiseError::Handshake)
 }
 
-pub fn build_responder(static_priv: &[u8; 32]) -> Result<HandshakeState, LanNoiseError> {
-    builder(static_priv)?
+pub fn build_responder_with_ephemeral(
+    static_priv: &[u8; 32],
+    fixed_ephemeral: Option<&[u8; 32]>,
+) -> Result<HandshakeState, LanNoiseError> {
+    builder_with_ephemeral(static_priv, fixed_ephemeral)?
         .build_responder()
         .map_err(|_| LanNoiseError::Handshake)
+}
+
+pub fn handshake_hash(state: &HandshakeState) -> [u8; 32] {
+    let raw = state.get_handshake_hash();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(raw);
+    out
 }
 
 pub fn handshake_write(

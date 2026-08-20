@@ -1,0 +1,88 @@
+{
+  "description": "bob then carol; both digests and all lineage keys denied",
+  "deterministic": true,
+  "expected": {
+    "apply_results": [
+      "applied",
+      "applied"
+    ],
+    "revocation_id_collisions": [],
+    "store": {
+      "claims_wire_hex": [
+        "5256445231000000010172766e317179736c7576776c353932327963747a643075396770723036676e336b376c6466766563756c6530000c626f622d6465766963652d313d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660cde9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4fb6c42a759334231f85bcca4134233c0491ecd7e08c01de7728ed6ee4df15eddd000d616c6963652d7072696d61727900000000000000010102030405060708090a0b0c0d0e0f10010000018bcfe56800d25bac212192c5807ceded9142bee895a08359ebccfbfd65f5c5ee98d8ca7a111377eb2827e3ab7990bcc263fbb0fe5d730f8d1e8f903194022a45d416761508",
+        "5256445231000000010172766e317179736c7576776c353932327963747a643075396770723036676e336b376c6466766563756c6530000e6361726f6c2d6465766963652d31fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb91154890802505ee18184ed593900f639b87b8d99a7a5c5c00cc0aaac5629c45f8869c602907af2057907e9633f4a0dec78b3d67dc28f685444415d2139b96b9049e1d473bf9000d616c6963652d7072696d61727900000000000000021112131415161718191a1b1c1d1e1f20010000018bcfe568003b2622025bad1a1b9ad237fe0c97b74977a3105eb8826470d18b262526eed0273f3d1a0096069f4bb01f8271822c1876c8e7c06e4495ef8731ff3aebafc4df09"
+      ],
+      "corrupt": [],
+      "exhausted": [],
+      "forks": [],
+      "generation": 2,
+      "journal": null,
+      "revocation_id_collisions": [],
+      "revocation_store_hash_hex": "6410628d9e8bd7abee9b53d7321ea20b270113eaf5ef7ce54f2f0c4f507999a9",
+      "revoked_targets": [
+        {
+          "claim_digest_hex": "a0441bb28b380bf3d834ebfba05a8d5d753559a5d325cfcf60a18a35c53064bd",
+          "kind": "device_cert_hash",
+          "revocation_id_hex": "0102030405060708090a0b0c0d0e0f10",
+          "value_hex": "b6c42a759334231f85bcca4134233c0491ecd7e08c01de7728ed6ee4df15eddd"
+        },
+        {
+          "claim_digest_hex": "a0441bb28b380bf3d834ebfba05a8d5d753559a5d325cfcf60a18a35c53064bd",
+          "kind": "device_ed_pub",
+          "revocation_id_hex": "0102030405060708090a0b0c0d0e0f10",
+          "value_hex": "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c"
+        },
+        {
+          "claim_digest_hex": "a0441bb28b380bf3d834ebfba05a8d5d753559a5d325cfcf60a18a35c53064bd",
+          "kind": "device_id",
+          "revocation_id_hex": "0102030405060708090a0b0c0d0e0f10",
+          "value_hex": "626f622d6465766963652d31"
+        },
+        {
+          "claim_digest_hex": "a0441bb28b380bf3d834ebfba05a8d5d753559a5d325cfcf60a18a35c53064bd",
+          "kind": "device_x_pub",
+          "revocation_id_hex": "0102030405060708090a0b0c0d0e0f10",
+          "value_hex": "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f"
+        },
+        {
+          "claim_digest_hex": "f817ec6d65e19b9c64c738bd395952078114aeb071c89026c363cbffc9036695",
+          "kind": "device_cert_hash",
+          "revocation_id_hex": "1112131415161718191a1b1c1d1e1f20",
+          "value_hex": "af2057907e9633f4a0dec78b3d67dc28f685444415d2139b96b9049e1d473bf9"
+        },
+        {
+          "claim_digest_hex": "f817ec6d65e19b9c64c738bd395952078114aeb071c89026c363cbffc9036695",
+          "kind": "device_ed_pub",
+          "revocation_id_hex": "1112131415161718191a1b1c1d1e1f20",
+          "value_hex": "fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025"
+        },
+        {
+          "claim_digest_hex": "f817ec6d65e19b9c64c738bd395952078114aeb071c89026c363cbffc9036695",
+          "kind": "device_id",
+          "revocation_id_hex": "1112131415161718191a1b1c1d1e1f20",
+          "value_hex": "6361726f6c2d6465766963652d31"
+        },
+        {
+          "claim_digest_hex": "f817ec6d65e19b9c64c738bd395952078114aeb071c89026c363cbffc9036695",
+          "kind": "device_x_pub",
+          "revocation_id_hex": "1112131415161718191a1b1c1d1e1f20",
+          "value_hex": "05ee18184ed593900f639b87b8d99a7a5c5c00cc0aaac5629c45f8869c602907"
+        }
+      ]
+    }
+  },
+  "inputs": {
+    "apply_order": [
+      "bob",
+      "carol"
+    ],
+    "claims_wire_hex": [
+      "5256445231000000010172766e317179736c7576776c353932327963747a643075396770723036676e336b376c6466766563756c6530000c626f622d6465766963652d313d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660cde9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4fb6c42a759334231f85bcca4134233c0491ecd7e08c01de7728ed6ee4df15eddd000d616c6963652d7072696d61727900000000000000010102030405060708090a0b0c0d0e0f10010000018bcfe56800d25bac212192c5807ceded9142bee895a08359ebccfbfd65f5c5ee98d8ca7a111377eb2827e3ab7990bcc263fbb0fe5d730f8d1e8f903194022a45d416761508",
+      "5256445231000000010172766e317179736c7576776c353932327963747a643075396770723036676e336b376c6466766563756c6530000e6361726f6c2d6465766963652d31fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb91154890802505ee18184ed593900f639b87b8d99a7a5c5c00cc0aaac5629c45f8869c602907af2057907e9633f4a0dec78b3d67dc28f685444415d2139b96b9049e1d473bf9000d616c6963652d7072696d61727900000000000000021112131415161718191a1b1c1d1e1f20010000018bcfe568003b2622025bad1a1b9ad237fe0c97b74977a3105eb8826470d18b262526eed0273f3d1a0096069f4bb01f8271822c1876c8e7c06e4495ef8731ff3aebafc4df09"
+    ],
+    "identity_address": "rvn1qysluvwl5922yctzd0u9gpr06gn3k7ldfvecule0",
+    "identity_ed_pub_hex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+  },
+  "name": "Append-only union of two distinct claims",
+  "protocol_version": "rvn1"
+}
