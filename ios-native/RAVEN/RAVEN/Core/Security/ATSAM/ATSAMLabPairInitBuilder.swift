@@ -190,7 +190,7 @@ enum ATSAMLabPairInitBuilder {
         return (wire, packed, root)
     }
 
-    private static func pairInitCertificate(
+    static func pairInitCertificate(
         from cert: RavenSecureLanRlb1V1.LanDeviceCertificate
     ) -> ATSAMPairInitV1.SignedDeviceCertificate {
         var signing = Data("rvn1/devcert".utf8)

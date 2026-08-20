@@ -748,6 +748,11 @@ final class SQLCipherAcceptanceDatabase: ATSAMEndpointTransactionV1.OutboundData
 
     // MARK: - Test seeding
 
+    func outstandingDeliveryStatesForTesting() throws -> [Endpoint.OutstandingMessageKey: Endpoint.DeliveryState] {
+        lock.lock(); defer { lock.unlock() }
+        return outstanding
+    }
+
     func seedOutstandingRow(
         key: Endpoint.OutstandingMessageKey,
         state: Endpoint.DeliveryState
@@ -863,6 +868,35 @@ final class SQLCipherAcceptanceDatabase: ATSAMEndpointTransactionV1.OutboundData
                     try Self.bindBlob(stmt, 2, value.objectDigest)
                 }
             )
+            // Message outbounds register an exact outstanding Sent row (Rust parity).
+            // ACK outbounds bind via sourceAckIntent and must not create outstanding.
+            if value.sourceAckIntent == nil {
+                let outstandingKey = Endpoint.OutstandingMessageKey(
+                    sessionID: value.sessionID,
+                    messageID: value.messageID,
+                    recipientDeviceID: value.recipientDevice
+                )
+                try exec(
+                    """
+                    INSERT INTO endpoint_outstanding_messages
+                      (session_id, message_id, recipient_device, delivery_state)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(session_id, message_id, recipient_device) DO NOTHING;
+                    """,
+                    bind: { stmt in
+                        try Self.bindBlob(stmt, 1, outstandingKey.sessionID)
+                        try Self.bindBlob(stmt, 2, outstandingKey.messageID)
+                        try Self.bindBlob(stmt, 3, outstandingKey.recipientDeviceID)
+                        sqlite3_bind_int(stmt, 4, Int32(Endpoint.DeliveryState.sent.rawValue))
+                    }
+                )
+                if outstanding[outstandingKey] == nil {
+                    outstanding[outstandingKey] = .sent
+                }
+                guard outstanding[outstandingKey] == .sent else {
+                    throw Endpoint.TransactionError.outboundPending
+                }
+            }
             if let materialization = pendingAckMaterialization {
                 guard var intent = ackIntents[materialization.receiptKey],
                       !intent.isQueued,

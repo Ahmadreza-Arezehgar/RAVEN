@@ -375,6 +375,7 @@
 		LABTASK14TESTBUILD00001 /* ATSAMLabTask14Tests.swift in Sources */ = {isa = PBXBuildFile; fileRef = LABTASK14TESTFILE00001 /* ATSAMLabTask14Tests.swift */; };
 		LABTASK18TESTBUILD00001 /* ATSAMLabTask18Tests.swift in Sources */ = {isa = PBXBuildFile; fileRef = LABTASK18TESTFILE00001 /* ATSAMLabTask18Tests.swift */; };
 		LABTASK18RUSTTESTBUILD001 /* RavenSecureLanRustIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = LABTASK18RUSTTESTFILE001 /* RavenSecureLanRustIntegrationTests.swift */; };
+		TCPGATE01TESTBUILD00001 /* RavenSecureLanSwiftRustTcpGateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TCPGATE01TESTFILE000001 /* RavenSecureLanSwiftRustTcpGateTests.swift */; };
 		LABTASK18METABUILD000001 /* ATSAMLabSessionMetaStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = LABTASK18METAFILE000001 /* ATSAMLabSessionMetaStore.swift */; };
 		LABTASK18PAIRBUILD000001 /* ATSAMLabPairInitBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = LABTASK18PAIRFILE000001 /* ATSAMLabPairInitBuilder.swift */; };
 		C3D4E5F6A708192A3B4C02 /* ATSAMSessionMutationLease.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3D4E5F6A708192A3B4C01 /* ATSAMSessionMutationLease.swift */; };
@@ -1889,6 +1890,7 @@
 				LABTASK14TESTFILE00001 /* ATSAMLabTask14Tests.swift */,
 				LABTASK18TESTFILE00001 /* ATSAMLabTask18Tests.swift */,
 				LABTASK18RUSTTESTFILE001 /* RavenSecureLanRustIntegrationTests.swift */,
+				TCPGATE01TESTFILE000001 /* RavenSecureLanSwiftRustTcpGateTests.swift */,
 				B2C3D4E5F6A708192A3B09 /* ATSAMLabGateReleaseVerificationTests.swift */,
 				C3D4E5F6A708192A3B4C03 /* ATSAMEndpointDurabilityTests.swift */,
 				A1C2R3A4S5H6M7A8T9R0IX01 /* ATSAMA1CrashMatrixCoverageTests.swift */,
@@ -3252,6 +3254,7 @@
 				LABTASK14TESTBUILD00001 /* ATSAMLabTask14Tests.swift in Sources */,
 				LABTASK18TESTBUILD00001 /* ATSAMLabTask18Tests.swift in Sources */,
 				LABTASK18RUSTTESTBUILD001 /* RavenSecureLanRustIntegrationTests.swift in Sources */,
+				TCPGATE01TESTBUILD00001 /* RavenSecureLanSwiftRustTcpGateTests.swift in Sources */,
 				B2C3D4E5F6A708192A3B0A /* ATSAMLabGateReleaseVerificationTests.swift in Sources */,
 				C3D4E5F6A708192A3B4C04 /* ATSAMEndpointDurabilityTests.swift in Sources */,
 				A1C2R3A4S5H6M7A8T9R0IX02 /* ATSAMA1CrashMatrixCoverageTests.swift in Sources */,

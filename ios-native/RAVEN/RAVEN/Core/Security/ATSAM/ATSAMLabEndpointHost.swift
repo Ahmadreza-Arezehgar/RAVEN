@@ -845,6 +845,7 @@ final class ATSAMLabEndpointHost {
             protectedStore: ATSAMEndpointDurableAdapters.sharedProtectedStore,
             database: acceptanceDB
         )
+        var lastError: Error?
         for session in boundSessions.values {
             do {
                 let outcome = try await receiver.acceptAck(
@@ -868,8 +869,12 @@ final class ATSAMLabEndpointHost {
                     return
                 }
             } catch {
+                lastError = error
                 continue
             }
+        }
+        if let lastError {
+            throw lastError
         }
         throw ATSAMEndpointTransactionV1.TransactionError.wrongSession
     }
@@ -890,31 +895,41 @@ final class ATSAMLabEndpointHost {
 
         let built: (wire: Data, packed: Data, root: Data)
         let initValue: ATSAMPairInitV1.PairInit
+        let replies: [Data]
+        let responderCert: ATSAMPairInitV1.SignedDeviceCertificate
 
         if let pending = try lifecycle.loadPendingInitiatorOutbound() {
             initValue = try ATSAMPairInitV1.decodeInit(pending.record.initWire)
             built = (pending.record.initWire, pending.record.packedWire, pending.record.provisionalRoot)
+            replies = try await RavenSecureLanDialerV1.dialLab(
+                host: lan.host,
+                port: lan.port,
+                expectedDeviceEdPub: peerEd,
+                frames: [built.packed]
+            )
+            responderCert = try ATSAMLabTrustStore.peerCertificate(forDeviceEd: peerEd)
         } else {
-            let fresh = try ATSAMLabPairInitBuilder.buildPackedPairInit(peerDeviceEd: peerEd)
-            initValue = try ATSAMPairInitV1.decodeInit(fresh.wire)
-            let sessionID = try ATSAMPairInitV1.sessionID(initValue)
+            // Prefer live RLB1 offer so PairInit matches the peer's current prekey on the wire.
+            let capture = try await RavenSecureLanDialerV1.dialLabPairInitCapturing(
+                host: lan.host,
+                port: lan.port,
+                expectedDeviceEdPub: peerEd
+            )
+            replies = capture.replies
+            built = (capture.initWire, capture.packed, capture.root)
+            initValue = try ATSAMPairInitV1.decodeInit(capture.initWire)
+            responderCert = ATSAMLabPairInitBuilder.pairInitCertificate(from: capture.responderBundle.cert)
+            let sessionIDPending = try ATSAMPairInitV1.sessionID(initValue)
             try lifecycle.persistInitiatorOutbound(
                 initID: initValue.initID,
-                packedWire: fresh.packed,
-                initWire: fresh.wire,
-                sessionID: sessionID,
-                provisionalRoot: fresh.root,
+                packedWire: capture.packed,
+                initWire: capture.initWire,
+                sessionID: sessionIDPending,
+                provisionalRoot: capture.root,
                 createdAtMs: initValue.createdAtMs
             )
-            built = fresh
         }
 
-        let replies = try await RavenSecureLanDialerV1.dialLab(
-            host: lan.host,
-            port: lan.port,
-            expectedDeviceEdPub: peerEd,
-            frames: [built.packed]
-        )
         guard let pairResponsePacked = replies.dropFirst().first(where: { frame in
             if case .pairResponse = RavenPairInitLanOob.classifyPackedEnvelope(frame) { return true }
             return false
@@ -936,7 +951,6 @@ final class ATSAMLabEndpointHost {
             nowMs: nowMs
         )
         let sessionID = try ATSAMPairInitV1.sessionID(initValue)
-        let responderCert = try ATSAMLabTrustStore.peerCertificate(forDeviceEd: peerEd)
         try await installInitiatorSession(
             initValue: initValue,
             root: built.root,
@@ -1008,6 +1022,41 @@ final class ATSAMLabEndpointHost {
     }
 
     #if DEBUG
+    /// Test hook: dial frames over secure LAN and return raw replies (no ACK accept).
+    func dialLabCollectingReplies(outboundFrames: [Data]) async throws -> [Data] {
+        guard let lan = RavenServerlessLanConfig.stored,
+              let peerEd = Data(ravenHex: lan.peerPubHex), peerEd.count == 32 else {
+            throw HostError.lanConfigMissing
+        }
+        return try await RavenSecureLanDialerV1.dialLab(
+            host: lan.host,
+            port: lan.port,
+            expectedDeviceEdPub: peerEd,
+            frames: outboundFrames
+        )
+    }
+
+    /// Test hook: dial packed message, require sealed ACK, CAS outstanding → Delivered.
+    func dialLabAndAcceptInboundAckForTesting(outboundFrames: [Data]) async throws {
+        guard let lan = RavenServerlessLanConfig.stored,
+              let peerEd = Data(ravenHex: lan.peerPubHex), peerEd.count == 32 else {
+            throw HostError.lanConfigMissing
+        }
+        try await dialLabAndAcceptInboundAck(
+            host: lan.host,
+            port: lan.port,
+            expectedDeviceEdPub: peerEd,
+            outboundFrames: outboundFrames
+        )
+        if let sid = boundSessions.keys.first {
+            syncBoundGeneration(sessionID: sid)
+        }
+    }
+
+    static func sealedAckFrame(in replies: [Data]) -> Data? {
+        findSealedAckFrame(in: replies)
+    }
+
     /// Test hook: run Sender path and return packed envelope without network dial.
     func captureOutboundIndexedMessage(_ text: String) async throws -> Data {
         guard isOperational, let acceptanceDB else {
@@ -1134,7 +1183,8 @@ final class ATSAMLabEndpointHost {
             root: meta.rootKey,
             initiatorAddress: meta.initiatorAddress,
             responderAddress: meta.responderAddress,
-            signingKey: signingKey
+            signingKey: signingKey,
+            inboundDirection: bound.inboundDirection
         )
         let dialer = LabAckDialer()
         let worker = ATSAMEndpointTransactionV1.AckWorker(
@@ -1322,7 +1372,8 @@ final class ATSAMLabEndpointHost {
             root: meta.rootKey,
             initiatorAddress: meta.initiatorAddress,
             responderAddress: meta.responderAddress,
-            signingKey: signingKey
+            signingKey: signingKey,
+            inboundDirection: session.inboundDirection
         )
         let dialer = LabAckDialer()
         let worker = ATSAMEndpointTransactionV1.AckWorker(
@@ -1353,6 +1404,14 @@ final class ATSAMLabEndpointHost {
     #if DEBUG
     func debugBoundGeneration(for sessionID: Data) -> UInt64? {
         boundSessions[sessionID]?.publicGeneration
+    }
+
+    func debugBoundSessionIDs() -> [Data] {
+        Array(boundSessions.keys)
+    }
+
+    func debugBoundSession(sessionID: Data) -> ATSAMEndpointTransactionV1.BoundSession? {
+        boundSessions[sessionID]
     }
 
     func resetLabHostStateForTesting() {
@@ -1416,17 +1475,20 @@ private final class LabAckMaterializer: ATSAMEndpointTransactionV1.AckMaterializ
     let initiatorAddress: String
     let responderAddress: String
     let signingKey: Curve25519.Signing.PrivateKey
+    let inboundDirection: ATSAMIndexedSessionProfile.Direction
 
     init(
         root: Data,
         initiatorAddress: String,
         responderAddress: String,
-        signingKey: Curve25519.Signing.PrivateKey
+        signingKey: Curve25519.Signing.PrivateKey,
+        inboundDirection: ATSAMIndexedSessionProfile.Direction
     ) {
         self.root = root
         self.initiatorAddress = initiatorAddress
         self.responderAddress = responderAddress
         self.signingKey = signingKey
+        self.inboundDirection = inboundDirection
     }
 
     func prepareCommittedAck(
@@ -1436,7 +1498,13 @@ private final class LabAckMaterializer: ATSAMEndpointTransactionV1.AckMaterializ
         createdAtMs: UInt64,
         expiresAtMs: UInt64
     ) throws -> ATSAMEndpointTransactionV1.PreparedAckOutbound {
-        let direction = ATSAMIndexedSessionProfile.Direction.responderToInitiator
+        // ACK is local→peer: same as outbound message direction (Rust
+        // `local_role.outbound_direction()`). Hardcoding R→I only worked when
+        // Swift was the PairInit responder.
+        let direction: ATSAMIndexedSessionProfile.Direction =
+            inboundDirection == .initiatorToResponder
+            ? .responderToInitiator
+            : .initiatorToResponder
         let pair = try ATSAMIndexedSessionProfile.endpoints(
             initiatorAddress: initiatorAddress,
             responderAddress: responderAddress,

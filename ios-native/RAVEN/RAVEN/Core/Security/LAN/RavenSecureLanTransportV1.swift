@@ -118,6 +118,16 @@ enum RavenSecureLanIPKeyCodec {
             var raw = addr.rawValue
             guard raw.count == 16 else { return nil }
             return RavenSecureLanIPKey(family: .ipv6, octets: raw)
+        case .name(let name, _):
+            // Simulator / some loopback peers present as names, not raw IPv4/IPv6.
+            let lower = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if lower == "localhost" || lower == "127.0.0.1" {
+                return ipv4(127, 0, 0, 1)
+            }
+            if lower == "::1" || lower == "[::1]" {
+                return ipv6Loopback()
+            }
+            return nil
         default:
             return nil
         }
@@ -328,8 +338,10 @@ final class RavenSecureLanLabListenerController {
         }
         let lw = try NWListener(using: .tcp, on: nwPort)
         lw.newConnectionHandler = { [weak self] conn in
+            // Snapshot admit/config on MainActor, then run Noise off-main so a
+            // busy XCTest MainActor cannot stall Mac→Simulator reverse dials.
             Task { @MainActor in
-                self?.handleInboundConnection(conn)
+                self?.spawnInboundConnection(conn)
             }
         }
         lw.stateUpdateHandler = { state in
@@ -347,47 +359,81 @@ final class RavenSecureLanLabListenerController {
         #endif
     }
 
-    private func handleInboundConnection(_ conn: NWConnection) {
-        guard ATSAMLabGate.isEnabled, isForeground else {
+    private func spawnInboundConnection(_ conn: NWConnection) {
+        guard ATSAMLabGate.isEnabled else {
+            #if DEBUG
+            print("🕊️ [SecureLanTransport] inbound cancel — lab gate closed")
+            #endif
             conn.cancel()
             return
         }
-        guard case let .hostPort(host, _) = conn.endpoint,
-              let ipKey = RavenSecureLanIPKeyCodec.key(from: host),
-              admission.tryAdmit(ip: ipKey) else {
+        guard isForeground else {
+            #if DEBUG
+            print("🕊️ [SecureLanTransport] inbound cancel — not foreground")
+            #endif
+            conn.cancel()
+            return
+        }
+        // Prefer remote endpoint octets; lab/simulator loopback may arrive as `.name`.
+        let ipKey: RavenSecureLanIPKey
+        if case let .hostPort(host, _) = conn.endpoint,
+           let parsed = RavenSecureLanIPKeyCodec.key(from: host) {
+            ipKey = parsed
+        } else if ATSAMLabGate.isEnabled {
+            // Fail-open only for lab gate: admit as IPv4 loopback so Mac→Simulator
+            // reverse dials are not cancelled before Noise (host may be opaque).
+            ipKey = RavenSecureLanIPKeyCodec.ipv4(127, 0, 0, 1)
+            #if DEBUG
+            print("🕊️ [SecureLanTransport] inbound host opaque — lab loopback admit")
+            #endif
+        } else {
+            #if DEBUG
+            print("🕊️ [SecureLanTransport] inbound cancel — unparseable host")
+            #endif
+            conn.cancel()
+            return
+        }
+        guard admission.tryAdmit(ip: ipKey) else {
+            #if DEBUG
+            print("🕊️ [SecureLanTransport] inbound cancel — admission cap")
+            #endif
             conn.cancel()
             return
         }
         guard let sessionConfiguration else {
+            #if DEBUG
+            print("🕊️ [SecureLanTransport] inbound cancel — no session configuration")
+            #endif
             admission.release(ip: ipKey)
             conn.cancel()
             return
         }
-        let openedAt = Date()
         let limits = RavenSecureLanTransportV1.limits
         let channel = RavenSecureLanNWFramedChannel(connection: conn)
-        Task {
+        let configuration = sessionConfiguration
+        Task.detached { [weak self] in
             defer {
                 Task { @MainActor in
-                    self.admission.release(ip: ipKey)
+                    self?.admission.release(ip: ipKey)
                 }
                 channel.close()
             }
             do {
                 try await RavenSecureLanSessionV1.serveInboundConnection(
                     channel: channel,
-                    configuration: sessionConfiguration,
+                    configuration: configuration,
                     limits: limits
                 )
             } catch {
                 #if DEBUG
-                if !(error is RavenSecureLanSessionError) {
-                    print("🕊️ [SecureLanTransport] inbound session: \(error)")
-                }
+                print("🕊️ [SecureLanTransport] inbound session: \(error)")
                 #endif
             }
-            _ = openedAt
         }
+    }
+
+    private func handleInboundConnection(_ conn: NWConnection) {
+        spawnInboundConnection(conn)
     }
 }
 

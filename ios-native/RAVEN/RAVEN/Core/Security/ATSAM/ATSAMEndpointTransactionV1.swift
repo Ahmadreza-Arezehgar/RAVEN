@@ -1605,6 +1605,15 @@ enum ATSAMEndpointTransactionV1 {
                 try bodyStage.preflightCapacity(body: body, createdAtMs: createdAtMs)
             } catch ATSAMOutboundBodyStage.StageError.tooLarge {
                 throw TransactionError.stageCapacityExceeded
+            } catch let error as ATSAMOutboundBodyStage.StageError {
+                switch error {
+                case .fsyncFailed, .ioFailed, .authenticationFailed, .corrupt, .bindingMismatch:
+                    throw TransactionError.invalidProtectedState
+                case .tooLarge:
+                    throw TransactionError.stageCapacityExceeded
+                case .orphanDeleted:
+                    throw TransactionError.invalidProtectedState
+                }
             }
 
             // 2. Build envelope + bindings in memory (ratchet only in memory)

@@ -48,6 +48,22 @@ enum RavenSecureLanDialerV1 {
         expectedDeviceEdPub: Data,
         limits: RavenSecureLanTransportLimits = .production
     ) async throws -> [Data] {
+        try await dialLabPairInitCapturing(
+            host: host,
+            port: port,
+            expectedDeviceEdPub: expectedDeviceEdPub,
+            limits: limits
+        ).replies
+    }
+
+    /// Same as `dialLabPairInit`, also returning initiator material for session install.
+    @MainActor
+    static func dialLabPairInitCapturing(
+        host: String,
+        port: UInt16,
+        expectedDeviceEdPub: Data,
+        limits: RavenSecureLanTransportLimits = .production
+    ) async throws -> LabPairInitDialCapture {
         try RavenSecureLanTransportV1.preflightSecureEntry()
         guard ATSAMLabGate.isEnabled else {
             throw RavenSecureLanSessionError.labGateClosed
@@ -104,13 +120,28 @@ enum RavenSecureLanDialerV1 {
             throw RavenSecureLanSessionError.identityMismatch
         }
         let built = try ATSAMLabPairInitBuilder.buildPackedPairInit(responderBundle: peer)
-        return try await RavenSecureLanSessionV1.runInitiatorApplicationExchange(
+        let replies = try await RavenSecureLanSessionV1.runInitiatorApplicationExchange(
             channel: channel,
             transport: &transport,
             frames: [built.packed],
             initialReplies: [peerOfferWire],
             limits: limits
         )
+        return LabPairInitDialCapture(
+            replies: replies,
+            initWire: built.wire,
+            packed: built.packed,
+            root: built.root,
+            responderBundle: peer
+        )
+    }
+
+    struct LabPairInitDialCapture {
+        let replies: [Data]
+        let initWire: Data
+        let packed: Data
+        let root: Data
+        let responderBundle: RavenSecureLanRlb1V1.LanBundle
     }
 
     /// Secure dial with explicit identity (tests / vectors).

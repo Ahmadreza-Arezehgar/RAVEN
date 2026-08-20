@@ -148,6 +148,12 @@ enum ATSAMOutboundBodyStage {
 
         #if DEBUG
         static func deleteForTesting() {
+            resetLabStoreForTesting()
+        }
+
+        /// Clears keychain key and the shared lab stage file so a new key cannot
+        /// trip `authenticationFailed` on a stale AEAD blob.
+        static func resetLabStoreForTesting() {
             let query: [String: Any] = [
                 kSecClass as String: kSecClassGenericPassword,
                 kSecAttrService as String: service,
@@ -155,6 +161,11 @@ enum ATSAMOutboundBodyStage {
             ]
             SecItemDelete(query as CFDictionary)
             testOverride = nil
+            let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+                ?? FileManager.default.temporaryDirectory
+            let dir = base.appendingPathComponent("raven/atsam/lab-outbound-stage", isDirectory: true)
+            let path = dir.appendingPathComponent(ATSAMOutboundBodyStage.fileName)
+            try? FileManager.default.removeItem(at: path)
         }
         #endif
     }
