@@ -145,7 +145,9 @@ struct MeshEnvelope: Codable, Identifiable {
     /// 16 random bytes, base64 — same shape `toSecureEnvelope()` used to mint.
     static func freshNonce() -> String {
         var bytes = [UInt8](repeating: 0, count: 16)
-        _ = SecRandomCopyBytes(kSecRandomDefault, 16, &bytes)
+        let status = SecRandomCopyBytes(kSecRandomDefault, 16, &bytes)
+        // Fail closed: a zero-filled identifier collides across messages.
+        precondition(status == errSecSuccess, "SecRandomCopyBytes failed: \(status)")
         return Data(bytes).base64EncodedString()
     }
 

@@ -1168,6 +1168,15 @@ class RealtimeEngine: @unchecked Sendable {
     private func showToast(for payload: [String: Any]) {
         guard let type = payload["type"] as? String else { return }
 
+        // The realtime channel is a private-messaging carrier. Legacy social
+        // events must not be converted into UI or engagement notifications.
+        let messagingEventTypes: Set<String> = [
+            "message", "group_message", "dm_message", "friend_request",
+            "added_to_group", "group_invite", "vault_access",
+            "security_alert", "security",
+        ]
+        guard messagingEventTypes.contains(type) else { return }
+
         // 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — name lookup
         // is shared by every toast case below so the banner ALWAYS
         // gets a display name. Tries `sender_username` first (modern
@@ -1376,50 +1385,6 @@ class RealtimeEngine: @unchecked Sendable {
                 }
             }
             
-        // 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — handle every
-        // other notification type the server may push so the in-app
-        // banner actually shows real info (was: silent default-break
-        // for like/comment/mention/group_message/audio_room/etc.,
-        // leaving the user with no idea anything happened).
-        case "like":
-            let userName = resolveSenderName(nil)
-            let postId = (payload["post_id"] as? String) ?? (payload["postId"] as? String) ?? ""
-            Task { @MainActor in
-                NotificationPipeline.shared.enqueue(ToastItem.like(
-                    userName: userName,
-                    avatarURL: resolveAvatarURL(),
-                    postId: postId
-                ))
-            }
-
-        case "comment":
-            let userName = resolveSenderName(nil)
-            let postId = (payload["post_id"] as? String) ?? (payload["postId"] as? String) ?? ""
-            var preview = (payload["preview"] as? String) ?? (payload["body"] as? String) ?? ""
-            if preview.looksEncrypted || preview.isEmpty { preview = "commented on your post" }
-            Task { @MainActor in
-                NotificationPipeline.shared.enqueue(ToastItem.comment(
-                    userName: userName,
-                    preview: preview,
-                    avatarURL: resolveAvatarURL(),
-                    postId: postId
-                ))
-            }
-
-        case "mention":
-            let userName = resolveSenderName(nil)
-            let postId = (payload["post_id"] as? String) ?? (payload["postId"] as? String) ?? ""
-            var preview = (payload["preview"] as? String) ?? (payload["body"] as? String) ?? ""
-            if preview.looksEncrypted || preview.isEmpty { preview = "mentioned you" }
-            Task { @MainActor in
-                NotificationPipeline.shared.enqueue(ToastItem.comment(
-                    userName: userName,
-                    preview: preview,
-                    avatarURL: resolveAvatarURL(),
-                    postId: postId
-                ))
-            }
-
         case "added_to_group", "group_invite":
             let inviter = resolveSenderName(nil)
             let groupName = (payload["group_name"] as? String) ?? "a group"
@@ -1447,19 +1412,6 @@ class RealtimeEngine: @unchecked Sendable {
             let body = (payload["preview"] as? String) ?? (payload["body"] as? String) ?? "New activity detected"
             Task { @MainActor in
                 NotificationPipeline.shared.enqueue(ToastItem.security(title: title, message: body))
-            }
-
-        case "new_post", "post":
-            let author = resolveSenderName(nil)
-            var preview = (payload["preview"] as? String) ?? (payload["post_preview"] as? String) ?? "New post"
-            if preview.looksEncrypted || preview.isEmpty { preview = "shared a new post" }
-            Task { @MainActor in
-                NotificationPipeline.shared.enqueue(ToastItem.comment(
-                    userName: author,
-                    preview: preview,
-                    avatarURL: resolveAvatarURL(),
-                    postId: (payload["post_id"] as? String) ?? ""
-                ))
             }
 
         default:

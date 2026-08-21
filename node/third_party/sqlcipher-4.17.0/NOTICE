@@ -1,0 +1,45 @@
+# NOTICE — SQLCipher 4.17.0 provenance tree (RAVEN)
+
+This directory vendors a regenerated SQLCipher 4.17.0 amalgamation and related
+provenance metadata for RAVEN Full Braid Slice 3 Task 0A.1. It does not yet
+wire any production dependency.
+
+## SQLCipher
+
+Copyright (c) 2025, ZETETIC LLC
+All rights reserved.
+
+SQLCipher is redistributed under the terms in `LICENSE` (BSD-style ZETETIC LLC
+license). SQLCipher is an intentional cryptographic extension / fork of SQLite.
+
+Upstream: https://github.com/sqlcipher/sqlcipher
+Tag: v4.17.0
+Peeled commit: 810db22f575ee7cf94ea96a3e91622b5fcece3dc
+
+## SQLite
+
+The amalgamation incorporates SQLite source material. SQLite itself is
+dedicated to the public domain by the authors (see upstream SQLite licensing
+notes). SQLCipher’s additional codec and build changes remain under the
+ZETETIC LLC license above.
+
+## OpenSSL (Terminal pin — openssl-src 300.6.1+3.6.3 / OpenSSL 3.6.3)
+
+Terminal builds that use `bundled-sqlcipher-vendored-openssl` are pinned to the
+crates.io `openssl-src` crate version `300.6.1+3.6.3`, which embeds OpenSSL
+**3.6.3**.
+
+- crates.io package SHA-256:
+  `46eb8fb9fb3b61ce1c0f8a026c4c1a0714d3a9e138e7fbde78753ce2babc3846`
+- OpenSSL release metadata (`VERSION.dat`): MAJOR=3 MINOR=6 PATCH=3,
+  RELEASE_DATE="9 Jun 2026"
+- `openssl-src` crate license: MIT / Apache-2.0
+- Embedded OpenSSL license: Apache License 2.0
+
+Copyright notices for OpenSSL Software Foundation / OpenSSL Project authors
+apply as distributed in the `openssl-src` crate’s `openssl/LICENSE.txt`.
+Full Apache License 2.0 text is available from that file and from
+https://www.apache.org/licenses/LICENSE-2.0
+
+This Task 0A.1 freeze records the pin and notices only; it does not replace
+Cargo/SPM packages or enable production SQLCipher linkage.

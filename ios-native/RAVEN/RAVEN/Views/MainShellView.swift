@@ -77,6 +77,25 @@ struct MainShellView: View {
                 .zIndex(3)
             }
         }
+        // TERMINAL v2: keyboard-first tab switching — ⌘1…⌘4 on hardware
+        // keyboards (iPad Magic Keyboard / MFi). Invisible 0×0 buttons so
+        // the keys fire without taking layout space, matching the chat
+        // shortcuts pattern in ChatKeyboardShortcutsModifier.
+        .background {
+            Group {
+                Button("") { selectedTab = .contacts }
+                    .keyboardShortcut("1", modifiers: .command)
+                Button("") { selectedTab = .messages }
+                    .keyboardShortcut("2", modifiers: .command)
+                Button("") { selectedTab = .network }
+                    .keyboardShortcut("3", modifiers: .command)
+                Button("") { selectedTab = .account }
+                    .keyboardShortcut("4", modifiers: .command)
+            }
+            .frame(width: 0, height: 0)
+            .opacity(0)
+            .accessibilityHidden(true)
+        }
         .onChange(of: selectedTab) { _, _ in
             if feedStateManager.isChromeHidden {
                 feedStateManager.isChromeHidden = false

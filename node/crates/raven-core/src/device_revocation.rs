@@ -85,7 +85,8 @@ impl DeviceRevocationV1 {
     }
 
     pub fn decode(wire: &[u8]) -> Result<Self, String> {
-        if wire.len() < 8 + 2 + ADDRESS_LEN + 2 + ID_MIN + 32 + 32 + 32 + 2 + ID_MIN + 8 + 16 + 1 + 8 + 64
+        if wire.len()
+            < 8 + 2 + ADDRESS_LEN + 2 + ID_MIN + 32 + 32 + 32 + 2 + ID_MIN + 8 + 16 + 1 + 8 + 64
         {
             return Err("wire too short".into());
         }
@@ -215,10 +216,7 @@ pub fn canonical_store_snapshot(
     claims_sorted.sort_by_key(|a| claim_digest(&a.exact_record_bytes));
     let mut exh = exhausted.to_vec();
     exh.sort_by(|a, b| {
-        (
-            a.identity_address.as_bytes(),
-            a.claim_digest.as_slice(),
-        )
+        (a.identity_address.as_bytes(), a.claim_digest.as_slice())
             .cmp(&(b.identity_address.as_bytes(), b.claim_digest.as_slice()))
     });
     let mut cor = corrupt.to_vec();
@@ -309,9 +307,9 @@ mod tests {
         let wire = hex(v["inputs"]["wire_hex"].as_str().unwrap());
         let rec = DeviceRevocationV1::decode(&wire).unwrap();
         let mut pubk = [0u8; 32];
-        pubk.copy_from_slice(&hex(
-            v["inputs"]["claimed_identity_ed_pub_hex"].as_str().unwrap(),
-        ));
+        pubk.copy_from_slice(&hex(v["inputs"]["claimed_identity_ed_pub_hex"]
+            .as_str()
+            .unwrap()));
         assert!(rec.verify(&pubk).is_err());
     }
 

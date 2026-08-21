@@ -164,8 +164,7 @@ struct LiquidToastView: View {
     }
 
     /// Context label that appears next to the sender name on the top
-    /// row. For 1:1 chats it's "DM"; for groups it's the group name;
-    /// for non-chat (likes, comments, …) it describes the action.
+    /// row. For 1:1 chats it's "Direct" and for groups it is the group name.
     private var contextLabel: String {
         switch item.type {
         case .message:
@@ -180,16 +179,14 @@ struct LiquidToastView: View {
             return "Direct"
         case .friendRequest:
             return "Friend Request"
-        case .like:
-            return "liked your post"
-        case .comment:
-            return "commented"
+        case .like, .comment:
+            return "Unavailable"
         case .groupInvite:
             return item.groupName ?? "Group invite"
         case .meshPeerNearby:
             return "Nearby on mesh"
         case .audioRoomMention:
-            return item.groupName ?? "Live room"
+            return "Unavailable"
         case .vaultAccess:
             return "Vault"
         case .backupDone:
@@ -213,11 +210,10 @@ struct LiquidToastView: View {
         case .message: return "Sent you a message"
         case .voice: return "Sent a voice message"
         case .friendRequest: return "wants to connect"
-        case .like: return "tapped ♥ on your post"
-        case .comment: return "left a comment"
+        case .like, .comment: return "Legacy notification unavailable"
         case .groupInvite: return "Invited you to a group"
         case .meshPeerNearby: return "Just appeared on the mesh"
-        case .audioRoomMention: return "Mentioned you in a live room"
+        case .audioRoomMention: return "Legacy notification unavailable"
         case .vaultAccess: return "Vault attachment opened"
         case .backupDone: return "Encrypted backup finished"
         case .twoFactorRequest: return "Sign-in approval needed"

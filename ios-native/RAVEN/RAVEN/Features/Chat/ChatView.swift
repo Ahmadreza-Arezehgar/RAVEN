@@ -244,6 +244,8 @@ struct ChatView: View {
     @State private var searchQuery: String = ""
     @State private var searchResults: [NetworkService.MessageSearchHit] = []
     @State private var isSearching = false
+    /// TERMINAL v2: `/help` man-page sheet for the slash-command system.
+    @State private var showCommandHelp = false
     @State private var searchTask: Task<Void, Never>?
     /// Message id we want to scroll to and pulse-highlight (from a search hit).
     @State private var pulseMessageId: String? = nil
@@ -648,6 +650,25 @@ struct ChatView: View {
                         .padding(.horizontal, 12)
                         .padding(.bottom, 110) // ✅ Above floating composer
                     }
+                }
+                // TERMINAL v2: slash-command autocomplete — keyboard-first.
+                // Typing `/` (no space yet) floats the matching commands
+                // above the composer; tap to complete into the input line.
+                .overlay(alignment: .bottom) {
+                    let cmdMatches = TerminalCommandRegistry.matches(for: inputText)
+                    if !cmdMatches.isEmpty && editingMessage == nil {
+                        CommandPickerView(matches: cmdMatches) { command in
+                            Haptics.light()
+                            let takesArgs = command.signature.contains("<") || command.signature.contains("[")
+                            inputText = takesArgs ? command.name + " " : command.name
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.bottom, 110) // ✅ Above floating composer
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+                }
+                .sheet(isPresented: $showCommandHelp) {
+                    CommandHelpSheet()
                 }
                 .onChange(of: isInputFocused) { _, isFocused in
                     if isFocused {
@@ -1702,9 +1723,9 @@ struct ChatView: View {
     // ✅ Chat Background (extends under safe areas - adaptive for light/dark)
     private var chatBackground: some View {
         // (2026-05-15 — round 6) Honour the per-chat wallpaper
-        // selection from ChatDetailsView. When the user picks the
-        // default we fall back to the system Liquid Glass wallpaper
-        // so chats without a custom selection stay on-brand.
+        // selection from ChatDetailsView. TERMINAL v2: the default is
+        // the CRT console screen (ink + faint grid + scanlines) so the
+        // message log reads like a terminal buffer, not a wallpaper.
         let wp = ChatChromePreferences.shared.wallpaper(roomId: conversation.roomId)
         if let stops = wp.gradientStops, stops.count == 2,
            let top = ChatBackgroundColor.fromHex(stops[0]),
@@ -1714,7 +1735,7 @@ struct ChatView: View {
                     .ignoresSafeArea()
             )
         }
-        return AnyView(RavenChatWallpaper())
+        return AnyView(TerminalChatScreen())
     }
     
     // MARK: - Message Request Receiver Controls
@@ -2737,7 +2758,23 @@ struct ChatView: View {
             }
             return
         }
-        
+
+        // TERMINAL v2: IRC-style slash commands — resolved locally,
+        // keyboard-first. `/me` and `/shrug` transform the outgoing text;
+        // the rest execute an action and consume the line.
+        var outgoingText = text
+        if outgoingText.hasPrefix("/") {
+            switch handleSlashCommand(outgoingText) {
+            case .consumed:
+                inputText = ""
+                return
+            case .send(let replacement):
+                outgoingText = replacement
+            case .passthrough:
+                break
+            }
+        }
+
         let reply = replyingTo
         let entities = mentionTracker.entities.isEmpty ? nil : mentionTracker.entities
         inputText = ""
@@ -2745,7 +2782,84 @@ struct ChatView: View {
         mentionTracker.reset()
         
         Task {
-            try? await messageStore.sendText(text, replyTo: reply, entities: entities)
+            try? await messageStore.sendText(outgoingText, replyTo: reply, entities: entities)
+        }
+    }
+
+    // MARK: - Slash commands (TERMINAL v2)
+
+    private enum SlashCommandOutcome {
+        case consumed            // executed locally; drop the input line
+        case send(String)        // transformed — send this text instead
+        case passthrough         // unknown command — send verbatim
+    }
+
+    /// Local nick for `/me` action lines.
+    private var myNick: String {
+        if let me = AuthService.shared.currentUser {
+            let name = me.displayName.isEmpty ? (me.username ?? "") : me.displayName
+            if !name.isEmpty { return TerminalSyntax.displayNick(name) }
+        }
+        return "me"
+    }
+
+    private func handleSlashCommand(_ raw: String) -> SlashCommandOutcome {
+        let parts = raw.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+        guard let head = parts.first else { return .passthrough }
+        let command = head.lowercased()
+        let arg = parts.count > 1
+            ? String(parts[1]).trimmingCharacters(in: .whitespacesAndNewlines)
+            : ""
+
+        switch command {
+        case "/clear":
+            Haptics.light()
+            return .consumed
+
+        case "/help":
+            Haptics.light()
+            isInputFocused = false
+            showCommandHelp = true
+            return .consumed
+
+        case "/search":
+            Haptics.light()
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.86)) {
+                showSearchBar = true
+            }
+            searchQuery = arg
+            return .consumed
+
+        case "/reply":
+            Haptics.light()
+            if let target = messageStore.messages.last(where: { !senderIsMe($0.senderId) }) {
+                replyingTo = target
+            }
+            return .consumed
+
+        case "/edit":
+            Haptics.light()
+            if let target = messageStore.messages.last(where: {
+                senderIsMe($0.senderId) && $0.type == .text
+            }) {
+                editingMessage = target
+                // Defer so the consumed line's `inputText = ""` doesn't
+                // clobber the prefilled edit text.
+                let prefill = target.text ?? ""
+                DispatchQueue.main.async { inputText = prefill }
+            }
+            return .consumed
+
+        case "/me":
+            guard !arg.isEmpty else { return .consumed }
+            return .send("* \(myNick) \(arg)")
+
+        case "/shrug":
+            return .send(arg.isEmpty ? #"¯\_(ツ)_/¯"# : #"\#(arg) ¯\_(ツ)_/¯"#)
+
+        default:
+            // Unknown command → send verbatim (BitChat behavior).
+            return .passthrough
         }
     }
     
@@ -3076,210 +3190,222 @@ struct MessageBubbleView: View {
     @GestureState private var dragOffset: CGFloat = 0
     private let swipeThreshold: CGFloat = 60
     
+    // TERMINAL v2 (2026-08): BitChat-style flat log line. No bubbles, no
+    // avatars, no left/right alignment — every message is a left-aligned
+    // `[HH:mm] <nick> body` line in monospace, with syntax highlighting
+    // (TerminalSyntax) coloring mentions/URLs/commands/code like source.
+    // All previous interactions survive: swipe-to-reply, double-tap like,
+    // long-press action overlay (via BubbleFrameReporter), selection mode.
     var body: some View {
-        ZStack(alignment: isFromMe ? .trailing : .leading) {
-            // Reply icon (appears when swiping)
+        ZStack(alignment: .leading) {
+            // Reply glyph (appears when swiping)
             if abs(dragOffset) > 20 {
                 HStack {
-                    if isFromMe { Spacer() }
                     Image(systemName: "arrowshape.turn.up.left.fill")
-                        .font(.system(size: 18))
-                        .foregroundStyle(.blue)
+                        .font(.system(size: 16))
+                        .foregroundStyle(DS.phosphor)
                         .opacity(min(1, abs(dragOffset) / swipeThreshold))
                         .scaleEffect(min(1, abs(dragOffset) / swipeThreshold))
-                    if !isFromMe { Spacer() }
+                    Spacer()
                 }
-                .padding(.horizontal, 24)
+                .padding(.horizontal, 18)
             }
-            
-            HStack(alignment: .bottom, spacing: 8) {
-                // Selection checkbox (left side)
+
+            HStack(alignment: .top, spacing: 8) {
+                // Selection checkbox — terminal square
                 if isSelectionMode {
                     Button {
                         onSelect?()
                     } label: {
-                        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                            .font(.system(size: 22))
-                            .foregroundStyle(isSelected ? .blue : .secondary)
+                        Image(systemName: isSelected ? "checkmark.square.fill" : "square")
+                            .font(.system(size: 18))
+                            .foregroundStyle(isSelected ? DS.phosphor : .secondary)
                     }
                     .buttonStyle(.plain)
+                    .padding(.top, 1)
                 }
-            
-            if isFromMe && !isSelectionMode { Spacer(minLength: 40) }
-            
-            // Group avatar (left of bubble, only for others' messages)
-            // Pinned to LAST message in block (WhatsApp/Telegram style)
-            if isGroupChat && !isChannel && !isFromMe {
-                if isLastInBlock {
-                    groupAvatarView
-                } else {
-                    // Invisible spacer to keep indent
-                    Color.clear.frame(width: 28, height: 28)
-                }
-            }
-            
-            VStack(alignment: isFromMe ? .trailing : .leading, spacing: 4) {
-                // Group sender name (only first message in block, others only)
-                if isGroupChat && !isChannel && !isFromMe && isFirstInBlock {
-                    // 🔴 ROUND 71 phase 3 follow-up (2026-05-24) — three-
-                    // step fallback for the group sender label:
-                    //   1. message.senderName (carried on the wire when
-                    //      the sender's client populated it)
-                    //   2. senderDisplayNameFallback (resolved by
-                    //      ChatView from groupMembers via senderId —
-                    //      catches the offline-create case where the
-                    //      synthesized member entry was empty)
-                    //   3. "User" string as the absolute last resort
-                    //      (still better than blank).
-                    let resolvedName: String = {
-                        if !message.senderName.isEmpty { return message.senderName }
-                        if let fallback = senderDisplayNameFallback,
-                           !fallback.isEmpty { return fallback }
-                        return "User"
-                    }()
-                    Text(resolvedName)
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(senderNameColor)
-                        .padding(.leading, 4)
-                }
-                
-                // Forwarded from Channel header
-                if let forwardedChannelName = message.forwardedFromChannelName {
-                    HStack(spacing: 4) {
-                        Image(systemName: "arrowshape.turn.up.right.fill")
-                            .font(.system(size: 10))
-                        Text("Forwarded from \(forwardedChannelName)")
-                            .font(.system(size: 11, weight: .medium))
+
+                VStack(alignment: .leading, spacing: 4) {
+                    // Forwarded source — dim log annotation
+                    if let forwardedChannelName = message.forwardedFromChannelName {
+                        Text("→ fwd from \(forwardedChannelName)")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(DS.mist.opacity(0.45))
                     }
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-                    .background(.ultraThinMaterial, in: Capsule())
-                    .overlay(Capsule().stroke(Color.primary.opacity(0.08), lineWidth: 0.5))
-                    .padding(.bottom, 2)
-                    .padding(.leading, isFromMe ? 0 : 4)
-                    .padding(.trailing, isFromMe ? 4 : 0)
-                }
 
-                // Reply preview if exists
-                if let replyPreview = message.safeDisplaySnippetForReply {
-                    ReplyBubbleView(
-                        senderName: message.replyToSenderName ?? "",
-                        preview: replyPreview,
-                        type: message.replyToType ?? .text,
-                        isFromMe: isFromMe,
-                        onTap: message.replyToMessageId.map { id in
-                            { onJumpToReply?(id) }
-                        }
-                    )
-                }
-                
-                // Main bubble
-                HStack(alignment: .bottom, spacing: 4) {
-                    // "edited" label
-                    if message.editedAt != nil && !isMediaType {
-                        Text("edited")
-                            .font(.system(size: 9, weight: .medium))
-                            .foregroundStyle(.secondary.opacity(0.7))
-                            .italic()
+                    // Reply quote — `┌ re:` line
+                    if let replyPreview = message.safeDisplaySnippetForReply {
+                        ReplyBubbleView(
+                            senderName: message.replyToSenderName ?? "",
+                            preview: replyPreview,
+                            type: message.replyToType ?? .text,
+                            isFromMe: isFromMe,
+                            onTap: message.replyToMessageId.map { id in
+                                { onJumpToReply?(id) }
+                            }
+                        )
                     }
-                    expiryBadge
-                    // Content
-                    contentView
-                    
-                    // Timestamp + delivery indicator (hidden for media types — they render their own)
-                    if !isMediaType {
-                        VStack(alignment: .trailing, spacing: 2) {
-                            Text(message.timestamp, style: .time)
-                                .font(.caption2)
-                                .foregroundStyle(timestampColor)
 
-                            // Status (only for my messages)
-                            if isFromMe {
-                                HStack(spacing: 2) {
-                                    // Delivery authority dot
-                                    Circle()
-                                        .fill(deliveryColor)
-                                        .frame(width: 4, height: 4)
-
-                                    statusIcon
-                                }
-                                .font(.caption2)
+                    // Main content: flat log line (text) or framed panel (media)
+                    Group {
+                        if isMediaType || effectiveType != .text {
+                            VStack(alignment: .leading, spacing: 4) {
+                                mediaHeaderLine
+                                contentView
+                                    .clipShape(RoundedRectangle(cornerRadius: DS.radiusInner, style: .continuous))
+                                    .overlay {
+                                        RoundedRectangle(cornerRadius: DS.radiusInner, style: .continuous)
+                                            .strokeBorder(DS.hairlineDim, lineWidth: 1)
+                                    }
                             }
-
-                            // 2026-05-16 — round 12: per-message
-                            // encryption verdict. Renders nothing on
-                            // the happy path (sealed); only surfaces
-                            // when the body went over the wire as
-                            // RVNP1 plaintext or failed to decrypt.
-                            // Sits in the same metadata column as the
-                            // delivery checkmarks so it reads as part
-                            // of the message's status.
-                            MessageEncryptionBadge(messageId: message.id)
-
-                            // ✅ Smart Expiry icon (glass style)
-                            if let mode = message.expiryMode, mode != .none {
-                                Image(systemName: mode.icon)
-                                    .font(.system(size: 9, weight: .medium))
-                                    .foregroundStyle(.secondary.opacity(0.7))
-                            }
+                        } else {
+                            contentView
                         }
                     }
+                    // 🆕 Capture the content's screen frame so the
+                    // long-press overlay can clone + position around the
+                    // actual visible line (not the full row width).
+                    .modifier(BubbleFrameReporter(messageId: message.id))
+
+                    // Meta row — only renders when something is present:
+                    // expiry countdown + encryption verdict badge.
+                    HStack(spacing: 6) {
+                        expiryBadge
+                        MessageEncryptionBadge(messageId: message.id)
+                    }
+
+                    // Mesh delivery badge (only for mesh messages)
+                    MeshDeliveryBadge(message: message, isFromMe: isFromMe)
                 }
-                .padding(.horizontal, isMediaType ? 0 : 12)
-                .padding(.vertical, isMediaType ? 0 : 8)
-                .background(bubbleBackground)
-                .clipShape(
-                    UnevenRoundedRectangle(
-                        topLeadingRadius: isMediaType ? 0 : ((!isFromMe && !isFirstInBlock) ? 4 : appSettings.messageCornerRadius),
-                        bottomLeadingRadius: isMediaType ? 0 : ((!isFromMe && !isLastInBlock) ? 4 : appSettings.messageCornerRadius),
-                        bottomTrailingRadius: isMediaType ? 0 : ((isFromMe && !isLastInBlock) ? 4 : appSettings.messageCornerRadius),
-                        topTrailingRadius: isMediaType ? 0 : ((isFromMe && !isFirstInBlock) ? 4 : appSettings.messageCornerRadius),
-                        style: .continuous
-                    )
-                )
-                // 🆕 Capture the inner bubble's screen frame so the
-                // long-press overlay can clone + position around the
-                // actual visible bubble (not the full row width).
-                .modifier(BubbleFrameReporter(messageId: message.id))
-                // Bug 4 fix: Removed unused bubbleSize GeometryReader that caused layout thrashing
-                
-                // Mesh delivery badge (only for mesh messages)
-                MeshDeliveryBadge(message: message, isFromMe: isFromMe)
-            }
-            .onTapGesture(count: 2) {
-                if !isFromMe {
-                    Haptics.medium()
-                    onQuickLike?()
-                }
-            }
-            
-            if !isFromMe { Spacer(minLength: isGroupChat ? 40 : 60) }
-        }
-        // ✅ Bug 3+4 fix: offset & gesture on HStack only (not ZStack), using @GestureState
-        .offset(x: dragOffset)
-        .gesture(
-            DragGesture(minimumDistance: 20)
-                .updating($dragOffset) { value, state, _ in
-                    let dx = value.translation.width
-                    let dy = value.translation.height
-                    // Fix: only activate on horizontal swipe (abs(dx) > abs(dy)) to avoid scroll jitter
-                    if abs(dx) > abs(dy) && dx < 0 && !isSelectionMode {
-                        state = max(dx, -(swipeThreshold + 20))
+                .onTapGesture(count: 2) {
+                    if !isFromMe {
+                        Haptics.medium()
+                        onQuickLike?()
                     }
                 }
-                .onEnded { value in
-                    let dx = value.translation.width
-                    let dy = value.translation.height
-                    if abs(dx) > abs(dy) && dx <= -swipeThreshold {
-                        Haptics.light()
-                        onReply()
+
+                Spacer(minLength: 12)
+            }
+            // ✅ Bug 3+4 fix: offset & gesture on HStack only (not ZStack), using @GestureState
+            .offset(x: dragOffset)
+            .gesture(
+                DragGesture(minimumDistance: 20)
+                    .updating($dragOffset) { value, state, _ in
+                        let dx = value.translation.width
+                        let dy = value.translation.height
+                        // Fix: only activate on horizontal swipe (abs(dx) > abs(dy)) to avoid scroll jitter
+                        if abs(dx) > abs(dy) && dx < 0 && !isSelectionMode {
+                            state = max(dx, -(swipeThreshold + 20))
+                        }
                     }
-                }
-        )
+                    .onEnded { value in
+                        let dx = value.translation.width
+                        let dy = value.translation.height
+                        if abs(dx) > abs(dy) && dx <= -swipeThreshold {
+                            Haptics.light()
+                            onReply()
+                        }
+                    }
+            )
         } // Close ZStack
-        .padding(.vertical, 3)
-        .padding(.horizontal, 8)
+        .padding(.vertical, 2)
+        .padding(.horizontal, 10)
+    }
+
+    // MARK: - Terminal log-line pieces
+
+    /// Resolved sender handle for the `<nick>` prefix. Same three-step
+    /// fallback the old group name label used, extended with the local
+    /// user for own messages.
+    private var resolvedNick: String {
+        if !message.senderName.isEmpty { return message.senderName }
+        if isFromMe {
+            if let me = AuthService.shared.currentUser {
+                let name = me.displayName.isEmpty ? (me.username ?? "") : me.displayName
+                if !name.isEmpty { return name }
+            }
+            return "you"
+        }
+        if let fallback = senderDisplayNameFallback, !fallback.isEmpty { return fallback }
+        return "user"
+    }
+
+    /// Delivery status rendered as trailing terminal glyphs (own msgs only).
+    private var statusSuffix: AttributedString {
+        guard isFromMe else { return AttributedString("") }
+        let glyph: String
+        let color: Color
+        switch message.status {
+        case .pending, .sending: glyph = "○"; color = DS.amber
+        case .forwarding: glyph = "⇄"; color = DS.pathBlue
+        case .accepted, .sent: glyph = "✓"; color = DS.mist.opacity(0.45)
+        case .delivered: glyph = "✓✓"; color = DS.mist.opacity(0.75)
+        case .read: glyph = "✓✓"; color = DS.phosphor
+        case .failed: glyph = "✗"; color = DS.accentDanger
+        case .scheduled: glyph = "⏱"; color = DS.amber
+        }
+        var suffix = AttributedString("  \(glyph)")
+        suffix.foregroundColor = color
+        suffix.font = .system(size: 11, weight: .bold, design: .monospaced)
+        return suffix
+    }
+
+    /// `·edited` marker appended after the body.
+    private var editedSuffix: AttributedString {
+        guard message.editedAt != nil else { return AttributedString("") }
+        var suffix = AttributedString("  ·edited")
+        suffix.foregroundColor = DS.mist.opacity(0.35)
+        suffix.font = .system(size: 10, design: .monospaced)
+        return suffix
+    }
+
+    /// `[HH:mm] ` dim gutter prefix.
+    private var timePrefix: AttributedString {
+        var prefix = AttributedString("[\(TerminalSyntax.timeFormatter.string(from: message.timestamp))] ")
+        prefix.foregroundColor = DS.mist.opacity(0.38)
+        prefix.font = .system(size: 11, design: .monospaced)
+        return prefix
+    }
+
+    /// Header line for media/file/poll/… messages:
+    /// `[12:03] <nick> ▸ img photo.jpg ✓✓`
+    private var mediaHeaderLine: some View {
+        let bodySize = 15 * appSettings.textScaleFactor
+        var line = timePrefix
+        line += TerminalSyntax.nickPrefix(
+            resolvedNick, senderId: message.senderId, isMe: isFromMe, fontSize: bodySize
+        )
+        var kind = AttributedString("▸ \(mediaKindLabel)")
+        kind.foregroundColor = DS.phosphorSoft
+        kind.font = .system(size: 12, weight: .semibold, design: .monospaced)
+        line += kind
+        if let name = message.fileName, !name.isEmpty {
+            var file = AttributedString(" \(name)")
+            file.foregroundColor = DS.mist.opacity(0.6)
+            file.font = .system(size: 11, design: .monospaced)
+            line += file
+        }
+        line += statusSuffix
+        return Text(line)
+            .lineLimit(2)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// Short type tag for the media header.
+    private var mediaKindLabel: String {
+        switch effectiveType {
+        case .image: return "img"
+        case .video, .videoNote: return "vid"
+        case .ephemeralPhoto: return "snap"
+        case .voice: return "voice"
+        case .file: return "file"
+        case .location: return "loc"
+        case .contactCard: return "contact"
+        case .poll: return "poll"
+        case .postShare: return "post"
+        case .system: return "sys"
+        case .text: return "txt"
+        }
     }
     
     // MARK: - Content
@@ -3327,8 +3453,8 @@ struct MessageBubbleView: View {
     var contentView: some View {
         switch effectiveType {
         case .text:
-            VStack(alignment: isFromMe ? .trailing : .leading, spacing: 6) {
-                // Message text - with mention highlighting
+            VStack(alignment: .leading, spacing: 6) {
+                // Message text — terminal log line with syntax highlighting
                 mentionHighlightedText
 
                 // 🔴 ROUND 26 (2026-05-17) — tap-to-reset on decrypt-fail
@@ -3590,24 +3716,25 @@ struct MessageBubbleView: View {
         let opacity = isScheduled ? 0.4 : 1.0
         
         if isFromMe {
-            // Dynamic color based on delivery authority
-            // 🔵 Blue = Server, 🟣 Purple = Mesh, ⚪ Gray = Unknown/Pending
+            // TERMINAL REDESIGN: dynamic hue by delivery authority, all in
+            // deep console tints — 🟢 green = mesh, 🔵 cyan-blue = server,
+            // ⚫ gray = unknown/pending.
             let baseColor: Color = switch message.deliveryAuthority {
-            case .server: .blue
-            case .mesh: .purple
-            case .unknown: .gray
+            case .server: Color(red: 0.078, green: 0.353, blue: 0.459)   // #145C75
+            case .mesh: DS.phosphorDeep                                   // #0E9244
+            case .unknown: Color(red: 0.157, green: 0.196, blue: 0.173)   // #28322C
             }
             return AnyShapeStyle(
                 LinearGradient(
-                    colors: [baseColor, baseColor.opacity(0.85)],
+                    colors: [baseColor.opacity(0.9), baseColor.opacity(0.72)],
                     startPoint: .topLeading,
                     endPoint: .bottomTrailing
                 ).opacity(opacity)
             )
         } else {
-            // Received message: gray background
+            // Received message: raised console panel.
             return AnyShapeStyle(
-                Color(.systemGray6).opacity(opacity)
+                Color(red: 0.086, green: 0.125, blue: 0.098).opacity(opacity) // #16201A
             )
         }
     }
@@ -3790,35 +3917,53 @@ struct MessageBubbleView: View {
         return text
     }
     
-    // MARK: - Mention-Highlighted Text
-    
-    @ViewBuilder
+    // MARK: - Terminal Log Line (text messages)
+
+    // TERMINAL v2: the whole message renders as ONE wrapping monospace
+    // Text — `[HH:mm] <nick> body ✓✓` — with the body syntax-highlighted
+    // like source code (URLs, @mentions, #channels, /commands, `code`,
+    // "strings", numbers). Server-provided mention entities are applied
+    // on top so tap-verified group mentions stay amber even when the
+    // regex wouldn't catch them.
     var mentionHighlightedText: some View {
-        let text = displayableText
-        
-        if let entities = message.entities, !entities.isEmpty, !text.isEmpty {
-            // Build attributed string with mention highlights
-            Text(buildMentionAttributedString(text: text, entities: entities))
-                .font(.subheadline)
-        } else {
-            // Plain text (no mentions)
-            Text(text)
-                .font(.subheadline)
-                .foregroundStyle(isFromMe ? .white : .primary)
-        }
+        Text(terminalLogLine)
+            .fixedSize(horizontal: false, vertical: true)
+            .lineSpacing(2)
     }
-    
-    private func buildMentionAttributedString(text: String, entities: [MentionEntity]) -> AttributedString {
-        var attributed = AttributedString(text)
-        attributed.foregroundColor = isFromMe ? .white : .primary
-        
+
+    /// Full `[HH:mm] <nick> body ✓✓` attributed line for text messages.
+    private var terminalLogLine: AttributedString {
+        let text = displayableText
+        let bodySize = 15 * appSettings.textScaleFactor
+
+        var line = timePrefix
+        line += TerminalSyntax.nickPrefix(
+            resolvedNick, senderId: message.senderId, isMe: isFromMe, fontSize: bodySize
+        )
+
+        var body = TerminalSyntax.highlight(text, fontSize: bodySize)
+        if let entities = message.entities, !entities.isEmpty, !text.isEmpty {
+            applyMentionEntities(&body, text: text, entities: entities, fontSize: bodySize)
+        }
+        line += body
+        line += editedSuffix
+        line += statusSuffix
+        return line
+    }
+
+    private func applyMentionEntities(
+        _ attributed: inout AttributedString,
+        text: String,
+        entities: [MentionEntity],
+        fontSize: CGFloat
+    ) {
         // Sort entities by rangeStart (descending to preserve indices)
         let sorted = entities.sorted { $0.rangeStart > $1.rangeStart }
-        
+
         for entity in sorted {
             let start = entity.rangeStart
             let length = entity.rangeLength
-            
+
             // ✅ Bug 6 fix: Server sends UTF-16 offsets, but Swift's String.Index counts
             // Character clusters. Emojis (e.g. 👨‍👩‍👧‍👦) are 1 Character but multiple UTF-16 units,
             // causing offsetBy to overshoot and crash with "String index is out of bounds".
@@ -3828,19 +3973,17 @@ struct MessageBubbleView: View {
                   let utf16End = utf16.index(utf16Start, offsetBy: length, limitedBy: utf16.endIndex),
                   let startIdx = String.Index(utf16Start, within: text),
                   let endIdx = String.Index(utf16End, within: text) else { continue }
-            
+
             // Find the corresponding range in AttributedString
             guard let attrStart = AttributedString.Index(startIdx, within: attributed),
                   let attrEnd = AttributedString.Index(endIdx, within: attributed) else {
                 continue
             }
-            
-            // Style the mention
-            attributed[attrStart..<attrEnd].foregroundColor = isFromMe ? .cyan : .blue
-            attributed[attrStart..<attrEnd].font = .subheadline.bold()
+
+            // Style the mention — amber block, bold (terminal syntax class)
+            attributed[attrStart..<attrEnd].foregroundColor = DS.amber
+            attributed[attrStart..<attrEnd].font = .system(size: fontSize, weight: .bold, design: .monospaced)
         }
-        
-        return attributed
     }
 }
 
@@ -3880,30 +4023,27 @@ struct ReplyBubbleView: View {
     var onTap: (() -> Void)? = nil
 
     var body: some View {
+        // TERMINAL v2: `┌ re <nick>: excerpt` quote line — flat, dim,
+        // accent left rule instead of a filled card.
         Button {
             Haptics.light()
             onTap?()
         } label: {
-            HStack(spacing: 8) {
-                Rectangle()
-                    .fill(isFromMe ? Color.white.opacity(0.6) : .blue)
-                    .frame(width: 3)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(senderName)
-                        .font(.caption)
-                        .fontWeight(.semibold)
-                        .foregroundStyle(isFromMe ? .white : .blue)
-
-                    Text(safePreviewText)
-                        .font(.caption)
-                        .foregroundStyle(isFromMe ? .white.opacity(0.8) : .secondary)
-                        .lineLimit(1)
-                }
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text("┌")
+                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .foregroundStyle(DS.phosphor.opacity(0.7))
+                Text("re <\(TerminalSyntax.displayNick(senderName))>")
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundStyle(DS.phosphorSoft)
+                    .lineLimit(1)
+                Text(safePreviewText)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(DS.mist.opacity(0.5))
+                    .lineLimit(1)
             }
-            .padding(8)
-            .background(isFromMe ? Color.white.opacity(0.2) : Color.gray.opacity(0.1))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .padding(.vertical, 2)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(onTap == nil)
@@ -4205,38 +4345,45 @@ struct ChatInputBar: View {
                 )
             }
             
-            // ✅ Clean Liquid Glass Composer: + | TextField | Capture/Send
-            HStack(spacing: 10) {
-                
-                // LEFT: Attachment button (+ icon) - Glass circle
+            // TERMINAL v2 composer: `+ │ > input▍ │ ↵` — one sharp console
+            // strip. Monospace field, no autocapitalization (terminal!),
+            // accent send block, square hairline buttons.
+            HStack(spacing: 8) {
+
+                // LEFT: Attachment button (+) — square console key
                 Button {
                     Haptics.light()
                     onAttachment()
                 } label: {
                     Image(systemName: "plus")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(.primary.opacity(0.8))
-                        .frame(width: 40, height: 40)
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(DS.phosphor)
+                        .frame(width: 38, height: 38)
                 }
                 .buttonStyle(.plain)
-                .background(.ultraThinMaterial, in: Circle())
-                .overlay(Circle().stroke(Color.primary.opacity(0.10), lineWidth: 0.8))
+                .background(
+                    RoundedRectangle(cornerRadius: DS.radiusInner, style: .continuous)
+                        .fill(DS.inkElevated.opacity(0.92))
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: DS.radiusInner, style: .continuous)
+                        .strokeBorder(DS.hairline, lineWidth: 1)
+                }
                 // (2026-05-15 — round 4) Vault badge + long-press
-                // toggle. Shows a small accent lock circle in the
+                // toggle. Shows a small accent lock square in the
                 // top-right of the + button when the next send is
                 // vaulted. Long-press the + button to flip vault
                 // mode without opening the attachment sheet first.
                 .overlay(alignment: .topTrailing) {
                     if vaultMode {
                         ZStack {
-                            Circle()
-                                .fill(Color.accentColor)
-                                .frame(width: 16, height: 16)
+                            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                .fill(DS.phosphor)
+                                .frame(width: 15, height: 15)
                             Image(systemName: "lock.fill")
-                                .font(.system(size: 9, weight: .bold))
-                                .foregroundStyle(.white)
+                                .font(.system(size: 8, weight: .bold))
+                                .foregroundStyle(DS.ink)
                         }
-                        .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 1.5))
                         .offset(x: 4, y: -4)
                         .accessibilityLabel("Vault mode on for next attachment")
                     }
@@ -4249,47 +4396,62 @@ struct ChatInputBar: View {
                             onToggleVault()
                         }
                 )
-                
-                // CENTER: Glass TextField Capsule
-                HStack(spacing: 8) {
-                    TextField("Write a message…", text: $text, axis: .vertical)
+
+                // CENTER: prompt + monospace field
+                HStack(alignment: .firstTextBaseline, spacing: 7) {
+                    Text(">")
+                        .font(.system(size: 15, weight: .bold, design: .monospaced))
+                        .foregroundStyle(DS.phosphor)
+
+                    TextField("message · / for cmds", text: $text, axis: .vertical)
                         .textFieldStyle(.plain)
                         .lineLimit(1...5)
-                        .font(.system(size: 16, weight: .medium))
-                        .foregroundStyle(.primary)
-                        .textInputAutocapitalization(.sentences)
-                    
+                        .font(.system(size: 15, design: .monospaced))
+                        .foregroundStyle(DS.mist)
+                        .tint(DS.phosphor)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled(false)
+
                     // Optional: clear button (only when typing)
                     if canSend {
                         Button {
                             text = ""
                         } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .font(.system(size: 16))
-                                .foregroundStyle(.secondary)
+                            Image(systemName: "xmark.square.fill")
+                                .font(.system(size: 15))
+                                .foregroundStyle(DS.mist.opacity(0.4))
                         }
                         .buttonStyle(.plain)
                     }
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(Color.primary.opacity(0.12), lineWidth: 0.8))
-                
-                // RIGHT: Send (when text) or unified Capture button (when empty)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 9)
+                .background(
+                    RoundedRectangle(cornerRadius: DS.radiusInner, style: .continuous)
+                        .fill(DS.inkElevated.opacity(0.94))
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: DS.radiusInner, style: .continuous)
+                        .strokeBorder(DS.hairline, lineWidth: 1)
+                }
+
+                // RIGHT: Send (when text) or capture key (when empty)
                 if canSend {
-                    // Send button — tap sends now, long-press opens the
-                    // schedule picker so the user can defer delivery to
-                    // a future time.
+                    // Send — accent block key. Tap sends now; long-press
+                    // (context menu) opens the schedule picker.
                     Button {
                         Haptics.medium()
                         onSend()
                     } label: {
-                        Image(systemName: "paperplane.fill")
-                            .font(.system(size: 17, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .frame(width: 40, height: 40)
-                            .background(Circle().fill(.blue.gradient))
+                        Image(systemName: "return")
+                            .font(.system(size: 15, weight: .bold))
+                            .foregroundStyle(DS.ink)
+                            .frame(width: 38, height: 38)
+                            .background(
+                                RoundedRectangle(cornerRadius: DS.radiusInner, style: .continuous)
+                                    .fill(DS.phosphor)
+                                    .shadow(color: DS.phosphor.opacity(0.4), radius: 8, y: 0)
+                            )
                     }
                     .buttonStyle(.plain)
                     .contextMenu {
@@ -4302,8 +4464,7 @@ struct ChatInputBar: View {
                         }
                     }
                 } else {
-                    // ✅ Unified Capture button (Voice / Video)
-                    // Double-tap = switch mode, Single-tap = activate
+                    // ✅ Unified Capture button (Voice)
                     captureButton
                 }
             }
@@ -4315,16 +4476,17 @@ struct ChatInputBar: View {
     
     private var captureButton: some View {
         Image(systemName: "mic.fill")
-            .font(.system(size: 16, weight: .medium))
-            .foregroundStyle(.secondary)
-            .frame(width: 40, height: 40)
-            .background(.ultraThinMaterial, in: Circle())
-            .overlay(
-                Circle().stroke(
-                    Color.primary.opacity(0.10),
-                    lineWidth: 0.8
-                )
+            .font(.system(size: 15, weight: .medium))
+            .foregroundStyle(DS.mist.opacity(0.7))
+            .frame(width: 38, height: 38)
+            .background(
+                RoundedRectangle(cornerRadius: DS.radiusInner, style: .continuous)
+                    .fill(DS.inkElevated.opacity(0.92))
             )
+            .overlay {
+                RoundedRectangle(cornerRadius: DS.radiusInner, style: .continuous)
+                    .strokeBorder(DS.hairline, lineWidth: 1)
+            }
             .onTapGesture(count: 1) {
                 Haptics.medium()
                 onCaptureTap?()
@@ -5950,9 +6112,9 @@ struct ChatSheetsModifier: ViewModifier {
                     }
                 }
                 Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("You won't see their posts, stories, or messages. They can't message you.")
-            }
+        } message: {
+            Text("You won't receive messages from this contact, and they won't be able to message you.")
+        }
             .sheet(isPresented: $showImagePicker) {
                 ImagePickerView { image in
                     print("📸 [ImagePicker] Image received — size: \(image.size)")
@@ -6298,21 +6460,40 @@ struct ChatDateSeparator: View {
     }
 
     var body: some View {
-        HStack {
-            Spacer(minLength: 0)
-            Text(label)
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 5)
-                .background(.ultraThinMaterial, in: Capsule())
-                .overlay(
-                    Capsule().stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
-                )
-            Spacer(minLength: 0)
+        // TERMINAL v2: `── label ──` section rule, log-style.
+        HStack(spacing: 10) {
+            Rectangle().fill(DS.hairlineDim).frame(height: 1)
+            Text(label.lowercased())
+                .font(.system(.caption2, design: .monospaced, weight: .semibold))
+                .foregroundStyle(DS.mist.opacity(0.5))
+                .fixedSize()
+            Rectangle().fill(DS.hairlineDim).frame(height: 1)
         }
+        .padding(.horizontal, 12)
         .accessibilityAddTraits(.isHeader)
         .accessibilityLabel(label)
+    }
+}
+
+// MARK: - Terminal Chat Screen (default chat background)
+/// CRT console backdrop for the message log: accent-tinted ink, faint
+/// engineering grid, scanlines, and a soft top phosphor wash. Dimmer
+/// than `RavenScreenBackground` so log text keeps maximum contrast.
+struct TerminalChatScreen: View {
+    var body: some View {
+        ZStack {
+            DS.ink
+            LinearGradient(
+                colors: [DS.phosphor.opacity(0.045), Color.clear],
+                startPoint: .top,
+                endPoint: .center
+            )
+            TerminalGrid(cell: 44, opacity: 0.022)
+                .allowsHitTesting(false)
+            ScanlineOverlay(spacing: 3, opacity: 0.035)
+                .allowsHitTesting(false)
+        }
+        .ignoresSafeArea()
     }
 }
 
@@ -6767,7 +6948,10 @@ struct ReactionChipsRow: View {
                     ))
                 }
             }
-            .frame(maxWidth: .infinity, alignment: isFromMe ? .trailing : .leading)
+            // TERMINAL v2: the log is left-aligned — reactions indent under
+            // the message line regardless of sender.
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.leading, 44) // align under the body column (past [HH:mm])
             // More bounce: lower damping → noticeable overshoot when the
             // chip lands. The previous 0.78 damping was too quick to
             // settle for a "reaction" gesture.
@@ -6792,27 +6976,28 @@ private struct ReactionChip: View {
             }
             action()
         }) {
-            HStack(spacing: 3) {
+            // TERMINAL v2: sharp `[ 👍 2 ]` block chip.
+            HStack(spacing: 4) {
                 Text(group.emoji)
-                    .font(.system(size: 13))
+                    .font(.system(size: 12))
                 if group.count > 1 {
                     Text("\(group.count)")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(group.mine ? Color.accentColor : .secondary)
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundStyle(group.mine ? DS.phosphor : DS.mist.opacity(0.6))
                         .monospacedDigit()
                 }
             }
-            .padding(.horizontal, group.count > 1 ? 8 : 6)
-            .padding(.vertical, 4)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
             .background(
-                Capsule(style: .continuous)
-                    .fill(group.mine ? Color.accentColor.opacity(0.15) : Color.primary.opacity(0.06))
+                RoundedRectangle(cornerRadius: DS.radiusPill, style: .continuous)
+                    .fill(group.mine ? DS.phosphorDeep.opacity(0.30) : DS.charcoal.opacity(0.85))
             )
             .overlay(
-                Capsule(style: .continuous)
-                    .stroke(
-                        group.mine ? Color.accentColor.opacity(0.45) : Color.primary.opacity(0.10),
-                        lineWidth: 0.5
+                RoundedRectangle(cornerRadius: DS.radiusPill, style: .continuous)
+                    .strokeBorder(
+                        group.mine ? DS.phosphor.opacity(0.55) : DS.hairlineDim,
+                        lineWidth: 1
                     )
             )
             .scaleEffect(pressed ? 1.12 : 1)
@@ -6839,41 +7024,25 @@ struct TypingIndicatorCapsule: View {
     @State private var visible = false
 
     var body: some View {
-        HStack(spacing: 8) {
-            HStack(spacing: 4) {
-                ForEach(0..<3) { i in
-                    Circle()
-                        .fill(Color.secondary)
-                        .frame(width: 6, height: 6)
-                        .scaleEffect(scale(for: i))
-                        .opacity(opacity(for: i))
-                }
-            }
+        // TERMINAL v2: flat log line — `> nick is typing ▍`
+        HStack(spacing: 6) {
+            Text(">")
+                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                .foregroundStyle(DS.phosphor.opacity(0.8))
 
-            if let presenceLabel, !presenceLabel.isEmpty {
-                Text(presenceLabel)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
+            Text("\(TerminalSyntax.displayNick(presenceLabel ?? "peer")) is typing")
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(DS.mist.opacity(0.55))
+                .lineLimit(1)
+
+            BlinkingCursor(color: DS.phosphor.opacity(0.85), height: 12)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(
-            Capsule(style: .continuous)
-                .fill(.ultraThinMaterial)
-        )
-        .overlay(
-            Capsule(style: .continuous)
-                .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
-        )
-        .shadow(color: .black.opacity(0.06), radius: 6, y: 2)
-        .scaleEffect(visible ? 1 : 0.85, anchor: .bottomLeading)
+        .padding(.horizontal, 4)
+        .padding(.vertical, 4)
         .opacity(visible ? 1 : 0)
         .onAppear {
-            withAnimation(.spring(response: 0.32, dampingFraction: 0.78)) { visible = true }
-            // Drive the dot animation with a continuous phase so we don't
-            // chain three independent withAnimation timers.
+            withAnimation(.easeOut(duration: 0.2)) { visible = true }
+            // Drive the (legacy) dot phase so the computed helpers stay valid.
             withAnimation(.linear(duration: 1.2).repeatForever(autoreverses: false)) {
                 phase = 1
             }
@@ -7527,26 +7696,18 @@ struct UnreadMessagesDivider: View {
     }
 
     var body: some View {
+        // TERMINAL v2: `── ▼ n unread ──` amber marker line.
         HStack(spacing: 10) {
             Rectangle()
-                .fill(Color.accentColor.opacity(0.30))
-                .frame(height: 0.5)
-            Text(label)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundColor(.accentColor)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(
-                    Capsule(style: .continuous)
-                        .fill(.ultraThinMaterial)
-                        .overlay(
-                            Capsule(style: .continuous)
-                                .stroke(Color.accentColor.opacity(0.35), lineWidth: 0.6)
-                        )
-                )
+                .fill(DS.amber.opacity(0.35))
+                .frame(height: 1)
+            Text("▼ \(label.lowercased())")
+                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                .foregroundStyle(DS.amber)
+                .fixedSize()
             Rectangle()
-                .fill(Color.accentColor.opacity(0.30))
-                .frame(height: 0.5)
+                .fill(DS.amber.opacity(0.35))
+                .frame(height: 1)
         }
         .padding(.horizontal, 16)
         .accessibilityLabel(label)

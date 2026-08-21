@@ -1,0 +1,60 @@
+[package]
+name = "libsqlite3-sys"
+version = "0.38.2+raven.sqlcipher.4.17.0"
+authors = ["The rusqlite developers", "RAVEN contributors"]
+edition = "2021"
+repository = "https://github.com/rusqlite/rusqlite"
+description = "RAVEN-audited libsqlite3-sys 0.38.2 with frozen SQLCipher 4.17.0 amalgamation (Task 0A.2)"
+license = "MIT"
+links = "sqlite3"
+build = "build.rs"
+keywords = ["sqlite", "sqlcipher", "ffi"]
+categories = ["external-ffi-bindings"]
+exclude = ["**/*.sh"]
+
+# Standalone package (patched into the Raven workspace via [patch.crates-io]).
+[workspace]
+
+[features]
+default = ["min_sqlite_version_3_34_1"]
+bundled = ["cc", "bundled_bindings"]
+bundled-windows = ["cc", "bundled_bindings"]
+bundled-sqlcipher = ["bundled"]
+bundled-sqlcipher-vendored-openssl = [
+    "bundled-sqlcipher",
+    "openssl-sys/vendored",
+]
+buildtime_bindgen = ["bindgen", "pkg-config", "vcpkg"]
+sqlcipher = []
+min_sqlite_version_3_34_1 = ["pkg-config", "vcpkg"]
+bundled_bindings = []
+loadable_extension = ["prettyplease", "quote", "syn"]
+unlock_notify = []
+column_metadata = []
+preupdate_hook = ["buildtime_bindgen"]
+session = ["preupdate_hook", "buildtime_bindgen"]
+in_gecko = []
+with-asan = []
+wasm32-wasi-vfs = []
+
+[dependencies]
+openssl-sys = { version = "0.9.103", optional = true }
+
+[build-dependencies]
+bindgen = { version = "0.72", optional = true, default-features = false, features = [
+    "runtime",
+] }
+pkg-config = { version = "0.3.19", optional = true }
+cc = { version = "1.2.27", optional = true }
+vcpkg = { version = "0.2.15", optional = true }
+prettyplease = { version = "0.2.20", optional = true }
+quote = { version = "1.0.36", optional = true, default-features = false }
+syn = { version = "2.0.89", optional = true, features = [
+    "full",
+    "extra-traits",
+    "visit-mut",
+] }
+# Host-independent SHA-256 for Task 0A.2 provenance pins (no `shasum` dependency).
+sha2 = "0.10"
+# Shared fail-closed profile env guard (CC/CFLAGS/@/-include).
+raven-sqlcipher-profile-guard = { path = "../raven-sqlcipher-profile-guard" }

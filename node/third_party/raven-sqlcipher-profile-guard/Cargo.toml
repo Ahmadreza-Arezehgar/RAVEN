@@ -1,0 +1,11 @@
+[package]
+name = "raven-sqlcipher-profile-guard"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "AGPL-3.0-or-later"
+description = "Fail-closed SQLCipher 4.17.0 profile env guard (Task 0A.2)"
+
+[[bin]]
+name = "raven-sqlcipher-profile-guard"
+path = "src/main.rs"

@@ -32,6 +32,13 @@ enum ATSAMError: Error, Equatable {
     /// post-quantum protection — proceed?".
     case nonHybridFallbackRefused
 
+    /// An X25519 key agreement produced the all-zero shared secret
+    /// (non-contributory behavior). The peer supplied a low-order /
+    /// degenerate public key. MUST fail closed per the ATSAM spec —
+    /// a predictable shared secret would silently void all
+    /// confidentiality guarantees derived from it.
+    case nonContributoryX25519
+
     // MARK: - Input validation
 
     /// A byte-string supplied to a primitive is the wrong length.

@@ -144,6 +144,10 @@ final class RavenServerlessLanPathTests: XCTestCase {
             RavenHybridTransport.prefer(wifiUp: false, peerOnLan: false, blePeersNearby: true),
             .bleMesh
         )
+        XCTAssertEqual(
+            RavenHybridTransport.prefer(wifiUp: false, peerOnLan: false, blePeersNearby: false),
+            .unavailable
+        )
     }
 
     func testSendThrowsWhenFlagOff() async {

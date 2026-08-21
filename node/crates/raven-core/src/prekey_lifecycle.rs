@@ -543,17 +543,16 @@ impl ProtectedPrekeyBackend for PlatformProtectedPrekeyBackend {
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 fn ensure_secret_service_available() -> Result<(), PrekeyLifecycleError> {
     use secret_service::{EncryptionType, SecretService};
+
     let service = SecretService::new(EncryptionType::Dh)
         .map_err(|_| PrekeyLifecycleError::ProtectedStoreUnavailable)?;
     let collection = service
         .get_default_collection()
         .map_err(|_| PrekeyLifecycleError::ProtectedStoreUnavailable)?;
-    if collection.is_locked() {
-        collection
-            .unlock()
-            .map_err(|_| PrekeyLifecycleError::ProtectedStoreUnavailable)?;
+    match collection.is_locked() {
+        Ok(false) => Ok(()),
+        Ok(true) | Err(_) => Err(PrekeyLifecycleError::ProtectedStoreUnavailable),
     }
-    Ok(())
 }
 
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
@@ -563,18 +562,21 @@ impl ProtectedPrekeyBackend for PlatformProtectedPrekeyBackend {
             return locked_file_get(path);
         }
         use secret_service::{EncryptionType, SecretService};
+        use std::collections::HashMap;
         let service = SecretService::new(EncryptionType::Dh)
             .map_err(|_| PrekeyLifecycleError::ProtectedStoreUnavailable)?;
         let collection = service
             .get_default_collection()
             .map_err(|_| PrekeyLifecycleError::ProtectedStoreUnavailable)?;
-        if collection.is_locked() {
-            collection
-                .unlock()
-                .map_err(|_| PrekeyLifecycleError::ProtectedStoreUnavailable)?;
+        match collection.is_locked() {
+            Ok(false) => {}
+            Ok(true) | Err(_) => return Err(PrekeyLifecycleError::ProtectedStoreUnavailable),
         }
         let items = collection
-            .search_items(vec![("service", PLATFORM_SERVICE), ("account", account)])
+            .search_items(HashMap::from([
+                ("service", PLATFORM_SERVICE),
+                ("account", account),
+            ]))
             .map_err(|_| PrekeyLifecycleError::ProtectedStore)?;
         let Some(item) = items.into_iter().next() else {
             return Ok(None);
@@ -589,20 +591,20 @@ impl ProtectedPrekeyBackend for PlatformProtectedPrekeyBackend {
             return locked_file_put(path, value);
         }
         use secret_service::{EncryptionType, SecretService};
+        use std::collections::HashMap;
         let service = SecretService::new(EncryptionType::Dh)
             .map_err(|_| PrekeyLifecycleError::ProtectedStoreUnavailable)?;
         let collection = service
             .get_default_collection()
             .map_err(|_| PrekeyLifecycleError::ProtectedStoreUnavailable)?;
-        if collection.is_locked() {
-            collection
-                .unlock()
-                .map_err(|_| PrekeyLifecycleError::ProtectedStoreUnavailable)?;
+        match collection.is_locked() {
+            Ok(false) => {}
+            Ok(true) | Err(_) => return Err(PrekeyLifecycleError::ProtectedStoreUnavailable),
         }
         collection
             .create_item(
                 "RAVEN hybrid prekey lifecycle",
-                vec![("service", PLATFORM_SERVICE), ("account", account)],
+                HashMap::from([("service", PLATFORM_SERVICE), ("account", account)]),
                 value,
                 true,
                 "application/octet-stream",
@@ -667,7 +669,7 @@ fn dpapi_protect(value: &[u8]) -> Result<Vec<u8>, PrekeyLifecycleError> {
     use windows_sys::Win32::Security::Cryptography::{
         CryptProtectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
     };
-    let mut input = CRYPT_INTEGER_BLOB {
+    let input = CRYPT_INTEGER_BLOB {
         cbData: value
             .len()
             .try_into()
@@ -680,7 +682,7 @@ fn dpapi_protect(value: &[u8]) -> Result<Vec<u8>, PrekeyLifecycleError> {
     };
     let ok = unsafe {
         CryptProtectData(
-            &mut input,
+            &input,
             std::ptr::null(),
             std::ptr::null_mut(),
             std::ptr::null_mut(),
@@ -707,7 +709,7 @@ fn dpapi_unprotect(value: &[u8]) -> Result<Vec<u8>, PrekeyLifecycleError> {
     use windows_sys::Win32::Security::Cryptography::{
         CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
     };
-    let mut input = CRYPT_INTEGER_BLOB {
+    let input = CRYPT_INTEGER_BLOB {
         cbData: value
             .len()
             .try_into()
@@ -720,7 +722,7 @@ fn dpapi_unprotect(value: &[u8]) -> Result<Vec<u8>, PrekeyLifecycleError> {
     };
     let ok = unsafe {
         CryptUnprotectData(
-            &mut input,
+            &input,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
             std::ptr::null_mut(),

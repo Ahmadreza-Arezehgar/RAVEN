@@ -76,9 +76,16 @@ impl PeerRecord {
             return Err("peer record short".into());
         }
         let dial_len = u16::from_be_bytes([raw[0], raw[1]]) as usize;
-        let mut off = 2;
-        if raw.len() < off + dial_len + 32 + 4 + 8 + 64 {
+        let mut off: usize = 2;
+        let expected_len = off
+            .checked_add(dial_len)
+            .and_then(|n| n.checked_add(32 + 4 + 8 + 64))
+            .ok_or_else(|| "peer record length overflow".to_string())?;
+        if raw.len() < expected_len {
             return Err("peer record truncated".into());
+        }
+        if raw.len() != expected_len {
+            return Err("peer record trailing bytes".into());
         }
         let dial = String::from_utf8(raw[off..off + dial_len].to_vec())
             .map_err(|_| "dial utf8".to_string())?;
@@ -148,7 +155,7 @@ impl DiscoveryStore {
 
 /// Documented NAT / CGNAT status for checklist honesty.
 pub const NAT_STATUS: &str = "BLOCKED_HARDWARE: multi-NAT/CGNAT/DCUtR live matrix not run; \
-software substitutes: DiscoveryStore + internet_dial_smoke + lan_path_smoke";
+software evidence: DiscoveryStore + legacy Internet hold gate + LAN path smoke";
 
 /// Capability bit used only in encode tests (mirrors internet CAP_INTERNET loosely).
 #[cfg(test)]
@@ -214,5 +221,12 @@ mod tests {
         assert_eq!(back.dial, rec.dial);
         assert_eq!(back.ed25519_pub, rec.ed25519_pub);
         back.verify(1).unwrap();
+
+        let mut trailing = raw.clone();
+        trailing.push(0);
+        assert_eq!(
+            PeerRecord::decode(&trailing).unwrap_err(),
+            "peer record trailing bytes"
+        );
     }
 }

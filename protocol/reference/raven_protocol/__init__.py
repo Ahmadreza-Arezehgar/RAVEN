@@ -20,4 +20,5 @@ __all__ = [
     "full_braid_auth",
     "full_braid_state",
     "full_braid_transition",
+    "full_braid_protected_anchor",
 ]

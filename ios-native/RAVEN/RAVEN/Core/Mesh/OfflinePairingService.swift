@@ -228,8 +228,13 @@ final class OfflinePairingService: NSObject, ObservableObject {
     private func generateNonce() -> Data {
         var nonce = Data(count: 16)
         nonce.withUnsafeMutableBytes { bytes in
-            guard let baseAddress = bytes.baseAddress else { return }
-            _ = SecRandomCopyBytes(kSecRandomDefault, 16, baseAddress)
+            guard let baseAddress = bytes.baseAddress else {
+                preconditionFailure("SecRandomCopyBytes: nil buffer")
+            }
+            let status = SecRandomCopyBytes(kSecRandomDefault, 16, baseAddress)
+            // Fail closed: a predictable pairing nonce weakens the
+            // out-of-band verification code.
+            precondition(status == errSecSuccess, "SecRandomCopyBytes failed: \(status)")
         }
         return nonce
     }

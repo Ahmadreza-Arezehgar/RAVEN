@@ -68,24 +68,31 @@ struct DisplayNameSetupView: View {
         VStack(spacing: 28) {
             Spacer()
 
+            // TERMINAL REDESIGN: identity creation as a console session.
             Image("RavenLogo")
                 .resizable()
                 .scaledToFit()
-                .frame(width: 84, height: 84)
-                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .frame(width: 72, height: 72)
+                .clipShape(RoundedRectangle(cornerRadius: DS.radiusInner, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: DS.radiusInner, style: .continuous)
+                        .strokeBorder(DS.hairline, lineWidth: 1)
+                )
+                .shadow(color: DS.phosphor.opacity(0.3), radius: 14)
 
             VStack(spacing: 8) {
-                Text("Choose a display name")
-                    .font(.title2.weight(.bold))
+                Text("$ raven --new-identity")
+                    .font(.system(.title3, design: .monospaced, weight: .bold))
+                    .foregroundStyle(DS.mist)
 
-                Text("This is how people see you. No account, no email, no phone — your identity is a key that lives only on this device.")
-                    .font(.subheadline)
+                Text("this is how people see you. no account, no email, no phone — your identity is a key that lives only on this device.")
+                    .font(.system(.footnote, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 24)
             }
 
-            LiquidGlassTextField(icon: "person", placeholder: "Display name", text: $name)
+            LiquidGlassTextField(icon: "person", placeholder: "display name", text: $name)
                 .focused($focused)
                 .submitLabel(.done)
                 .onSubmit(submit)
@@ -93,27 +100,27 @@ struct DisplayNameSetupView: View {
 
             Button(action: submit) {
                 HStack(spacing: 8) {
-                    if isSubmitting { ProgressView().tint(.white) }
-                    Text(isSubmitting ? "Creating identity…" : "Continue")
-                        .font(.headline)
+                    if isSubmitting { ProgressView().tint(DS.ink) }
+                    Text(isSubmitting ? "[ generating… ]" : "[ enter ]")
+                        .font(.system(.callout, design: .monospaced, weight: .bold))
                 }
+                .foregroundStyle(DS.ink)
                 .frame(maxWidth: .infinity)
                 .padding()
                 .background(
                     trimmed.isEmpty
                         ? AnyShapeStyle(Color.gray.opacity(0.4))
-                        : AnyShapeStyle(Color.accentColor)
+                        : AnyShapeStyle(DS.phosphor)
                 )
-                .foregroundStyle(.white)
-                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: DS.radiusInner, style: .continuous))
             }
             .disabled(trimmed.isEmpty || isSubmitting)
             .padding(.horizontal, 24)
 
             if let errorText {
-                Text(errorText)
-                    .font(.footnote)
-                    .foregroundStyle(.red)
+                Text("[!!] " + errorText)
+                    .font(.system(.footnote, design: .monospaced))
+                    .foregroundStyle(DS.accentDanger)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 24)
                     .transition(.opacity)

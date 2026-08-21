@@ -350,16 +350,13 @@ struct ProfileAvatarView: View {
 // MARK: - Settings Redesign — ink + cyan aura (brand, not purple glow)
 private struct SettingsBackdrop: View {
     var body: some View {
-        ZStack {
-            Color(.systemGroupedBackground)
-            DS.inkAura
-                .opacity(0.9)
-        }
-        .ignoresSafeArea()
+        RavenScreenBackground()
     }
 }
 
 // MARK: - Settings Redesign — Identity / Security hero
+/// TERMINAL REDESIGN (2026-08): identity rendered as a console user card —
+/// window chrome, monospace fields, phosphor hairline frame.
 private struct RavenIdentityHero: View {
     let user: User?
     var onCameraTap: () -> Void
@@ -371,53 +368,49 @@ private struct RavenIdentityHero: View {
     var body: some View {
         VStack(spacing: 14) {
             ZStack(alignment: .bottomTrailing) {
-                ZStack {
-                    Circle()
-                        .fill(DS.cyan.opacity(0.28))
-                        .frame(width: 108, height: 108)
-                        .blur(radius: 22)
-                    GlassAvatar(name: user?.displayName ?? "?", path: user?.avatarPath, size: 92, showGlow: false)
-                        .overlay(
-                            Circle().stroke(DS.signalGradient, lineWidth: 2.5)
-                        )
-                }
+                GlassAvatar(name: user?.displayName ?? "?", path: user?.avatarPath, size: 92, showGlow: false)
+                    .overlay(
+                        Circle().stroke(DS.phosphor.opacity(0.55), lineWidth: 2)
+                    )
+                    .shadow(color: DS.phosphor.opacity(0.25), radius: 14)
+
                 Button(action: onCameraTap) {
                     Image(systemName: "camera.fill")
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(DS.ink)
                         .frame(width: 30, height: 30)
-                        .background(Circle().fill(DS.signalGradient))
-                        .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 2.5))
+                        .background(Circle().fill(DS.phosphor))
+                        .overlay(Circle().stroke(DS.ink, lineWidth: 2))
                 }
                 .buttonStyle(.plain)
             }
             .padding(.top, 4)
 
             VStack(spacing: 4) {
-                Text("RAVEN")
-                    .font(.system(size: 11, weight: .bold, design: .rounded))
-                    .tracking(2.5)
-                    .foregroundStyle(DS.cyanDeep)
+                Text("uid=1000(raven)")
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .tracking(1.5)
+                    .foregroundStyle(DS.phosphor.opacity(0.75))
                 HStack(spacing: 6) {
                     Text(user?.displayName ?? "You")
-                        .font(.system(size: 24, weight: .bold))
-                        .foregroundStyle(.primary)
+                        .font(.system(size: 22, weight: .bold, design: .monospaced))
+                        .foregroundStyle(DS.mist)
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
                     if user?.isVerified == true {
                         Image(systemName: "checkmark.seal.fill")
                             .font(.system(size: 16))
-                            .foregroundStyle(DS.cyan)
+                            .foregroundStyle(DS.phosphor)
                     }
                 }
-                Text("Messaging Beyond Connectivity")
-                    .font(.system(size: 12, weight: .medium))
+                Text("secure mesh messaging")
+                    .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.secondary)
             }
 
             if let uname = user?.username, !uname.isEmpty {
                 Text("@\(uname)")
-                    .font(.system(size: 15))
+                    .font(.system(size: 14, design: .monospaced))
                     .foregroundStyle(.secondary)
             }
 
@@ -427,16 +420,22 @@ private struct RavenIdentityHero: View {
                     Text(fingerprint).font(DS.mono(.subheadline))
                     Image(systemName: "chevron.right").font(.system(size: 10, weight: .bold)).opacity(0.5)
                 }
-                .foregroundStyle(DS.cyanDeep)
+                .foregroundStyle(DS.phosphorSoft)
                 .padding(.horizontal, 14).padding(.vertical, 9)
-                .background(Capsule().fill(DS.cyan.opacity(0.12)))
-                .overlay(Capsule().stroke(DS.cyan.opacity(0.28), lineWidth: 1))
+                .background(
+                    RoundedRectangle(cornerRadius: DS.radiusInner, style: .continuous)
+                        .fill(DS.phosphor.opacity(0.10))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: DS.radiusInner, style: .continuous)
+                        .strokeBorder(DS.hairline, lineWidth: 1)
+                )
             }
             .buttonStyle(.plain)
 
             HStack(spacing: 8) {
-                SecurityPill(icon: "lock.shield.fill", text: "End-to-end", tint: DS.accentSuccess)
-                SecurityPill(icon: "key.fill", text: "No account", tint: DS.cyanDeep)
+                SecurityPill(icon: "lock.shield.fill", text: "e2e encrypted", tint: DS.accentSuccess)
+                SecurityPill(icon: "key.fill", text: "no account", tint: DS.amber)
             }
             .padding(.top, 2)
 
@@ -451,20 +450,14 @@ private struct RavenIdentityHero: View {
         .padding(.horizontal, 18)
         .background(
             RoundedRectangle(cornerRadius: DS.radiusHero, style: .continuous)
-                .fill(.ultraThinMaterial)
+                .fill(DS.inkElevated.opacity(0.94))
         )
         .overlay(
             RoundedRectangle(cornerRadius: DS.radiusHero, style: .continuous)
-                .stroke(
-                    LinearGradient(
-                        colors: [DS.cyan.opacity(0.55), DS.teal.opacity(0.15), Color.white.opacity(0.06)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ),
-                    lineWidth: 1
-                )
+                .strokeBorder(DS.hairline, lineWidth: 1)
         )
-        .shadow(color: DS.cyan.opacity(0.14), radius: 24, x: 0, y: 10)
+        .overlay(TerminalCornerTicks(radius: DS.radiusHero, length: 16))
+        .shadow(color: .black.opacity(0.45), radius: 20, x: 0, y: 10)
     }
 }
 

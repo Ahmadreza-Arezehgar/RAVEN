@@ -73,12 +73,7 @@ impl ConformanceStore {
                 exact_record_bytes: b.clone(),
             })
             .collect();
-        revocation_store_hash(
-            self.generation,
-            &claims,
-            &self.exhausted,
-            &self.corrupt,
-        )
+        revocation_store_hash(self.generation, &claims, &self.exhausted, &self.corrupt)
     }
 }
 
@@ -201,10 +196,7 @@ pub fn expand_quota(store: &mut ConformanceStore, new_max: usize) -> Result<(), 
 }
 
 pub fn convert_exhausted_journal_to_pending(store: &mut ConformanceStore) -> Result<(), String> {
-    let j = store
-        .journal
-        .as_ref()
-        .ok_or("no journal")?;
+    let j = store.journal.as_ref().ok_or("no journal")?;
     if j.kind != "PENDING_REVOKE_EXHAUSTED" {
         return Err("not exhausted journal".into());
     }
@@ -359,7 +351,10 @@ mod tests {
         for (g, exp) in got.iter().zip(arr.iter()) {
             assert_eq!(g.kind, exp["kind"].as_str().unwrap());
             assert_eq!(g.value_hex, exp["value_hex"].as_str().unwrap());
-            assert_eq!(g.claim_digest_hex, exp["claim_digest_hex"].as_str().unwrap());
+            assert_eq!(
+                g.claim_digest_hex,
+                exp["claim_digest_hex"].as_str().unwrap()
+            );
             assert_eq!(
                 g.revocation_id_hex,
                 exp["revocation_id_hex"].as_str().unwrap()
@@ -389,7 +384,10 @@ mod tests {
     #[test]
     fn union_001() {
         let v = load("union_001.json");
-        let addr = v["inputs"]["identity_address"].as_str().unwrap().to_string();
+        let addr = v["inputs"]["identity_address"]
+            .as_str()
+            .unwrap()
+            .to_string();
         let pubk = hex32(v["inputs"]["identity_ed_pub_hex"].as_str().unwrap());
         let mut store = ConformanceStore::new(addr, 10_000);
         let mut results = Vec::new();
@@ -411,7 +409,10 @@ mod tests {
     #[test]
     fn collision_revocation_id_001() {
         let v = load("collision_revocation_id_001.json");
-        let addr = v["inputs"]["identity_address"].as_str().unwrap().to_string();
+        let addr = v["inputs"]["identity_address"]
+            .as_str()
+            .unwrap()
+            .to_string();
         let pubk = hex32(v["inputs"]["identity_ed_pub_hex"].as_str().unwrap());
         let mut store = ConformanceStore::new(addr, 10_000);
         for h in v["inputs"]["claims_wire_hex"].as_array().unwrap() {
@@ -432,7 +433,10 @@ mod tests {
     fn quota_machine_001() {
         let v = load("quota_machine_001.json");
         let gates = load("apply_gates_001.json");
-        let addr = v["inputs"]["identity_address"].as_str().unwrap().to_string();
+        let addr = v["inputs"]["identity_address"]
+            .as_str()
+            .unwrap()
+            .to_string();
         let pubk = hex32(v["inputs"]["identity_ed_pub_hex"].as_str().unwrap());
         let mut store = ConformanceStore::new(
             addr,
@@ -502,7 +506,10 @@ mod tests {
             ),
         ] {
             let v = load(name);
-            let addr = v["inputs"]["identity_address"].as_str().unwrap().to_string();
+            let addr = v["inputs"]["identity_address"]
+                .as_str()
+                .unwrap()
+                .to_string();
             let pubk = hex32(v["inputs"]["identity_ed_pub_hex"].as_str().unwrap());
             let mut store = ConformanceStore::new(addr, 10_000);
             let jb = &v["inputs"]["journal_before"];
@@ -551,7 +558,10 @@ mod tests {
     #[test]
     fn apply_gates_001() {
         let v = load("apply_gates_001.json");
-        let addr = v["inputs"]["identity_address"].as_str().unwrap().to_string();
+        let addr = v["inputs"]["identity_address"]
+            .as_str()
+            .unwrap()
+            .to_string();
         let pubk = hex32(v["inputs"]["identity_ed_pub_hex"].as_str().unwrap());
         let mut store = ConformanceStore::new(addr.clone(), 10_000);
         let wire = hex::decode(v["inputs"]["revoked_wire_hex"].as_str().unwrap()).unwrap();
@@ -584,7 +594,10 @@ mod tests {
     #[test]
     fn pending_binding_negatives() {
         let v = load("pending_binding_negatives_001.json");
-        let addr = v["inputs"]["identity_address"].as_str().unwrap().to_string();
+        let addr = v["inputs"]["identity_address"]
+            .as_str()
+            .unwrap()
+            .to_string();
         let pubk = hex32(v["inputs"]["identity_ed_pub_hex"].as_str().unwrap());
         for case in v["cases"].as_array().unwrap() {
             let mut store = ConformanceStore::new(addr.clone(), 10_000);
@@ -593,10 +606,8 @@ mod tests {
                 store.journal = Some(Journal {
                     kind: jb["kind"].as_str().unwrap().into(),
                     claim_digest_hex: jb["claim_digest_hex"].as_str().unwrap().into(),
-                    exact_record_bytes: hex::decode(
-                        jb["exact_record_bytes_hex"].as_str().unwrap(),
-                    )
-                    .unwrap(),
+                    exact_record_bytes: hex::decode(jb["exact_record_bytes_hex"].as_str().unwrap())
+                        .unwrap(),
                 });
             }
             let wire = hex::decode(case["apply_wire_hex"].as_str().unwrap()).unwrap();

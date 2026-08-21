@@ -16,6 +16,25 @@ struct ServerNotification: Codable, Identifiable {
     let timestamp: Date
     var isRead: Bool = false
 
+    /// Server rows are untrusted input. Keep legacy fields decodable so an old
+    /// response cannot corrupt the whole page, but only private messaging,
+    /// contact, group, and security events may affect badges or UI.
+    static func isMessagingProductEventType(_ type: String) -> Bool {
+        switch type {
+        case "message", "dm_message", "group_message", "friend_request",
+             "added_to_group", "group_invite", "security", "security_alert",
+             "vault_access", "reaction", "contact_shared", "screenshot_chat",
+             "live_location_started", "live_location_ended":
+            true
+        default:
+            false
+        }
+    }
+
+    var isMessagingProductEvent: Bool {
+        Self.isMessagingProductEventType(type)
+    }
+
     // 🔴 ROUND 70 (2026-05-23) — BUG FIX: badge always shows 50.
     //
     // PREVIOUSLY this enum had `case isRead = "is_read"`. NetworkService's
@@ -166,10 +185,11 @@ actor NotificationsService {
         }
         
         do {
-            let notifications: [ServerNotification] = try await NetworkService.shared.get(
+            let fetched: [ServerNotification] = try await NetworkService.shared.get(
                 path: "/api/notifications",
                 queryItems: [URLQueryItem(name: "limit", value: "20")]
             )
+            let notifications = fetched.filter(\.isMessagingProductEvent)
             
             // Merge with local cache: if the user already marked a notification read
             // locally but the server hasn't processed the POST yet, preserve the local
@@ -289,10 +309,11 @@ actor NotificationsService {
     
     @MainActor
     private func createToast(from notification: ServerNotification) -> ToastItem? {
+        guard notification.isMessagingProductEvent else { return nil }
         let conversations = ConversationStore.shared.conversations
         
         switch notification.type {
-        case "message":
+        case "message", "dm_message":
             guard let roomId = notification.data.roomId else { return nil }
             var senderUsername = notification.data.senderUsername ?? notification.data.title ?? "New message"
             
@@ -365,46 +386,6 @@ actor NotificationsService {
                 avatarURL: AppConfig.mediaURL(from: notification.data.requesterAvatar),
                 senderId: senderId,
                 requestId: requestId
-            )
-            
-        case "like":
-            #if DEBUG
-            print("  [createToast] Like notification data: postId=\(notification.data.postId ?? "nil"), likerUsername=\(notification.data.likerUsername ?? "nil")")
-            #endif
-            guard var username = notification.data.likerUsername,
-                  let postId = notification.data.postId else {
-                #if DEBUG
-                print("  [createToast] Like missing required fields!")
-                #endif
-                return nil
-            }
-            if username.looksEncrypted { username = "Someone" }
-            
-            return ToastItem.like(
-                id: notification.id,
-                userName: username,
-                // 🟦 R52 — avatar plumbing.
-                avatarURL: AppConfig.mediaURL(from: notification.data.likerAvatar),
-                postId: postId
-            )
-
-        case "comment":
-            guard var username = notification.data.commenterUsername,
-                  let postId = notification.data.postId else {
-                return nil
-            }
-            if username.looksEncrypted { username = "Someone" }
-
-            var preview = notification.data.message ?? notification.data.preview ?? "commented on your post"
-            if preview.looksEncrypted { preview = "commented on your post" }
-
-            return ToastItem.comment(
-                id: notification.id,
-                userName: username,
-                preview: preview,
-                // 🟦 R52 — avatar plumbing.
-                avatarURL: AppConfig.mediaURL(from: notification.data.commenterAvatar),
-                postId: postId
             )
             
         case "added_to_group":
@@ -496,52 +477,9 @@ actor NotificationsService {
                 isGroup: true
             )
 
-        case "mention":
-            guard var username = notification.data.commenterUsername,
-                  let postId = notification.data.postId else { return nil }
-
-            if username.looksEncrypted { username = "someone" }
-
-            var preview = notification.data.preview ?? "mentioned you"
-            if preview.looksEncrypted { preview = "mentioned you" }
-
-            return ToastItem.comment(
-                id: notification.id,
-                userName: username,
-                preview: preview,
-                // 🟦 R52 — avatar plumbing.
-                avatarURL: AppConfig.mediaURL(from: notification.data.commenterAvatar),
-                postId: postId
-            )
-            
-        case "audio_room", "audio_room_join":
-            var username = notification.data.senderUsername ?? notification.data.addedBy ?? "Someone"
-            if username.looksEncrypted { username = "Someone" }
-            
-            let defaultMessage = notification.type == "audio_room" ? "\(username) started an audio room" : "\(username) joined the audio room"
-            var safePreview = notification.data.message ?? notification.data.preview ?? defaultMessage
-            if safePreview.looksEncrypted { safePreview = defaultMessage }
-
-            return ToastItem.appUpdate(
-                id: notification.id,
-                title: "Live Audio Room",
-                message: safePreview
-            )
-            
         default:
-            // Generic notification
-            if var title = notification.data.title,
-               var message = notification.data.message {
-               
-                if title.looksEncrypted { title = "Notification" }
-                if message.looksEncrypted { message = "You have a new secure notification" }
-                
-                return ToastItem.appUpdate(
-                    id: notification.id,
-                    title: title,
-                    message: message
-                )
-            }
+            // Unknown and retired public-engagement rows are migration input,
+            // never a generic notification that can cross the product boundary.
             return nil
         }
     }
@@ -563,10 +501,32 @@ actor NotificationsService {
         )
         
         // Convert ServerNotification to AppNotification
-        return serverNotifications.map { server in
-            AppNotification(
+        return serverNotifications.compactMap { server in
+            guard server.isMessagingProductEvent else { return nil }
+            let type: NotificationType
+            switch server.type {
+            case "message", "dm_message", "group_message", "added_to_group", "group_invite":
+                type = .message
+            case "friend_request":
+                type = .friendRequest
+            case "security", "security_alert":
+                type = server.type == "security_alert" ? .securityAlert : .security
+            case "reaction":
+                type = .reaction
+            case "contact_shared":
+                type = .contactShared
+            case "screenshot_chat":
+                type = .screenshotChat
+            case "live_location_started":
+                type = .liveLocationStarted
+            case "live_location_ended":
+                type = .liveLocationEnded
+            default:
+                return nil
+            }
+            return AppNotification(
                 id: server.id,
-                type: NotificationType(rawValue: server.type) ?? .security,
+                type: type,
                 data: .generic,  // Simplified - use generic for now
                 timestamp: server.timestamp,
                 isRead: server.isRead

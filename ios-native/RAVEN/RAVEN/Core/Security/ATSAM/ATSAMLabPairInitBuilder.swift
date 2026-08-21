@@ -17,6 +17,7 @@ enum ATSAMLabPairInitBuilder {
         case addressMissing
         case mlkemFailed(String)
         case signFailed
+        case rngFailed(String)
 
         var errorDescription: String? {
             switch self {
@@ -27,6 +28,7 @@ enum ATSAMLabPairInitBuilder {
             case .addressMissing: return "Raven address missing"
             case .mlkemFailed(let s): return "ML-KEM: \(s)"
             case .signFailed: return "Could not sign PairInit"
+            case .rngFailed(let s): return "CSPRNG failed: \(s)"
             }
         }
     }
@@ -112,12 +114,24 @@ enum ATSAMLabPairInitBuilder {
         let encap = try ATSAMMLKem.encapsulate(publicKey: prekeyFields.mlkemEK)
 
         var initID = Data(count: 16)
-        initID.withUnsafeMutableBytes { buf in
-            _ = SecRandomCopyBytes(kSecRandomDefault, 16, buf.baseAddress!)
+        try initID.withUnsafeMutableBytes { buf in
+            guard let base = buf.baseAddress else {
+                throw BuildError.rngFailed("nil buffer")
+            }
+            let status = SecRandomCopyBytes(kSecRandomDefault, 16, base)
+            guard status == errSecSuccess else {
+                throw BuildError.rngFailed("SecRandomCopyBytes \(status)")
+            }
         }
         var pairingNonce = Data(count: 32)
-        pairingNonce.withUnsafeMutableBytes { buf in
-            _ = SecRandomCopyBytes(kSecRandomDefault, 32, buf.baseAddress!)
+        try pairingNonce.withUnsafeMutableBytes { buf in
+            guard let base = buf.baseAddress else {
+                throw BuildError.rngFailed("nil buffer")
+            }
+            let status = SecRandomCopyBytes(kSecRandomDefault, 32, base)
+            guard status == errSecSuccess else {
+                throw BuildError.rngFailed("SecRandomCopyBytes \(status)")
+            }
         }
 
         let oneTimeX = prekeyFields.oneTimePrekeyID != 0

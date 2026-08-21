@@ -11,8 +11,8 @@ struct NotificationsListView: View {
     enum NotificationFilter: String, CaseIterable {
         case all = "All"
         case unread = "Unread"
-        case friends = "Friends"
-        case activity = "Activity"
+        case friends = "Requests"
+        case activity = "Messages"
     }
     
     var body: some View {
@@ -41,7 +41,7 @@ struct NotificationsListView: View {
                 }
             }
         }
-        .navigationTitle("Activity")
+        .navigationTitle("Notifications")
         .navigationBarTitleDisplayMode(.large)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
@@ -457,7 +457,15 @@ struct NotificationsListView: View {
         case .friends:
             return notifications.filter { $0.type.isPendingRequest }
         case .activity:
-            return notifications.filter { $0.type == .like || $0.type == .comment || $0.type == .mention || $0.type == .groupMessage }
+            return notifications.filter { notification in
+                switch notification.type {
+                case .message, .groupMessage, .reaction, .contactShared,
+                     .screenshotChat, .liveLocationStarted, .liveLocationEnded:
+                    return true
+                default:
+                    return false
+                }
+            }
         }
     }
     
@@ -489,7 +497,14 @@ struct NotificationsListView: View {
             return notifications.filter { $0.type.isPendingRequest && !$0.isRead }.count
         case .activity:
             return notifications.filter {
-                !$0.isRead && ($0.type == .like || $0.type == .comment || $0.type == .mention || $0.type == .groupMessage)
+                guard !$0.isRead else { return false }
+                switch $0.type {
+                case .message, .groupMessage, .reaction, .contactShared,
+                     .screenshotChat, .liveLocationStarted, .liveLocationEnded:
+                    return true
+                default:
+                    return false
+                }
             }.count
         }
     }
@@ -511,6 +526,7 @@ struct NotificationsListView: View {
     
     // MARK: - Handle Tap
     private func handleTap(_ notification: LocalNotification) {
+        guard notification.type.isMessagingProductEvent else { return }
         Haptics.light()
         
         Task { await markAsRead(notification.id) }
@@ -520,28 +536,11 @@ struct NotificationsListView: View {
             if let roomId = notification.referenceId {
                 DeepLinkRouter.shared.navigate(to: .chat(roomId: roomId))
             }
-        case .friendRequest, .followRequest:
+        case .friendRequest:
             DeepLinkRouter.shared.navigate(to: .friendRequests)
-        case .like, .comment:
-            // FIX: Navigate to the post when tapping like/comment notifications
-            if let postId = notification.referenceId {
-                DeepLinkRouter.shared.navigate(to: .post(postId: postId))
-            }
-        case .mention:
-            // Navigate to the post where user was mentioned
-            if let postId = notification.referenceId {
-                DeepLinkRouter.shared.navigate(to: .post(postId: postId))
-            }
-        case .newPost:
-            // Navigate to the post
-            if let postId = notification.referenceId {
-                DeepLinkRouter.shared.navigate(to: .post(postId: postId))
-            }
-        case .audioRoom:
-            // Navigate to the audio room
-            if let roomId = notification.referenceId {
-                DeepLinkRouter.shared.navigate(to: .audioRoom(slug: roomId))
-            }
+        case .followRequest, .like, .comment, .mention, .newPost, .audioRoom,
+             .profileView, .screenshotProfile:
+            break
         case .security, .securityAlert:
             DeepLinkRouter.shared.navigate(to: .security)
         case .liveLocationStarted, .liveLocationEnded:
@@ -562,17 +561,6 @@ struct NotificationsListView: View {
             // "Allow others to share my contact" toggle if they're
             // unhappy. The setting we already built in PrivacySettingsView.
             DeepLinkRouter.shared.navigate(to: .privacySettings)
-        case .profileView:
-            // Open MY profile so the user can review what was visible.
-            // referenceId carries the viewer's user id (could surface
-            // later as "X viewed you" header).
-            DeepLinkRouter.shared.navigate(to: .myProfile)
-        case .screenshotProfile:
-            // referenceId = the snitcher's user id — drop into their
-            // profile so the user can decide to block / report.
-            if let viewerId = notification.referenceId {
-                DeepLinkRouter.shared.navigate(to: .profile(userId: viewerId))
-            }
         case .screenshotChat:
             // Drop into the chat that was screenshot.
             if let roomId = notification.referenceId {
@@ -1189,20 +1177,16 @@ struct LocalNotification: Identifiable, Hashable, Codable {
             case .message: return "message.fill"
             case .groupMessage: return "person.3.fill"
             case .friendRequest: return "person.badge.plus"
-            case .followRequest: return "person.badge.plus"
-            case .like: return "heart.fill"
-            case .comment: return "bubble.left.fill"
-            case .mention: return "at"
-            case .newPost: return "square.and.pencil"
-            case .audioRoom: return "waveform"
+            case .followRequest, .like, .comment, .mention, .newPost,
+                 .audioRoom, .profileView, .screenshotProfile:
+                return "nosign"
             case .security: return "shield.fill"
             case .securityAlert: return "exclamationmark.shield.fill"
             case .liveLocationStarted: return "location.fill.viewfinder"
             case .liveLocationEnded: return "location.slash.fill"
             case .reaction: return "face.smiling.inverse"
             case .contactShared: return "person.crop.rectangle.stack.fill"
-            case .profileView: return "eye.fill"
-            case .screenshotProfile, .screenshotChat: return "camera.viewfinder"
+            case .screenshotChat: return "camera.viewfinder"
             }
         }
 
@@ -1211,20 +1195,16 @@ struct LocalNotification: Identifiable, Hashable, Codable {
             case .message: return .blue
             case .groupMessage: return .indigo
             case .friendRequest: return .purple
-            case .followRequest: return .purple
-            case .like: return .pink
-            case .comment: return .green
-            case .mention: return .cyan
-            case .newPost: return .blue
-            case .audioRoom: return .purple
+            case .followRequest, .like, .comment, .mention, .newPost,
+                 .audioRoom, .profileView, .screenshotProfile:
+                return .gray
             case .security: return .orange
             case .securityAlert: return .red
             case .liveLocationStarted: return .cyan
             case .liveLocationEnded: return .gray
             case .reaction: return .pink
             case .contactShared: return .orange
-            case .profileView: return .blue
-            case .screenshotProfile, .screenshotChat: return .red
+            case .screenshotChat: return .red
             }
         }
 
@@ -1234,7 +1214,22 @@ struct LocalNotification: Identifiable, Hashable, Codable {
         /// the global mark-all-as-read sweep. Centralised so we never
         /// miss one of the two when adding/removing.
         var isPendingRequest: Bool {
-            return self == .friendRequest || self == .followRequest
+            self == .friendRequest
+        }
+
+        /// Only private conversation/contact/security events may cross the
+        /// messenger product boundary. Legacy cases remain decodable solely so
+        /// an old cache can be discarded without making the whole cache corrupt.
+        var isMessagingProductEvent: Bool {
+            switch self {
+            case .message, .groupMessage, .friendRequest, .security,
+                 .securityAlert, .liveLocationStarted, .liveLocationEnded,
+                 .reaction, .contactShared, .screenshotChat:
+                true
+            case .followRequest, .like, .comment, .mention, .newPost,
+                 .audioRoom, .profileView, .screenshotProfile:
+                false
+            }
         }
     }
 }
@@ -1265,6 +1260,13 @@ class LocalNotificationService {
     static let shared = LocalNotificationService()
     private let networkService = NetworkService.shared
     private let cacheKey = "raven_notifications_cache_v1"
+
+    private static let allowedServerTypes: Set<String> = [
+        "message", "group_message", "friend_request", "added_to_group",
+        "pinned_message", "poll_created", "security_alert", "security",
+        "reaction", "contact_shared", "screenshot_chat",
+        "live_location_started", "live_location_ended",
+    ]
     
     private init() {}
     
@@ -1274,11 +1276,13 @@ class LocalNotificationService {
     func getCachedNotifications() -> [LocalNotification]? {
         guard let data = UserDefaults.standard.data(forKey: cacheKey) else { return nil }
         return try? JSONDecoder().decode([LocalNotification].self, from: data)
+            .filter { $0.type.isMessagingProductEvent }
     }
     
     /// Save notifications to UserDefaults cache
     func cacheNotifications(_ notifications: [LocalNotification]) {
-        if let data = try? JSONEncoder().encode(notifications) {
+        let messagingOnly = notifications.filter { $0.type.isMessagingProductEvent }
+        if let data = try? JSONEncoder().encode(messagingOnly) {
             UserDefaults.standard.set(data, forKey: cacheKey)
         }
     }
@@ -1454,11 +1458,14 @@ class LocalNotificationService {
             }
         }
         
-        let serverNotifications: [ServerNotification] = try await networkService.get(path: "/api/notifications")
+        let allServerNotifications: [ServerNotification] = try await networkService.get(path: "/api/notifications")
+        let serverNotifications = allServerNotifications.filter {
+            Self.allowedServerTypes.contains($0.type)
+        }
         
         let conversations = await MainActor.run { ConversationStore.shared.conversations }
         
-        let mapped = serverNotifications.map { n in
+        let mapped = serverNotifications.compactMap { n -> LocalNotification? in
             let notifType: LocalNotification.NotificationType
             var title = ""
             var body = ""
@@ -1492,62 +1499,6 @@ class LocalNotificationService {
                     preview: safePreview
                 )
                 
-            case "like":
-                notifType = .like
-                var senderName = n.data.likerUsername ?? "Someone"
-                if senderName.looksEncrypted { senderName = "Someone" }
-                title = senderName
-                body = "liked your post"
-                referenceId = n.data.postId
-                avatarUrl = n.data.likerAvatar
-                
-            case "comment":
-                notifType = .comment
-                var senderName = n.data.commenterUsername ?? "Someone"
-                if senderName.looksEncrypted { senderName = "Someone" }
-                title = senderName
-                
-                var preview = n.data.preview ?? "..."
-                if preview.looksEncrypted { preview = "Secure comment" }
-                body = "commented: \(preview)"
-                referenceId = n.data.postId
-                avatarUrl = n.data.commenterAvatar
-                
-            case "follow_request":
-                // 🟢 ROUND 76 (2026-05-24) — follow_request notification
-                // type was previously falling into the `default` case
-                // (.security) because no switch arm matched it. Result:
-                // notifType=.security, referenceId=nil, no Accept/
-                // Decline buttons. The server's `data` payload mirrors
-                // `friend_request` (requester_id/username/avatar +
-                // request_id = follow.id), so we reuse the same field
-                // extraction here but route the accept/decline action
-                // to /api/users/follow-request/{id}/accept|reject
-                // instead of /friend-request/.
-                notifType = .followRequest
-                var senderName = n.data.requesterUsername ?? ""
-                if senderName.isEmpty || senderName.looksEncrypted {
-                    if let rid = n.data.requesterId,
-                       let conv = conversations.first(where: { $0.peer.userId == rid }) {
-                        senderName = conv.peer.displayName
-                    } else {
-                        senderName = "Someone"
-                    }
-                }
-                title = senderName
-
-                var resolvedAvatar = n.data.requesterAvatar
-                if (resolvedAvatar == nil || resolvedAvatar?.isEmpty == true),
-                   let rid = n.data.requesterId,
-                   let conv = conversations.first(where: { $0.peer.userId == rid }),
-                   let peerAvatar = conv.peer.avatarPath, !peerAvatar.isEmpty {
-                    resolvedAvatar = peerAvatar
-                }
-                avatarUrl = resolvedAvatar
-
-                body = "wants to follow you"
-                referenceId = n.data.requestId
-
             case "friend_request":
                 notifType = .friendRequest
                 // 🔴 ROUND 71 phase 3 — fall back to the peer cache
@@ -1583,19 +1534,6 @@ class LocalNotificationService {
                 body = "sent you a friend request"
                 referenceId = n.data.requestId
 
-
-            case "mention":
-                notifType = .mention
-                var senderName = n.data.mentionerUsername ?? n.data.authorUsername ?? n.data.commenterUsername ?? "someone"
-                if senderName.looksEncrypted { senderName = "someone" }
-                title = senderName
-                
-                var preview = n.data.postPreview ?? n.data.preview ?? "in a post"
-                if preview.looksEncrypted { preview = "in a post" }
-                body = "mentioned you: \(preview)"
-                referenceId = n.data.postId
-                avatarUrl = n.data.mentionerAvatar
-                
             case "group_message":
                 notifType = .groupMessage
                 referenceId = n.data.roomId ?? n.data.groupId
@@ -1627,25 +1565,6 @@ class LocalNotificationService {
                     preview: safePreview
                 )
                 body = "in \(group): \(inner)"
-                
-            case "new_post":
-                notifType = .newPost
-                var senderName = n.data.authorUsername ?? "Someone"
-                if senderName.looksEncrypted { senderName = "Someone" }
-                title = "\(senderName) posted"
-                
-                var preview = n.data.postPreview ?? n.data.preview ?? "New post"
-                if preview.looksEncrypted { preview = "New post" }
-                body = preview
-                referenceId = n.data.postId
-                
-            case "audio_room":
-                notifType = .audioRoom
-                var senderName = n.data.hostUsername ?? n.data.authorUsername ?? n.data.senderUsername ?? "Someone"
-                if senderName.looksEncrypted { senderName = "Someone" }
-                title = "\(senderName) started a room"
-                body = n.data.roomTitle ?? n.data.preview ?? "Join the audio room"
-                referenceId = n.data.roomId
                 
             case "added_to_group":
                 notifType = .groupMessage
@@ -1726,24 +1645,6 @@ class LocalNotificationService {
                 referenceId = n.data.roomId
                 avatarUrl = n.data.sharerAvatar ?? n.data.senderAvatar
 
-            case "profile_view":
-                notifType = .profileView
-                var viewer = n.data.viewerUsername ?? n.data.senderUsername ?? "Someone"
-                if viewer.looksEncrypted { viewer = "Someone" }
-                title = viewer
-                body = "viewed your profile"
-                referenceId = n.data.viewerId ?? n.data.senderId
-                avatarUrl = n.data.viewerAvatar ?? n.data.senderAvatar
-
-            case "screenshot_profile":
-                notifType = .screenshotProfile
-                var viewer = n.data.viewerUsername ?? n.data.senderUsername ?? "Someone"
-                if viewer.looksEncrypted { viewer = "Someone" }
-                title = viewer
-                body = "took a screenshot of your profile"
-                referenceId = n.data.viewerId ?? n.data.senderId
-                avatarUrl = n.data.viewerAvatar ?? n.data.senderAvatar
-
             case "screenshot_chat":
                 notifType = .screenshotChat
                 var viewer = n.data.viewerUsername ?? n.data.senderUsername ?? "Someone"
@@ -1772,10 +1673,9 @@ class LocalNotificationService {
                 avatarUrl = n.data.senderAvatar ?? n.data.sharerAvatar
 
             default:
-                notifType = .security
-                title = "RAVEN"
-                // Prettify raw type: "app_update" → "App update"
-                body = n.type.replacingOccurrences(of: "_", with: " ").capitalized
+                // Defense in depth: future allow-list edits cannot turn an
+                // unknown row into a generic user-visible notification.
+                return nil
             }
             
             // ═══════════════════════════════════════════════════════════
@@ -1843,7 +1743,7 @@ class LocalNotificationService {
         case "location":
             return "shared a 📍 location"
         case "post_share", "postshare":
-            return "shared a 📬 post"
+            return "shared a legacy attachment"
         case "contact_card", "contactcard":
             return "shared a 👤 contact"
         case "ephemeral_photo", "ephemeralphoto", "snap":

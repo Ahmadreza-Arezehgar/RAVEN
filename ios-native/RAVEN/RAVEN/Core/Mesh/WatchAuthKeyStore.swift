@@ -30,10 +30,8 @@
 //    4. `WatchSnapshotProjector` now writes the token AS
 //       `ChaChaPoly.seal(token, using: key).combined` (base64) to
 //       the App Group file under the key `raven.auth.token.enc`.
-//       The legacy plaintext `raven.auth.token` is ALSO written for
-//       backward-compat with older Watch builds — when the entire
-//       Watch fleet has the new RemoteAPI, the plaintext write can
-//       be deleted in a flag-day round.
+//       No plaintext compatibility field is written. A Watch without
+//       the wrap key fails closed to the phone-mediated send path.
 
 import Foundation
 import CryptoKit

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# InternetTransport smoke: two nodes dial with authenticated hello + capability bits.
-# No FastAPI. Opaque framed RavenEnvelopeV1. Safe ephemeral dirs.
+# Negative production gate for the legacy raw InternetTransport.
+# The binary must refuse message origination until the authenticated indexed
+# endpoint actor and sealed ACK lifecycle are wired to this carrier.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="$ROOT/target/debug"
@@ -8,7 +9,10 @@ NODE="$BIN/raven-node"
 WORKDIR="${TMPDIR:-/tmp}/raven-inet-$$"
 mkdir -p "$WORKDIR/a" "$WORKDIR/b"
 cleanup() {
-  [[ -n "${BPID:-}" ]] && kill "$BPID" 2>/dev/null || true
+  if [[ -n "${BPID:-}" ]]; then
+    kill "$BPID" 2>/dev/null || true
+    wait "$BPID" 2>/dev/null || true
+  fi
   rm -rf "$WORKDIR"
 }
 trap cleanup EXIT
@@ -36,6 +40,7 @@ for _ in $(seq 1 80); do
 done
 B_ADDR=$(cat "$WORKDIR/b.addr")
 
+set +e
 printf '%s\n' "inet-transport-proof" | "$NODE" run \
   --data-dir "$WORKDIR/a" \
   --listen "127.0.0.1:0" \
@@ -45,10 +50,14 @@ printf '%s\n' "inet-transport-proof" | "$NODE" run \
   --exit-after-ack \
   --timeout-secs 25 \
   >"$WORKDIR/a.log" 2>&1
+A_STATUS=$?
+set -e
 
-wait "$BPID" || true
-grep -q 'ACK delivered' "$WORKDIR/a.log"
-grep -q 'DELIVERED' "$WORKDIR/b.log"
-# Prove no FastAPI / HTTP API was required
-! grep -qiE 'fastapi|localhost:8000|/api/' "$WORKDIR/a.log" "$WORKDIR/b.log"
-echo "=== INTERNET TRANSPORT DIAL OK (no FastAPI) ==="
+if [[ "$A_STATUS" -eq 0 ]]; then
+  echo "INTERNET_TRANSPORT_FALSE_DELIVERY: raw path unexpectedly exited zero" >&2
+  exit 1
+fi
+grep -q 'ATSAM_SESSION_REQUIRED: no authenticated persisted ATSAM session is available' "$WORKDIR/a.log"
+! grep -q 'ACK delivered' "$WORKDIR/a.log"
+! grep -q 'DELIVERED' "$WORKDIR/b.log"
+echo "PASS: legacy InternetTransport remains fail-closed pending indexed endpoint wiring"

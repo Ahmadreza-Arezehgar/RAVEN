@@ -2,13 +2,9 @@ import SwiftUI
 
 // MARK: - Report Target Type
 enum ReportTargetType: String, CaseIterable {
-    case post = "post"
     case user = "user"
     case message = "message"
-    case comment = "comment"
     case group = "group"
-    case room = "room"
-    case story = "story"
     case media = "media"
 }
 
@@ -186,7 +182,7 @@ struct ReportView: View {
                     dismiss()
                 }
             } message: {
-                Text("They won't be able to see your profile, posts, or message you.")
+                Text("You won't receive messages from this contact, and they won't be able to message you.")
             }
             .alert("Error", isPresented: $showError) {
                 Button("OK", role: .cancel) {}
@@ -346,5 +342,5 @@ private struct ReportAPIResponse: Decodable {
 
 // MARK: - Preview
 #Preview {
-    ReportView(targetType: .post, targetId: "123", targetName: "Example Post", reportedUserId: "user-456")
+    ReportView(targetType: .message, targetId: "123", targetName: "Private message", reportedUserId: "user-456")
 }

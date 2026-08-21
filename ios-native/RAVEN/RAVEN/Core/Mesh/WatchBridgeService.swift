@@ -18,23 +18,18 @@
 //                             we post `ravenWatchVoiceReplyArrived` and the
 //                             media/voice pipeline picks it up.
 //     • react               → posts `ravenWatchReact`
-//     • post-toggle-like    → posts `ravenWatchPostToggleLike`
-//     • post-comment        → posts `ravenWatchPostComment`
 //     • mark-read           → posts `ravenWatchMarkRead`
-//     • room-membership     → posts `ravenWatchRoomMembership`
-//     • room-ptt            → posts `ravenWatchRoomPTT`
 //     • subscribe-thread    → posts `ravenWatchSubscribeThread` (the chat
 //                             store responds by calling
 //                             pushThreadSnapshot below)
 //     • request-snapshot    → posts `ravenWatchRequestSnapshot`
-//     • open                → posts `ravenWatchOpen` (deep-link)
+//     • open                → opens an admitted chat target only
 //
 //   Outbound (iPhone → Watch):
-//     • pushApplicationContext  → state snapshot (inbox/feed/rooms/notifs)
+//     • pushApplicationContext  → state snapshot (inbox + message alerts)
 //     • notifyWatchOfMessage    → incoming-DM haptic
 //     • pushThreadSnapshot      → full history for a subscribed thread
 //     • pushThreadAppend        → one new message in a subscribed thread
-//     • pushPostUpdate          → like/comment counter change
 //     • pushDeliveryReceipt     → a mesh-pending send finally landed
 //
 // Notes:
@@ -56,16 +51,11 @@ fileprivate let logger = Logger(subsystem: "app.raven.ios", category: "Mesh.Watc
 
 extension Notification.Name {
     /// Watch → iPhone intents. Subscribers are the corresponding domain
-    /// services (reactions, posts feed, rooms, chat store).
+    /// services (message reactions and chat store).
     static let ravenWatchReact              = Notification.Name("raven.watch.react")
-    static let ravenWatchPostToggleLike     = Notification.Name("raven.watch.postToggleLike")
-    static let ravenWatchPostComment        = Notification.Name("raven.watch.postComment")
     static let ravenWatchMarkRead           = Notification.Name("raven.watch.markRead")
-    static let ravenWatchRoomMembership     = Notification.Name("raven.watch.roomMembership")
-    static let ravenWatchRoomPTT            = Notification.Name("raven.watch.roomPTT")
     static let ravenWatchSubscribeThread    = Notification.Name("raven.watch.subscribeThread")
     static let ravenWatchRequestSnapshot    = Notification.Name("raven.watch.requestSnapshot")
-    static let ravenWatchOpen               = Notification.Name("raven.watch.open")
     static let ravenWatchVoiceReplyArrived  = Notification.Name("raven.watch.voiceReplyArrived")
 }
 
@@ -155,18 +145,6 @@ final class WatchBridgeService: NSObject {
         sendOrQueue(payload)
     }
 
-    /// Notify the Watch that a post's counters changed (like, comment).
-    func pushPostUpdate(postId: String, likeCount: Int?, commentCount: Int?, likedByMe: Bool?) {
-        var payload: [String: Any] = [
-            "kind": "post-update",
-            "postId": postId,
-        ]
-        if let likeCount     { payload["likeCount"] = likeCount }
-        if let commentCount  { payload["commentCount"] = commentCount }
-        if let likedByMe     { payload["likedByMe"] = likedByMe }
-        sendOrQueue(payload)
-    }
-
     /// Tell the Watch a previously-mesh-pending message has landed.
     /// Used so the inbox can drop the orange "mesh routing…" badge.
     func pushDeliveryReceipt(messageId: String) {
@@ -239,7 +217,7 @@ final class WatchBridgeService: NSObject {
     /// corresponding services can subscribe without us needing tight
     /// coupling here.
     private func handleInbound(_ payload: [String: Any]) {
-        let kind = (payload["kind"] as? String) ?? "compose-dm"
+        guard let kind = payload["kind"] as? String else { return }
         switch kind {
         case "compose-dm":
             handleWatchCompose(payload)
@@ -247,25 +225,9 @@ final class WatchBridgeService: NSObject {
             NotificationCenter.default.post(
                 name: .ravenWatchReact, object: nil, userInfo: payload
             )
-        case "post-toggle-like":
-            NotificationCenter.default.post(
-                name: .ravenWatchPostToggleLike, object: nil, userInfo: payload
-            )
-        case "post-comment":
-            NotificationCenter.default.post(
-                name: .ravenWatchPostComment, object: nil, userInfo: payload
-            )
         case "mark-read":
             NotificationCenter.default.post(
                 name: .ravenWatchMarkRead, object: nil, userInfo: payload
-            )
-        case "room-membership":
-            NotificationCenter.default.post(
-                name: .ravenWatchRoomMembership, object: nil, userInfo: payload
-            )
-        case "room-ptt":
-            NotificationCenter.default.post(
-                name: .ravenWatchRoomPTT, object: nil, userInfo: payload
             )
         case "subscribe-thread":
             NotificationCenter.default.post(
@@ -276,9 +238,15 @@ final class WatchBridgeService: NSObject {
                 name: .ravenWatchRequestSnapshot, object: nil
             )
         case "open":
-            NotificationCenter.default.post(
-                name: .ravenWatchOpen, object: nil, userInfo: payload
-            )
+            guard let target = payload["target"] as? String,
+                  target.hasPrefix("chat:")
+            else { return }
+            let roomId = String(target.dropFirst("chat:".count))
+            guard !roomId.isEmpty,
+                  roomId.utf8.count <= 128,
+                  !roomId.unicodeScalars.contains(where: { $0.properties.generalCategory == .control })
+            else { return }
+            DeepLinkRouter.shared.route(to: .chat(roomId: roomId))
         default:
             logger.debug("[watch] unknown kind=\(kind, privacy: .public)")
         }

@@ -22,18 +22,22 @@ pub mod contact_request;
 pub mod device_cert;
 pub mod device_revocation;
 pub mod device_revocation_conformance;
-#[cfg(feature = "full-braid-lab")]
-pub mod hybrid_ratchet_v2;
-#[cfg(feature = "full-braid-lab")]
-pub mod hybrid_ratchet_v2_state;
-#[cfg(feature = "full-braid-lab")]
-pub mod hybrid_ratchet_v2_tr;
 pub mod device_sync;
 pub mod discovery;
 pub mod discovery_resolver;
 pub mod envelope;
 pub mod fingerprint;
 pub mod forward_queue;
+#[cfg(feature = "full-braid-durable-lab")]
+pub mod full_braid_durable_lab;
+#[cfg(feature = "full-braid-lab")]
+pub mod hybrid_ratchet_v2;
+#[cfg(feature = "full-braid-lab")]
+pub mod hybrid_ratchet_v2_full_braid;
+#[cfg(feature = "full-braid-lab")]
+pub mod hybrid_ratchet_v2_state;
+#[cfg(feature = "full-braid-lab")]
+pub mod hybrid_ratchet_v2_tr;
 pub mod identity;
 pub mod identity_store;
 pub mod indexed_session_store;
@@ -45,12 +49,10 @@ pub mod lan_gate;
 pub mod lan_noise;
 pub mod lan_rlb1;
 pub mod lan_vectors;
-#[cfg(feature = "mlkem768-incremental-lab")]
-pub mod mlkem768_incremental;
-#[cfg(feature = "full-braid-lab")]
-pub mod hybrid_ratchet_v2_full_braid;
 pub mod message_router;
 pub mod messaging_path;
+#[cfg(feature = "mlkem768-incremental-lab")]
+pub mod mlkem768_incremental;
 pub mod nearby;
 pub mod node_policy;
 pub mod pair_init;
@@ -200,6 +202,6 @@ pub use store_object::{
     mailbox_tag, mailbox_tags_with_overlap, store_tag_from_mailbox, StoreMailbox, StoreObject,
 };
 pub use transport::{
-    prefer_transport, select_path, NodeCapability, PathChoice, PathContext, TransportKind,
-    TransportPreference,
+    plan_paths, prefer_transport, select_path, NodeCapability, PathChoice, PathContext,
+    TransportKind, TransportPreference,
 };

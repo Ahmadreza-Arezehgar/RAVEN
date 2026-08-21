@@ -278,7 +278,12 @@ extension SocialRecoveryVSS {
             // (the fingerprint really is SHA-256 of the secret).
             var secret = Data(count: 32)
             secret.withUnsafeMutableBytes { buf in
-                _ = SecRandomCopyBytes(kSecRandomDefault, 32, buf.baseAddress!)
+                guard let base = buf.baseAddress else {
+                    preconditionFailure("SecRandomCopyBytes: nil buffer")
+                }
+                let status = SecRandomCopyBytes(kSecRandomDefault, 32, base)
+                // Fail closed: a known secret voids the sharing scheme.
+                precondition(status == errSecSuccess, "SecRandomCopyBytes failed: \(status)")
             }
             let ownerFP = Data(SHA256.hash(data: secret))
 

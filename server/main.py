@@ -1985,20 +1985,34 @@ async def _room_cleanup_loop():
 
 
 def _setup_admin_user():
-    """Create or update admin user and Apple reviewer demo accounts."""
+    """Create or update admin user and Apple reviewer demo accounts.
+
+    Security: credentials are injected via environment variables. Passwords
+    hardcoded here were committed to the public repository and had to be
+    treated as burned; they are also no longer force-reset on every boot.
+    """
+    import os
     from sqlalchemy import text
     from database import SessionLocal
     from auth import hash_password
     import uuid
-    
-    admin_username = "Raven-messenger"
-    admin_password = "REDACTED-ROTATE-ME"
-    
+
+    admin_username = os.environ.get("RAVEN_ADMIN_USERNAME", "Raven-messenger")
+    admin_password = os.environ.get("RAVEN_ADMIN_PASSWORD")
+    reviewer_password = os.environ.get("RAVEN_REVIEWER_PASSWORD")
+
+    if not admin_password or not reviewer_password:
+        logger.warning(
+            "⚠️ RAVEN_ADMIN_PASSWORD / RAVEN_REVIEWER_PASSWORD not set — "
+            "skipping privileged account bootstrap entirely."
+        )
+        return
+
     db = SessionLocal()
     try:
-        # ── 1. Admin account ──
+        # ── 1. Admin account (create-only; never overwrite an existing hash) ──
         result = db.execute(text("SELECT id FROM users WHERE username = :u"), {"u": admin_username}).fetchone()
-        
+
         if not result:
             user_id = str(uuid.uuid4())
             hashed = hash_password(admin_password)
@@ -2016,27 +2030,20 @@ def _setup_admin_user():
             db.commit()
             logger.info(f"✅ Admin user created: {admin_username}")
         else:
-            hashed = hash_password(admin_password)
-            db.execute(text("UPDATE users SET password_hash = :ph WHERE username = :u"), {
-                "ph": hashed, "u": admin_username
-            })
-            db.commit()
-            logger.info(f"✅ Admin user password updated: {admin_username}")
+            logger.info(f"ℹ️ Admin user already exists; password left untouched.")
         
         # ── 2. Apple Reviewer demo accounts ──
-        # These accounts let Apple reviewers test the app during App Store review.
-        # Login with USERNAME (not email) — e.g. username: "reviewer1", password: "REDACTED-ROTATE-ME"
+        # Password comes from RAVEN_REVIEWER_PASSWORD; existing accounts are
+        # never force-updated on boot (that silently reverted rotations).
         reviewer_accounts = [
             {
                 "username": "reviewer1",
-                "password": "REDACTED-ROTATE-ME",
                 "first_name": "Apple",
                 "last_name": "Reviewer",
                 "email": "apple-reviewer-1@raven-messenger.com",
             },
             {
                 "username": "reviewer2",
-                "password": "REDACTED-ROTATE-ME",
                 "first_name": "App",
                 "last_name": "Reviewer",
                 "email": "apple-reviewer-2@raven-messenger.com",
@@ -2053,9 +2060,9 @@ def _setup_admin_user():
                 {"u": acct["username"]}
             ).fetchone()
             
-            hashed_pw = hash_password(acct["password"])
+            hashed_pw = hash_password(reviewer_password)
             email_hash = hashlib.sha256(acct["email"].lower().encode()).hexdigest()
-            
+
             if not row:
                 uid = str(uuid.uuid4())
                 db.execute(text("""
@@ -2077,13 +2084,13 @@ def _setup_admin_user():
                 reviewer_ids.append(uid)
                 logger.info(f"✅ Reviewer account created: {acct['username']}")
             else:
-                # Update password so it always matches what we expect
+                # Leave existing credentials alone; rotation is an operator action.
                 uid = row[0]
                 db.execute(text(
-                    "UPDATE users SET password_hash = :pw, email_verified = TRUE WHERE username = :u"
-                ), {"pw": hashed_pw, "u": acct["username"]})
+                    "UPDATE users SET email_verified = TRUE WHERE username = :u"
+                ), {"u": acct["username"]})
                 reviewer_ids.append(uid)
-                logger.info(f"✅ Reviewer account updated: {acct['username']}")
+                logger.info(f"ℹ️ Reviewer account exists: {acct['username']}")
         
         db.commit()
         

@@ -18,7 +18,7 @@
 | Substitute | Evidence |
 |------------|----------|
 | TCP InternetTransport hello+frame | `raven_core::internet` unit tests |
-| Dial smoke | `node/scripts/internet_dial_smoke.sh` |
+| Raw Internet message hold | `node/scripts/internet_dial_smoke.sh` (negative gate) |
 | LAN path | `node/scripts/lan_path_smoke.sh` |
 | Signed peer discovery records | `raven_core::discovery::PeerRecord` + `DiscoveryStore` |
 | Opaque store-carry when path down | `bridge_abc_demo` + `store_object` |

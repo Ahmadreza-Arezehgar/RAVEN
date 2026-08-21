@@ -3284,8 +3284,12 @@ extension BLEMeshEngine: CBPeripheralDelegate {
 
         var msgID = Data(count: 16)
         msgID.withUnsafeMutableBytes { ptr in
-            guard let base = ptr.baseAddress else { return }
-            _ = SecRandomCopyBytes(kSecRandomDefault, 16, base)
+            guard let base = ptr.baseAddress else {
+                preconditionFailure("SecRandomCopyBytes: nil buffer")
+            }
+            let status = SecRandomCopyBytes(kSecRandomDefault, 16, base)
+            // Fail closed: zero-filled message IDs collide.
+            precondition(status == errSecSuccess, "SecRandomCopyBytes failed: \(status)")
         }
 
         let m2Envelope = RUMProtocolV2.Envelope(
@@ -3465,8 +3469,12 @@ extension BLEMeshEngine: CBPeripheralDelegate {
         // future spray.
         var stopMsgID = Data(count: 16)
         stopMsgID.withUnsafeMutableBytes { ptr in
-            guard let base = ptr.baseAddress else { return }
-            _ = SecRandomCopyBytes(kSecRandomDefault, 16, base)
+            guard let base = ptr.baseAddress else {
+                preconditionFailure("SecRandomCopyBytes: nil buffer")
+            }
+            let status = SecRandomCopyBytes(kSecRandomDefault, 16, base)
+            // Fail closed: zero-filled message IDs collide.
+            precondition(status == errSecSuccess, "SecRandomCopyBytes failed: \(status)")
         }
 
         let stop = RUMProtocolV2.Envelope(

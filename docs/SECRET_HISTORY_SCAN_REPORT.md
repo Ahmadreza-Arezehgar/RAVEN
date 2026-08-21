@@ -1,43 +1,35 @@
 # Secret History Scan Report
 
-- Generated: `2026-08-12T16:19:32Z` (triage table refreshed this wave)
+- Generated: `2026-08-13T13:23:18Z`
 - Branch: `feature/raven-serverless-v1`
-- HEAD: see latest local commit on branch
+- HEAD: `53b05a8`
 - Script: `scripts/secret_history_scan.sh`
-- Hit rows: **5** (pattern class only — values redacted)
-- CI hard-fail classes present: **0**
+- Hit rows: **3** (pattern class only — values redacted)
+- Historical blobs examined: **2535** (all reachable refs)
+- CI hard-fail classes present: **0** (1=yes)
 
 ## Policy
 
 - Findings are flagged for **HUMAN** rotation / history rewrite decisions.
+- Historical findings use `history:path@blob-id`; no matching value is emitted.
 - This script does **not** rotate credentials or rewrite git history.
 - Public test vectors / shared-vectors hex are excluded from path scope.
-- `.env.example` / README placeholder assignments are reported but do not hard-fail CI.
+- Environment-style assignments are always reported for human review but do not hard-fail CI; PEM/cloud-token patterns and untracked secret files do.
 
-## Rotate-or-false-positive table
+## Findings
 
-| Class | Path | Line | Verdict | Action |
-|-------|------|------|---------|--------|
-| `ENV_SECRET_ASSIGNMENT` | `news_bot/README.md` | 84 | **FALSE_POSITIVE** (docs fixture) | none — keep as example |
-| `ENV_SECRET_ASSIGNMENT` | `server/.env.example` | 36 | **FALSE_POSITIVE** (placeholder template) | none — expected in `.env.example` |
-| `ENV_SECRET_ASSIGNMENT` | `server/.env.example` | 51 | **FALSE_POSITIVE** (placeholder template) | none |
-| `ENV_SECRET_ASSIGNMENT` | `server/.env.example` | 87 | **FALSE_POSITIVE** (placeholder template) | none |
-| `ENV_SECRET_ASSIGNMENT` | `server/setup-resend.sh` | 27 | **HUMAN_CONFIRM** | confirm no live Resend key; if live → **ROTATE** at provider + purge history |
+| Class | Path | Line | Action |
+|-------|------|------|--------|
+| `ENV_SECRET_ASSIGNMENT` | `history:news_bot/README.md@6f99d558b254` | 84 | human_review |
+| `ENV_SECRET_ASSIGNMENT` | `history:server/.env.example@4387e6e4ba72` | 36 | human_review |
+| `ENV_SECRET_ASSIGNMENT` | `history:server/setup-resend.sh@bfc2b9f760c0` | 27 | human_review |
 
-## Summary
+## Human follow-ups (BLOCKED_HUMAN if real secrets)
 
-| Verdict | Count |
-|---------|------:|
-| FALSE_POSITIVE | 4 |
-| HUMAN_CONFIRM (rotate if real) | 1 |
-| Confirmed live secret in tree | **0** |
-
-## Human follow-ups (BLOCKED_HUMAN only if live)
-
-1. Spot-check `server/setup-resend.sh:27` — if a real key was ever used, rotate at Resend and consider history purge.
-2. Do not commit `.env` / key material; keep gitignored.
-3. Canonical report: this file. `node/SECRET_SCAN_REPORT_*.txt` is a pointer stub only.
+1. Review each row; ignore intentional fixtures.
+2. If a live credential is confirmed: rotate at the provider, then decide on history purge.
+3. Do not commit `.env` / key material; keep gitignored.
 
 ## CI
 
-`--ci` exits non-zero only for hard-fail classes (PEM/cloud tokens/untracked secret files / non-example ENV assignments).
+`--ci` exits non-zero only for hard-fail classes (PEM/cloud-token patterns or untracked secret files). Environment-style assignments remain non-blocking human-review findings.

@@ -34,7 +34,10 @@ ALGORITHM = "HS256"
 # Refresh tokens: Effectively permanent — only invalidated on explicit sign-out
 # or app uninstall. Revocation is handled via DB (revoke_refresh_token).
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
-REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "3650"))
+# 60-day refresh window: long enough for a messaging app, short enough that a
+# stolen-but-unused token cannot serve as a decade-long backdoor. Theft
+# detection (rotation reuse) still applies on top of this.
+REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "60"))
 
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")

@@ -13,7 +13,7 @@ cleanup() {
 }
 trap cleanup EXIT
 source "${HOME}/.cargo/env" 2>/dev/null || true
-[[ -x "$NODE" ]] || (cd "$ROOT" && cargo build -p raven-node -p raven-swarm -q)
+[[ -x "$NODE" ]] || (cd "$ROOT" && cargo build -p raven-node -p raven-swarm --features raven-node/unsafe-demo-crypto -q)
 [[ -x "$SWARM" ]] || (cd "$ROOT" && cargo build -p raven-swarm -q)
 
 # bootstrap.json: raven defaults disabled/empty; only manual peer
@@ -59,7 +59,7 @@ printf '%s\n' "manual-bootstrap-only" | "$NODE" run \
   --listen "127.0.0.1:0" \
   --peer "$B_ADDR" \
   --peer-pub-hex "$B_PUB" \
-  --send-stdin \
+  --send-stdin --body-mode unsafe-interim \
   --exit-after-ack \
   --timeout-secs 25 \
   >"$WORKDIR/a.log" 2>&1

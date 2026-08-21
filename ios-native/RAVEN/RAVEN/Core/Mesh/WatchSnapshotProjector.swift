@@ -1,14 +1,13 @@
 // WatchSnapshotProjector.swift
 //
-// Projects the iPhone's full chat / feed / room / notification state
+// Projects the iPhone's conversation and message-alert state
 // down into the slim `WatchSnapshot` shape the paired Apple Watch
 // renders. This is the iPhone half of the sync model documented in
 // `RAVEN-WatchApp/README.md` (§ "Wiring the iPhone side"):
 //
-//   ConversationStore  ┐
-//   FeedStore          ├─► [observe + debounce 250 ms]
-//   RoomService        ┤            │
-//   AudioRoomManager   ┘            ▼
+//   ConversationStore ───► [observe + debounce 250 ms]
+//                                      │
+//                                      ▼
 //                              build dict
 //                                    │
 //                                    ▼
@@ -90,29 +89,18 @@ final class WatchSnapshotProjector {
             // per-pair symmetric key derived via WCSession; that
             // wiring lands in this round.
             //
-            // We DUAL-WRITE during the rollout:
-            //   • `raven.auth.token`     — legacy plaintext, kept
-            //     so older RAVEN-Watch builds keep working. Will
-            //     be removed in a flag-day round once the entire
-            //     Watch fleet has the new RemoteAPI reader.
-            //   • `raven.auth.token.enc` — ChaChaPoly.seal(token, key)
+            // We write only `raven.auth.token.enc` —
+            // ChaChaPoly.seal(token, key)
             //     where `key` is the per-install AES-256 wrap key
             //     stored in the iPhone Keychain (no access group,
             //     so other processes cannot read it). The Watch
             //     receives a copy of `key` over WCSession (see
             //     `WatchBridgeService.publishAuthWrapKey`) and
             //     caches it in its own Keychain.
-            //
-            // After the flag-day flip, the App Group file holds ONLY
-            // the encrypted token; a backup-extracted file is a
-            // tagged ciphertext blob.
             Task.detached(priority: .utility) {
-                var payload: [String: Any] = ["raven.auth.token": token]
-                if let enc = await WatchAuthKeyStore.shared.encryptToken(token) {
-                    payload["raven.auth.token.enc"] = enc
-                    payload["raven.auth.token.kid"] = "v1"
-                }
-                if let data = try? JSONSerialization.data(withJSONObject: payload) {
+                let encrypted = await WatchAuthKeyStore.shared.encryptToken(token)
+                if let payload = Self.makeEncryptedAuthPayload(encrypted),
+                   let data = try? JSONSerialization.data(withJSONObject: payload) {
                     // `.completeFileProtection` keeps the file
                     // unreadable while the device is locked. The
                     // encrypted-blob upgrade defends post-unlock.
@@ -142,6 +130,11 @@ final class WatchSnapshotProjector {
                     rv.isExcludedFromBackup = true
                     var mutableURL = url
                     try? mutableURL.setResourceValues(rv)
+                } else {
+                    // Never leave a stale bearer credential available if the
+                    // current token cannot be sealed. The Watch will use the
+                    // phone-mediated queue until a later successful publish.
+                    try? FileManager.default.removeItem(at: url)
                 }
                 // Make sure the paired Watch has the wrap key — if
                 // this is the first sign-in we may not have shipped
@@ -153,6 +146,16 @@ final class WatchSnapshotProjector {
         } else {
             try? FileManager.default.removeItem(at: url)
         }
+    }
+
+    /// Pure payload constructor used by runtime boundary tests. Plaintext
+    /// bearer tokens are intentionally not accepted by this API.
+    nonisolated static func makeEncryptedAuthPayload(_ encryptedToken: String?) -> [String: Any]? {
+        guard let encryptedToken, !encryptedToken.isEmpty else { return nil }
+        return [
+            "raven.auth.token.enc": encryptedToken,
+            "raven.auth.token.kid": "v1",
+        ]
     }
 
     private var authFileURL: URL? {

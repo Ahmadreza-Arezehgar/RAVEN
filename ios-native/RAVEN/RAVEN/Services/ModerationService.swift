@@ -94,6 +94,19 @@ struct ModerationDecision: Codable, Identifiable {
         case appealStatus = "appeal_status"
         case canAppeal = "can_appeal"
     }
+
+    /// Old server rows can reference retired social objects. Keep the appeal
+    /// evidence available without reintroducing those object types as product
+    /// surfaces or user-facing labels.
+    var messagingTargetLabel: String {
+        switch targetType {
+        case "user": "Contact"
+        case "message": "Message"
+        case "group": "Private group"
+        case "media": "Message attachment"
+        default: "Legacy record"
+        }
+    }
     
     /// Human-readable decision label
     var decisionLabel: String {
@@ -104,7 +117,7 @@ struct ModerationDecision: Codable, Identifiable {
         case "tempban": return "Temporary Suspension"
         case "ban": return "Account Banned"
         case "mute": return "Account Muted"
-        case "shadowban": return "Visibility Reduced"
+        case "shadowban": return "Account Restricted"
         default: return "Action Taken"
         }
     }
@@ -118,7 +131,7 @@ struct ModerationDecision: Codable, Identifiable {
         case "tempban": return "clock.badge.xmark"
         case "ban": return "nosign"
         case "mute": return "speaker.slash.fill"
-        case "shadowban": return "eye.slash.fill"
+        case "shadowban": return "lock.fill"
         default: return "gavel.fill"
         }
     }

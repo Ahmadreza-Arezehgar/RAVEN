@@ -100,20 +100,6 @@ struct FAQView: View {
                 FAQItem(id: next(), question: "faq.q45".localized, answer: "faq.a45".localized),
             ]),
             
-            // E — Posts & Feed (10)
-            FAQSection(id: 4, title: "faq.section.4".localized, icon: "square.stack", items: [
-                FAQItem(id: next(), question: "faq.q46".localized, answer: "faq.a46".localized),
-                FAQItem(id: next(), question: "faq.q47".localized, answer: "faq.a47".localized),
-                FAQItem(id: next(), question: "faq.q48".localized, answer: "faq.a48".localized),
-                FAQItem(id: next(), question: "faq.q49".localized, answer: "faq.a49".localized),
-                FAQItem(id: next(), question: "faq.q50".localized, answer: "faq.a50".localized),
-                FAQItem(id: next(), question: "faq.q51".localized, answer: "faq.a51".localized),
-                FAQItem(id: next(), question: "faq.q52".localized, answer: "faq.a52".localized),
-                FAQItem(id: next(), question: "faq.q53".localized, answer: "faq.a53".localized),
-                FAQItem(id: next(), question: "faq.q54".localized, answer: "faq.a54".localized),
-                FAQItem(id: next(), question: "faq.q55".localized, answer: "faq.a55".localized),
-            ]),
-            
             // F — RAVEN+ & Subscriptions (4)
             FAQSection(id: 5, title: "faq.section.5".localized, icon: "crown", items: [
                 FAQItem(id: next(), question: "faq.q56".localized, answer: "faq.a56".localized),
@@ -138,27 +124,10 @@ struct FAQView: View {
                 FAQItem(id: next(), question: "faq.q64d".localized, answer: "faq.a64d".localized),
             ]),
             
-            // H — Echo, Club & Vault (6)
-            FAQSection(id: 7, title: "faq.section.7".localized, icon: "waveform.circle", items: [
-                FAQItem(id: next(), question: "faq.q65".localized, answer: "faq.a65".localized),
-                FAQItem(id: next(), question: "faq.q66".localized, answer: "faq.a66".localized),
-                FAQItem(id: next(), question: "faq.q67".localized, answer: "faq.a67".localized),
-                FAQItem(id: next(), question: "faq.q68".localized, answer: "faq.a68".localized),
-                FAQItem(id: next(), question: "faq.q69".localized, answer: "faq.a69".localized),
-                FAQItem(id: next(), question: "faq.q70".localized, answer: "faq.a70".localized),
-            ]),
-            
-            // I — Stories, Discovery & More (9)
-            FAQSection(id: 8, title: "faq.section.8".localized, icon: "sparkles", items: [
-                FAQItem(id: next(), question: "faq.q71".localized, answer: "faq.a71".localized),
-                FAQItem(id: next(), question: "faq.q72".localized, answer: "faq.a72".localized),
+            // H — Device linking and message carrying
+            FAQSection(id: 8, title: "Messaging Tools", icon: "point.3.connected.trianglepath.dotted", items: [
                 FAQItem(id: next(), question: "faq.q73".localized, answer: "faq.a73".localized),
-                FAQItem(id: next(), question: "faq.q74".localized, answer: "faq.a74".localized),
-                FAQItem(id: next(), question: "faq.q75".localized, answer: "faq.a75".localized),
-                FAQItem(id: next(), question: "faq.q76".localized, answer: "faq.a76".localized),
                 FAQItem(id: next(), question: "faq.q77".localized, answer: "faq.a77".localized),
-                FAQItem(id: next(), question: "faq.q78".localized, answer: "faq.a78".localized),
-                FAQItem(id: next(), question: "faq.q79".localized, answer: "faq.a79".localized),
             ]),
         ]
     }

@@ -41,7 +41,7 @@ Bridge / relay / store **never decrypt**. Endpoint ATSAM / Noise / interim seal 
 | Component | Role |
 |-----------|------|
 | `raven-core` | Identity, address, envelope, seal/ATSAM KATs, MessageRouter, forward queue |
-| `raven-node` | Always-on daemon: TCP/LAN frames, bridge, store-carry, InternetTransport dial |
+| `raven-node` | Always-on daemon for the Unix secure-LAN slice; legacy raw InternetTransport remains fail-closed |
 | `ash` / `raven` | Terminal UI + policy IPC client — closing ash must not stop the node |
 | iOS (flag ON) | Parallel path: LAN + BLE RVN1 + ChatWire Delivered; MeshEnvelope default when flag OFF |
 
@@ -58,7 +58,7 @@ Bridge / relay / store **never decrypt**. Endpoint ATSAM / Noise / interim seal 
 
 ## Honest limitations (software)
 
-- Full rust-libp2p DHT + DCUtR on real CGNAT: **partial** — InternetTransport dials TCP peers; AutoNAT/relay stubs forward opaque frames; multi-NAT hardware proof is human/BLOCKED where noted.
+- Full rust-libp2p DHT + DCUtR on real CGNAT: **experimental/held** — bounded client composition exists, but no production endpoint coordinator or relay server is wired; multi-NAT hardware proof is still BLOCKED.
 - ML-KEM hybrid pairing in Rust: **known-root + X25519 subset**; full PQ stack remains iOS-primary until ported.
 - Real GATT in headless `raven-node`: mock_ble for CI; iOS BLEMeshEngine for hardware.
 - External crypto review + notarized signing: **BLOCKED_HUMAN**.

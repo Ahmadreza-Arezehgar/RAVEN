@@ -1,9 +1,9 @@
 // NotificationsView.swift
 //
-// Mentions, reactions on your posts, replies. Tapping a row sends
+// Group mentions, message reactions and delivery alerts. Tapping a row sends
 // `open` back to the phone so the iPhone surfaces the right screen —
 // the Watch doesn't try to render deep targets itself because most of
-// them rely on the phone's full chat / post / profile UI.
+// them to the corresponding conversation on the phone.
 
 import SwiftUI
 
@@ -12,7 +12,9 @@ struct NotificationsView: View {
     @EnvironmentObject var bridge: PhoneBridge
 
     private var items: [NotificationItem] {
-        store.snapshot.notifications.sorted(by: { $0.timestamp > $1.timestamp })
+        store.snapshot.notifications
+            .filter(\.isMessagingProductEvent)
+            .sorted(by: { $0.timestamp > $1.timestamp })
     }
 
     var body: some View {

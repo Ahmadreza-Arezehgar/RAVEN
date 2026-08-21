@@ -373,15 +373,15 @@ struct ConversationListView: View {
                                 )
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(conversation.displayTitle)
-                                        .font(.system(size: 15, weight: .semibold))
+                                        .font(.system(.subheadline, design: .monospaced, weight: .semibold))
                                         .lineLimit(1)
-                                    Text("Wants to message you")
-                                        .font(.caption)
-                                        .foregroundStyle(.orange)
+                                    Text("wants to message you")
+                                        .font(.system(.caption2, design: .monospaced))
+                                        .foregroundStyle(DS.amber)
                                 }
                                 Spacer()
                                 Image(systemName: "envelope.badge")
-                                    .foregroundStyle(.orange)
+                                    .foregroundStyle(DS.amber)
                             }
                             .padding(.vertical, 4)
                         }
@@ -390,16 +390,17 @@ struct ConversationListView: View {
                         .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
                     }
                 } header: {
-                    HStack {
-                        Text("Message Requests")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.orange)
-                        Text("\(pendingRequests.count)")
-                            .font(.caption2.bold())
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.orange, in: Capsule())
+                    HStack(spacing: 6) {
+                        Text("pending requests")
+                            .font(.system(.caption2, design: .monospaced, weight: .semibold))
+                            .foregroundStyle(DS.amber)
+                            .textCase(.uppercase)
+                        Text("[\(pendingRequests.count)]")
+                            .font(.system(.caption2, design: .monospaced, weight: .bold))
+                            .foregroundStyle(DS.ink)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(RoundedRectangle(cornerRadius: 2).fill(DS.amber))
                     }
                 }
             }
@@ -519,26 +520,44 @@ struct ConversationListView: View {
     /// bar (the nav bar title is emptied out in `InboxView`).
     private var titleSearchHeader: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Chats")
-                .font(.system(size: 34, weight: .bold))
-                .foregroundStyle(.white)
+            // TERMINAL REDESIGN: path-style title with a live cursor.
+            HStack(alignment: .center, spacing: 8) {
+                Text("raven:~/chats")
+                    .font(.system(size: 24, weight: .bold, design: .monospaced))
+                    .foregroundStyle(DS.mist)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                BlinkingCursor(height: 20)
+                    .padding(.top, 6)
+                Spacer(minLength: 0)
+            }
 
             Button {
                 showSearchSheet = true
             } label: {
                 HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.system(size: 15, weight: .medium))
-                        .foregroundStyle(.secondary)
-                    Text("Search")
-                        .font(.system(size: 15))
+                    Text("$")
+                        .font(.system(size: 15, weight: .bold, design: .monospaced))
+                        .foregroundStyle(DS.phosphor)
+                    Text("grep -i \"search\"")
+                        .font(.system(size: 14, design: .monospaced))
                         .foregroundStyle(.secondary)
                     Spacer(minLength: 0)
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.secondary)
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
                 .frame(maxWidth: .infinity)
-                .glassSurface(in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .background(
+                    RoundedRectangle(cornerRadius: DS.radiusInner, style: .continuous)
+                        .fill(DS.inkElevated.opacity(0.9))
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: DS.radiusInner, style: .continuous)
+                        .strokeBorder(DS.hairline, lineWidth: 1)
+                }
             }
             .buttonStyle(.plain)
         }
@@ -610,8 +629,9 @@ struct ConversationRowView: View {
                         username: conversation.isGroup ? nil : conversation.peer.username
                     )
                     Text(tagTitle.title)
-                        .font(.headline)
+                        .font(.system(.headline, design: .monospaced))
                         .fontWeight(conversation.unreadCount > 0 ? .bold : .semibold)
+                        .foregroundStyle(conversation.unreadCount > 0 ? DS.mist : DS.mist.opacity(0.8))
                         .lineLimit(1)
                     
                     // Verified badge for 1:1 chats
@@ -626,15 +646,8 @@ struct ConversationRowView: View {
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
-                    
+
                     Spacer()
-                    
-                    // Timestamp
-                    if let lastMessage = conversation.lastMessage {
-                        Text(lastMessage.timestamp, style: .relative)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
                 }
 
                 if let sub = RavenTagDisplay.inboxTitle(
@@ -642,10 +655,10 @@ struct ConversationRowView: View {
                     username: conversation.isGroup ? nil : conversation.peer.username
                 ).subtitle {
                     Text(sub)
-                        .font(.caption)
+                        .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
-                } 
+                }
                 HStack {
                     // Preview with delivery indicator. If the user has an
                     // unsent draft for this conversation we surface it
@@ -654,12 +667,12 @@ struct ConversationRowView: View {
                     // mid-thought.
                     HStack(spacing: 4) {
                         if let draft = inboxDraft(for: conversation.roomId) {
-                            Text("Draft:")
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(.orange)
+                            Text("$ draft:")
+                                .font(.system(.subheadline, design: .monospaced, weight: .semibold))
+                                .foregroundStyle(DS.amber)
                             Text(draft)
-                                .font(.subheadline)
-                                .foregroundStyle(.primary)
+                                .font(.system(.subheadline, design: .monospaced))
+                                .foregroundStyle(DS.mist)
                                 .lineLimit(1)
                         } else if let lastMessage = conversation.lastMessage {
                             // Delivery-path prefix: only the mesh hop gets
@@ -668,22 +681,33 @@ struct ConversationRowView: View {
                             if lastMessage.deliveryAuthority == .mesh {
                                 Image(systemName: "antenna.radiowaves.left.and.right")
                                     .font(.caption2)
-                                    .foregroundStyle(DS.violetSoft)
+                                    .foregroundStyle(DS.phosphorSoft)
                                 Text("via mesh · ")
-                                    .font(.subheadline)
-                                    .foregroundStyle(.secondary)
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .foregroundStyle(DS.phosphor.opacity(0.75))
                             }
 
                             Text(previewText)
-                                .font(previewText.hasPrefix("rvn1") ? .system(.subheadline, design: .monospaced) : .subheadline)
-                                .foregroundStyle(conversation.unreadCount > 0 ? .primary : .secondary)
+                                .font(
+                                    previewText.hasPrefix("rvn1")
+                                        ? .system(.subheadline, design: .monospaced)
+                                        : .system(.footnote, design: .monospaced)
+                                )
+                                .foregroundStyle(conversation.unreadCount > 0 ? DS.mist : .secondary)
                                 .lineLimit(1)
                         }
                     }
 
                     Spacer()
 
-                    // Unread badge — Obsidian: violet capsule, white text.
+                    // Timestamp — console log style.
+                    if let lastMessage = conversation.lastMessage {
+                        Text(lastMessage.timestamp, style: .relative)
+                            .font(.system(.caption2, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+
+                    // Unread badge — inverse phosphor block.
                     InboxUnreadBadge(count: conversation.unreadCount, isMuted: conversation.isMuted)
                 }
             }
@@ -776,13 +800,18 @@ struct InboxUnreadBadge: View {
 
     var body: some View {
         if count > 0 {
+            // TERMINAL REDESIGN: inverse phosphor block counter.
             Text(count > 99 ? "99+" : "\(count)")
-                .font(.caption2)
-                .fontWeight(.semibold)
-                .foregroundStyle(.white)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(isMuted ? DS.violet.opacity(0.45) : DS.violet, in: Capsule())
+                .font(.system(.caption2, design: .monospaced, weight: .bold))
+                .foregroundStyle(DS.ink)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(
+                    RoundedRectangle(cornerRadius: DS.radiusPill, style: .continuous)
+                        .fill(isMuted ? DS.phosphor.opacity(0.45) : DS.phosphor)
+                        .shadow(color: DS.phosphor.opacity(0.4), radius: 5, y: 0)
+                )
+                .accessibilityLabel("\(count) unread")
         }
     }
 }
@@ -838,26 +867,32 @@ struct EmptyInboxView: View {
 
     var body: some View {
         VStack(spacing: 28) {
-            ZStack {
-                Circle()
-                    .fill(DS.cyan.opacity(0.12))
-                    .frame(width: 120, height: 120)
-                    .blur(radius: 8)
+            // TERMINAL REDESIGN: console panel instead of glowing circle.
+            VStack(spacing: 12) {
+                TerminalWindowBar(title: "raven — /var/spool/inbox", trailing: "0 msgs")
                 Image(systemName: "bird.fill")
-                    .font(.system(size: 44, weight: .medium))
-                    .foregroundStyle(DS.signalGradient)
+                    .font(.system(size: 40, weight: .medium))
+                    .foregroundStyle(DS.phosphor)
                     .symbolRenderingMode(.hierarchical)
+                    .padding(.vertical, 22)
+
+                BootLogLine(status: .ok, text: "mesh daemon online")
+                BootLogLine(status: .pending, text: "awaiting first peer")
             }
+            .frame(width: 300)
+            .overlay(TerminalCornerTicks(radius: DS.radiusCard))
+
             VStack(spacing: 8) {
-                Text("No messages yet")
-                    .font(.system(.title2, design: .default, weight: .bold))
-                Text("Messaging Beyond Connectivity — add a contact, then send over Wi‑Fi or Bluetooth.")
-                    .font(.system(.subheadline, design: .default, weight: .regular))
+                Text("no messages yet")
+                    .font(.system(.title3, design: .monospaced, weight: .bold))
+                    .foregroundStyle(DS.mist)
+                Text("messaging beyond connectivity — add a contact, then send over Wi‑Fi or Bluetooth.")
+                    .font(.system(.footnote, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 28)
             }
-            Button("Start a chat", action: onNewChat)
+            Button("$ start a chat", action: onNewChat)
                 .buttonStyle(.ravenPrimary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

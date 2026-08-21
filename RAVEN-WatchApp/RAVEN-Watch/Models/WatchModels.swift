@@ -1,8 +1,8 @@
 // WatchModels.swift
 //
-// Slimmed Codable mirrors of the iPhone-side chat / feed / room models.
-// These are intentionally *not* a copy of `ChatMessage` / `Post` /
-// `RoomSummary` — they hold only the fields a 41–49mm watch screen can
+// Slimmed Codable mirrors of the iPhone-side conversation models.
+// These are intentionally *not* a copy of `ChatMessage` — they hold only
+// the fields a 41–49mm watch screen can
 // actually render. The phone projects its full models down into these
 // shapes before sending over WCSession, which keeps every payload below
 // the ~64KB WCSession limit even for accounts with thousands of chats.
@@ -54,49 +54,15 @@ struct MessagePreview: Codable, Identifiable, Hashable {
     }
 }
 
-// MARK: - Echo Wall feed (Feed tab)
-
-struct PostPreview: Codable, Identifiable, Hashable {
-    let id: String
-    let authorName: String
-    let authorInitial: String
-    let text: String
-    let createdAt: TimeInterval
-    let likeCount: Int
-    let commentCount: Int
-    let likedByMe: Bool
-    let hasMedia: Bool          // image/video — watch shows a small badge
-
-    enum CodingKeys: String, CodingKey {
-        case id, authorName = "an", authorInitial = "ai", text = "txt"
-        case createdAt = "ts", likeCount = "lc", commentCount = "cc"
-        case likedByMe = "lm", hasMedia = "hm"
-    }
-}
-
-// MARK: - Voice rooms (Rooms tab)
-
-struct RoomSummary: Codable, Identifiable, Hashable {
-    let id: String
-    let name: String
-    let participantCount: Int
-    let joinedByMe: Bool
-    let activeSpeakerName: String?
-
-    enum CodingKeys: String, CodingKey {
-        case id, name = "n", participantCount = "pc"
-        case joinedByMe = "j", activeSpeakerName = "as"
-    }
-}
-
 // MARK: - Notifications (Notifications tab)
 
 struct NotificationItem: Codable, Identifiable, Hashable {
     enum Kind: String, Codable {
-        case mention            // @you in a post or chat
+        case mention            // @you in a group chat
         case reaction           // someone reacted to your message
-        case comment            // someone commented on your post
-        case follow             // someone followed you
+        // Legacy decode-only cases. Filtered before entering the UI.
+        case comment
+        case follow
         case bridgeArrived      // a bridged DM finally arrived from an offline peer
     }
 
@@ -115,6 +81,15 @@ struct NotificationItem: Codable, Identifiable, Hashable {
         case id, kind = "k", actorName = "an", actorInitial = "ai"
         case summary = "s", timestamp = "ts", target = "tg"
     }
+
+    var isMessagingProductEvent: Bool {
+        switch kind {
+        case .mention, .reaction, .bridgeArrived:
+            return target.hasPrefix("chat:")
+        case .comment, .follow:
+            return false
+        }
+    }
 }
 
 // MARK: - Top-level snapshot the phone sends on every change
@@ -126,17 +101,14 @@ struct NotificationItem: Codable, Identifiable, Hashable {
 struct WatchSnapshot: Codable {
     var conversations: [ConversationSummary]
     var notifications: [NotificationItem]
-    var rooms: [RoomSummary]
-    var feed: [PostPreview]
     var generatedAt: TimeInterval
 
     static let empty = WatchSnapshot(
-        conversations: [], notifications: [], rooms: [], feed: [],
+        conversations: [], notifications: [],
         generatedAt: 0
     )
 
     enum CodingKeys: String, CodingKey {
-        case conversations = "c", notifications = "n"
-        case rooms = "r", feed = "f", generatedAt = "ts"
+        case conversations = "c", notifications = "n", generatedAt = "ts"
     }
 }

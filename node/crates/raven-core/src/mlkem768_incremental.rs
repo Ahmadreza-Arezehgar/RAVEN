@@ -355,8 +355,7 @@ mod feature_smoke {
         let fips_ek = fixture_fips_ek(&fixture);
         let ciphertext = fixture_fips_ct(&fixture);
         let expected_ss = hex_array::<{ super::SS_LEN }>("ss_hex", &fixture.ss_hex);
-        let frozen_fips_ek =
-            hex_array::<FIPS_EK_LEN>("fips_ek_hex", &fixture.fips_ek_hex);
+        let frozen_fips_ek = hex_array::<FIPS_EK_LEN>("fips_ek_hex", &fixture.fips_ek_hex);
         let frozen_libcrux_ct =
             hex_array::<FIPS_CT_LEN>("atomic_libcrux_ct_hex", &fixture.atomic_libcrux_ct_hex);
         let frozen_libcrux_ss =

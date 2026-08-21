@@ -1,16 +1,16 @@
 //! Stateful Triple Ratchet KATs (production-disabled). No live callsites.
 
-use hmac::{Hmac, Mac};
-use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
 use chacha20poly1305::{
     aead::{Aead, KeyInit, Payload},
     ChaCha20Poly1305, Nonce,
 };
+use hmac::{Hmac, Mac};
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::hybrid_ratchet_v2::{
-    hkdf_sha256, kdf_ck, ratchet_init_alice_scka, ratchet_init_bob_scka, MAX_SKIP,
-    PROFILE, SPQR_PROTOCOL_INFO,
+    hkdf_sha256, kdf_ck, ratchet_init_alice_scka, ratchet_init_bob_scka, MAX_SKIP, PROFILE,
+    SPQR_PROTOCOL_INFO,
 };
 
 type HmacSha256 = Hmac<Sha256>;
@@ -61,7 +61,10 @@ pub fn scka_from_init(alice: bool, sk: &[u8; 32]) -> SckaEpochState {
     }
 }
 
-pub fn scka_epoch_promote_initiator(state: &SckaEpochState, ss: &[u8; 32]) -> Result<SckaEpochState, String> {
+pub fn scka_epoch_promote_initiator(
+    state: &SckaEpochState,
+    ss: &[u8; 32],
+) -> Result<SckaEpochState, String> {
     let (rk2, ck) = kdf_scka_rk(&state.rk, ss)?;
     Ok(SckaEpochState {
         rk: rk2,
@@ -74,7 +77,10 @@ pub fn scka_epoch_promote_initiator(state: &SckaEpochState, ss: &[u8; 32]) -> Re
     })
 }
 
-pub fn scka_epoch_promote_responder(state: &SckaEpochState, ss: &[u8; 32]) -> Result<SckaEpochState, String> {
+pub fn scka_epoch_promote_responder(
+    state: &SckaEpochState,
+    ss: &[u8; 32],
+) -> Result<SckaEpochState, String> {
     let (rk2, ck) = kdf_scka_rk(&state.rk, ss)?;
     Ok(SckaEpochState {
         rk: rk2,
@@ -167,7 +173,11 @@ pub fn ec_send_mk(state: &EcSendState) -> (EcSendState, [u8; 32]) {
     )
 }
 
-pub fn ec_skip_keys(state: &EcRecvState, until_n: u32, max_skip: u32) -> Result<EcRecvState, String> {
+pub fn ec_skip_keys(
+    state: &EcRecvState,
+    until_n: u32,
+    max_skip: u32,
+) -> Result<EcRecvState, String> {
     if until_n < state.n {
         return Err("until_n behind current n".into());
     }
@@ -192,7 +202,11 @@ pub fn ec_skip_keys(state: &EcRecvState, until_n: u32, max_skip: u32) -> Result<
     })
 }
 
-pub fn ec_try_skipped(state: &EcRecvState, dh_pub: &[u8; 32], n: u32) -> (Option<[u8; 32]>, EcRecvState) {
+pub fn ec_try_skipped(
+    state: &EcRecvState,
+    dh_pub: &[u8; 32],
+    n: u32,
+) -> (Option<[u8; 32]>, EcRecvState) {
     let key = mk_key(dh_pub, n);
     let mut out = state.clone();
     if let Some(mk) = out.mkskipped.remove(&key) {
@@ -297,7 +311,8 @@ pub fn commit_accept(
     }
     let mut out = ledger.clone();
     out.accepted_keys.insert(packed);
-    out.digest_to_ack.insert(*object_digest, retained_ack.to_vec());
+    out.digest_to_ack
+        .insert(*object_digest, retained_ack.to_vec());
     out.mutation_count += 1;
     (out, "accepted")
 }
@@ -381,7 +396,13 @@ pub fn candidate_decrypt(
 ) -> serde_json::Value {
     let cipher = ChaCha20Poly1305::new_from_slice(key).expect("key");
     let n = Nonce::from_slice(nonce);
-    match cipher.decrypt(n, Payload { msg: ciphertext, aad }) {
+    match cipher.decrypt(
+        n,
+        Payload {
+            msg: ciphertext,
+            aad,
+        },
+    ) {
         Ok(pt) => {
             let mut h = Sha256::new();
             h.update(live_fp);
@@ -423,7 +444,11 @@ pub fn mailbox_catchup_plan(
     let ttl_horizon = today - mailbox_ttl_days;
     let late_arrival_floor = today - late_arrival_days;
     let start = catchup_cursor_day + 1;
-    let start = if start > ttl_horizon { start } else { ttl_horizon };
+    let start = if start > ttl_horizon {
+        start
+    } else {
+        ttl_horizon
+    };
     let mut historical = Vec::new();
     if start < today {
         let mut e = start;
@@ -642,7 +667,9 @@ pub fn run_skip_boundary(ck0: &[u8; 32], dh_pub: &[u8; 32]) -> serde_json::Value
         match ec_skip_keys(&base, count, MAX_SKIP) {
             Ok(advanced) => {
                 let first = if count > 0 {
-                    Some(hex::encode(advanced.mkskipped.get(&mk_key(dh_pub, 0)).unwrap()))
+                    Some(hex::encode(
+                        advanced.mkskipped.get(&mk_key(dh_pub, 0)).unwrap(),
+                    ))
                 } else {
                     None
                 };
@@ -761,8 +788,14 @@ mod tests {
         let dup = duplicate_ack_exact(&ledger2, &digest).unwrap();
         assert_eq!(r1, v["expected"]["first_result"].as_str().unwrap());
         assert_eq!(r2, v["expected"]["replay_result"].as_str().unwrap());
-        assert_eq!(hex::encode(fp1), v["expected"]["fp_after_accept_hex"].as_str().unwrap());
-        assert_eq!(hex::encode(fp2), v["expected"]["fp_after_replay_hex"].as_str().unwrap());
+        assert_eq!(
+            hex::encode(fp1),
+            v["expected"]["fp_after_accept_hex"].as_str().unwrap()
+        );
+        assert_eq!(
+            hex::encode(fp2),
+            v["expected"]["fp_after_replay_hex"].as_str().unwrap()
+        );
         assert_eq!(fp1, fp2);
         assert_eq!(dup, ack);
         assert_eq!(ledger2.mutation_count, 1);
@@ -800,21 +833,44 @@ mod tests {
             inp["mailbox_ttl_days"].as_i64().unwrap(),
             MAILBOX_LATE_ARRIVAL_DAYS,
         );
-        assert_eq!(hex::encode(kr0), v["expected"]["k_route_0_hex"].as_str().unwrap());
-        assert_eq!(hex::encode(kr1), v["expected"]["k_route_1_hex"].as_str().unwrap());
-        assert_eq!(hex::encode(r0), v["expected"]["routing_tag_d0_hex"].as_str().unwrap());
-        assert_eq!(hex::encode(r1), v["expected"]["routing_tag_d1_hex"].as_str().unwrap());
+        assert_eq!(
+            hex::encode(kr0),
+            v["expected"]["k_route_0_hex"].as_str().unwrap()
+        );
+        assert_eq!(
+            hex::encode(kr1),
+            v["expected"]["k_route_1_hex"].as_str().unwrap()
+        );
+        assert_eq!(
+            hex::encode(r0),
+            v["expected"]["routing_tag_d0_hex"].as_str().unwrap()
+        );
+        assert_eq!(
+            hex::encode(r1),
+            v["expected"]["routing_tag_d1_hex"].as_str().unwrap()
+        );
         assert_ne!(r0, r1);
-        assert_eq!(hex::encode(m0), v["expected"]["mailbox_tag_d0_hex"].as_str().unwrap());
-        assert_eq!(hex::encode(s0), v["expected"]["store_tag_d0_hex"].as_str().unwrap());
-        assert_eq!(plan.today, v["expected"]["catchup"]["today"].as_i64().unwrap());
+        assert_eq!(
+            hex::encode(m0),
+            v["expected"]["mailbox_tag_d0_hex"].as_str().unwrap()
+        );
+        assert_eq!(
+            hex::encode(s0),
+            v["expected"]["store_tag_d0_hex"].as_str().unwrap()
+        );
+        assert_eq!(
+            plan.today,
+            v["expected"]["catchup"]["today"].as_i64().unwrap()
+        );
         assert_eq!(
             plan.ttl_horizon,
             v["expected"]["catchup"]["ttl_horizon"].as_i64().unwrap()
         );
         assert_eq!(
             plan.late_arrival_floor,
-            v["expected"]["catchup"]["late_arrival_floor"].as_i64().unwrap()
+            v["expected"]["catchup"]["late_arrival_floor"]
+                .as_i64()
+                .unwrap()
         );
         assert_eq!(
             plan.historical_days,
@@ -836,7 +892,9 @@ mod tests {
         );
         assert_eq!(
             plan.historical_days.len() as i64,
-            v["expected"]["catchup"]["historical_span"].as_i64().unwrap()
+            v["expected"]["catchup"]["historical_span"]
+                .as_i64()
+                .unwrap()
         );
     }
 

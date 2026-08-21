@@ -314,18 +314,18 @@
 "tos.s2.content" = "• You must be at least 13 (or 16 depending on region) years old.\n• You confirm that the information you provide is accurate.\n• One account per person unless explicitly allowed.";
 "tos.s3.title" = "3. Account Responsibility";
 "tos.s3.content" = "• You are responsible for your account activity.\n• You must keep your login credentials secure.\n• Raven is not responsible for unauthorized access caused by user negligence.";
-"tos.s4.title" = "4. User Content";
-"tos.s4.content" = "• You own the content you create (messages, posts, stories).\n• By posting content, you grant Raven a limited license to display and distribute it within the app.\n• You are responsible for what you share.";
+"tos.s4.title" = "4. Your Messages and Files";
+"tos.s4.content" = "• You retain ownership of messages and files you create.\n• By choosing recipients or an invited private group, you authorize Raven software and the carriers you select only to process and deliver that content.\n• You are responsible for what you send and who you send it to.";
 "tos.s5.title" = "5. Prohibited Content & Behavior";
-"tos.s5.content" = "Users must NOT:\n• Post illegal, violent, or abusive content\n• Harass, threaten, or impersonate others\n• Share spam, malware, or scams\n• Violate intellectual property rights\n• Attempt to reverse-engineer the app\n• Abuse Mesh networking or system resources\n\nRaven may remove content or suspend accounts that violate these rules.";
+"tos.s5.content" = "Users must NOT:\n• Send or share illegal, violent, or abusive material in conversations\n• Harass, threaten, or impersonate others\n• Share spam, malware, or scams\n• Violate intellectual property rights\n• Attempt to reverse-engineer the app\n• Abuse Mesh networking or system resources\n\nRecipients, device owners, and independently operated carriers may block abusive traffic or access under their own policies; Raven does not operate a global content-removal feed.";
 "tos.s6.title" = "6. Messaging & Communication";
 "tos.s6.content" = "• Messages may be delivered via internet or Mesh networking.\n• Mesh networking supports text-only messages.\n• Raven does not guarantee real-time delivery.\n• Deleted messages may be permanently removed.";
 "tos.s7.title" = "7. Mesh Networking Disclaimer";
 "tos.s7.content" = "• Mesh is provided as-is and depends on nearby devices.\n• Raven is not responsible for message delays, loss, or duplication during Mesh transmission.\n• Mesh is not intended for emergency communication.";
-"tos.s8.title" = "8. Posts, Stories & Visibility";
-"tos.s8.content" = "• Content visibility depends on selected mode (Public, Friends, Local).\n• Stories may be view-limited or time-limited.\n• Raven does not guarantee visibility reach or engagement.";
-"tos.s9.title" = "9. Voice Rooms";
-"tos.s9.content" = "• Voice Rooms are live-only unless stated otherwise.\n• Raven does not record rooms by default.\n• Hosts may moderate, mute, or remove users.";
+"tos.s8.title" = "8. Private Conversations and Visibility";
+"tos.s8.content" = "• Raven has no public feed, follower audience, or public publishing mode.\n• Messages are addressed only to selected contacts, linked devices, or members of an invited private group.\n• Recipients may retain or forward what they receive, so choose recipients carefully.";
+"tos.s9.title" = "9. Private Calls";
+"tos.s9.content" = "• Calls are limited to accepted participants in a private conversation.\n• Raven does not record calls by default.\n• Participants or private-group administrators may mute or remove participants.";
 "tos.s10.title" = "10. Online Status & Presence";
 "tos.s10.content" = "• Online status is approximate.\n• Raven does not guarantee accuracy of \"online\" or \"last seen\" indicators.\n• Users may control visibility via settings.";
 "tos.s11.title" = "11. Media Uploads";
@@ -555,4 +555,3 @@
 // Acknowledgements
 "acknowledgements.title" = "Acknowledgements";
 "acknowledgements.description" = "RAVEN uses the following open-source libraries:";
-

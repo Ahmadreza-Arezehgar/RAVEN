@@ -537,6 +537,7 @@ actor PushNotificationService {
     // MARK: - Foreground Push (Silent Update + Banner)
     
     private func handleForegroundPush(_ payload: PushPayload) async {
+        guard payload.type.isMessagingProductEvent else { return }
         await debouncedSync()
         
         switch payload.type {
@@ -588,80 +589,16 @@ actor PushNotificationService {
                 NotificationPipeline.shared.enqueue(toast)
             }
 
-        case .like, .comment, .mention:
+        case .addedToGroup:
             await MainActor.run {
-                var userName = payload.senderName ?? "Someone"
-                if userName.looksEncrypted { userName = "Someone" }
-
-                let defaultAction: String
-                if payload.type == .like { defaultAction = "liked your post" }
-                else if payload.type == .mention { defaultAction = "mentioned you" }
-                else { defaultAction = "commented on your post" }
-
-                var safePreview = payload.preview ?? defaultAction
-                if safePreview.looksEncrypted { safePreview = defaultAction }
-
-                let toast = ToastItem.comment(
-                    id: UUID().uuidString,
-                    userName: userName,
-                    preview: safePreview,
-                    avatarURL: AppConfig.mediaURL(from: payload.senderAvatar),  // R52
-                    postId: payload.chatId ?? ""
-                )
-                NotificationPipeline.shared.enqueue(toast)
-            }
-
-        case .addedToGroup, .audioRoom, .audioRoomJoin:
-            await MainActor.run {
-                let title = (payload.type == .audioRoom || payload.type == .audioRoomJoin) ? "Voice Room" : "Group Update"
-
                 var safeName = payload.senderName ?? "Someone"
                 if safeName.looksEncrypted { safeName = "Someone" }
-
-                let defaultPreview: String
-                if payload.type == .audioRoom { defaultPreview = "\(safeName) started an audio room" }
-                else if payload.type == .audioRoomJoin { defaultPreview = "\(safeName) joined the audio room" }
-                else { defaultPreview = "\(safeName) invited you" }
-
-                var safePreview = payload.preview ?? defaultPreview
-                if safePreview.looksEncrypted { safePreview = defaultPreview }
-
-                let toast = ToastItem.appUpdate(
+                let toast = ToastItem.groupInvite(
                     id: UUID().uuidString,
-                    title: title,
-                    message: safePreview
-                )
-                NotificationPipeline.shared.enqueue(toast)
-            }
-
-        case .postComment, .postLike:
-            await MainActor.run {
-                var userName = payload.senderName ?? "Someone"
-                if userName.looksEncrypted { userName = "Someone" }
-
-                let defaultAction = payload.type == .postLike ? "liked your post" : "commented on your post"
-                var safePreview = payload.preview ?? defaultAction
-                if safePreview.looksEncrypted { safePreview = defaultAction }
-
-                let toast = ToastItem.comment(
-                    id: UUID().uuidString,
-                    userName: userName,
-                    preview: safePreview,
-                    avatarURL: AppConfig.mediaURL(from: payload.senderAvatar),  // R52
-                    postId: payload.postId ?? ""
-                )
-                NotificationPipeline.shared.enqueue(toast)
-            }
-
-        case .followRequest, .follow:
-            await MainActor.run {
-                var userName = payload.senderName ?? "Someone"
-                if userName.looksEncrypted { userName = "Someone" }
-                let toast = ToastItem.friendRequest(
-                    fromName: userName,
-                    avatarURL: AppConfig.mediaURL(from: payload.senderAvatar),  // R52
-                    senderId: payload.senderId ?? "",
-                    requestId: payload.senderId ?? ""
+                    groupName: payload.preview ?? "Private group",
+                    inviterName: safeName,
+                    avatarURL: AppConfig.mediaURL(from: payload.senderAvatar),
+                    groupId: payload.chatId ?? ""
                 )
                 NotificationPipeline.shared.enqueue(toast)
             }
@@ -672,6 +609,10 @@ actor PushNotificationService {
             if !isInChat {
                 await showToastForMessage(payload)
             }
+
+        case .like, .comment, .mention, .audioRoom, .audioRoomJoin,
+             .postComment, .postLike, .followRequest, .follow:
+            return
         }
     }
     
@@ -780,6 +721,7 @@ actor PushNotificationService {
     // MARK: - Route to Destination
     
     private func routeToDestination(_ payload: PushPayload) async {
+        guard payload.type.isMessagingProductEvent else { return }
         switch payload.type {
         case .message, .groupMessage, .addedToGroup, .dmMessage:
             if let chatId = payload.chatId { await DeepLinkRouter.shared.route(to: .chat(roomId: chatId)) }
@@ -787,26 +729,9 @@ actor PushNotificationService {
             await DeepLinkRouter.shared.route(to: .friendRequests)
         case .security:
             await DeepLinkRouter.shared.route(to: .security)
-        case .like, .comment, .mention:
-            if let postId = payload.postId {
-                await DeepLinkRouter.shared.route(to: .post(postId: postId))
-            } else {
-                await DeepLinkRouter.shared.route(to: .notifications)
-            }
-        case .postComment, .postLike:
-            if let postId = payload.postId {
-                await DeepLinkRouter.shared.route(to: .post(postId: postId))
-            } else {
-                await DeepLinkRouter.shared.route(to: .notifications)
-            }
-        case .followRequest, .follow:
-            if let userId = payload.senderId {
-                await DeepLinkRouter.shared.route(to: .profile(userId: userId))
-            } else {
-                await DeepLinkRouter.shared.route(to: .friendRequests)
-            }
-        case .audioRoom, .audioRoomJoin:
-            if let slug = payload.chatId { await DeepLinkRouter.shared.route(to: .audioRoom(slug: slug)) }
+        case .like, .comment, .mention, .postComment, .postLike,
+             .followRequest, .follow, .audioRoom, .audioRoomJoin:
+            return
         }
     }
     
@@ -814,11 +739,12 @@ actor PushNotificationService {
     
     /// Schedule a local notification for background pushes.
     /// APNs alert pushes SHOULD display on lock screen, but iOS sometimes
-    /// throttles or silently drops non-message notifications (likes, comments,
-    /// friend requests). This method guarantees lock screen delivery by
+    /// throttles or silently drops some admitted contact/group/security
+    /// notifications. This method guarantees lock screen delivery by
     /// scheduling a local UNNotificationRequest — same pattern used for
     /// mesh messages which reliably appear on lock screen.
     private func scheduleLocalNotificationForBackground(_ payload: PushPayload) async {
+        guard payload.type.isMessagingProductEvent else { return }
         // ⚡ Dedup gate for message types
         // ─────────────────────────────────
         // For .message / .dmMessage / .groupMessage iOS already shows
@@ -828,9 +754,8 @@ actor PushNotificationService {
         // users hit. Mesh-delivered duplicates are handled by the
         // shared `NotificationDedupCache` in the mesh handler.
         //
-        // We keep the safety net for non-message types (likes,
-        // comments, friend requests) where APNs has historically
-        // been less reliable.
+        // We keep the safety net only for admitted contact/group/security
+        // events where APNs has historically been less reliable.
         if payload.type == .message || payload.type == .dmMessage || payload.type == .groupMessage {
             // If we can identify the message, claim it so the mesh
             // path knows APNs already showed an alert and skips its
@@ -869,28 +794,6 @@ actor PushNotificationService {
                 "sender_id": payload.senderId ?? ""
             ]
             
-        case .like, .postLike:
-            var userName = payload.senderName ?? "Someone"
-            if userName.looksEncrypted { userName = "Someone" }
-            content.title = "New Like"
-            content.body = "\(userName) liked your post"
-            content.userInfo = [
-                "type": payload.type.rawValue,
-                "post_id": payload.postId ?? ""
-            ]
-            
-        case .comment, .postComment:
-            var userName = payload.senderName ?? "Someone"
-            if userName.looksEncrypted { userName = "Someone" }
-            var safePreview = payload.preview ?? "commented on your post"
-            if safePreview.looksEncrypted { safePreview = "commented on your post" }
-            content.title = "\(userName) commented"
-            content.body = safePreview
-            content.userInfo = [
-                "type": payload.type.rawValue,
-                "post_id": payload.postId ?? ""
-            ]
-            
         case .friendRequest:
             var userName = payload.senderName ?? "Someone"
             if userName.looksEncrypted { userName = "Someone" }
@@ -901,32 +804,12 @@ actor PushNotificationService {
                 "requester_id": payload.senderId ?? ""
             ]
             
-        case .followRequest, .follow:
-            var userName = payload.senderName ?? "Someone"
-            if userName.looksEncrypted { userName = "Someone" }
-            content.title = "New Follower"
-            content.body = "\(userName) started following you"
-            content.userInfo = [
-                "type": payload.type.rawValue,
-                "sender_id": payload.senderId ?? ""
-            ]
-            
         case .security:
             var safePreview = payload.preview ?? "New activity detected"
             if safePreview.looksEncrypted { safePreview = "New activity detected" }
             content.title = "Security Alert"
             content.body = safePreview
             content.userInfo = ["type": "security"]
-            
-        case .mention:
-            var userName = payload.senderName ?? "Someone"
-            if userName.looksEncrypted { userName = "Someone" }
-            content.title = "\(userName) mentioned you"
-            content.body = payload.preview ?? "mentioned you in a comment"
-            content.userInfo = [
-                "type": "mention",
-                "post_id": payload.postId ?? ""
-            ]
             
         case .addedToGroup:
             var userName = payload.senderName ?? "Someone"
@@ -938,17 +821,9 @@ actor PushNotificationService {
                 "group_id": payload.chatId ?? ""
             ]
             
-        case .audioRoom, .audioRoomJoin:
-            var userName = payload.senderName ?? "Someone"
-            if userName.looksEncrypted { userName = "Someone" }
-            content.title = "Voice Room"
-            content.body = payload.type == .audioRoom
-                ? "\(userName) started an audio room"
-                : "\(userName) joined the audio room"
-            content.userInfo = [
-                "type": payload.type.rawValue,
-                "room_id": payload.chatId ?? ""
-            ]
+        case .like, .comment, .mention, .postComment, .postLike,
+             .followRequest, .follow, .audioRoom, .audioRoomJoin:
+            return
         }
 
         // Round 13 (2026-05-16) — hacker-audit finding N7.
@@ -1008,41 +883,7 @@ actor PushNotificationService {
     // MARK: - Parse Payload
     
     private func parsePushPayload(_ userInfo: [AnyHashable: Any]) -> PushPayload? {
-        guard let typeStr = userInfo["type"] as? String else { return nil }
-        
-        // Fallback to .message for unknown types so they aren't silently dropped
-        let type = PushType(rawValue: typeStr) ?? .message
-        
-        // 🟦 ROUND 52 (2026-05-17) — read sender avatar from any of the
-        // several keys different microservices use. The server side
-        // isn't consistent: messages.py uses `sender_avatar`, the
-        // friend-request push uses `requester_avatar`, the comment
-        // push uses `commenter_avatar` / `actor_avatar`, etc. We
-        // fall through them in order of how common each is.
-        let avatarRaw = (userInfo["sender_avatar"] as? String)
-            ?? (userInfo["sender_avatar_url"] as? String)
-            ?? (userInfo["avatar_url"] as? String)
-            ?? (userInfo["sender_avatar_path"] as? String)
-            ?? (userInfo["requester_avatar"] as? String)
-            ?? (userInfo["commenter_avatar"] as? String)
-            ?? (userInfo["liker_avatar"] as? String)
-            ?? (userInfo["actor_avatar"] as? String)
-            ?? (userInfo["author_avatar"] as? String)
-
-        return PushPayload(
-            type: type,
-            chatId: userInfo["chat_id"] as? String ?? userInfo["room_id"] as? String ?? userInfo["chatId"] as? String ?? userInfo["group_id"] as? String ?? userInfo["groupId"] as? String,
-            senderId: userInfo["sender_id"] as? String ?? userInfo["requester_id"] as? String ?? userInfo["senderId"] as? String ?? userInfo["userId"] as? String,
-            messageType: userInfo["message_type"] as? String,
-            senderName: userInfo["sender_username"] as? String ?? userInfo["sender_name"] as? String ?? userInfo["title"] as? String,
-            preview: userInfo["body"] as? String ?? userInfo["preview"] as? String ?? userInfo["message"] as? String,
-            postId: userInfo["post_id"] as? String ?? userInfo["postId"] as? String,
-            commentId: userInfo["comment_id"] as? String ?? userInfo["commentId"] as? String,
-            messageId: userInfo["message_id"] as? String
-                       ?? userInfo["client_message_id"] as? String
-                       ?? userInfo["messageId"] as? String,
-            senderAvatar: avatarRaw
-        )
+        PushPayload.parseMessaging(userInfo)
     }
 }
 
@@ -1066,6 +907,16 @@ enum PushType: String {
     case follow
     // Backend may also send dm_message / group_message aliases
     case dmMessage = "dm_message"
+
+    var isMessagingProductEvent: Bool {
+        switch self {
+        case .message, .groupMessage, .dmMessage, .friendRequest, .security, .addedToGroup:
+            true
+        case .like, .comment, .mention, .audioRoom, .audioRoomJoin,
+             .postComment, .postLike, .followRequest, .follow:
+            false
+        }
+    }
 }
 
 struct PushPayload {
@@ -1090,6 +941,52 @@ struct PushPayload {
     /// before handing to AsyncImage. Nil is still valid (toast
     /// falls back to a coloured initials avatar).
     let senderAvatar: String?
+
+    /// Pure admission/parser seam shared by the actor and runtime tests.
+    /// Unknown and retired public-engagement payloads fail closed before any
+    /// sync, notification scheduling, navigation, or network side effect.
+    static func parseMessaging(_ userInfo: [AnyHashable: Any]) -> PushPayload? {
+        guard let typeRaw = userInfo["type"] as? String,
+              let type = PushType(rawValue: typeRaw),
+              type.isMessagingProductEvent
+        else { return nil }
+
+        let avatarRaw = (userInfo["sender_avatar"] as? String)
+            ?? (userInfo["sender_avatar_url"] as? String)
+            ?? (userInfo["avatar_url"] as? String)
+            ?? (userInfo["sender_avatar_path"] as? String)
+            ?? (userInfo["requester_avatar"] as? String)
+            ?? (userInfo["commenter_avatar"] as? String)
+            ?? (userInfo["liker_avatar"] as? String)
+            ?? (userInfo["actor_avatar"] as? String)
+            ?? (userInfo["author_avatar"] as? String)
+
+        return PushPayload(
+            type: type,
+            chatId: userInfo["chat_id"] as? String
+                ?? userInfo["room_id"] as? String
+                ?? userInfo["chatId"] as? String
+                ?? userInfo["group_id"] as? String
+                ?? userInfo["groupId"] as? String,
+            senderId: userInfo["sender_id"] as? String
+                ?? userInfo["requester_id"] as? String
+                ?? userInfo["senderId"] as? String
+                ?? userInfo["userId"] as? String,
+            messageType: userInfo["message_type"] as? String,
+            senderName: userInfo["sender_username"] as? String
+                ?? userInfo["sender_name"] as? String
+                ?? userInfo["title"] as? String,
+            preview: userInfo["body"] as? String
+                ?? userInfo["preview"] as? String
+                ?? userInfo["message"] as? String,
+            postId: userInfo["post_id"] as? String ?? userInfo["postId"] as? String,
+            commentId: userInfo["comment_id"] as? String ?? userInfo["commentId"] as? String,
+            messageId: userInfo["message_id"] as? String
+                ?? userInfo["client_message_id"] as? String
+                ?? userInfo["messageId"] as? String,
+            senderAvatar: avatarRaw
+        )
+    }
 }
 
 // MARK: - Push Token Registration

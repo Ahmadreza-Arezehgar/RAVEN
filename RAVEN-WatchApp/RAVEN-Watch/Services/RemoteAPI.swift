@@ -30,17 +30,13 @@ actor RemoteAPI {
     /// Override at build time for staging.
     private let baseURL = URL(string: "https://api.raven-messager.com")!
     private let groupId = "group.app.raven.shared"
-    private let tokenKey = "raven.auth.token"
-
     /// Pulled from the App Group container that the iPhone writes after
     /// sign-in. The Watch never owns credentials — only borrows them.
     ///
     /// 🔴 ROUND 26 — hacker-audit MESH-HIGH-3.
-    ///   Prefer the encrypted variant (`raven.auth.token.enc`) when
-    ///   the iPhone has shipped the wrap key down via WCSession.
-    ///   Fall back to the legacy plaintext field when the key
-    ///   isn't installed yet (e.g. first launch before the first
-    ///   WCSession activation completes).
+    ///   Only the encrypted variant (`raven.auth.token.enc`) is accepted.
+    ///   Before the iPhone ships the wrap key via WCSession, standalone LTE
+    ///   sends fail closed to the phone-mediated queue.
     private var token: String? {
         get async {
             guard let base = FileManager.default
@@ -116,18 +112,4 @@ actor RemoteAPI {
         }
     }
 
-    /// Online-only post like. Same path as the iPhone uses.
-    func togglePostLike(postId: String) async throws {
-        guard let token = await token else { throw APIError.noAuth }
-
-        var req = URLRequest(url: baseURL.appendingPathComponent("/api/posts/\(postId)/like"))
-        req.httpMethod = "POST"
-        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        req.setValue("watchos", forHTTPHeaderField: "X-Raven-Client")
-
-        let (_, resp) = try await URLSession.shared.data(for: req)
-        guard let http = resp as? HTTPURLResponse,
-              (200..<300).contains(http.statusCode)
-        else { throw APIError.status(((resp as? HTTPURLResponse)?.statusCode) ?? -1) }
-    }
 }

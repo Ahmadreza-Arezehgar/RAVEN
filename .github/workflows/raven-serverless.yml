@@ -23,6 +23,8 @@ on:
       - "ios-native/RAVEN/RAVEN/Features/QRCode/**"
       - "ios-native/RAVEN/RAVEN/Features/Settings/RavenServerlessLanSettingsView.swift"
       - "ios-native/RAVEN/RAVENTests/**"
+      - "ios-native/RAVEN/RAVEN/**/*.swift"
+      - "RAVEN-WatchApp/RAVEN-Watch/**/*.swift"
       - "node/scripts/ios_lan_kat.sh"
       - "node/scripts/ios_lan_lab_checklist.md"
       - "scripts/secret_history_scan.sh"
@@ -48,6 +50,8 @@ on:
       - "ios-native/RAVEN/RAVEN/Features/QRCode/**"
       - "ios-native/RAVEN/RAVEN/Features/Settings/RavenServerlessLanSettingsView.swift"
       - "ios-native/RAVEN/RAVENTests/**"
+      - "ios-native/RAVEN/RAVEN/**/*.swift"
+      - "RAVEN-WatchApp/RAVEN-Watch/**/*.swift"
       - "node/scripts/ios_lan_kat.sh"
       - "node/scripts/ios_lan_lab_checklist.md"
       - "scripts/secret_history_scan.sh"
@@ -60,6 +64,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  messaging-product-boundary:
+    name: Messaging-only product boundary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Refuse public-social product regressions
+        run: bash node/scripts/messaging_product_boundary_gate.sh
+
   secret-scan:
     name: Secret pattern scan
     runs-on: ubuntu-latest
@@ -174,7 +186,7 @@ jobs:
         run: ./scripts/mailbox_opaque_smoke.sh
       - name: libp2p offline mailbox restart smoke
         run: ./scripts/swarm_mailbox_smoke.sh
-      - name: internet dial smoke
+      - name: legacy Internet path remains fail-closed
         run: ./scripts/internet_dial_smoke.sh
       - name: protocol vectors (python)
         working-directory: protocol/reference
@@ -402,6 +414,94 @@ jobs:
       - name: Full Braid Swift FFI lab gate
         run: bash ./node/scripts/ios_full_braid_lab_gate.sh
 
+  # Task 0A.5 — SQLCipher packaging aggregate stop-line (0A.1–0A.4).
+  # Does not authorize Task 0B / production / commit.
+  full-braid-task0a-provenance:
+    name: Full Braid Task 0A provenance (0A.1)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: node
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Hermetic SQLCipher regen/verify selftest
+        working-directory: ${{ github.workspace }}
+        env:
+          RAVEN_0A5_DIFF_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: bash ./node/scripts/full_braid_task0a_ci_gate.sh provenance
+
+  full-braid-task0a-linux:
+    name: Full Braid Task 0A Linux (0A.2/0A.4/0A.5)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: node
+    env:
+      CARGO_TARGET_DIR: target/full-braid-task0a
+      RAVEN_EXPECT_SQLCIPHER_4_17_0: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: node
+          prefix-key: full-braid-task0a-linux
+      - name: Task 0A Linux CI gate
+        working-directory: ${{ github.workspace }}
+        env:
+          RAVEN_0A5_DIFF_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: bash ./node/scripts/full_braid_task0a_ci_gate.sh linux
+
+  full-braid-task0a-macos:
+    name: Full Braid Task 0A macOS + iOS (0A.2–0A.4)
+    runs-on: macos-14
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/node/target/full-braid-task0a-macos
+      RAVEN_EXPECT_SQLCIPHER_4_17_0: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: node
+          prefix-key: full-braid-task0a-macos
+      - name: Task 0A macOS/iOS CI gate (incl. cross-provider)
+        working-directory: ${{ github.workspace }}
+        env:
+          RAVEN_0A5_DIFF_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: bash ./node/scripts/full_braid_task0a_ci_gate.sh macos
+
+  full-braid-task0a-windows:
+    name: Full Braid Task 0A Windows MSVC (0A.2/0A.4)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: node
+        shell: bash
+    env:
+      CARGO_TARGET_DIR: target/full-braid-task0a-windows
+      RAVEN_EXPECT_SQLCIPHER_4_17_0: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: node
+          prefix-key: full-braid-task0a-windows
+      - name: Task 0A Windows CI gate
+        working-directory: ${{ github.workspace }}
+        run: bash ./node/scripts/full_braid_task0a_ci_gate.sh windows
+
   mlkem768-incremental-avx2:
     name: ML-KEM-768 incremental (AVX2)
     runs-on: ubuntu-latest
@@ -615,7 +715,8 @@ jobs:
             -only-testing:RAVENTests/MeshInteropVectorsTests \
             -only-testing:RAVENTests/RavenContactRequestV1Tests \
             -only-testing:RAVENTests/ContactRequestInboxTests \
-            -only-testing:RAVENTests/RavenServerlessLanSettingsTests
+            -only-testing:RAVENTests/RavenServerlessLanSettingsTests \
+            -only-testing:RAVENTests/MessagingProductBoundaryTests
       - name: LAN handshake KAT + Release lab gate (scripted)
         run: bash ../../node/scripts/ios_lan_kat.sh
         env:

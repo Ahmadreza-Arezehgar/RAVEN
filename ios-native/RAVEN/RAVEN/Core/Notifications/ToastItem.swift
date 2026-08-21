@@ -7,8 +7,8 @@ enum ToastType: Int, Codable, CaseIterable {
     case voice = 1          // Voice message
     case friendRequest = 2  // Friend request
     case security = 3       // Security alert (login, etc.)
-    case like = 4           // Someone liked your post
-    case comment = 5        // Someone commented on your post
+    case like = 4           // Retired legacy value; decode-and-drop only
+    case comment = 5        // Retired legacy value; decode-and-drop only
     case groupInvite = 6    // Invited to a group
     case appUpdate = 7      // App update available
     // (2026-05-15 — round 8) New in-app toast types matching the
@@ -19,7 +19,18 @@ enum ToastType: Int, Codable, CaseIterable {
     case backupDone = 10        // Encrypted backup finished
     case twoFactorRequest = 11  // Sign-in approval request
     case disasterMode = 12      // Disaster mode flipped on
-    case audioRoomMention = 13  // Your name appeared in a live transcript
+    case audioRoomMention = 13  // Retired legacy value; decode-and-drop only
+
+    var isMessagingProductEvent: Bool {
+        switch self {
+        case .message, .voice, .friendRequest, .security, .groupInvite,
+             .appUpdate, .vaultAccess, .meshPeerNearby, .backupDone,
+             .twoFactorRequest, .disasterMode:
+            true
+        case .like, .comment, .audioRoomMention:
+            false
+        }
+    }
 
     var icon: String {
         switch self {
@@ -27,8 +38,7 @@ enum ToastType: Int, Codable, CaseIterable {
         case .voice: return "waveform"
         case .friendRequest: return "person.badge.plus"
         case .security: return "shield.checkered"
-        case .like: return "heart.fill"
-        case .comment: return "bubble.left.fill"
+        case .like, .comment: return "nosign"
         case .groupInvite: return "person.3.fill"
         case .appUpdate: return "arrow.down.circle.fill"
         case .vaultAccess: return "lock.open.fill"
@@ -36,7 +46,7 @@ enum ToastType: Int, Codable, CaseIterable {
         case .backupDone: return "externaldrive.fill.badge.checkmark"
         case .twoFactorRequest: return "key.fill"
         case .disasterMode: return "exclamationmark.triangle.fill"
-        case .audioRoomMention: return "mic.fill.badge.plus"
+        case .audioRoomMention: return "nosign"
         }
     }
 
@@ -46,8 +56,7 @@ enum ToastType: Int, Codable, CaseIterable {
         case .voice: return "purple"
         case .friendRequest: return "green"
         case .security: return "orange"
-        case .like: return "pink"
-        case .comment: return "cyan"
+        case .like, .comment: return "gray"
         case .groupInvite: return "indigo"
         case .appUpdate: return "mint"
         case .vaultAccess: return "indigo"
@@ -55,7 +64,7 @@ enum ToastType: Int, Codable, CaseIterable {
         case .backupDone: return "green"
         case .twoFactorRequest: return "yellow"
         case .disasterMode: return "red"
-        case .audioRoomMention: return "purple"
+        case .audioRoomMention: return "gray"
         }
     }
 
@@ -66,8 +75,7 @@ enum ToastType: Int, Codable, CaseIterable {
         case .voice: return "Voice"
         case .friendRequest: return "Friend Request"
         case .security: return "Security"
-        case .like: return "Like"
-        case .comment: return "Comment"
+        case .like, .comment: return "Unavailable"
         case .groupInvite: return "Group Invite"
         case .appUpdate: return "Update"
         case .vaultAccess: return "Vault Access"
@@ -75,7 +83,7 @@ enum ToastType: Int, Codable, CaseIterable {
         case .backupDone: return "Backup Done"
         case .twoFactorRequest: return "Sign-in Request"
         case .disasterMode: return "Disaster Mode"
-        case .audioRoomMention: return "Mention"
+        case .audioRoomMention: return "Unavailable"
         }
     }
 }
@@ -253,51 +261,6 @@ struct ToastItem: Identifiable, Equatable {
             chatId: nil,
             senderId: nil,
             senderName: nil,
-            isGroup: false,
-            canReply: false,
-            receivedAt: Date()
-        )
-    }
-    
-    /// Create a like notification toast
-    static func like(
-        id: String = UUID().uuidString,
-        userName: String,
-        avatarURL: URL? = nil,
-        postId: String
-    ) -> ToastItem {
-        ToastItem(
-            id: id,
-            type: .like,
-            title: userName,
-            body: "liked your post",
-            avatarURL: avatarURL,
-            chatId: postId, // reuse chatId for postId
-            senderId: nil,
-            senderName: userName,
-            isGroup: false,
-            canReply: false,
-            receivedAt: Date()
-        )
-    }
-    
-    /// Create a comment notification toast
-    static func comment(
-        id: String = UUID().uuidString,
-        userName: String,
-        preview: String,
-        avatarURL: URL? = nil,
-        postId: String
-    ) -> ToastItem {
-        ToastItem(
-            id: id,
-            type: .comment,
-            title: userName,
-            body: preview.isEmpty ? "commented on your post" : preview,
-            avatarURL: avatarURL,
-            chatId: postId, // reuse chatId for postId
-            senderId: nil,
-            senderName: userName,
             isGroup: false,
             canReply: false,
             receivedAt: Date()

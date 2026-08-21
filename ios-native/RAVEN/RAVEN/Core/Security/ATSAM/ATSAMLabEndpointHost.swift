@@ -18,6 +18,7 @@ final class ATSAMLabEndpointHost {
         case legacySessionRefused(Int)
         case inboundAckMissing
         case generationRollback(sessionID: Data, protected: UInt64, head: UInt64)
+        case rngFailed(String)
 
         var errorDescription: String? {
             switch self {
@@ -30,6 +31,7 @@ final class ATSAMLabEndpointHost {
             case .generationRollback(let sid, let protected, let head):
                 let prefix = sid.prefix(4).map { String(format: "%02x", $0) }.joined()
                 return "Generation rollback refused session=\(prefix)… protected=\(protected) head=\(head)"
+            case .rngFailed(let s): return "CSPRNG failed: \(s)"
             }
         }
     }
@@ -1519,12 +1521,24 @@ private final class LabAckMaterializer: ATSAMEndpointTransactionV1.AckMaterializ
         )
         chainKey = try ATSAMIndexedSessionProfile.advanceChainKey(chainKey)
         var outerMessageID = Data(count: 16)
-        outerMessageID.withUnsafeMutableBytes { buf in
-            _ = SecRandomCopyBytes(kSecRandomDefault, 16, buf.baseAddress!)
+        try outerMessageID.withUnsafeMutableBytes { buf in
+            guard let base = buf.baseAddress else {
+                throw ATSAMLabEndpointHost.HostError.rngFailed("nil buffer")
+            }
+            let status = SecRandomCopyBytes(kSecRandomDefault, 16, base)
+            guard status == errSecSuccess else {
+                throw ATSAMLabEndpointHost.HostError.rngFailed("SecRandomCopyBytes \(status)")
+            }
         }
         var innerNonce = Data(count: 12)
-        innerNonce.withUnsafeMutableBytes { buf in
-            _ = SecRandomCopyBytes(kSecRandomDefault, 12, buf.baseAddress!)
+        try innerNonce.withUnsafeMutableBytes { buf in
+            guard let base = buf.baseAddress else {
+                throw ATSAMLabEndpointHost.HostError.rngFailed("nil buffer")
+            }
+            let status = SecRandomCopyBytes(kSecRandomDefault, 12, base)
+            guard status == errSecSuccess else {
+                throw ATSAMLabEndpointHost.HostError.rngFailed("SecRandomCopyBytes \(status)")
+            }
         }
         var signedAck = ATSAMIndexedSessionProfile.SignedAck(
             ackedMessageId: intent.ackedMessageID,
@@ -1545,8 +1559,14 @@ private final class LabAckMaterializer: ATSAMEndpointTransactionV1.AckMaterializ
         )
         let plaintext = try ATSAMIndexedSessionProfile.encodeSignedAck(signedAck)
         var sealNonce = Data(count: 12)
-        sealNonce.withUnsafeMutableBytes { buf in
-            _ = SecRandomCopyBytes(kSecRandomDefault, 12, buf.baseAddress!)
+        try sealNonce.withUnsafeMutableBytes { buf in
+            guard let base = buf.baseAddress else {
+                throw ATSAMLabEndpointHost.HostError.rngFailed("nil buffer")
+            }
+            let status = SecRandomCopyBytes(kSecRandomDefault, 12, base)
+            guard status == errSecSuccess else {
+                throw ATSAMLabEndpointHost.HostError.rngFailed("SecRandomCopyBytes \(status)")
+            }
         }
         let sealed = try ATSAMIndexedSessionProfile.sealAck(
             root: root,
@@ -1566,8 +1586,14 @@ private final class LabAckMaterializer: ATSAMEndpointTransactionV1.AckMaterializ
             direction: direction
         )
         var anti = Data(count: 12)
-        anti.withUnsafeMutableBytes { buf in
-            _ = SecRandomCopyBytes(kSecRandomDefault, 12, buf.baseAddress!)
+        try anti.withUnsafeMutableBytes { buf in
+            guard let base = buf.baseAddress else {
+                throw ATSAMLabEndpointHost.HostError.rngFailed("nil buffer")
+            }
+            let status = SecRandomCopyBytes(kSecRandomDefault, 12, base)
+            guard status == errSecSuccess else {
+                throw ATSAMLabEndpointHost.HostError.rngFailed("SecRandomCopyBytes \(status)")
+            }
         }
         var envelope = RavenEnvelopeV1(
             envType: RavenEnvelopeV1.EnvType.ack.rawValue,
@@ -1661,8 +1687,14 @@ private final class LabOutboundMaterializer: ATSAMEndpointTransactionV1.Outbound
         )
         chainKey = try ATSAMIndexedSessionProfile.advanceChainKey(chainKey)
         var outerMessageID = Data(count: 16)
-        outerMessageID.withUnsafeMutableBytes { buf in
-            _ = SecRandomCopyBytes(kSecRandomDefault, 16, buf.baseAddress!)
+        try outerMessageID.withUnsafeMutableBytes { buf in
+            guard let base = buf.baseAddress else {
+                throw ATSAMLabEndpointHost.HostError.rngFailed("nil buffer")
+            }
+            let status = SecRandomCopyBytes(kSecRandomDefault, 16, base)
+            guard status == errSecSuccess else {
+                throw ATSAMLabEndpointHost.HostError.rngFailed("SecRandomCopyBytes \(status)")
+            }
         }
         let aad = try ATSAMIndexedSessionProfile.buildAAD(
             index: index,
@@ -1693,8 +1725,14 @@ private final class LabOutboundMaterializer: ATSAMEndpointTransactionV1.Outbound
             direction: outboundDirection
         )
         var anti = Data(count: 12)
-        anti.withUnsafeMutableBytes { buf in
-            _ = SecRandomCopyBytes(kSecRandomDefault, 12, buf.baseAddress!)
+        try anti.withUnsafeMutableBytes { buf in
+            guard let base = buf.baseAddress else {
+                throw ATSAMLabEndpointHost.HostError.rngFailed("nil buffer")
+            }
+            let status = SecRandomCopyBytes(kSecRandomDefault, 12, base)
+            guard status == errSecSuccess else {
+                throw ATSAMLabEndpointHost.HostError.rngFailed("SecRandomCopyBytes \(status)")
+            }
         }
         var envelope = RavenEnvelopeV1(
             envType: RavenEnvelopeV1.EnvType.message.rawValue,

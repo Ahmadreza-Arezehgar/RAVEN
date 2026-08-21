@@ -136,7 +136,9 @@ enum VaultCrypto {
     /// public broadcast (e.g. via a sealed-sender DM).
     static func generateCreatorSecret() -> Data {
         var bytes = [UInt8](repeating: 0, count: 32)
-        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        // Fail closed: a predictable creator secret breaks vault ACLs.
+        precondition(status == errSecSuccess, "SecRandomCopyBytes failed: \(status)")
         return Data(bytes)
     }
     

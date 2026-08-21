@@ -97,27 +97,6 @@ final class PhoneBridge: NSObject, ObservableObject {
         return await deliver(payload)
     }
 
-    /// Toggle a post like.
-    @discardableResult
-    func togglePostLike(postId: String) async -> Bool {
-        let payload: [String: Any] = [
-            "kind": "post-toggle-like",
-            "postId": postId,
-        ]
-        return await deliver(payload)
-    }
-
-    /// Submit a post comment composed via dictation.
-    @discardableResult
-    func commentOnPost(postId: String, text: String) async -> Bool {
-        let payload: [String: Any] = [
-            "kind": "post-comment",
-            "postId": postId,
-            "text": text,
-        ]
-        return await deliver(payload)
-    }
-
     /// Mark a thread as read up to a given timestamp.
     @discardableResult
     func markRead(roomId: String, upTo: Date) async -> Bool {
@@ -125,30 +104,6 @@ final class PhoneBridge: NSObject, ObservableObject {
             "kind": "mark-read",
             "roomId": roomId,
             "upTo": upTo.timeIntervalSince1970,
-        ]
-        return await deliver(payload)
-    }
-
-    /// Join / leave a voice room. The phone owns the RTC connection and
-    /// pipes audio frames to the Watch via the audio session (in-call
-    /// haptic + headphone routing handled by the OS).
-    @discardableResult
-    func setRoomMembership(roomId: String, joined: Bool) async -> Bool {
-        let payload: [String: Any] = [
-            "kind": "room-membership",
-            "roomId": roomId,
-            "joined": joined,
-        ]
-        return await deliver(payload)
-    }
-
-    /// Push-to-talk control while in a room.
-    @discardableResult
-    func setPTT(roomId: String, talking: Bool) async -> Bool {
-        let payload: [String: Any] = [
-            "kind": "room-ptt",
-            "roomId": roomId,
-            "talking": talking,
         ]
         return await deliver(payload)
     }

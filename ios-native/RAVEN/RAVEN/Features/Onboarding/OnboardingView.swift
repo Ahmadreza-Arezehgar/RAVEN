@@ -3,10 +3,12 @@ import SwiftUI
 // MARK: - Onboarding Slide Model
 struct OnboardingSlide: Identifiable {
     let id = UUID()
+    let index: Int
+    let command: String        // fake shell command typed at the prompt
     let title: String
     let subtitle: String
     let systemImage: String
-    let accentColor: Color
+    let bootLines: [(BootLogLine.Status, String)]
 }
 
 // MARK: - App Launch State (First-Time Check)
@@ -18,7 +20,10 @@ final class AppLaunchState: ObservableObject {
     }
 }
 
-// MARK: - Onboarding View (4 Slides with Swipe)
+// MARK: - Onboarding View (TERMINAL v2 — boot sequence)
+/// First-run walkthrough restyled as a CRT boot sequence: each slide is
+/// a console panel with a typed command, boot-log lines and a monospace
+/// pitch. Swipe or use [ NEXT ] — keyboard-first everywhere else too.
 struct OnboardingView: View {
     let onFinish: () -> Void
     
@@ -26,29 +31,53 @@ struct OnboardingView: View {
     
     private let slides: [OnboardingSlide] = [
         .init(
-            title: "Works Offline",
-            subtitle: "Even without internet, messages hop device-to-device via Mesh and reach a bridge later.",
+            index: 0,
+            command: "raven --offline",
+            title: "works offline",
+            subtitle: "no internet needed. messages hop device-to-device over the bluetooth mesh and reach a bridge later.",
             systemImage: "dot.radiowaves.left.and.right",
-            accentColor: .purple
+            bootLines: [
+                (.ok, "ble mesh radio up"),
+                (.ok, "store-and-forward queue ready"),
+                (.pending, "scanning for peers…"),
+            ]
         ),
         .init(
-            title: "Private & Encrypted",
-            subtitle: "Your messages and data are protected with strong end-to-end encryption by design.",
+            index: 1,
+            command: "raven --e2ee status",
+            title: "private & encrypted",
+            subtitle: "end-to-end encryption by design. keys never leave your device; there is nothing useful to intercept.",
             systemImage: "lock.shield.fill",
-            accentColor: .blue
+            bootLines: [
+                (.ok, "identity key sealed in enclave"),
+                (.ok, "noise handshake verified"),
+                (.ok, "zero plaintext on the wire"),
+            ]
         ),
         .init(
-            title: "Local + Friends Feed",
-            subtitle: "See your friends' posts, and discover nearby local posts when your account is public.",
-            systemImage: "person.2.wave.2.fill",
-            accentColor: .green
+            index: 2,
+            command: "raven --route trace",
+            title: "one message, many paths",
+            subtitle: "private conversations travel over nearby and internet paths — never a public feed.",
+            systemImage: "point.3.connected.trianglepath.dotted",
+            bootLines: [
+                (.ok, "path 1: mesh · 2 hops"),
+                (.ok, "path 2: lan bridge"),
+                (.pending, "path 3: internet relay"),
+            ]
         ),
         .init(
-            title: "Fast Messaging",
-            subtitle: "Send text, photos, and voice with a smooth Liquid Glass experience.",
-            systemImage: "paperplane.fill",
-            accentColor: .cyan
-        )
+            index: 3,
+            command: "raven --start",
+            title: "fast, keyboard-first",
+            subtitle: "monospace everything. type / for commands, @ for people. text, photos, voice — at terminal speed.",
+            systemImage: "keyboard.fill",
+            bootLines: [
+                (.ok, "slash commands loaded"),
+                (.ok, "syntax highlighting on"),
+                (.ok, "ready."),
+            ]
+        ),
     ]
     
     private var isLastSlide: Bool { currentIndex == slides.count - 1 }
@@ -56,64 +85,73 @@ struct OnboardingView: View {
     
     var body: some View {
         ZStack {
-            // Background gradient
-            LinearGradient(
-                colors: [
-                    slides[currentIndex].accentColor.opacity(0.3),
-                    Color.black
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .ignoresSafeArea()
-            .animation(.easeInOut(duration: 0.5), value: currentIndex)
+            RavenScreenBackground()
             
             VStack(spacing: 0) {
-                // Top bar: Skip button
-                HStack {
+                // Top bar: window chrome + skip
+                HStack(spacing: 10) {
+                    Circle().fill(DS.accentDanger).frame(width: 9, height: 9)
+                    Circle().fill(DS.amber).frame(width: 9, height: 9)
+                    Circle().fill(DS.phosphor).frame(width: 9, height: 9)
+                    Text("raven — install")
+                        .font(.system(.caption, design: .monospaced, weight: .medium))
+                        .foregroundStyle(DS.mist.opacity(0.6))
                     Spacer()
-                    Button("Skip") {
+                    Button("skip ⏭") {
                         Haptics.light()
                         onFinish()
                     }
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.65))
-                    .padding(.horizontal, 20)
-                    .padding(.top, 16)
+                    .font(.system(.footnote, design: .monospaced, weight: .semibold))
+                    .foregroundStyle(DS.mist.opacity(0.6))
                 }
+                .padding(.horizontal, 20)
+                .padding(.top, 16)
                 
                 // Slides (Swipeable)
                 TabView(selection: $currentIndex) {
-                    ForEach(Array(slides.enumerated()), id: \.offset) { index, slide in
+                    ForEach(slides, id: \.index) { slide in
                         SlideContent(slide: slide)
-                            .tag(index)
+                            .tag(slide.index)
                     }
                 }
-                .tabViewStyle(.page(indexDisplayMode: .always))
-                .indexViewStyle(.page(backgroundDisplayMode: .always))
+                .tabViewStyle(.page(indexDisplayMode: .never))
+                
+                // Progress: [■][■][□][□] step blocks
+                HStack(spacing: 6) {
+                    ForEach(slides, id: \.index) { slide in
+                        RoundedRectangle(cornerRadius: 2, style: .continuous)
+                            .fill(slide.index <= currentIndex ? DS.phosphor : DS.phosphor.opacity(0.15))
+                            .frame(width: 26, height: 5)
+                    }
+                }
+                .padding(.bottom, 22)
+                .animation(.spring(response: 0.3, dampingFraction: 0.85), value: currentIndex)
                 
                 // Bottom actions
-                HStack(spacing: 16) {
-                    // Back button
+                HStack(spacing: 12) {
                     Button {
                         Haptics.light()
                         withAnimation(.spring(response: 0.35)) {
                             currentIndex = max(currentIndex - 1, 0)
                         }
                     } label: {
-                        Text("Back")
-                            .font(.system(size: 16, weight: .semibold))
+                        Text("[ back ]")
+                            .font(.system(.body, design: .monospaced, weight: .semibold))
                             .frame(maxWidth: .infinity)
-                            .padding(.vertical, 16)
-                            .foregroundStyle(.white.opacity(isFirstSlide ? 0.3 : 0.9))
+                            .padding(.vertical, 15)
+                            .foregroundStyle(DS.mist.opacity(isFirstSlide ? 0.25 : 0.85))
+                            .background(
+                                RoundedRectangle(cornerRadius: DS.radiusInner, style: .continuous)
+                                    .fill(DS.inkElevated.opacity(0.92))
+                            )
+                            .overlay {
+                                RoundedRectangle(cornerRadius: DS.radiusInner, style: .continuous)
+                                    .strokeBorder(DS.hairline, lineWidth: 1)
+                            }
                     }
+                    .buttonStyle(.plain)
                     .disabled(isFirstSlide)
-                    .background(
-                        Capsule()
-                            .fill(.ultraThinMaterial)
-                    )
                     
-                    // Next / Get Started button
                     Button {
                         Haptics.medium()
                         if isLastSlide {
@@ -124,25 +162,13 @@ struct OnboardingView: View {
                             }
                         }
                     } label: {
-                        Text(isLastSlide ? "Get Started" : "Next")
-                            .font(.system(size: 16, weight: .bold))
+                        Text(isLastSlide ? "[ execute ]" : "[ next ]")
                             .frame(maxWidth: .infinity)
-                            .padding(.vertical, 16)
-                            .foregroundStyle(.white)
                     }
-                    .background(
-                        Capsule()
-                            .fill(
-                                LinearGradient(
-                                    colors: [.blue, slides[currentIndex].accentColor],
-                                    startPoint: .leading,
-                                    endPoint: .trailing
-                                )
-                            )
-                    )
+                    .buttonStyle(.ravenPrimary)
                 }
                 .padding(.horizontal, 20)
-                .padding(.bottom, 40)
+                .padding(.bottom, 36)
             }
         }
     }
@@ -153,49 +179,60 @@ private struct SlideContent: View {
     let slide: OnboardingSlide
     
     var body: some View {
-        VStack(spacing: 20) {
-            Spacer()
+        VStack(spacing: 24) {
+            Spacer(minLength: 12)
             
-            // Icon with glow effect
-            ZStack {
-                // Glow
-                Circle()
-                    .fill(slide.accentColor.opacity(0.3))
-                    .frame(width: 140, height: 140)
-                    .blur(radius: 40)
+            // Console panel: typed command + boot log
+            VStack(alignment: .leading, spacing: 10) {
+                PromptLabel(marker: .shell, text: slide.command, color: DS.mist)
                 
-                // Icon
-                Image(systemName: slide.systemImage)
-                    .font(.system(size: 60, weight: .semibold))
-                    .foregroundStyle(
-                        LinearGradient(
-                            colors: [.white, slide.accentColor],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .frame(width: 100, height: 100)
+                Rectangle().fill(DS.hairlineDim).frame(height: 1)
+                
+                ForEach(Array(slide.bootLines.enumerated()), id: \.offset) { _, line in
+                    BootLogLine(status: line.0, text: line.1)
+                }
+                
+                HStack(spacing: 8) {
+                    Image(systemName: slide.systemImage)
+                        .font(.system(size: 30, weight: .semibold))
+                        .foregroundStyle(DS.phosphor)
+                        .symbolRenderingMode(.hierarchical)
+                    Spacer()
+                    BlinkingCursor(height: 16)
+                }
+                .padding(.top, 8)
+            }
+            .padding(18)
+            .frame(maxWidth: 340)
+            .background(
+                RoundedRectangle(cornerRadius: DS.radiusCard, style: .continuous)
+                    .fill(DS.inkElevated.opacity(0.92))
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: DS.radiusCard, style: .continuous)
+                    .strokeBorder(DS.hairline, lineWidth: 1)
+            }
+            .overlay(TerminalCornerTicks(radius: DS.radiusCard))
+            .shadow(color: .black.opacity(0.45), radius: 14, y: 5)
+            
+            // Title + subtitle
+            VStack(spacing: 10) {
+                Text(slide.title)
+                    .font(.system(size: 26, weight: .bold, design: .monospaced))
+                    .foregroundStyle(DS.mist)
+                    .multilineTextAlignment(.center)
+                
+                Text(slide.subtitle)
+                    .font(.system(size: 14, design: .monospaced))
+                    .foregroundStyle(DS.mist.opacity(0.65))
+                    .multilineTextAlignment(.center)
+                    .lineSpacing(4)
+                    .padding(.horizontal, 30)
             }
             
-            // Title
-            Text(slide.title)
-                .font(.system(size: 32, weight: .bold))
-                .foregroundStyle(.white)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 24)
-            
-            // Subtitle
-            Text(slide.subtitle)
-                .font(.system(size: 16, weight: .regular))
-                .foregroundStyle(.white.opacity(0.7))
-                .multilineTextAlignment(.center)
-                .lineSpacing(4)
-                .padding(.horizontal, 32)
-            
-            Spacer()
-            Spacer()
+            Spacer(minLength: 8)
         }
-        .padding(.bottom, 20)
+        .padding(.bottom, 12)
     }
 }
 

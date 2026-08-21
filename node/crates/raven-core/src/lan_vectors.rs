@@ -132,8 +132,7 @@ pub fn compute_handshake_kat() -> HandshakeKat {
     let init_bind_ct = transport_encrypt(&mut init_t, &init_bind).expect("init bind ct");
     let resp_bind = encode_bind(&responder, &resp_pub);
     let resp_bind_ct = transport_encrypt(&mut resp_t, &resp_bind).expect("resp bind ct");
-    let first_app_ct =
-        transport_encrypt(&mut init_t, FIRST_APP_PLAINTEXT).expect("first app ct");
+    let first_app_ct = transport_encrypt(&mut init_t, FIRST_APP_PLAINTEXT).expect("first app ct");
 
     HandshakeKat {
         m1,
@@ -230,7 +229,10 @@ pub fn assert_rlb1_offer_vector() {
 
 pub fn assert_noise_xx_handshake_vector() {
     let v = load_json("noise_xx_handshake_001.json");
-    assert_eq!(v["inputs"]["noise_pattern"].as_str().unwrap(), NOISE_PATTERN);
+    assert_eq!(
+        v["inputs"]["noise_pattern"].as_str().unwrap(),
+        NOISE_PATTERN
+    );
     assert_eq!(v["inputs"]["prologue"].as_str().unwrap(), "");
     assert_eq!(
         v["inputs"]["initiator_device_seed_hex"].as_str().unwrap(),
@@ -242,11 +244,15 @@ pub fn assert_noise_xx_handshake_vector() {
     );
     assert_eq!(
         hex::encode(INITIATOR_EPHEMERAL),
-        v["inputs"]["initiator_ephemeral_priv_hex"].as_str().unwrap()
+        v["inputs"]["initiator_ephemeral_priv_hex"]
+            .as_str()
+            .unwrap()
     );
     assert_eq!(
         hex::encode(RESPONDER_EPHEMERAL),
-        v["inputs"]["responder_ephemeral_priv_hex"].as_str().unwrap()
+        v["inputs"]["responder_ephemeral_priv_hex"]
+            .as_str()
+            .unwrap()
     );
 
     let kat = compute_handshake_kat();

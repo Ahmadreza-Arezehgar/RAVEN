@@ -72,6 +72,12 @@ final class NotificationPipeline: ObservableObject {
     
     /// Enqueue a new toast notification
     func enqueue(_ item: ToastItem) {
+        guard item.type.isMessagingProductEvent else {
+            #if DEBUG
+            print("🍞 [NotificationPipeline] Refused non-messaging toast type=\(item.type)")
+            #endif
+            return
+        }
         // 🔴 Bug fix (2026-05-09): if both title and body come in
         // empty (race between push payload arrival and conversation
         // metadata resolution, or a malformed mesh frame), the toast
@@ -164,6 +170,7 @@ final class NotificationPipeline: ObservableObject {
     
     /// Show a toast immediately (skips queue)
     func showImmediate(_ item: ToastItem) {
+        guard item.type.isMessagingProductEvent else { return }
         dismissTask?.cancel()
         currentToast = item
         unreadCount += 1
@@ -211,6 +218,7 @@ final class NotificationPipeline: ObservableObject {
     
     /// Handle tap on toast - navigates to appropriate screen
     func handleTap(_ item: ToastItem) {
+        guard item.type.isMessagingProductEvent else { return }
         Haptics.light()
         pauseDismiss()
 
@@ -243,10 +251,7 @@ final class NotificationPipeline: ObservableObject {
             DeepLinkRouter.shared.navigate(to: .security)
             
         case .like, .comment:
-            // FIX: Navigate to the post (postId stored in chatId)
-            if let postId = item.chatId {
-                DeepLinkRouter.shared.navigate(to: .post(postId: postId))
-            }
+            break
             
         case .groupInvite:
             // Navigate to group chat when accepted
@@ -283,10 +288,7 @@ final class NotificationPipeline: ObservableObject {
             // pinned at the top inside Home/Inbox separately.
             DeepLinkRouter.shared.navigate(to: .notifications)
         case .audioRoomMention:
-            // Open the room if we know its slug (stored in chatId).
-            if let slug = item.chatId {
-                DeepLinkRouter.shared.navigate(to: .audioRoom(slug: slug))
-            }
+            break
         }
 
         // Resume dismiss timer so subsequent toasts auto-dismiss properly
@@ -296,6 +298,7 @@ final class NotificationPipeline: ObservableObject {
     
     /// Open quick reply sheet
     func openQuickReply(_ item: ToastItem) {
+        guard item.type.isMessagingProductEvent, item.canReply else { return }
         Haptics.medium()
         pauseDismiss()
         
@@ -518,8 +521,7 @@ final class NotificationPipeline: ObservableObject {
         case .message:           return "New message"
         case .voice:             return "Voice message"
         case .friendRequest:     return "Friend request"
-        case .like:              return "New like"
-        case .comment:           return "New comment"
+        case .like, .comment:    return "Unsupported notification"
         case .security:          return "Security alert"
         case .groupInvite:       return "Group invite"
         case .appUpdate:         return "Update"
@@ -528,7 +530,7 @@ final class NotificationPipeline: ObservableObject {
         case .backupDone:        return "Backup complete"
         case .twoFactorRequest:  return "Sign-in request"
         case .disasterMode:      return "Disaster mode active"
-        case .audioRoomMention:  return "Mentioned in room"
+        case .audioRoomMention:  return "Unsupported notification"
         }
     }
 
@@ -536,8 +538,7 @@ final class NotificationPipeline: ObservableObject {
         switch type {
         case .message, .voice:   return "You have a new message"
         case .friendRequest:     return "Someone wants to connect"
-        case .like:              return "Someone liked your post"
-        case .comment:           return "Someone commented"
+        case .like, .comment:    return "This legacy notification is unavailable"
         case .security:          return "Account activity"
         case .groupInvite:       return "You were invited to a group"
         case .appUpdate:         return "RAVEN was updated"
@@ -546,7 +547,7 @@ final class NotificationPipeline: ObservableObject {
         case .backupDone:        return "Your encrypted backup finished"
         case .twoFactorRequest:  return "Approve a sign-in from another device"
         case .disasterMode:      return "Mesh-only delivery is active in your area"
-        case .audioRoomMention:  return "Your name came up in a live transcript"
+        case .audioRoomMention:  return "This legacy notification is unavailable"
         }
     }
 

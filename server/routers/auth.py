@@ -270,16 +270,6 @@ def login(req: LoginRequest, request: Request, db: Session = Depends(get_db)):
         window_minutes=15,
         lockout_minutes=30
     )
-    
-    # 🟡 TEMP DEBUG (2026-05-23) — login-failure investigation.
-    # Logs the username + password fingerprint (NOT plaintext) so we
-    # can see whether iOS is sending the same shape as a working curl.
-    # REMOVE before normal operation.
-    import hashlib as _hl
-    _pwd = req.password or ""
-    _pwd_fp = _hl.sha256(_pwd.encode()).hexdigest()[:10] if _pwd else "(empty)"
-    _ua = (request.headers.get("User-Agent") or "?")[:80]
-    print(f"🟡 LOGIN-DEBUG user={req.username!r} pwd_len={len(_pwd)} pwd_sha256_10={_pwd_fp} ua={_ua!r}")
 
     # Find user by username
     user = db.query(User).filter(User.username == req.username).first()

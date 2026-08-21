@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		MSGPBOUNDARYTESTBUILD01 /* MessagingProductBoundaryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = MSGPBOUNDARYTESTFILE001 /* MessagingProductBoundaryTests.swift */; };
+		WATCHMODELSTESTBUILD001 /* WatchModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77B4EE50FEFC27115CD09BF8 /* WatchModels.swift */; };
 		0058BA60ACEEAF24D3C0E7F5 /* PendingACKRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8087776A7278A0D863091BDB /* PendingACKRepository.swift */; };
 		00F9E8D3EAEE0C42F57D28CB /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 6E095ECDF0EAB857600F593D /* Foundation.framework */; };
 		01ECA268D87ED0B3AF9DAB16 /* ATSAMConstants.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1448A9CBB4AA06129A1656A /* ATSAMConstants.swift */; };
@@ -148,7 +150,6 @@
 		61A91CAB9942A20455929287 /* QuickReplySheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A73ABE65437152A16103313 /* QuickReplySheet.swift */; };
 		67A59FEE502B09BDD8872314 /* MeshInteropVectorsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 15B36E34E30E171DA9D47854 /* MeshInteropVectorsTests.swift */; };
 		68034A09A2A82AA42300EE39 /* MeshACKHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F2C0D1CB7EC1248A4B27343 /* MeshACKHandler.swift */; };
-		681F06B665D45BEE82FE1BC0 /* MeshSuccessToast.swift in Sources */ = {isa = PBXBuildFile; fileRef = 252E31D8C42B9DBC820F559B /* MeshSuccessToast.swift */; };
 		682AF5248D378CE0801BDAB1 /* CoverTrafficEmitter.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6ECFCA8BCF060BAA3342643 /* CoverTrafficEmitter.swift */; };
 		699494391A4C64905E80CA9C /* EditRecipe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 149129F092F88C093B686993 /* EditRecipe.swift */; };
 		6999D3F7E23220142F18887C /* MyQRCodeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58EB746CE4984776EA79B5B8 /* MyQRCodeView.swift */; };
@@ -247,7 +248,6 @@
 		A9F5568BB2BF7A8400C67072 /* PVEncryptor.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0E5E1BAE1D0A6DD2EA03060 /* PVEncryptor.swift */; };
 		AA1234567890ABCD12345678 /* AppleSignInCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB1234567890ABCD12345678 /* AppleSignInCoordinator.swift */; };
 		AA716E632DBD265057340883 /* ATSAMTranscript.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00FD6671D9FB5386C8E727D0 /* ATSAMTranscript.swift */; };
-		AAB5C8C00C77EFC95605D233 /* TranscriptionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3DBF8183AE81344C4714CBC /* TranscriptionService.swift */; };
 		AB7A8A6BC3ED96090E6AC295 /* UserIdMatching.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E1D25E3EE0589A1388B5B7D /* UserIdMatching.swift */; };
 		ABV2604645390CDEF87654321 /* AlbumBubbleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABV2604645390CDEF12345678 /* AlbumBubbleView.swift */; };
 		AC95A5E18F55628AA70A0B60 /* DesignSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83E43A3075CD75A8D98910DC /* DesignSettingsView.swift */; };
@@ -297,7 +297,6 @@
 		C251504C148DE7678DD59291 /* ChatEncryptionSummaryChip.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4DD6A4DC027AF687AB9EC0DE /* ChatEncryptionSummaryChip.swift */; };
 		C2B1856669150E6DF1D530CF /* E2EENetworkProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4209162713209C2DB4949B33 /* E2EENetworkProvider.swift */; };
 		C57345132DC9C698077EA66D /* DatabaseService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A6E8CC5984AED065D853D4F /* DatabaseService.swift */; };
-		C58BF4C98AE680BF687CE9CD /* ContentConsumptionTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = F553131FF42E5C7C56716FE3 /* ContentConsumptionTracker.swift */; };
 		C5DB4BC312E41A65C04C091A /* ATSAMOnlinePairView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C383A9DBA4B1E209921AB26D /* ATSAMOnlinePairView.swift */; };
 		C5DFF70105691CF1CB950302 /* PushNotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C9D778C694F5AF7FAA7DFE4 /* PushNotificationService.swift */; };
 		C61C746120F849C15309D457 /* Notification.swift in Sources */ = {isa = PBXBuildFile; fileRef = F189A7A4925D0AF3850241CF /* Notification.swift */; };
@@ -434,6 +433,24 @@
 		A9B8C7D6E5F4012345678914 /* ATSAMFullBraidLabTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9B8C7D6E5F4012345678913 /* ATSAMFullBraidLabTests.swift */; };
 		LABTRUSTADMTESTFILE00001 /* ATSAMLabTrustAdmissionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMLabTrustAdmissionTests.swift; sourceTree = "<group>"; };
 		LABTRUSTADMTESTBUILD0001 /* ATSAMLabTrustAdmissionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = LABTRUSTADMTESTFILE00001 /* ATSAMLabTrustAdmissionTests.swift */; };
+		FBNSPROBEFILE00000000001 /* FullBraidNamespaceProvisioningTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FullBraidNamespaceProvisioningTests.swift; sourceTree = "<group>"; };
+		FBNSPROBEBUILD0000000001 /* FullBraidNamespaceProvisioningTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FBNSPROBEFILE00000000001 /* FullBraidNamespaceProvisioningTests.swift */; };
+		FB0A3PROFREF0000000001 /* ATSAMFullBraidSQLCipherProfileV1.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMFullBraidSQLCipherProfileV1.swift; sourceTree = "<group>"; };
+		FB0A3PROFBUILD00000001 /* ATSAMFullBraidSQLCipherProfileV1.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB0A3PROFREF0000000001 /* ATSAMFullBraidSQLCipherProfileV1.swift */; };
+		FB0B1ANCHREF0000000001 /* ATSAMFullBraidProtectedAnchorV1.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMFullBraidProtectedAnchorV1.swift; sourceTree = "<group>"; };
+		FB0B1ANCHBUILD00000001 /* ATSAMFullBraidProtectedAnchorV1.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB0B1ANCHREF0000000001 /* ATSAMFullBraidProtectedAnchorV1.swift */; };
+		FB0B1STOREREF0000000001 /* ATSAMFullBraidProtectedStoreV1.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMFullBraidProtectedStoreV1.swift; sourceTree = "<group>"; };
+		FB0B1STOREBUILD00000001 /* ATSAMFullBraidProtectedStoreV1.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB0B1STOREREF0000000001 /* ATSAMFullBraidProtectedStoreV1.swift */; };
+		FB0B1TESTREF0000000001 /* ATSAMFullBraidProtectedAnchorV1Tests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMFullBraidProtectedAnchorV1Tests.swift; sourceTree = "<group>"; };
+		FB0B1TESTBUILD00000001 /* ATSAMFullBraidProtectedAnchorV1Tests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB0B1TESTREF0000000001 /* ATSAMFullBraidProtectedAnchorV1Tests.swift */; };
+		FB0B2TESTREF0000000001 /* ATSAMFullBraidProtectedStoreV1Tests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMFullBraidProtectedStoreV1Tests.swift; sourceTree = "<group>"; };
+		FB0B2TESTBUILD00000001 /* ATSAMFullBraidProtectedStoreV1Tests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB0B2TESTREF0000000001 /* ATSAMFullBraidProtectedStoreV1Tests.swift */; };
+		FB0B2PHYSREF0000000001 /* ATSAMFullBraidProtectedStorePhysicalGateTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMFullBraidProtectedStorePhysicalGateTests.swift; sourceTree = "<group>"; };
+		FB0B2PHYSBUILD00000001 /* ATSAMFullBraidProtectedStorePhysicalGateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB0B2PHYSREF0000000001 /* ATSAMFullBraidProtectedStorePhysicalGateTests.swift */; };
+		FB0A4SHIMREF0000000001 /* RavenSQLCipherProfileShim.c */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.c; path = RavenSQLCipherProfileShim.c; sourceTree = "<group>"; };
+		FB0A4SHIMBUILD00000001 /* RavenSQLCipherProfileShim.c in Sources */ = {isa = PBXBuildFile; fileRef = FB0A4SHIMREF0000000001 /* RavenSQLCipherProfileShim.c */; };
+		FB0A3TESTREF0000000001 /* ATSAMFullBraidSQLCipherProfileV1Tests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMFullBraidSQLCipherProfileV1Tests.swift; sourceTree = "<group>"; };
+		FB0A3TESTBUILD00000001 /* ATSAMFullBraidSQLCipherProfileV1Tests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB0A3TESTREF0000000001 /* ATSAMFullBraidSQLCipherProfileV1Tests.swift */; };
 		C8A813500000000000000004 /* ATSAMPairInitV1Tests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8A813500000000000000003 /* ATSAMPairInitV1Tests.swift */; };
 		B7A1C0DE1F0CBB45A5E17182 /* ATSAMPairingRootAgreementTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7A1C0DE1F0CBB45A5E17181 /* ATSAMPairingRootAgreementTests.swift */; };
 		EDBF4EC6E4871DC1C55318C0 /* RelayReceipt.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3397C365AA11ECF59A599C8 /* RelayReceipt.swift */; };
@@ -447,7 +464,7 @@
 		F31BD8F7943B1644E698D6BC /* LocationPrivacyService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D2B7BEEE6D6DD9A9999619A /* LocationPrivacyService.swift */; };
 		F321710AAA02300124C3F36A /* PVGHash.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70FC76706ABC0FF7287CFD4C /* PVGHash.swift */; };
 		F475AE608460A15BF2B26E18 /* AnimatedEmptyMessagesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1BA171B239A8D69BD49E0DA /* AnimatedEmptyMessagesView.swift */; };
-		F503642FD16698774552E23D /* SQLCipher in Frameworks */ = {isa = PBXBuildFile; productRef = 521FEB9344DC6D60786129F5 /* SQLCipher */; };
+		F503642FD16698774552E23D /* SQLCipher in Frameworks */ = {isa = PBXBuildFile; productRef = 521FEB9344DC6D60786129F5 /* SQLCipher */; platformFilters = (ios, ); };
 		F56BFBAD62ABEB90B24C77AE /* PrivacyPolicyView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66B251F8675096E4BF8D5EF8 /* PrivacyPolicyView.swift */; };
 		F63B90EF3A79B7B7432FFF0E /* LiquidTabBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = LT2234567890ABCD12345678 /* LiquidTabBar.swift */; };
 		F7F5F7C28DE5EFC84E3CAA0C /* RAVENApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F111C12EC8E0792767873D5 /* RAVENApp.swift */; };
@@ -460,6 +477,9 @@
 		FC9966B60C95BD074F2E3B28 /* PVEnvelope.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78CBC53938BA53B9B22A02B9 /* PVEnvelope.swift */; };
 		FCV_BUILD_001 /* FindContactsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCV_FILEREF_001 /* FindContactsView.swift */; };
 		FD5BE3B312D8F2275F9DDB8B /* RavenDesignTokens.swift in Sources */ = {isa = PBXBuildFile; fileRef = E864E83F0DC978CC4230EA21 /* RavenDesignTokens.swift */; };
+		A7C0DE00000000000000TK01 /* TerminalKit.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7C0DE00000000000000TK02 /* TerminalKit.swift */; };
+		A7C0DE00000000000000TS01 /* TerminalSyntax.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7C0DE00000000000000TS02 /* TerminalSyntax.swift */; };
+		A7C0DE00000000000000TC01 /* TerminalCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7C0DE00000000000000TC02 /* TerminalCommands.swift */; };
 		FDEB5F92A7AA4E04A564CD08 /* VerificationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCEE5BE7413C4CA08829C082 /* VerificationView.swift */; };
 		FEC46CC6DF25207991FF2E3E /* SecuritySettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1F3C7251AD59AD803910A19 /* SecuritySettingsView.swift */; };
 		FF5EAA9C61716D573FA5DA73 /* TransportTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 98069C49110F27EEE6B5DBF7 /* TransportTypes.swift */; };
@@ -576,6 +596,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		MSGPBOUNDARYTESTFILE001 /* MessagingProductBoundaryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessagingProductBoundaryTests.swift; sourceTree = "<group>"; };
 		002321610551231541640116 /* MPCTransportService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MPCTransportService.swift; sourceTree = "<group>"; };
 		00309340B252AB4E7C51F7C3 /* LiquidToastView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LiquidToastView.swift; path = RAVEN/Views/Components/Toast/LiquidToastView.swift; sourceTree = "<group>"; };
 		008D4CE7C8812B17C6327E09 /* PendingReadService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PendingReadService.swift; sourceTree = "<group>"; };
@@ -715,7 +736,6 @@
 		21747701EBE5488580BF6864 /* VaultUnlockView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RAVEN/Features/Vault/Views/VaultUnlockView.swift; sourceTree = SOURCE_ROOT; };
 		2365FDAEE3D7BC4F8DD60832 /* InboxView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxView.swift; sourceTree = "<group>"; };
 		23F5F66FBE3DA26FA2F20A0A /* ConversationStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationStore.swift; sourceTree = "<group>"; };
-		252E31D8C42B9DBC820F559B /* MeshSuccessToast.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MeshSuccessToast.swift; sourceTree = "<group>"; };
 		2544E5B1E7659A7BA6F06444 /* RAVEN.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = RAVEN.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		27744FC3DB87434B5F4E6175 /* VoiceUploadService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = VoiceUploadService.swift; path = Services/VoiceUploadService.swift; sourceTree = "<group>"; };
 		29F110F4059DB022042CB6B5 /* User.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = User.swift; sourceTree = "<group>"; };
@@ -945,7 +965,6 @@
 		3D5C25D40AC88840C0E154F8 /* NetworkHubView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NetworkHubView.swift; sourceTree = "<group>"; };
 		C1F3C7251AD59AD803910A19 /* SecuritySettingsView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SecuritySettingsView.swift; sourceTree = "<group>"; };
 		C383A9DBA4B1E209921AB26D /* ATSAMOnlinePairView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ATSAMOnlinePairView.swift; sourceTree = "<group>"; };
-		C3DBF8183AE81344C4714CBC /* TranscriptionService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = TranscriptionService.swift; path = Services/TranscriptionService.swift; sourceTree = "<group>"; };
 		C3F14A7DB0B7BDB9E77C2E46 /* RatchetSessionStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RatchetSessionStore.swift; sourceTree = "<group>"; };
 		C46984BC788D649CBC935B16 /* FriendQRPayload.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FriendQRPayload.swift; sourceTree = "<group>"; };
 		C483D9011A20F1F7C727399A /* PresenceService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PresenceService.swift; sourceTree = "<group>"; };
@@ -1005,6 +1024,9 @@
 		E7EC34E60BF2DE97008EF940 /* NotificationService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NotificationService.swift; sourceTree = "<group>"; };
 		E8455C3C770C32EE12E864D3 /* LiveLocationSyncService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LiveLocationSyncService.swift; path = Services/LiveLocationSyncService.swift; sourceTree = "<group>"; };
 		E864E83F0DC978CC4230EA21 /* RavenDesignTokens.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RavenDesignTokens.swift; sourceTree = "<group>"; };
+		A7C0DE00000000000000TK02 /* TerminalKit.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TerminalKit.swift; sourceTree = "<group>"; };
+		A7C0DE00000000000000TS02 /* TerminalSyntax.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TerminalSyntax.swift; sourceTree = "<group>"; };
+		A7C0DE00000000000000TC02 /* TerminalCommands.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TerminalCommands.swift; sourceTree = "<group>"; };
 		E9AF700954FAA3844C3B83D7 /* AccountView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AccountView.swift; sourceTree = "<group>"; };
 		EA2456747CED701933F184CF /* VoiceRecorder.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VoiceRecorder.swift; sourceTree = "<group>"; };
 		EA8581D591ED0459062787C0 /* PremiumLimits.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PremiumLimits.swift; path = Config/PremiumLimits.swift; sourceTree = "<group>"; };
@@ -1023,7 +1045,6 @@
 		F1750831C58A60E1156CB1DC /* FindFriendsView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FindFriendsView.swift; sourceTree = "<group>"; };
 		F189A7A4925D0AF3850241CF /* Notification.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Notification.swift; sourceTree = "<group>"; };
 		F200D3D4548B51B905B87A41 /* CropToolView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CropToolView.swift; sourceTree = "<group>"; };
-		F553131FF42E5C7C56716FE3 /* ContentConsumptionTracker.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ContentConsumptionTracker.swift; path = Services/ContentConsumptionTracker.swift; sourceTree = "<group>"; };
 		F69400FA8E8F0DAD01349987 /* BBEBeacon.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BBEBeacon.swift; sourceTree = "<group>"; };
 		F7E49B089B6425DD980DFFED /* MarkupToolView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MarkupToolView.swift; sourceTree = "<group>"; };
 		F7FF03C515D3A1566FB792BE /* ConversationSearchSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ConversationSearchSheet.swift; sourceTree = "<group>"; };
@@ -1275,6 +1296,8 @@
 				VRB_FILEREF_001 /* VoiceRecordingBar.swift */,
 				RCW_FILEREF_001 /* RavenChatWallpaper.swift */,
 				DE90B94E288876353A42817D /* FeatureDesignSystem.swift */,
+				A7C0DE00000000000000TK02 /* TerminalKit.swift */,
+				A7C0DE00000000000000TS02 /* TerminalSyntax.swift */,
 				60D2EE5F17E4E3BFB367E094 /* DeliveryStateBadge.swift */,
 			);
 			path = Components;
@@ -1309,10 +1332,22 @@
 				LABTASK18PAIRFILE000001 /* ATSAMLabPairInitBuilder.swift */,
 				C8A813500000000000000001 /* ATSAMPairInitV1.swift */,
 				B2F7E2B1C3D4E5F6A7B8C9D1 /* ATSAMRootStorage.swift */,
+				FB0A3DURABLEGRP0000001 /* Durable */,
 				4BCE3D6E55D175EBB9274E9D /* Online */,
 			);
 			name = ATSAM;
 			path = ATSAM;
+			sourceTree = "<group>";
+		};
+		FB0A3DURABLEGRP0000001 /* Durable */ = {
+			isa = PBXGroup;
+			children = (
+				FB0A3PROFREF0000000001 /* ATSAMFullBraidSQLCipherProfileV1.swift */,
+				FB0B1ANCHREF0000000001 /* ATSAMFullBraidProtectedAnchorV1.swift */,
+				FB0B1STOREREF0000000001 /* ATSAMFullBraidProtectedStoreV1.swift */,
+				FB0A4SHIMREF0000000001 /* RavenSQLCipherProfileShim.c */,
+			);
+			path = Durable;
 			sourceTree = "<group>";
 		};
 		10AA55951628553D885A54EE /* de.lproj */ = {
@@ -1872,6 +1907,7 @@
 		7E5BDA194C6B8632813379C5 /* RAVENTests */ = {
 			isa = PBXGroup;
 			children = (
+				MSGPBOUNDARYTESTFILE001 /* MessagingProductBoundaryTests.swift */,
 				A882C069EB8ED4E7A736D581 /* E2EERatchetTests.swift */,
 				12FD2A1C31D0CBB45A5E1464 /* KeyBackupServiceTests.swift */,
 				B7A1C0DE1F0CBB45A5E17181 /* ATSAMPairingRootAgreementTests.swift */,
@@ -1902,6 +1938,11 @@
 				A9B8C7D6E5F4012345678911 /* ATSAMFullBraidLab.swift */,
 				A9B8C7D6E5F4012345678913 /* ATSAMFullBraidLabTests.swift */,
 				LABTRUSTADMTESTFILE00001 /* ATSAMLabTrustAdmissionTests.swift */,
+				FBNSPROBEFILE00000000001 /* FullBraidNamespaceProvisioningTests.swift */,
+				FB0A3TESTREF0000000001 /* ATSAMFullBraidSQLCipherProfileV1Tests.swift */,
+				FB0B1TESTREF0000000001 /* ATSAMFullBraidProtectedAnchorV1Tests.swift */,
+				FB0B2TESTREF0000000001 /* ATSAMFullBraidProtectedStoreV1Tests.swift */,
+				FB0B2PHYSREF0000000001 /* ATSAMFullBraidProtectedStorePhysicalGateTests.swift */,
 				C8A813500000000000000003 /* ATSAMPairInitV1Tests.swift */,
 				E8F9A0B1C2D3E4F5A6B7C8DE /* ATSAMPrekeyLifecycleStoreTests.swift */,
 				E5F3A2BC4C0CBB45A5E1B001 /* MeshRelayIntegrityTests.swift */,
@@ -1970,8 +2011,6 @@
 				CG_FILEREF_001 /* CrashGuard.swift */,
 				664BA4BEA18A993B47734793 /* LinkMetadataService.swift */,
 				51FCA8E62F32678700F9E6FC /* ContactsService.swift */,
-				F553131FF42E5C7C56716FE3 /* ContentConsumptionTracker.swift */,
-				C3DBF8183AE81344C4714CBC /* TranscriptionService.swift */,
 				27744FC3DB87434B5F4E6175 /* VoiceUploadService.swift */,
 				91C39AF943EB541C400A4B98 /* AudioRecorderService.swift */,
 				APS_FILEREF_001 /* AudioPlaybackStore.swift */,
@@ -2045,7 +2084,6 @@
 				B379C959B5CAF3725A4DA71B /* Mule */,
 				B4C02BBC1F364558BC8D0142 /* Echo */,
 				E5301F91E9D549F197115BD9 /* Club */,
-				252E31D8C42B9DBC820F559B /* MeshSuccessToast.swift */,
 			);
 			path = Features;
 			sourceTree = "<group>";
@@ -2073,6 +2111,7 @@
 				09F06A675F244BD8A772AB5B /* ContactCardMessageView.swift */,
 				3C272FB219D37B204FF48697 /* AttachmentService.swift */,
 				BEF3BEA38B036BF656B4E77C /* ChatView.swift */,
+				A7C0DE00000000000000TC02 /* TerminalCommands.swift */,
 				SEB_FILEREF_001 /* SystemEventBubble.swift */,
 				E32B18311D4B4CC6B30F9CD3 /* MentionPickerView.swift */,
 				DFD28B56CDFCD18022438CC4 /* MessageService.swift */,
@@ -2986,7 +3025,6 @@
 				5A2B3C4D5E6F5A2B3C4D5E6F /* WatchBridgeService.swift in Sources */,
 				7A2B3C4D5E6F7A2B3C4D5E6F /* WiFiAwareTransport.swift in Sources */,
 				MI1234567890ABCD12345678 /* MeshInventoryFrame.swift in Sources */,
-				C58BF4C98AE680BF687CE9CD /* ContentConsumptionTracker.swift in Sources */,
 				B6C04718A042CCDAC8BAB1A6 /* BackgroundMeshManager.swift in Sources */,
 				8D8B91C721C94E2DA24714EC /* BackgroundMeshSettingsView.swift in Sources */,
 				7D9519EF6785018AA20FF55D /* BackgroundMeshOnboardingView.swift in Sources */,
@@ -3012,9 +3050,11 @@
 				849F913859E4F75643818245 /* MeshCryptoService.swift in Sources */,
 				13C86EF7DBEB25CB11A3B504 /* EditProfileView.swift in Sources */,
 				FD5BE3B312D8F2275F9DDB8B /* RavenDesignTokens.swift in Sources */,
+				A7C0DE00000000000000TK01 /* TerminalKit.swift in Sources */,
+				A7C0DE00000000000000TS01 /* TerminalSyntax.swift in Sources */,
+				A7C0DE00000000000000TC01 /* TerminalCommands.swift in Sources */,
 				RCW_BUILD_001 /* RavenChatWallpaper.swift in Sources */,
 				82AF0621D02FDE740738234F /* GlassNavBar.swift in Sources */,
-				AAB5C8C00C77EFC95605D233 /* TranscriptionService.swift in Sources */,
 				10F4DEDCF127BCED4EBEFBC9 /* MeshError.swift in Sources */,
 				D1D21924EAF3B7ADE7A69B77 /* MediaURL+Extension.swift in Sources */,
 				183DAEBF97AD70C1DD05951C /* VoiceUploadService.swift in Sources */,
@@ -3132,6 +3172,10 @@
 				F1A2B3C4D5E6F708192A3B01 /* RavenPairInitLanOob.swift in Sources */,
 				F1A2B3C4D5E6F708192A3B03 /* ATSAMEndpointDurableAdapters.swift in Sources */,
 				B2C3D4E5F6A708192A3B06 /* ATSAMLabGate.swift in Sources */,
+				FB0A3PROFBUILD00000001 /* ATSAMFullBraidSQLCipherProfileV1.swift in Sources */,
+				FB0B1ANCHBUILD00000001 /* ATSAMFullBraidProtectedAnchorV1.swift in Sources */,
+				FB0B1STOREBUILD00000001 /* ATSAMFullBraidProtectedStoreV1.swift in Sources */,
+				FB0A4SHIMBUILD00000001 /* RavenSQLCipherProfileShim.c in Sources */,
 				RVDR1SRCBUILD000000001 /* RavenDeviceRevocationV1.swift in Sources */,
 				RVDR1CONFBUILD00000001 /* RavenDeviceRevocationConformance.swift in Sources */,
 				LANB2S001LANB2S002BUILD /* LanBlake2s.swift in Sources */,
@@ -3196,7 +3240,6 @@
 				0AD017B5225AEFFFF8925135 /* PeerIDRotator.swift in Sources */,
 				3EA908B16AF96D2B69746FE4 /* PQNoiseSession.swift in Sources */,
 				7F209FA89DEE14329241D6F1 /* RavenLogger.swift in Sources */,
-				681F06B665D45BEE82FE1BC0 /* MeshSuccessToast.swift in Sources */,
 				B81F7F15B5CCD1351C813E5E /* SafariSheet.swift in Sources */,
 				VLT_BUILD_001 /* VaultCrypto.swift in Sources */,
 				VLT_BUILD_002 /* VaultScreenGuard.swift in Sources */,
@@ -3236,6 +3279,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				MSGPBOUNDARYTESTBUILD01 /* MessagingProductBoundaryTests.swift in Sources */,
+				WATCHMODELSTESTBUILD001 /* WatchModels.swift in Sources */,
 				CF6F0582EF17D1BCC03C805C /* E2EERatchetTests.swift in Sources */,
 				ED2BCE86767953D0D35B26F2 /* KeyBackupServiceTests.swift in Sources */,
 				B7A1C0DE1F0CBB45A5E17182 /* ATSAMPairingRootAgreementTests.swift in Sources */,
@@ -3266,6 +3311,11 @@
 				A9B8C7D6E5F4012345678912 /* ATSAMFullBraidLab.swift in Sources */,
 				A9B8C7D6E5F4012345678914 /* ATSAMFullBraidLabTests.swift in Sources */,
 				LABTRUSTADMTESTBUILD0001 /* ATSAMLabTrustAdmissionTests.swift in Sources */,
+				FBNSPROBEBUILD0000000001 /* FullBraidNamespaceProvisioningTests.swift in Sources */,
+				FB0A3TESTBUILD00000001 /* ATSAMFullBraidSQLCipherProfileV1Tests.swift in Sources */,
+				FB0B1TESTBUILD00000001 /* ATSAMFullBraidProtectedAnchorV1Tests.swift in Sources */,
+				FB0B2TESTBUILD00000001 /* ATSAMFullBraidProtectedStoreV1Tests.swift in Sources */,
+				FB0B2PHYSBUILD00000001 /* ATSAMFullBraidProtectedStorePhysicalGateTests.swift in Sources */,
 				C8A813500000000000000004 /* ATSAMPairInitV1Tests.swift in Sources */,
 				E8F9A0B1C2D3E4F5A6B7C8DD /* ATSAMPrekeyLifecycleStoreTests.swift in Sources */,
 				E5F3A2BC4C0CBB45A5E1B002 /* MeshRelayIntegrityTests.swift in Sources */,
@@ -3444,12 +3494,34 @@
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODE_SIGNING_ALLOWED = NO;
+				"CODE_SIGNING_ALLOWED[sdk=iphoneos*]" = YES;
+				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "Apple Development";
+				"CODE_SIGN_STYLE[sdk=iphoneos*]" = Automatic;
+				"DEVELOPMENT_TEAM[sdk=iphoneos*]" = 72QQ5Q324C;
+				"GCC_PREPROCESSOR_DEFINITIONS[sdk=iphoneos*]" = (
+					"$(inherited)",
+					"SQLITE_HAS_CODEC=1",
+				);
+				"GCC_PREPROCESSOR_DEFINITIONS[sdk=iphonesimulator*]" = (
+					"$(inherited)",
+					"SQLITE_HAS_CODEC=1",
+				);
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = RAVENTests;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				"OTHER_CFLAGS[sdk=iphoneos*]" = (
+					"$(inherited)",
+					"-DSQLITE_HAS_CODEC=1",
+				);
+				"OTHER_CFLAGS[sdk=iphonesimulator*]" = (
+					"$(inherited)",
+					"-DSQLITE_HAS_CODEC=1",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = app.raven.ios.RAVENTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos*]" = "SQLITE_HAS_CODEC $(inherited)";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator*]" = "SQLITE_HAS_CODEC $(inherited)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_VERSION = 5.0;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/RAVEN.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/RAVEN";
@@ -3462,6 +3534,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = RAVEN/RAVEN.entitlements;
+				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = RAVEN/RAVEN-Catalyst.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 2026072401;
@@ -3471,6 +3544,14 @@
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/Libp2pBridge",
+				);
+				"GCC_PREPROCESSOR_DEFINITIONS[sdk=iphoneos*]" = (
+					"$(inherited)",
+					"SQLITE_HAS_CODEC=1",
+				);
+				"GCC_PREPROCESSOR_DEFINITIONS[sdk=iphonesimulator*]" = (
+					"$(inherited)",
+					"SQLITE_HAS_CODEC=1",
 				);
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = RAVEN/Info.plist;
@@ -3490,6 +3571,14 @@
 				);
 				MARKETING_VERSION = 2.1;
 				ONLY_ACTIVE_ARCH = YES;
+				"OTHER_CFLAGS[sdk=iphoneos*]" = (
+					"$(inherited)",
+					"-DSQLITE_HAS_CODEC=1",
+				);
+				"OTHER_CFLAGS[sdk=iphonesimulator*]" = (
+					"$(inherited)",
+					"-DSQLITE_HAS_CODEC=1",
+				);
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-lresolv",
@@ -3502,6 +3591,8 @@
 				SUPPORTS_MACCATALYST = YES;
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos*]" = "SQLITE_HAS_CODEC $(inherited)";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator*]" = "SQLITE_HAS_CODEC $(inherited)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -3697,12 +3788,34 @@
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODE_SIGNING_ALLOWED = NO;
+				"CODE_SIGNING_ALLOWED[sdk=iphoneos*]" = YES;
+				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "Apple Development";
+				"CODE_SIGN_STYLE[sdk=iphoneos*]" = Automatic;
+				"DEVELOPMENT_TEAM[sdk=iphoneos*]" = 72QQ5Q324C;
+				"GCC_PREPROCESSOR_DEFINITIONS[sdk=iphoneos*]" = (
+					"$(inherited)",
+					"SQLITE_HAS_CODEC=1",
+				);
+				"GCC_PREPROCESSOR_DEFINITIONS[sdk=iphonesimulator*]" = (
+					"$(inherited)",
+					"SQLITE_HAS_CODEC=1",
+				);
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = RAVENTests;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				"OTHER_CFLAGS[sdk=iphoneos*]" = (
+					"$(inherited)",
+					"-DSQLITE_HAS_CODEC=1",
+				);
+				"OTHER_CFLAGS[sdk=iphonesimulator*]" = (
+					"$(inherited)",
+					"-DSQLITE_HAS_CODEC=1",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = app.raven.ios.RAVENTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos*]" = "SQLITE_HAS_CODEC $(inherited)";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator*]" = "SQLITE_HAS_CODEC $(inherited)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_VERSION = 5.0;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/RAVEN.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/RAVEN";
@@ -3741,6 +3854,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = RAVEN/RAVEN.entitlements;
+				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = RAVEN/RAVEN-Catalyst.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 2026072401;
@@ -3749,6 +3863,14 @@
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/Libp2pBridge",
+				);
+				"GCC_PREPROCESSOR_DEFINITIONS[sdk=iphoneos*]" = (
+					"$(inherited)",
+					"SQLITE_HAS_CODEC=1",
+				);
+				"GCC_PREPROCESSOR_DEFINITIONS[sdk=iphonesimulator*]" = (
+					"$(inherited)",
+					"SQLITE_HAS_CODEC=1",
 				);
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = RAVEN/Info.plist;
@@ -3767,6 +3889,14 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 2.1;
+				"OTHER_CFLAGS[sdk=iphoneos*]" = (
+					"$(inherited)",
+					"-DSQLITE_HAS_CODEC=1",
+				);
+				"OTHER_CFLAGS[sdk=iphonesimulator*]" = (
+					"$(inherited)",
+					"-DSQLITE_HAS_CODEC=1",
+				);
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-lresolv",
@@ -3779,6 +3909,8 @@
 				SUPPORTS_MACCATALYST = YES;
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos*]" = "SQLITE_HAS_CODEC $(inherited)";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator*]" = "SQLITE_HAS_CODEC $(inherited)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -3883,10 +4015,10 @@
 /* Begin XCRemoteSwiftPackageReference section */
 		3C8B25AF49760BBD3F6B67BA /* XCRemoteSwiftPackageReference "SQLCipher" */ = {
 			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/stoneburner/SQLCipher.git";
+			repositoryURL = "https://github.com/sqlcipher/SQLCipher.swift.git";
 			requirement = {
 				kind = exactVersion;
-				version = 0.0.4;
+				version = 4.17.0;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */

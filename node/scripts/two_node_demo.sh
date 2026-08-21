@@ -12,7 +12,7 @@ trap cleanup EXIT
 
 if [[ ! -x "$NODE" ]]; then
   echo "Building raven-node..."
-  (cd "$ROOT" && cargo build -p raven-node -q)
+  (cd "$ROOT" && cargo build -p raven-node --features raven-node/unsafe-demo-crypto -q)
 fi
 
 echo "=== RAVEN two-node demo workdir=$WORKDIR ==="
@@ -48,7 +48,7 @@ run_once() {
     --listen "127.0.0.1:0" \
     --peer "$B_LISTEN" \
     --peer-pub-hex "$B_PUB" \
-    --send-stdin \
+    --send-stdin --body-mode unsafe-interim \
     --exit-after-ack \
     --timeout-secs 15 \
     >"$WORKDIR/a.log" 2>&1

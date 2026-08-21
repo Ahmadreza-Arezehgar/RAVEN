@@ -582,13 +582,31 @@ fn save_contacts(data_dir: &Path, contacts: &[Contact]) -> Result<(), String> {
 }
 
 fn ensure_identity(data_dir: &Path) -> Identity {
-    raven_core::load_or_create_identity(data_dir)
-        .map(|(id, _)| id)
-        .expect("secure identity store")
+    match raven_core::load_or_create_identity(data_dir) {
+        Ok((id, _)) => id,
+        Err(e) => {
+            eprintln!("secure identity store: {}", e.redacted_display());
+            std::process::exit(1);
+        }
+    }
 }
 
-fn try_load_identity(data_dir: &Path) -> Option<Identity> {
-    raven_core::load_identity(data_dir).ok().flatten()
+fn require_identity(data_dir: &Path) -> Identity {
+    match raven_core::load_identity(data_dir) {
+        Ok(Some(id)) => id,
+        Ok(None) => {
+            eprintln!("identity missing — run: ash --data-dir <dir> init");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("secure identity store: {}", e.redacted_display());
+            std::process::exit(1);
+        }
+    }
+}
+
+fn try_load_identity(data_dir: &Path) -> Result<Option<Identity>, String> {
+    raven_core::load_identity(data_dir).map_err(|e| e.redacted_display())
 }
 
 fn print_public_identity(id: &Identity) {
@@ -639,17 +657,20 @@ fn print_welcome(data_dir: &Path) {
     println!();
 
     match try_load_identity(data_dir) {
-        Some(id) => {
+        Ok(Some(id)) => {
             println!("{bold}●{reset} identity ready {dim}(public bits only — never a seed){reset}");
             print_public_identity(&id);
         }
-        None => {
+        Ok(None) => {
             println!("{bold}○ First run — no local identity yet{reset}");
-            println!("{dim}  Create one (public address + fingerprint only; private key stays on disk):{reset}");
-            println!("  {bold}1.{reset} Choose menu {bold}4 Status{reset}  — creates identity if missing");
-            println!("  {bold}2.{reset} Or run:  {bold}ash --data-dir <dir> init{reset}");
+            println!("{dim}  Create one (public address + fingerprint only; private key stays local in protected storage):{reset}");
+            println!("  {bold}1.{reset} Run: {bold}ash --data-dir <dir> init{reset}");
             println!("{dim}  Then add contacts (menu 3) before Send / Chat.{reset}");
         }
+        Err(e) => println!(
+            "{bold}× identity unavailable{reset} {dim}({}){reset}",
+            sanitize_terminal_text(&e)
+        ),
     }
     println!();
 }
@@ -1340,7 +1361,7 @@ fn cmd_contact_request(data_dir: &Path, target: &str, message: &str, pick: Optio
     if !contact_session_transport_ready() {
         refuse_unready_contact_session();
     }
-    let id = ensure_identity(data_dir);
+    let id = require_identity(data_dir);
     let ctx = build_discovery_ctx(data_dir);
     let q = target.trim();
     let mut hits = if q.starts_with("rvn1") {
@@ -1472,7 +1493,7 @@ fn parse_request_id_hex(s: &str) -> [u8; 16] {
 }
 
 fn load_contact_inbox(data_dir: &Path) -> ContactRequestInbox {
-    let id = ensure_identity(data_dir);
+    let id = require_identity(data_dir);
     let mut inbox = ContactRequestInbox::default();
     let dir = contact_inbox_dir(data_dir);
     let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -1539,7 +1560,7 @@ fn cmd_contact_ingest(data_dir: &Path, file: &Path) {
     if !contact_session_transport_ready() {
         refuse_unready_contact_session();
     }
-    let id = ensure_identity(data_dir);
+    let id = require_identity(data_dir);
     let raw = std::fs::read(file).unwrap_or_else(|e| {
         eprintln!("read failed: {e}");
         std::process::exit(1);
@@ -1576,7 +1597,7 @@ fn cmd_contact_accept(data_dir: &Path, request_id_hex: &str, petname: &str) {
     if !contact_session_transport_ready() {
         refuse_unready_contact_session();
     }
-    let id = ensure_identity(data_dir);
+    let id = require_identity(data_dir);
     let rid = parse_request_id_hex(request_id_hex);
     let mut inbox = load_contact_inbox(data_dir);
     let outcome = inbox
@@ -1915,7 +1936,9 @@ fn cmd_contacts(data_dir: &Path) {
             println!("{dim}→ Messages (queue/history — to compose a new DM use 2){reset}");
             cmd_messages(data_dir);
         }
-        "4" | "status" => cmd_status(data_dir),
+        "4" | "status" => {
+            let _ = cmd_status(data_dir);
+        }
         "q" | "quit" | "exit" => {
             println!("{dim}Press Enter to leave Contacts, then type q at raven> to quit.{reset}");
         }
@@ -2249,7 +2272,7 @@ fn cmd_contact_verify(
 }
 
 fn cmd_prekey_publish(data_dir: &Path, device_id: &str, out: Option<&Path>) {
-    let id = ensure_identity(data_dir);
+    let id = require_identity(data_dir);
     if let Err(e) = ext::cmd_prekey_publish_real(data_dir, &id, device_id, out) {
         eprintln!("{e}");
         std::process::exit(1);
@@ -2399,23 +2422,23 @@ fn print_production_gate_matrix() {
     );
 }
 
-fn cmd_status(data_dir: &Path) {
+fn cmd_status(data_dir: &Path) -> Result<(), String> {
     println!("{C_BOLD}Status{C_RESET}");
     println!("{C_DIM}data_dir{C_RESET} {}", data_dir.display());
     print_messaging_path_diag();
     match try_load_identity(data_dir) {
-        Some(id) => {
+        Ok(Some(id)) => {
             println!("{C_GREEN}●{C_RESET} identity");
             print_public_identity(&id);
         }
-        None => {
-            println!("{C_DIM}○{C_RESET} identity missing — creating local identity…");
-            let id = ensure_identity(data_dir);
-            println!("{C_GREEN}●{C_RESET} identity created {C_DIM}(public bits only — never a seed){C_RESET}");
-            print_public_identity(&id);
-            println!(
-                "{C_DIM}Share address + pub_hex via `ash whoami` — never share a seed.{C_RESET}"
-            );
+        Ok(None) => println!(
+            "{C_DIM}○{C_RESET} identity missing — run `ash --data-dir <dir> init` explicitly"
+        ),
+        Err(e) => {
+            return Err(format!(
+                "identity store unavailable: {}",
+                sanitize_terminal_text(&e)
+            ));
         }
     }
     let contacts = contacts_or_die(data_dir);
@@ -2494,6 +2517,7 @@ fn cmd_status(data_dir: &Path) {
     println!(
         "{C_DIM}note{C_RESET}      ash configures only — raven-node bridge keeps running after ash exits"
     );
+    Ok(())
 }
 
 fn set_node_flag(data_dir: &Path, which: &str, on: bool) {
@@ -2528,22 +2552,19 @@ fn cmd_send_interactive(data_dir: &Path) {
     let reset = s.reset;
 
     // Ensure identity exists, but teach if this is effectively first-run.
-    if try_load_identity(data_dir).is_none() {
-        println!("{bold}No identity yet.{reset}");
-        println!("{dim}Create one first: menu 4 Status, or `ash init` (public bits only).{reset}");
-        print!("Create identity now? [Y/n]: ");
-        let _ = io::stdout().flush();
-        let ans = read_line();
-        let a = ans.trim().to_ascii_lowercase();
-        if a.is_empty() || a == "y" || a == "yes" {
-            let id = ensure_identity(data_dir);
-            println!("{bold}●{reset} identity ready");
-            print_public_identity(&id);
-        } else {
+    match try_load_identity(data_dir) {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            println!("{bold}No identity yet.{reset}");
+            println!("{dim}Create one explicitly with `ash --data-dir <dir> init` first.{reset}");
+            return;
+        }
+        Err(e) => {
+            eprintln!("identity store unavailable: {}", sanitize_terminal_text(&e));
             return;
         }
     }
-    let id = ensure_identity(data_dir);
+    let id = require_identity(data_dir);
     let contacts = contacts_or_die(data_dir);
 
     if contacts.is_empty() {
@@ -2862,7 +2883,7 @@ fn cmd_endpoint_inbox(data_dir: &Path) {
 }
 
 fn run_send(data_dir: &Path, peer: &str, peer_pub_hex: &str, listen: &str, text: &str) {
-    let id = ensure_identity(data_dir);
+    let id = require_identity(data_dir);
     if let Err(error) =
         ext::run_send_secure(data_dir, &id, peer, peer_pub_hex, listen, text, "", "")
     {
@@ -2880,7 +2901,9 @@ fn interactive(data_dir: &Path) {
             "1" | "m" | "messages" => cmd_messages(data_dir),
             "2" | "s" | "send" => cmd_send_interactive(data_dir),
             "3" | "c" | "contacts" => cmd_contacts(data_dir),
-            "4" | "status" => cmd_status(data_dir),
+            "4" | "status" => {
+                let _ = cmd_status(data_dir);
+            }
             "q" | "quit" | "exit" => {
                 println!("{C_DIM}fly safe.{C_RESET}");
                 break;
@@ -2904,7 +2927,12 @@ pub fn run() {
     match cli.cmd {
         None => interactive(&data_dir),
         Some(Commands::Banner) => print_welcome(&data_dir),
-        Some(Commands::Status) => cmd_status(&data_dir),
+        Some(Commands::Status) => {
+            if let Err(e) = cmd_status(&data_dir) {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
         Some(Commands::Node { cmd }) => match cmd {
             NodeCommands::Bridge { state } => {
                 set_node_flag(&data_dir, "bridge", matches!(state, OnOff::On))
@@ -2938,10 +2966,17 @@ pub fn run() {
             }
         }
         Some(Commands::Whoami) => {
-            let id = try_load_identity(&data_dir).unwrap_or_else(|| {
-                eprintln!("identity missing — run: ash init --data-dir …");
-                std::process::exit(1);
-            });
+            let id = match try_load_identity(&data_dir) {
+                Ok(Some(id)) => id,
+                Ok(None) => {
+                    eprintln!("identity missing — run: ash --data-dir <dir> init");
+                    std::process::exit(1);
+                }
+                Err(e) => {
+                    eprintln!("identity store unavailable: {}", sanitize_terminal_text(&e));
+                    std::process::exit(1);
+                }
+            };
             print_public_identity(&id);
         }
         Some(Commands::Send {
@@ -2956,7 +2991,7 @@ pub fn run() {
             if std::env::args().any(|a| a == "--text" || (!a.starts_with('-') && false)) {
                 ext::refuse_argv_plaintext();
             }
-            let id = ensure_identity(&data_dir);
+            let id = require_identity(&data_dir);
             let (peer, peer_pub_hex, listen) =
                 match resolve_send_target(&data_dir, &contact, &peer, &peer_pub_hex, &listen) {
                     Ok(t) => t,
@@ -3065,7 +3100,7 @@ pub fn run() {
                 sequence,
                 expires_at,
             } => {
-                let id = ensure_identity(&data_dir);
+                let id = require_identity(&data_dir);
                 let exp = expires_at.unwrap_or_else(|| now_ms() + 30 * 24 * 3600 * 1000);
                 let rec = AliasRecord {
                     alias,
@@ -3105,7 +3140,7 @@ pub fn run() {
             }
         },
         Some(Commands::Device { cmd }) => {
-            let id = ensure_identity(&data_dir);
+            let id = require_identity(&data_dir);
             match cmd {
                 DeviceCommands::SyncExport { device_id, out } => {
                     ext::cmd_device_sync_export(&data_dir, &id, &device_id, &out)
@@ -3132,7 +3167,7 @@ pub fn run() {
             } => ext::cmd_mailbox_get(&data_dir, &k_route_hex, epoch, slot),
         },
         Some(Commands::Lab { cmd }) => {
-            let id = ensure_identity(&data_dir);
+            let id = require_identity(&data_dir);
             match cmd {
                 LabCommands::ExportCert => {
                     if let Err(e) = pair_init_lab::export_lab_device_cert(&data_dir, &id) {
@@ -3258,16 +3293,25 @@ fn cmd_doctor(data_dir: &Path) {
     }
 
     // Identity store (backend label only — never seed bytes).
-    let ks = raven_core::store_status(data_dir);
-    let backend = ks.backend.map(|b| b.as_str()).unwrap_or("none");
-    println!(
-        "  secure_keystore: backend={backend} identity={}",
-        if ks.has_identity { "present" } else { "absent" }
-    );
-    if ks.legacy_plaintext_present {
-        println!(
-            "  {C_PURPLE}secure_keystore{C_RESET}: legacy plaintext seed file still present — reopen once to migrate"
-        );
+    match raven_core::store_status(data_dir) {
+        Ok(ks) => {
+            let backend = ks.backend.map(|b| b.as_str()).unwrap_or("none");
+            println!(
+                "  secure_keystore: backend={backend} identity={}",
+                if ks.has_identity { "present" } else { "absent" }
+            );
+            if ks.legacy_plaintext_present {
+                println!(
+                    "  {C_PURPLE}secure_keystore{C_RESET}: legacy plaintext seed file still present — reopen once to migrate"
+                );
+            }
+        }
+        Err(e) => {
+            println!(
+                "  {C_PURPLE}secure_keystore{C_RESET}: unavailable ({})",
+                sanitize_terminal_text(&e.redacted_display())
+            );
+        }
     }
 
     // Database / queue files (existence only — no secret contents).
@@ -3331,11 +3375,12 @@ fn cmd_doctor(data_dir: &Path) {
         }
     }
     match try_load_identity(data_dir) {
-        Some(id) => {
+        Ok(Some(id)) => {
             println!("  identity: present");
             print_public_identity(&id);
         }
-        None => println!("  identity: missing (run raven init)"),
+        Ok(None) => println!("  identity: missing (run raven init)"),
+        Err(e) => println!("  identity: unavailable ({})", sanitize_terminal_text(&e)),
     }
     let pol = load_policy(data_dir);
     println!(

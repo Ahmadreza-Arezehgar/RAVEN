@@ -696,7 +696,6 @@ fn scoped_aad(data_dir: &Path, domain: &[u8]) -> [u8; 32] {
 #[cfg(any(
     test,
     target_os = "macos",
-    windows,
     all(target_os = "linux", target_env = "gnu")
 ))]
 fn history_scope(data_dir: &Path) -> [u8; 32] {
@@ -801,6 +800,7 @@ fn platform_set_key(data_dir: &Path, key: &[u8; 32]) -> Result<(), ChatHistoryEr
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 fn platform_get_key(data_dir: &Path) -> Result<Option<Zeroizing<[u8; 32]>>, ChatHistoryError> {
     use secret_service::{EncryptionType, SecretService};
+    use std::collections::HashMap;
     let service = SecretService::new(EncryptionType::Dh).map_err(|error| {
         ChatHistoryError::ProtectedStoreUnavailable(format!(
             "secret-service connection failed: {error}"
@@ -811,19 +811,25 @@ fn platform_get_key(data_dir: &Path) -> Result<Option<Zeroizing<[u8; 32]>>, Chat
             "secret-service collection failed: {error}"
         ))
     })?;
-    if collection.is_locked() {
-        collection.unlock().map_err(|error| {
-            ChatHistoryError::ProtectedStoreUnavailable(format!(
-                "secret-service unlock failed: {error}"
-            ))
-        })?;
+    match collection.is_locked() {
+        Ok(false) => {}
+        Ok(true) => {
+            return Err(ChatHistoryError::ProtectedStoreUnavailable(
+                "secret-service collection locked".into(),
+            ));
+        }
+        Err(error) => {
+            return Err(ChatHistoryError::ProtectedStoreUnavailable(format!(
+                "secret-service is_locked failed: {error}"
+            )));
+        }
     }
     let account = history_account(data_dir);
     let items = collection
-        .search_items(vec![
+        .search_items(HashMap::from([
             ("service", HISTORY_KEY_SERVICE),
             ("account", account.as_str()),
-        ])
+        ]))
         .map_err(|error| {
             ChatHistoryError::ProtectedStoreUnavailable(format!(
                 "secret-service search failed: {error}"
@@ -848,6 +854,7 @@ fn platform_get_key(data_dir: &Path) -> Result<Option<Zeroizing<[u8; 32]>>, Chat
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 fn platform_set_key(data_dir: &Path, key: &[u8; 32]) -> Result<(), ChatHistoryError> {
     use secret_service::{EncryptionType, SecretService};
+    use std::collections::HashMap;
     let service = SecretService::new(EncryptionType::Dh).map_err(|error| {
         ChatHistoryError::ProtectedStoreUnavailable(format!(
             "secret-service connection failed: {error}"
@@ -858,21 +865,27 @@ fn platform_set_key(data_dir: &Path, key: &[u8; 32]) -> Result<(), ChatHistoryEr
             "secret-service collection failed: {error}"
         ))
     })?;
-    if collection.is_locked() {
-        collection.unlock().map_err(|error| {
-            ChatHistoryError::ProtectedStoreUnavailable(format!(
-                "secret-service unlock failed: {error}"
-            ))
-        })?;
+    match collection.is_locked() {
+        Ok(false) => {}
+        Ok(true) => {
+            return Err(ChatHistoryError::ProtectedStoreUnavailable(
+                "secret-service collection locked".into(),
+            ));
+        }
+        Err(error) => {
+            return Err(ChatHistoryError::ProtectedStoreUnavailable(format!(
+                "secret-service is_locked failed: {error}"
+            )));
+        }
     }
     let account = history_account(data_dir);
     collection
         .create_item(
             HISTORY_KEY_LABEL,
-            vec![
+            HashMap::from([
                 ("service", HISTORY_KEY_SERVICE),
                 ("account", account.as_str()),
-            ],
+            ]),
             key,
             true,
             "application/octet-stream",
@@ -917,7 +930,7 @@ impl ChatHistoryProtector for PlatformChatHistoryProtector {
         }
         #[cfg(windows)]
         {
-            return dpapi_protect_blob(data_dir, HISTORY_AAD_DOMAIN, plaintext);
+            dpapi_protect_blob(data_dir, HISTORY_AAD_DOMAIN, plaintext)
         }
         #[cfg(not(any(
             target_os = "macos",
@@ -940,7 +953,7 @@ impl ChatHistoryProtector for PlatformChatHistoryProtector {
         }
         #[cfg(windows)]
         {
-            return dpapi_unprotect_blob(data_dir, HISTORY_AAD_DOMAIN, ciphertext);
+            dpapi_unprotect_blob(data_dir, HISTORY_AAD_DOMAIN, ciphertext)
         }
         #[cfg(not(any(
             target_os = "macos",
@@ -968,7 +981,7 @@ impl ChatHistoryProtector for PlatformOutboundStageProtector {
         }
         #[cfg(windows)]
         {
-            return dpapi_protect_blob(data_dir, STAGE_AAD_DOMAIN, plaintext);
+            dpapi_protect_blob(data_dir, STAGE_AAD_DOMAIN, plaintext)
         }
         #[cfg(not(any(
             target_os = "macos",
@@ -991,7 +1004,7 @@ impl ChatHistoryProtector for PlatformOutboundStageProtector {
         }
         #[cfg(windows)]
         {
-            return dpapi_unprotect_blob(data_dir, STAGE_AAD_DOMAIN, ciphertext);
+            dpapi_unprotect_blob(data_dir, STAGE_AAD_DOMAIN, ciphertext)
         }
         #[cfg(not(any(
             target_os = "macos",
@@ -1018,7 +1031,7 @@ impl ChatHistoryProtector for PlatformOutboundStageProtector {
         }
         #[cfg(windows)]
         {
-            return unprotect_stage_dpapi_with_legacy_fallback(data_dir, ciphertext);
+            unprotect_stage_dpapi_with_legacy_fallback(data_dir, ciphertext)
         }
         #[cfg(not(any(
             target_os = "macos",
@@ -1081,7 +1094,7 @@ fn dpapi_protect_blob(
     use windows_sys::Win32::Security::Cryptography::{
         CryptProtectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
     };
-    let mut input = CRYPT_INTEGER_BLOB {
+    let input = CRYPT_INTEGER_BLOB {
         cbData: plaintext
             .len()
             .try_into()
@@ -1089,7 +1102,7 @@ fn dpapi_protect_blob(
         pbData: plaintext.as_ptr() as *mut u8,
     };
     let scope = scoped_aad(data_dir, domain);
-    let mut entropy = CRYPT_INTEGER_BLOB {
+    let entropy = CRYPT_INTEGER_BLOB {
         cbData: scope.len() as u32,
         pbData: scope.as_ptr() as *mut u8,
     };
@@ -1099,9 +1112,9 @@ fn dpapi_protect_blob(
     };
     let ok = unsafe {
         CryptProtectData(
-            &mut input,
+            &input,
             std::ptr::null(),
-            &mut entropy,
+            &entropy,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
             CRYPTPROTECT_UI_FORBIDDEN,
@@ -1131,7 +1144,7 @@ fn dpapi_unprotect_blob(
     use windows_sys::Win32::Security::Cryptography::{
         CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
     };
-    let mut input = CRYPT_INTEGER_BLOB {
+    let input = CRYPT_INTEGER_BLOB {
         cbData: ciphertext
             .len()
             .try_into()
@@ -1139,7 +1152,7 @@ fn dpapi_unprotect_blob(
         pbData: ciphertext.as_ptr() as *mut u8,
     };
     let scope = scoped_aad(data_dir, domain);
-    let mut entropy = CRYPT_INTEGER_BLOB {
+    let entropy = CRYPT_INTEGER_BLOB {
         cbData: scope.len() as u32,
         pbData: scope.as_ptr() as *mut u8,
     };
@@ -1149,9 +1162,9 @@ fn dpapi_unprotect_blob(
     };
     let ok = unsafe {
         CryptUnprotectData(
-            &mut input,
+            &input,
             std::ptr::null_mut(),
-            &mut entropy,
+            &entropy,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
             CRYPTPROTECT_UI_FORBIDDEN,

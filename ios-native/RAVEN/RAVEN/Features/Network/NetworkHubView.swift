@@ -37,15 +37,31 @@ struct NetworkHubView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("Network")
-                        .font(.system(size: 34, weight: .bold))
-                        .foregroundStyle(.white)
-                        .padding(.top, 8)
+                    // TERMINAL REDESIGN: path title + live cursor.
+                    HStack(spacing: 8) {
+                        Text("raven:~/net")
+                            .font(.system(size: 24, weight: .bold, design: .monospaced))
+                            .foregroundStyle(DS.mist)
+                        BlinkingCursor(height: 18)
+                            .padding(.top, 6)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.top, 8)
 
                     identityCard
                     bluetoothCard
                     lanCard
                     bridgeCard
+
+                    // Console prompt footer.
+                    HStack(spacing: 6) {
+                        Text("$")
+                            .font(.system(.footnote, design: .monospaced, weight: .bold))
+                            .foregroundStyle(DS.phosphor)
+                        BlinkingCursor(height: 13)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.top, 2)
                 }
                 .padding(.horizontal, 16)
                 .padding(.bottom, DS.bottomTabClearance)
@@ -71,13 +87,13 @@ struct NetworkHubView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Identity")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.secondary)
+                    Text("$ whoami")
+                        .font(.system(.caption, design: .monospaced, weight: .semibold))
+                        .foregroundStyle(DS.phosphor.opacity(0.8))
                     if let name = authService.currentUser?.displayName, !name.isEmpty {
                         Text(name)
-                            .font(.system(size: 17, weight: .semibold))
-                            .foregroundStyle(.primary)
+                            .font(.system(.body, design: .monospaced, weight: .semibold))
+                            .foregroundStyle(DS.mist)
                     }
                 }
                 Spacer()
@@ -87,26 +103,33 @@ struct NetworkHubView: View {
                 } label: {
                     Image(systemName: "qrcode")
                         .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(DS.phosphor)
                         .frame(width: 36, height: 36)
-                        .background(Circle().fill(DS.violet.opacity(0.35)))
+                        .background(
+                            RoundedRectangle(cornerRadius: DS.radiusInner, style: .continuous)
+                                .fill(DS.phosphor.opacity(0.12))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: DS.radiusInner, style: .continuous)
+                                .strokeBorder(DS.hairline, lineWidth: 1)
+                        )
                 }
                 .accessibilityLabel("Show my QR code")
             }
 
             if localRavenAddress.isEmpty {
-                Text("Serverless identity not initialized")
-                    .font(.footnote)
+                Text("serverless identity not initialized")
+                    .font(.system(.footnote, design: .monospaced))
                     .foregroundStyle(.secondary)
             } else {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("rvn1 address")
-                        .font(.caption)
+                    Text("rvn1://address")
+                        .font(.system(.caption2, design: .monospaced))
                         .foregroundStyle(.secondary)
                     HStack(spacing: 8) {
                         Text(localRavenAddress)
                             .font(.system(.footnote, design: .monospaced))
-                            .foregroundStyle(.primary)
+                            .foregroundStyle(DS.mist)
                             .lineLimit(1)
                             .truncationMode(.middle)
                         Button {
@@ -125,7 +148,7 @@ struct NetworkHubView: View {
                     }
                     if !localFingerprint.isEmpty {
                         Text(localFingerprint)
-                            .font(.caption2)
+                            .font(.system(.caption2, design: .monospaced))
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -133,7 +156,7 @@ struct NetworkHubView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
-        .glassSurface(in: RoundedRectangle(cornerRadius: 20))
+        .ravenCard(padding: 0)
     }
 
     // MARK: - Bluetooth mesh card
@@ -144,21 +167,22 @@ struct NetworkHubView: View {
                 Circle()
                     .fill(isBluetoothActive ? DS.accentSuccess : Color.gray)
                     .frame(width: 8, height: 8)
-                Text("Bluetooth mesh")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                    .shadow(color: isBluetoothActive ? DS.accentSuccess.opacity(0.7) : .clear, radius: 4)
+                Text("mesh:bluetooth")
+                    .font(.system(.caption, design: .monospaced, weight: .semibold))
+                    .foregroundStyle(DS.phosphor.opacity(0.8))
                 Spacer()
             }
-            Text(bluetoothStateText)
-                .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(.primary)
+            Text(bluetoothStateText.lowercased())
+                .font(.system(.callout, design: .monospaced, weight: .medium))
+                .foregroundStyle(DS.mist)
             Text("\(bleEngine.discoveredPeers.count) nearby device\(bleEngine.discoveredPeers.count == 1 ? "" : "s")")
-                .font(.footnote)
+                .font(.system(.footnote, design: .monospaced))
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
-        .glassSurface(in: RoundedRectangle(cornerRadius: 20))
+        .ravenCard(padding: 0)
     }
 
     private var isBluetoothActive: Bool {
@@ -186,52 +210,59 @@ struct NetworkHubView: View {
 
     private var lanCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Serverless node")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.secondary)
+            Text("node:lan")
+                .font(.system(.caption, design: .monospaced, weight: .semibold))
+                .foregroundStyle(DS.phosphor.opacity(0.8))
 
-            Text(lanStatusText)
-                .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(.primary)
+            Text(lanStatusText.lowercased())
+                .font(.system(.callout, design: .monospaced, weight: .medium))
+                .foregroundStyle(DS.mist)
 
-            NavigationLink("Configure") {
+            NavigationLink("[ configure ]") {
                 RavenServerlessLanSettingsView()
             }
-            .font(.system(size: 14, weight: .semibold))
-            .foregroundStyle(DS.violetSoft)
+            .font(.system(.footnote, design: .monospaced, weight: .semibold))
+            .foregroundStyle(DS.phosphorSoft)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
-        .glassSurface(in: RoundedRectangle(cornerRadius: 20))
+        .ravenCard(padding: 0)
     }
 
     private var lanStatusText: String {
-        guard ravenFlagOn else { return "Off" }
+        guard ravenFlagOn else { return "off" }
         if let lanHostPort {
             return lanHostPort
         }
-        return "On · not configured"
+        return "on · not configured"
     }
 
     // MARK: - Internet bridge card
 
     private var bridgeCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Internet bridge")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.secondary)
-            Text(bridgeStatusText)
-                .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(.primary)
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(bridgeConnected ? DS.pathBlue : Color.gray)
+                    .frame(width: 8, height: 8)
+                    .shadow(color: bridgeConnected ? DS.pathBlue.opacity(0.7) : .clear, radius: 4)
+                Text("bridge:internet")
+                    .font(.system(.caption, design: .monospaced, weight: .semibold))
+                    .foregroundStyle(DS.phosphor.opacity(0.8))
+                Spacer()
+            }
+            Text(bridgeStatusText.lowercased())
+                .font(.system(.callout, design: .monospaced, weight: .medium))
+                .foregroundStyle(DS.mist)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
-        .glassSurface(in: RoundedRectangle(cornerRadius: 20))
+        .ravenCard(padding: 0)
     }
 
     private var bridgeStatusText: String {
-        guard internetBridgeFlagOn else { return "Off" }
-        return bridgeConnected ? "Connected" : "Idle"
+        guard internetBridgeFlagOn else { return "off" }
+        return bridgeConnected ? "connected" : "idle"
     }
 
     // MARK: - Refresh (non-published sources only; BLE state updates via @Published)

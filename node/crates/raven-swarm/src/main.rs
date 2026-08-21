@@ -17,7 +17,7 @@ use libp2p::{identify, noise, ping, tcp, yamux, Multiaddr, PeerId, StreamProtoco
 use raven_core::bootstrap::{load_bootstrap, save_bootstrap, BootstrapConfig};
 use raven_core::discovery::PeerRecord;
 use raven_core::identity::Identity;
-use raven_core::{CAP_INTERNET, CAP_RELAY};
+use raven_core::CAP_INTERNET;
 
 const RAVEN_KAD: StreamProtocol = StreamProtocol::new("/raven/kad/1.0.0");
 
@@ -232,7 +232,10 @@ async fn cmd_serve(
                                 let rec = PeerRecord {
                                     dial: dial.clone(),
                                     ed25519_pub: [0u8; 32],
-                                    caps: CAP_INTERNET | CAP_RELAY,
+                                    // This binary speaks Raven's Internet
+                                    // request/response protocol. It is not a
+                                    // Circuit Relay server.
+                                    caps: CAP_INTERNET,
                                     expires_at_ms: now_ms() + 3_600_000,
                                     signature: [0u8; 64],
                                 }

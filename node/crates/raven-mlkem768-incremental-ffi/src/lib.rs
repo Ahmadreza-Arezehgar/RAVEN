@@ -482,10 +482,7 @@ mod tests {
             ("RAVEN_MLKEM768_SS_LEN", SS_LEN),
         ] {
             let needle = format!("#define {name} {value}");
-            assert!(
-                header.contains(&needle),
-                "C header missing `{needle}`"
-            );
+            assert!(header.contains(&needle), "C header missing `{needle}`");
         }
     }
 
@@ -517,7 +514,12 @@ mod tests {
                 RAVEN_MLKEM768_SUCCESS
             );
             assert_eq!(
-                raven_mlkem768_validate(header.as_ptr(), header.len(), vector.as_ptr(), vector.len()),
+                raven_mlkem768_validate(
+                    header.as_ptr(),
+                    header.len(),
+                    vector.as_ptr(),
+                    vector.len()
+                ),
                 RAVEN_MLKEM768_SUCCESS
             );
             assert_eq!(

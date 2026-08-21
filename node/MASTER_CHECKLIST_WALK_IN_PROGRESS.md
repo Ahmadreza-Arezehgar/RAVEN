@@ -66,7 +66,7 @@
 | 25 | Send New Message | PASS | ash send via stdin / node IPC (no argv plaintext) |
 | 26 | Secure CLI Usage | PASS | ash refuse argv; **raven-node `--send` REFUSE** (`113bf33`) |
 | 27 | Local DB and Queues | PASS | SQLite outbox + forward_queue (+ busy_timeout) |
-| 28 | Internet P2P | PASS | InternetTransport + libp2p swarm + matrix 01 |
+| 28 | Internet P2P | HOLD | raw path refuses ATSAM origination; libp2p/NAT composition is experimental only |
 | 29 | DHT / Peer Discovery | PASS_SOFTWARE_SUBSTITUTE | DiscoveryResolver + local Kad; public Internet Kad **BLOCKED_HARDWARE** |
 | 30 | Bootstrap Nodes | PASS | disable-raven-defaults + manual peer smoke |
 | 31 | NAT Traversal | PASS_SOFTWARE_SUBSTITUTE | `nat_docker_sim.sh` **PASS** via Lima Docker; live CGNAT/DCUtR **BLOCKED_HARDWARE** |

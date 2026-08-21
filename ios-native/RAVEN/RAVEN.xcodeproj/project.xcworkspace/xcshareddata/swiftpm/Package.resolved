@@ -2,12 +2,12 @@
   "originHash" : "b0ee00a9bedaa45196807c8f2360ee4efec0f543379863e6c77f063b0c80ea61",
   "pins" : [
     {
-      "identity" : "sqlcipher",
+      "identity" : "sqlcipher.swift",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/stoneburner/SQLCipher.git",
+      "location" : "https://github.com/sqlcipher/SQLCipher.swift.git",
       "state" : {
-        "revision" : "e42d35c830ee442ee3b4630001fe12d7a990e915",
-        "version" : "0.0.4"
+        "revision" : "205df55271aa1ba512a9bfe3fd1813bc9ac52a19",
+        "version" : "4.17.0"
       }
     }
   ],

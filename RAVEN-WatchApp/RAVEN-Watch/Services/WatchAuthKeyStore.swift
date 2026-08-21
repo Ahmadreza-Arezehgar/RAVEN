@@ -19,10 +19,8 @@
 //
 //  `RemoteAPI.token` checks for `raven.auth.token.enc` first; if
 //  present AND we have a cached wrap key, it decrypts and returns
-//  the plaintext token. Falls back to the legacy
-//  `raven.auth.token` cleartext field if no wrap key is available
-//  (e.g. first sign-in before the iPhone's first session activation
-//  has shipped the key).
+//  the plaintext token in memory. There is no on-disk plaintext
+//  fallback; missing key or tamper fails closed.
 
 import Foundation
 import CryptoKit
@@ -64,8 +62,7 @@ actor WatchAuthKeyStore {
     }
 
     /// Read the cached wrap key. Returns nil before the iPhone has
-    /// shipped its first key — caller should fall back to the
-    /// plaintext token in that window.
+    /// shipped its first key; the caller must fail closed in that window.
     func readKey() -> SymmetricKey? {
         let query: [String: Any] = [
             kSecClass as String:                kSecClassGenericPassword,
@@ -84,8 +81,7 @@ actor WatchAuthKeyStore {
 
     /// Decrypt the base64 `raven.auth.token.enc` blob the iPhone
     /// wrote to the App Group file. Returns nil on missing key or
-    /// AEAD-tamper. Callers should fall back to the plaintext
-    /// `raven.auth.token` field in either failure case.
+    /// AEAD-tamper; callers must not use a plaintext fallback.
     func decryptToken(base64Blob: String) -> String? {
         guard let key = readKey() else { return nil }
         guard let raw = Data(base64Encoded: base64Blob) else { return nil }

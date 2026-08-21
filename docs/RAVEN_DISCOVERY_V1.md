@@ -1,6 +1,6 @@
 # Raven Discovery V1 — Multi-lane Search / Contact Request
 
-**Status:** Software V1 implemented on `feature/raven-serverless-v1`  
+**Status:** Software V1 implemented on `feature/raven-serverless-v1`
 **Companions:** [`RAVEN_TAG_V1.md`](RAVEN_TAG_V1.md), [`SERVERLESS_MODEL.md`](SERVERLESS_MODEL.md), [`SERVERLESS_FRIEND_MESH_BRIDGE_DESIGN.md`](SERVERLESS_FRIEND_MESH_BRIDGE_DESIGN.md), [`protocol/RAVEN_ALIAS_V1.md`](../protocol/RAVEN_ALIAS_V1.md), [`protocol/RAVEN_BRIDGE_V1.md`](../protocol/RAVEN_BRIDGE_V1.md), [`protocol/RAVEN_PREKEY_BUNDLE_V1.md`](../protocol/RAVEN_PREKEY_BUNDLE_V1.md), [`protocol/RAVEN_PROFILE_RECORD_V1.md`](../protocol/RAVEN_PROFILE_RECORD_V1.md), [`protocol/RAVEN_INTRODUCTION_V1.md`](../protocol/RAVEN_INTRODUCTION_V1.md), [`protocol/RAVEN_CONTACT_REQUEST_V1.md`](../protocol/RAVEN_CONTACT_REQUEST_V1.md)
 
 ## Architectural law
@@ -70,6 +70,7 @@ DiscoveryResult {
 | `RavenAliasRecordV1` | Bounded set of claims; charset `a-z0-9_-` |
 | `RavenIntroductionV1` | Encrypted to recipient |
 | `RavenContactRequestV1` + `ContactAcceptV1` | ATSAM-root codec frozen; product send/open held pending durable indexed-session state |
+| `RavenPrivateIntroductionV1` | Separate production-disabled Raven-ID-to-inert-proposal architecture; no session/contact authority |
 
 Contact requests ride existing **MessageRouter** paths: direct / relay / store / BLE / Bridge — opaque envelope, same `message_id`.
 
@@ -86,6 +87,12 @@ ash contact request @poline     # currently fails closed: ATSAM session required
 ash contact request rvn1…       # currently fails closed: ATSAM session required
 ```
 
+Those two held commands refer to the legacy session-root contact-request wire.
+A future first-contact command may use
+[`RAVEN_PRIVATE_INTRODUCTION_V1.md`](../protocol/RAVEN_PRIVATE_INTRODUCTION_V1.md)
+only after that companion is APPROVED; it remains a quiet pending proposal, not
+a chat message, contact, PairInit, or delivery claim.
+
 Interactive picker on alias conflicts (same resolver as future mobile).
 
 ## iOS
@@ -96,16 +103,16 @@ Interactive picker on alias conflicts (same resolver as future mobile).
 
 ## V1 MUST NOT include
 
-- Global fuzzy / trigram index  
-- Phone / email PSI  
-- Private directory committee  
-- Follow / social feed  
+- Global fuzzy / trigram index
+- Phone / email PSI
+- Private directory committee
+- Follow / social feed
 
 ## Phases
 
 | Phase | Scope |
 |-------|-------|
-| **V1** | Exact ID, exact alias, local/QR, nearby ephemeral, introductions, E2EE contact request via MessageRouter, conflict display, Sybil quota on alias publish |
+| **V1** | Exact ID, exact alias, local/QR, nearby ephemeral, session-root introductions/contact requests, conflict display, Sybil quota on alias publish; network first-contact remains held |
 | **V1.5** | Opt-in public profile tokens (bounded), scoped handles, richer intro UX, mobile search UI parity |
 | **V2** | Private directory / PSI research path, fuzzy index with cost, FOAF vouch (optional) |
 
@@ -115,6 +122,6 @@ Automated suite: `cd node && cargo test -p raven-core --test discovery_v1` (rese
 
 ## Cross-links
 
-- Soft Unique Tags UX: [`RAVEN_TAG_V1.md`](RAVEN_TAG_V1.md)  
-- Checklist: [`MASTER_CHECKLIST_STATUS.md`](MASTER_CHECKLIST_STATUS.md) §11 / §29  
+- Soft Unique Tags UX: [`RAVEN_TAG_V1.md`](RAVEN_TAG_V1.md)
+- Checklist: [`MASTER_CHECKLIST_STATUS.md`](MASTER_CHECKLIST_STATUS.md) §11 / §29
 - Rust: `raven_core::discovery_resolver`, `alias_record`, `profile_record`, `contact_request`, `nearby`, `introduction`

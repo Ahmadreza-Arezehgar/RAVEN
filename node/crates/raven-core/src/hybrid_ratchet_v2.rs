@@ -206,12 +206,21 @@ mod tests {
     fn pair_expand_001() {
         let v = load("pair_init_v2_001.json");
         let wire = hex::decode(v["expected"]["pair_init_wire_hex"].as_str().unwrap()).unwrap();
-        assert_eq!(wire.len(), v["expected"]["pair_init_wire_len"].as_u64().unwrap() as usize);
+        assert_eq!(
+            wire.len(),
+            v["expected"]["pair_init_wire_len"].as_u64().unwrap() as usize
+        );
         let zx = hex32(v["inputs"]["z_x_hex"].as_str().unwrap());
         let zp = hex32(v["inputs"]["z_pq_hex"].as_str().unwrap());
         let e = pair_expand(&zx, &zp, &wire).unwrap();
-        assert_eq!(hex::encode(e.sk_ec), v["expected"]["sk_ec_hex"].as_str().unwrap());
-        assert_eq!(hex::encode(e.sk_scka), v["expected"]["sk_scka_hex"].as_str().unwrap());
+        assert_eq!(
+            hex::encode(e.sk_ec),
+            v["expected"]["sk_ec_hex"].as_str().unwrap()
+        );
+        assert_eq!(
+            hex::encode(e.sk_scka),
+            v["expected"]["sk_scka_hex"].as_str().unwrap()
+        );
         assert_eq!(
             hex::encode(e.k_route_master),
             v["expected"]["k_route_master_hex"].as_str().unwrap()
@@ -236,9 +245,15 @@ mod tests {
         let dh = hex32(v["inputs"]["dh_out_hex"].as_str().unwrap());
         let (rk1, ck) = kdf_rk(&rk, &dh).unwrap();
         let (ck2, mk) = kdf_ck(&ck);
-        assert_eq!(hex::encode(rk1), v["expected"]["rk_next_hex"].as_str().unwrap());
+        assert_eq!(
+            hex::encode(rk1),
+            v["expected"]["rk_next_hex"].as_str().unwrap()
+        );
         assert_eq!(hex::encode(ck), v["expected"]["ck_hex"].as_str().unwrap());
-        assert_eq!(hex::encode(ck2), v["expected"]["ck_next_hex"].as_str().unwrap());
+        assert_eq!(
+            hex::encode(ck2),
+            v["expected"]["ck_next_hex"].as_str().unwrap()
+        );
         assert_eq!(hex::encode(mk), v["expected"]["mk_hex"].as_str().unwrap());
     }
 
@@ -262,8 +277,14 @@ mod tests {
         let ec = hex32(v["inputs"]["ec_mk_hex"].as_str().unwrap());
         let pq = hex32(v["inputs"]["scka_mk_hex"].as_str().unwrap());
         let (key, nonce) = kdf_hybrid(&ec, &pq);
-        assert_eq!(hex::encode(key), v["expected"]["aead_key_hex"].as_str().unwrap());
-        assert_eq!(hex::encode(nonce), v["expected"]["nonce_hex"].as_str().unwrap());
+        assert_eq!(
+            hex::encode(key),
+            v["expected"]["aead_key_hex"].as_str().unwrap()
+        );
+        assert_eq!(
+            hex::encode(nonce),
+            v["expected"]["nonce_hex"].as_str().unwrap()
+        );
     }
 
     #[test]

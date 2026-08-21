@@ -6,13 +6,9 @@ struct NotificationsSettingsView: View {
     @AppStorage("pushNotifications") private var pushNotifications = true
     @AppStorage("messageNotifications") private var messageNotifications = true
     @AppStorage("friendRequestNotifications") private var friendRequestNotifications = true
-    @AppStorage("likesCommentsNotifications") private var likesCommentsNotifications = true
     @AppStorage("soundsEnabled") private var soundsEnabled = true
     @AppStorage("vibrationEnabled") private var vibrationEnabled = true
     @AppStorage("messagePreview") private var messagePreview = true
-    @AppStorage("newPostNotifications") private var newPostNotifications = true
-    @AppStorage("audioRoomNotifications") private var audioRoomNotifications = true
-    @AppStorage("mentionNotifications") private var mentionNotifications = true
     // ── Added 2026-05-14 ──────────────────────────────────────────────
     /// `security_alert` push (new-device login etc). Default ON — these
     /// are infrequent and high-signal; opting out should be deliberate.
@@ -24,10 +20,7 @@ struct NotificationsSettingsView: View {
     /// Tells the user when their profile is shared as a contact card.
     /// Default ON — closes the loop on the `allow_contact_share` toggle.
     @AppStorage("contactSharedNotifications") private var contactSharedNotifications = true
-    /// Someone opened your public profile (non-friends only).
-    /// Default OFF — stalker-friendly UX risk; let users opt in.
-    @AppStorage("profileViewNotifications") private var profileViewNotifications = false
-    /// Screenshot of your profile / a chat you participate in.
+    /// Screenshot of a chat you participate in.
     @AppStorage("screenshotNotifications") private var screenshotNotifications = true
     
     @State private var systemNotificationsEnabled = true
@@ -98,52 +91,9 @@ struct NotificationsSettingsView: View {
                         syncPreferencesToServer()
                     }
                     
-                    SettingsToggleRow(
-                        title: "Likes & Comments",
-                        icon: "heart.fill",
-                        iconColor: .pink,
-                        isOn: $likesCommentsNotifications
-                    )
-                    .onChange(of: likesCommentsNotifications) { _, _ in
-                        syncPreferencesToServer()
-                    }
                 }
-                
-                // Social Notifications
-                SettingsSection(title: "Social") {
-                    SettingsToggleRow(
-                        title: "New Posts",
-                        subtitle: "From users you've subscribed to (bell)",
-                        icon: "square.and.pencil",
-                        iconColor: .cyan,
-                        isOn: $newPostNotifications
-                    )
-                    .onChange(of: newPostNotifications) { _, _ in
-                        syncPreferencesToServer()
-                    }
-                    
-                    SettingsToggleRow(
-                        title: "Audio Rooms",
-                        subtitle: "When subscribed users start rooms",
-                        icon: "waveform",
-                        iconColor: .purple,
-                        isOn: $audioRoomNotifications
-                    )
-                    .onChange(of: audioRoomNotifications) { _, _ in
-                        syncPreferencesToServer()
-                    }
-                    
-                    SettingsToggleRow(
-                        title: "Mentions",
-                        subtitle: "When someone @mentions you",
-                        icon: "at",
-                        iconColor: .teal,
-                        isOn: $mentionNotifications
-                    )
-                    .onChange(of: mentionNotifications) { _, _ in
-                        syncPreferencesToServer()
-                    }
 
+                SettingsSection(title: "Conversation Activity") {
                     SettingsToggleRow(
                         title: "Reactions",
                         subtitle: "When someone reacts to your message",
@@ -193,19 +143,8 @@ struct NotificationsSettingsView: View {
                     }
 
                     SettingsToggleRow(
-                        title: "Profile Views",
-                        subtitle: "When non-friends open your profile (off by default)",
-                        icon: "eye.fill",
-                        iconColor: .blue,
-                        isOn: $profileViewNotifications
-                    )
-                    .onChange(of: profileViewNotifications) { _, _ in
-                        syncPreferencesToServer()
-                    }
-
-                    SettingsToggleRow(
                         title: "Screenshot Alerts",
-                        subtitle: "When someone screenshots your profile or a chat",
+                        subtitle: "When someone screenshots a chat",
                         icon: "camera.viewfinder",
                         iconColor: .red,
                         isOn: $screenshotNotifications
@@ -307,17 +246,12 @@ struct NotificationsSettingsView: View {
                 pushEnabled: pushNotifications,
                 messagesEnabled: messageNotifications,
                 friendRequestsEnabled: friendRequestNotifications,
-                likesCommentsEnabled: likesCommentsNotifications,
                 soundsEnabled: soundsEnabled,
                 messagePreview: messagePreview,
-                newPostNotifications: newPostNotifications,
-                audioRoomNotifications: audioRoomNotifications,
-                mentionNotifications: mentionNotifications,
                 securityAlertNotifications: securityAlertNotifications,
                 liveLocationNotifications: liveLocationNotifications,
                 reactionNotifications: reactionNotifications,
                 contactSharedNotifications: contactSharedNotifications,
-                profileViewNotifications: profileViewNotifications,
                 screenshotNotifications: screenshotNotifications
             )
             
@@ -343,34 +277,24 @@ private struct NotificationPreferencesPayload: Encodable {
     let pushEnabled: Bool
     let messagesEnabled: Bool
     let friendRequestsEnabled: Bool
-    let likesCommentsEnabled: Bool
     let soundsEnabled: Bool
     let messagePreview: Bool
-    let newPostNotifications: Bool
-    let audioRoomNotifications: Bool
-    let mentionNotifications: Bool
     let securityAlertNotifications: Bool
     let liveLocationNotifications: Bool
     let reactionNotifications: Bool
     let contactSharedNotifications: Bool
-    let profileViewNotifications: Bool
     let screenshotNotifications: Bool
 
     enum CodingKeys: String, CodingKey {
         case pushEnabled = "push_enabled"
         case messagesEnabled = "messages_enabled"
         case friendRequestsEnabled = "friend_requests_enabled"
-        case likesCommentsEnabled = "likes_comments_enabled"
         case soundsEnabled = "sounds_enabled"
         case messagePreview = "message_preview"
-        case newPostNotifications = "new_post_notifications"
-        case audioRoomNotifications = "audio_room_notifications"
-        case mentionNotifications = "mention_notifications"
         case securityAlertNotifications = "security_alert_notifications"
         case liveLocationNotifications = "live_location_notifications"
         case reactionNotifications = "reaction_notifications"
         case contactSharedNotifications = "contact_shared_notifications"
-        case profileViewNotifications = "profile_view_notifications"
         case screenshotNotifications = "screenshot_notifications"
     }
 }

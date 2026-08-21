@@ -302,7 +302,12 @@ public enum ShamirSecretSharing {
         do {
             var secret = Data(count: 32)
             secret.withUnsafeMutableBytes { buf in
-                _ = SecRandomCopyBytes(kSecRandomDefault, 32, buf.baseAddress!)
+                guard let base = buf.baseAddress else {
+                    preconditionFailure("SecRandomCopyBytes: nil buffer")
+                }
+                let status = SecRandomCopyBytes(kSecRandomDefault, 32, base)
+                // Fail closed: a known secret voids the split's guarantees.
+                precondition(status == errSecSuccess, "SecRandomCopyBytes failed: \(status)")
             }
             let shares = try split(secret: secret, k: 3, n: 5)
             // Try a few different K-subsets.

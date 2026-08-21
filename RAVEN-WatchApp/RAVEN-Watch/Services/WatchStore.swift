@@ -1,6 +1,6 @@
 // WatchStore.swift
 //
-// Observable in-memory cache for everything the Watch renders.
+// Observable in-memory cache for the conversations the Watch renders.
 //
 // Source of truth flow:
 //
@@ -17,7 +17,7 @@
 //   @Published → SwiftUI views
 //
 // The Watch never writes to the snapshot directly. UI actions (send,
-// react, like, comment) optimistically mutate local fields for
+// react) optimistically mutate local fields for
 // responsiveness, then ask `PhoneBridge` to fire the intent over to the
 // phone. The next snapshot from the phone overwrites optimistic state
 // — if the phone's authoritative copy disagrees, the user sees the
@@ -69,7 +69,7 @@ final class WatchStore: ObservableObject {
     private init() {
         loadFromDisk()
         #if DEBUG
-        if snapshot.conversations.isEmpty && snapshot.feed.isEmpty {
+        if snapshot.conversations.isEmpty {
             seedDemoData()
         }
         #endif
@@ -89,26 +89,14 @@ final class WatchStore: ObservableObject {
             .init(id: "room-port",   title: "ASH Port Ops",  lastPreview: "Crane B online, AGV-04 docking",     lastAt: now - 3_600,    unread: 1, isGroup: true,  avatarInitial: "A"),
             .init(id: "room-mom",    title: "Maman",         lastPreview: "Khoob hasti azizam?",                 lastAt: now - 7_200,    unread: 0, isGroup: false, avatarInitial: "M"),
         ]
-        let feed: [PostPreview] = [
-            .init(id: "post-1", authorName: "ali_dev",  authorInitial: "A", text: "Just shipped post-quantum pairing in v1.7. The ATSAM stack is real 🐦‍⬛", createdAt: now - 900,   likeCount: 42, commentCount: 8,  likedByMe: true,  hasMedia: false),
-            .init(id: "post-2", authorName: "sara_a",   authorInitial: "S", text: "Mesh held through the whole Metro tunnel today. Three relays. No drops.",    createdAt: now - 5_400, likeCount: 17, commentCount: 3,  likedByMe: false, hasMedia: true),
-            .init(id: "post-3", authorName: "ports_io", authorInitial: "P", text: "ASH AGV-04 just did 14 hours under the gantry without a charge.",            createdAt: now - 9_800, likeCount: 88, commentCount: 21, likedByMe: false, hasMedia: true),
-        ]
-        let rooms: [RoomSummary] = [
-            .init(id: "room-live-1", name: "Late-night offline messaging",    participantCount: 12, joinedByMe: false, activeSpeakerName: "ali_dev"),
-            .init(id: "room-live-2", name: "ASH x port ops standup",          participantCount: 4,  joinedByMe: false, activeSpeakerName: nil),
-        ]
         let notifications: [NotificationItem] = [
             .init(id: "n1", kind: .mention,        actorName: "Sara Ahmadi", actorInitial: "S", summary: "mentioned you in RAVEN Core",          timestamp: now - 180,   target: "chat:room-team"),
-            .init(id: "n2", kind: .reaction,       actorName: "ali_dev",     actorInitial: "A", summary: "reacted 🔥 to your post",              timestamp: now - 1_200, target: "post:post-1"),
-            .init(id: "n3", kind: .comment,        actorName: "yash_p",      actorInitial: "Y", summary: "commented: \"this is huge\"",         timestamp: now - 3_300, target: "post:post-2"),
+            .init(id: "n2", kind: .reaction,       actorName: "ali_dev",     actorInitial: "A", summary: "reacted 🔥 to your message",           timestamp: now - 1_200, target: "chat:room-team"),
             .init(id: "n4", kind: .bridgeArrived,  actorName: "Maman",       actorInitial: "M", summary: "message delivered via mesh bridge",    timestamp: now - 6_600, target: "chat:room-mom"),
         ]
         self.snapshot = WatchSnapshot(
             conversations: conversations,
             notifications: notifications,
-            rooms: rooms,
-            feed: feed,
             generatedAt: now
         )
         // Pre-seed one thread so tapping the top chat row shows messages.
@@ -129,7 +117,9 @@ final class WatchStore: ObservableObject {
         guard let data = try? JSONSerialization.data(withJSONObject: context),
               let snap = try? JSONDecoder().decode(WatchSnapshot.self, from: data)
         else { return }
-        self.snapshot = snap
+        var admitted = snap
+        admitted.notifications.removeAll { !$0.isMessagingProductEvent }
+        self.snapshot = admitted
         persistToDisk()
     }
 
@@ -145,8 +135,6 @@ final class WatchStore: ObservableObject {
             handleThreadSnapshot(message)
         case "thread-append":
             handleThreadAppend(message)
-        case "post-update":
-            handlePostUpdate(message)
         case "delivery-receipt":
             if let mid = message["messageId"] as? String {
                 pendingMeshSends.remove(mid)
@@ -196,25 +184,6 @@ final class WatchStore: ObservableObject {
         }
     }
 
-    private func handlePostUpdate(_ message: [String: Any]) {
-        guard let postId = message["postId"] as? String else { return }
-        var feed = snapshot.feed
-        guard let idx = feed.firstIndex(where: { $0.id == postId }) else { return }
-        let old = feed[idx]
-        feed[idx] = PostPreview(
-            id: old.id,
-            authorName: old.authorName,
-            authorInitial: old.authorInitial,
-            text: old.text,
-            createdAt: old.createdAt,
-            likeCount: (message["likeCount"] as? Int) ?? old.likeCount,
-            commentCount: (message["commentCount"] as? Int) ?? old.commentCount,
-            likedByMe: (message["likedByMe"] as? Bool) ?? old.likedByMe,
-            hasMedia: old.hasMedia
-        )
-        snapshot.feed = feed
-    }
-
     // MARK: - Optimistic mutations from UI
 
     /// Append a locally-composed message to the thread cache before the
@@ -230,23 +199,6 @@ final class WatchStore: ObservableObject {
     /// shows a faint mesh-routing badge on rows with pending sends.
     func markPendingMeshSend(_ messageId: String) {
         pendingMeshSends.insert(messageId)
-    }
-
-    /// Toggle the optimistic like state while the phone API call runs.
-    /// If the phone disagrees, the next snapshot overrides this.
-    func toggleLikeOptimistic(postId: String) {
-        var feed = snapshot.feed
-        guard let idx = feed.firstIndex(where: { $0.id == postId }) else { return }
-        let p = feed[idx]
-        let nowLiked = !p.likedByMe
-        feed[idx] = PostPreview(
-            id: p.id, authorName: p.authorName, authorInitial: p.authorInitial,
-            text: p.text, createdAt: p.createdAt,
-            likeCount: p.likeCount + (nowLiked ? 1 : -1),
-            commentCount: p.commentCount, likedByMe: nowLiked,
-            hasMedia: p.hasMedia
-        )
-        snapshot.feed = feed
     }
 
     func clearHaptic() { incomingHaptic = nil }

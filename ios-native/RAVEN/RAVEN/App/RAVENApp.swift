@@ -72,7 +72,14 @@ struct RAVENApp: App {
             // (1×1 hidden window) and the post-auth shell dispatch lives
             // inside AuthGateView itself.
             rootContent
-                .preferredColorScheme(appSettings.preferredColorScheme)
+                // TERMINAL REDESIGN (2026-08): phosphor-green accent for every
+                // stock control (buttons, toggles, links, menus).
+                .tint(DS.phosphor)
+                // TERMINAL v2: the CRT design is dark-only — ink surfaces,
+                // neon accents. Force dark so system light mode can't wash
+                // the console white; personality comes from the accent
+                // picker (phosphor/ion/amber) in Settings → Design.
+                .preferredColorScheme(.dark)
                 .dynamicTypeSize(appSettings.dynamicTypeSize)  // Global text scaling
                 .environment(\.layoutDirection, languageManager.layoutDirection)
                 .environment(\.locale, languageManager.locale)
@@ -690,8 +697,8 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
             DeepLinkRouter.shared.navigate(to: .newMessage)
             return true
         case "app.raven.shortcut.newPost":
-            DeepLinkRouter.shared.navigate(to: .newPost)
-            return true
+            // Retired with the messenger-only product boundary.
+            return false
         case "app.raven.shortcut.search":
             DeepLinkRouter.shared.navigate(to: .search)
             return true

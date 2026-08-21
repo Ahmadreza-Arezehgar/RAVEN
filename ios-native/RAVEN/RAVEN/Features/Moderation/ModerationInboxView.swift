@@ -241,7 +241,7 @@ struct DecisionCard: View {
             HStack(spacing: 6) {
                 Image(systemName: targetIcon)
                     .font(.caption)
-                Text("\(decision.targetType.capitalized)")
+                Text(decision.messagingTargetLabel)
                     .font(.caption)
                 
                 Text("•")
@@ -276,12 +276,10 @@ struct DecisionCard: View {
     
     private var targetIcon: String {
         switch decision.targetType {
-        case "post": return "text.bubble"
-        case "comment": return "bubble.left"
         case "message": return "envelope"
         case "user": return "person"
-        case "group", "room": return "person.3"
-        case "story": return "circle.dashed"
+        case "group": return "person.3"
+        case "media": return "paperclip"
         default: return "doc"
         }
     }

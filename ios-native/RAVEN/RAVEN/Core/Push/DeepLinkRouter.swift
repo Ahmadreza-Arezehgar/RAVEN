@@ -52,6 +52,21 @@ class DeepLinkRouter {
         case newPost             // Home tab + open New Post composer
         case search              // Home tab + open in-app search overlay
         case voiceNote           // Inbox tab + scroll to top + arm voice recorder
+
+        /// Central product-boundary admission. Legacy cases stay decodable so
+        /// old caches and call sites fail closed instead of crashing, but they
+        /// cannot produce navigation or a pending destination.
+        var isMessagingProductDestination: Bool {
+            switch self {
+            case .chat, .newChat, .profile, .profileByUsername,
+                 .friendRequests, .notifications, .security, .settings,
+                 .inbox, .privacySettings, .myProfile, .newMessage,
+                 .search, .voiceNote:
+                return true
+            case .audioRoom, .post, .echo, .club, .newPost:
+                return false
+            }
+        }
     }
     
     // MARK: - Navigate (alias for route)
@@ -65,6 +80,13 @@ class DeepLinkRouter {
     
     @MainActor
     func route(to destination: Destination) {
+        guard destination.isMessagingProductDestination else {
+            #if DEBUG
+            print("[DeepLink] Refused non-messaging destination: \(destination)")
+            #endif
+            return
+        }
+
         // If app is not ready, store pending destination
         guard AuthService.shared.isAuthenticated else {
             pendingDestination = destination
@@ -157,19 +179,11 @@ extension DeepLinkRouter {
     ///
     /// Two URL families are recognized:
     ///
-    /// • Custom scheme — `raven://`
-    ///     - `raven://room/{slug}`     → .audioRoom
-    ///     - `raven://u/{username}`    → .profileByUsername
-    ///     - `raven://post/{id}`       → .post
-    ///     - `raven://echo/{id}`       → .echo
-    ///     - `raven://club/{id}`       → .club
+    /// • Custom scheme — `raven://u/{username}`
+    /// • Universal Link — `https://raven-messager.com/u/{username}`
     ///
-    /// • Universal Links — `https://raven-messager.com/*`
-    ///     - `/u/{username}`           → .profileByUsername
-    ///     - `/post/{id}`              → .post
-    ///     - `/echo/{id}`              → .echo
-    ///     - `/club/{id}`              → .club
-    ///     - `/room/{slug}`            → .audioRoom
+    /// Public-post, feed, club, and public-room link kinds are deliberately
+    /// refused by the messaging-only product boundary.
     ///
     /// Unknown paths fall through silently so an unrecognized link
     /// drops the user on the inbox (current behavior) instead of
@@ -222,7 +236,7 @@ extension DeepLinkRouter {
         guard !raw.isEmpty, raw.utf8.count <= maxDeepLinkValueLen else { return nil }
         for scalar in raw.unicodeScalars {
             switch scalar.properties.generalCategory {
-            case .control, .format, .lineSeparator, .paragraphSeparator:
+            case .control, .format, .spaceSeparator, .lineSeparator, .paragraphSeparator:
                 return nil
             default:
                 break
@@ -238,7 +252,7 @@ extension DeepLinkRouter {
     private func handleRavenScheme(_ url: URL) {
         // For raven://kind/value, `url.host` is the *kind* (room, u, post, …).
         let pathParts = url.pathComponents.filter { $0 != "/" }
-        guard let kind = url.host?.lowercased() else { return }
+        guard let kind = url.host?.lowercased(), pathParts.count == 1 else { return }
         guard let rawValue = pathParts.first,
               let value = Self.cleanValue(rawValue)
         else { return }
@@ -257,7 +271,7 @@ extension DeepLinkRouter {
         }
         let parts = url.pathComponents.filter { $0 != "/" }
         // First component is the kind, second is the slug / id / username.
-        guard parts.count >= 2,
+        guard parts.count == 2,
               let value = Self.cleanValue(parts[1])
         else { return }
         routeFor(kind: parts[0].lowercased(), value: value)
@@ -268,17 +282,9 @@ extension DeepLinkRouter {
         switch kind {
         case "u", "user", "profile":
             route(to: .profileByUsername(username: value))
-        case "post":
-            route(to: .post(postId: value))
-        case "echo":
-            route(to: .echo(echoId: value))
-        case "club":
-            route(to: .club(clubId: value))
-        case "room":
-            route(to: .audioRoom(slug: value))
         default:
             #if DEBUG
-            print("[DeepLink] Unrecognised kind '\(kind)' for value '\(value)'")
+            print("[DeepLink] Refused non-messaging kind '\(kind)' for value '\(value)'")
             #endif
         }
     }
@@ -305,6 +311,8 @@ struct DeepLinkHandler: ViewModifier {
     }
     
     private func handleDeepLink(_ destination: DeepLinkRouter.Destination) {
+        guard destination.isMessagingProductDestination else { return }
+
         switch destination {
         case .chat(let roomId):
             // Navigate to chat

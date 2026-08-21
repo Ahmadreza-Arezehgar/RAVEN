@@ -20,7 +20,7 @@ trap cleanup EXIT
 source "${HOME}/.cargo/env" 2>/dev/null || true
 if [[ ! -x "$NODE" ]]; then
   echo "Building…"
-  (cd "$ROOT" && cargo build -p raven-node -p ash -q)
+  (cd "$ROOT" && cargo build -p raven-node -p ash --features raven-node/unsafe-demo-crypto -q)
 fi
 
 echo "=== Bridge A-B-C workdir=$WORKDIR ==="
@@ -81,7 +81,7 @@ run_happy() {
     --peer-pub-hex "$B_PUB" \
     --seal-to-pub-hex "$C_PUB" \
     --ack-pub-hex "$C_PUB" \
-    --send-stdin \
+    --send-stdin --body-mode unsafe-interim \
     --exit-after-ack \
     --timeout-secs 35 \
     >"$WORKDIR/a.log" 2>&1
@@ -134,7 +134,7 @@ printf '%s\n' "store-carry-msg" | "$NODE" run \
   --peer-pub-hex "$B_PUB" \
   --seal-to-pub-hex "$C_PUB" \
   --ack-pub-hex "$C_PUB" \
-  --send-stdin \
+  --send-stdin --body-mode unsafe-interim \
   --exit-after-ack \
   --timeout-secs 40 \
   >"$WORKDIR/a_scf.log" 2>&1 &
@@ -198,7 +198,7 @@ printf '%s\n' "reverse-c-to-a" | "$NODE" run \
   --peer-pub-hex "$B_PUB" \
   --seal-to-pub-hex "$A_PUB" \
   --ack-pub-hex "$A_PUB" \
-  --send-stdin \
+  --send-stdin --body-mode unsafe-interim \
   --exit-after-ack \
   --timeout-secs 35 \
   >"$WORKDIR/c_rev.log" 2>&1

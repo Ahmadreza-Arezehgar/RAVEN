@@ -100,39 +100,13 @@ ensure_docker_host() {
 
 # ---- Scenario helpers -------------------------------------------------------
 
-sc_two_node_internet() {
-  # All-Internet: two_node + internet_dial + optional mid-flight restart
+sc_internet_hold_and_swarm() {
+  # Truthful software coverage: the legacy raw path must remain held while the
+  # libp2p transport composition still completes its localhost smoke.
   local cycle="$1" work
   work=$(mktemp -d "${TMPDIR:-/tmp}/rel-inet.XXXXXX")
-  bash "$NODE_ROOT/scripts/two_node_demo.sh" >"$work/two.log" 2>&1
-  grep -q 'ALL DEMO CHECKS PASSED' "$work/two.log"
   bash "$NODE_ROOT/scripts/internet_dial_smoke.sh" >"$work/inet.log" 2>&1
-  grep -q 'INTERNET TRANSPORT DIAL OK' "$work/inet.log"
-  # Mid-flight restart: kill listener mid-wait, restart, complete dial
-  "$NODE" init --data-dir "$work/a" >"$work/a.init"
-  "$NODE" init --data-dir "$work/b" >"$work/b.init"
-  local A_PUB B_PUB
-  A_PUB=$(grep '^pub_hex=' "$work/a.init" | cut -d= -f2)
-  B_PUB=$(grep '^pub_hex=' "$work/b.init" | cut -d= -f2)
-  "$NODE" run --data-dir "$work/b" --listen "127.0.0.1:0" --write-addr "$work/b1.addr" \
-    --peer-pub-hex "$A_PUB" --exit-after-recv 1 --timeout-secs 8 >"$work/b1.log" 2>&1 &
-  local BPID=$!
-  for _ in $(seq 1 60); do [[ -f "$work/b1.addr" ]] && break; sleep 0.05; done
-  kill "$BPID" 2>/dev/null || true
-  wait "$BPID" 2>/dev/null || true
-  # Restart B and complete
-  "$NODE" run --data-dir "$work/b" --listen "127.0.0.1:0" --write-addr "$work/b2.addr" \
-    --peer-pub-hex "$A_PUB" --exit-after-recv 1 --timeout-secs 20 >"$work/b2.log" 2>&1 &
-  BPID=$!
-  for _ in $(seq 1 80); do [[ -f "$work/b2.addr" ]] && break; sleep 0.05; done
-  local BADDR
-  BADDR=$(cat "$work/b2.addr")
-  printf '%s\n' "restart-midflight-$cycle" | "$NODE" run --data-dir "$work/a" \
-    --listen "127.0.0.1:0" --peer "$BADDR" --peer-pub-hex "$B_PUB" \
-    --send-stdin --exit-after-ack --timeout-secs 20 >"$work/a2.log" 2>&1
-  wait "$BPID" || true
-  grep -q 'ACK delivered' "$work/a2.log"
-  grep -q 'DELIVERED' "$work/b2.log"
+  grep -q 'PASS: legacy InternetTransport remains fail-closed' "$work/inet.log"
   # swarm smoke once per cycle (heavier)
   bash "$NODE_ROOT/scripts/libp2p_swarm_smoke.sh" >"$work/swarm.log" 2>&1
   grep -q 'LIBP2P SWARM SMOKE OK' "$work/swarm.log"
@@ -627,7 +601,7 @@ log "date_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 ensure_bins
 
-run_scenario "01_all_internet"           sc_two_node_internet          "$CRIT_ITERS"
+run_scenario "01_internet_hold_swarm"    sc_internet_hold_and_swarm    "$CRIT_ITERS"
 run_scenario "02_mesh_relay"             sc_mesh_relay                 "$CRIT_ITERS"
 run_scenario "03_bridge_up"              sc_bridge_up                  "$LIGHT_ITERS"
 run_scenario "04_bridge_down_up"         sc_bridge_down_up             "$LIGHT_ITERS"

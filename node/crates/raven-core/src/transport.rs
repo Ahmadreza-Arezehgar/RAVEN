@@ -50,7 +50,9 @@ impl NodeCapability {
     }
 }
 
-/// Path preference order (V1): DIRECT → INTERNET → RELAY stub → BRIDGE → STORE.
+/// Path preference order (V1): local/direct → Internet direct → relay →
+/// cross-carrier bridge → encrypted store-and-forward. `Unavailable` is a
+/// fail-closed result, never permission to enqueue on a disabled carrier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PathChoice {
@@ -59,6 +61,7 @@ pub enum PathChoice {
     Relay,
     Bridge,
     Store,
+    Unavailable,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -73,33 +76,42 @@ pub struct PathContext {
     pub relay_enabled: bool,
 }
 
-/// Situational selection — content stays RavenEnvelopeV1; this only picks path.
-pub fn select_path(ctx: &PathContext) -> PathChoice {
+/// Build the ordered set of paths that are actually usable for this peer.
+///
+/// The caller may attempt each entry in order and stop only after a verified
+/// endpoint ACK. Merely writing to one carrier is not delivery. Disabled or
+/// unreachable carriers never appear in the plan.
+pub fn plan_paths(ctx: &PathContext) -> Vec<PathChoice> {
+    let mut paths = Vec::with_capacity(5);
     if ctx.peer_reachable_direct {
-        return PathChoice::Direct;
+        paths.push(PathChoice::Direct);
     }
     if ctx.local_has_internet && ctx.peer_reachable_internet {
-        return PathChoice::Internet;
+        paths.push(PathChoice::Internet);
     }
     if ctx.relay_enabled && ctx.local_has_internet {
-        return PathChoice::Relay;
+        paths.push(PathChoice::Relay);
     }
     if ctx.bridge_enabled
         && ((ctx.local_has_internet && ctx.peer_reachable_ble)
-            || (ctx.local_has_ble && ctx.peer_reachable_internet)
-            || (ctx.local_has_ble && ctx.local_has_internet))
+            || (ctx.local_has_ble && ctx.peer_reachable_internet))
     {
-        return PathChoice::Bridge;
+        paths.push(PathChoice::Bridge);
     }
     if ctx.store_enabled {
-        return PathChoice::Store;
+        paths.push(PathChoice::Store);
     }
-    // Fall back: store-and-wait if store on; else bridge if any radios.
-    if ctx.bridge_enabled {
-        PathChoice::Bridge
-    } else {
-        PathChoice::Store
-    }
+    paths
+}
+
+/// Select the first currently usable path. Content stays immutable; this only
+/// chooses a carrier. Callers that implement retry/fallback should use
+/// [`plan_paths`] rather than recomputing policy after each failure.
+pub fn select_path(ctx: &PathContext) -> PathChoice {
+    plan_paths(ctx)
+        .into_iter()
+        .next()
+        .unwrap_or(PathChoice::Unavailable)
 }
 
 /// Thin legacy helper (LAN preference) — kept for existing callers.
@@ -108,6 +120,7 @@ pub enum TransportPreference {
     DirectLan,
     InternetLibp2p,
     BleMesh,
+    Unavailable,
 }
 
 pub fn prefer_transport(
@@ -122,7 +135,7 @@ pub fn prefer_transport(
     } else if ble_peers_nearby {
         TransportPreference::BleMesh
     } else {
-        TransportPreference::DirectLan
+        TransportPreference::Unavailable
     }
 }
 
@@ -143,6 +156,16 @@ mod tests {
             relay_enabled: true,
         };
         assert_eq!(select_path(&ctx), PathChoice::Direct);
+        assert_eq!(
+            plan_paths(&ctx),
+            vec![
+                PathChoice::Direct,
+                PathChoice::Internet,
+                PathChoice::Relay,
+                PathChoice::Bridge,
+                PathChoice::Store,
+            ]
+        );
     }
 
     #[test]
@@ -173,6 +196,58 @@ mod tests {
             relay_enabled: false,
         };
         assert_eq!(select_path(&ctx), PathChoice::Store);
+    }
+
+    #[test]
+    fn disabled_carriers_never_create_a_phantom_route() {
+        let ctx = PathContext {
+            local_has_internet: false,
+            local_has_ble: false,
+            peer_reachable_direct: false,
+            peer_reachable_internet: false,
+            peer_reachable_ble: false,
+            bridge_enabled: false,
+            store_enabled: false,
+            relay_enabled: false,
+        };
+        assert!(plan_paths(&ctx).is_empty());
+        assert_eq!(select_path(&ctx), PathChoice::Unavailable);
+        assert_eq!(
+            prefer_transport(false, false, false),
+            TransportPreference::Unavailable
+        );
+    }
+
+    #[test]
+    fn relay_and_store_are_ordered_fallbacks_not_delivery_claims() {
+        let ctx = PathContext {
+            local_has_internet: true,
+            local_has_ble: false,
+            peer_reachable_direct: false,
+            peer_reachable_internet: false,
+            peer_reachable_ble: false,
+            bridge_enabled: false,
+            store_enabled: true,
+            relay_enabled: true,
+        };
+        assert_eq!(plan_paths(&ctx), vec![PathChoice::Relay, PathChoice::Store]);
+        assert_eq!(select_path(&ctx), PathChoice::Relay);
+    }
+
+    #[test]
+    fn local_radios_alone_do_not_invent_a_bridge_route_to_the_peer() {
+        let ctx = PathContext {
+            local_has_internet: true,
+            local_has_ble: true,
+            peer_reachable_direct: false,
+            peer_reachable_internet: false,
+            peer_reachable_ble: false,
+            bridge_enabled: true,
+            store_enabled: false,
+            relay_enabled: false,
+        };
+        assert!(plan_paths(&ctx).is_empty());
+        assert_eq!(select_path(&ctx), PathChoice::Unavailable);
     }
 
     #[test]

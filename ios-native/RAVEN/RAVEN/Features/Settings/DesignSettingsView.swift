@@ -7,6 +7,34 @@ struct DesignSettingsView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
+                // TERMINAL v2: CRT accent theme — phosphor green / ion blue /
+                // amber. Drives every DS color live via @Observable tracking.
+                SettingsSection(title: "Terminal Accent") {
+                    VStack(spacing: 0) {
+                        ForEach(AppSettings.TerminalAccent.allCases, id: \.rawValue) { accent in
+                            TerminalAccentRow(
+                                accent: accent,
+                                isSelected: settings.terminalAccent == accent,
+                                onSelect: {
+                                    Haptics.selection()
+                                    withAnimation(.easeInOut(duration: 0.25)) {
+                                        settings.terminalAccent = accent
+                                    }
+                                }
+                            )
+
+                            if accent != AppSettings.TerminalAccent.allCases.last {
+                                Divider()
+                                    .background(Color.white.opacity(0.1))
+                            }
+                        }
+                    }
+                }
+
+                // Accent live preview
+                TerminalAccentPreview()
+                    .padding(.horizontal, 4)
+
                 // Text Size Section
                 SettingsSection(title: "Text Size") {
                     VStack(spacing: 0) {
@@ -57,32 +85,13 @@ struct DesignSettingsView: View {
                 MessageCornerPreview(cornerRadius: settings.messageCornerRadius)
                     .padding(.horizontal, 4)
                 
-                // Appearance Section
-                SettingsSection(title: "Appearance") {
-                    VStack(spacing: 0) {
-                        ForEach(AppSettings.AppearanceMode.allCases, id: \.rawValue) { mode in
-                            AppearanceRow(
-                                mode: mode,
-                                isSelected: settings.appearanceMode == mode,
-                                onSelect: {
-                                    Haptics.selection()
-                                    withAnimation(.easeInOut(duration: 0.3)) {
-                                        settings.appearanceMode = mode
-                                    }
-                                }
-                            )
-
-                            if mode != AppSettings.AppearanceMode.allCases.last {
-                                Divider()
-                                    .background(Color.white.opacity(0.1))
-                            }
-                        }
-                    }
-                }
+                // TERMINAL v2: the light/dark appearance rows are gone —
+                // the console design is dark-only; the accent picker above
+                // is the personality control now.
 
                 // Footer Note
-                Text("System uses your device's appearance settings")
-                    .font(.footnote)
+                Text("terminal is dark by design — pick your phosphor above")
+                    .font(.system(.footnote, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 4)
@@ -93,6 +102,122 @@ struct DesignSettingsView: View {
         .background(Color(.systemBackground))
         .navigationTitle("Design")
         .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+// MARK: - Terminal Accent Row
+private struct TerminalAccentRow: View {
+    let accent: AppSettings.TerminalAccent
+    let isSelected: Bool
+    let onSelect: () -> Void
+
+    var body: some View {
+        Button(action: onSelect) {
+            HStack(spacing: 14) {
+                // Swatch — accent block on its own ink
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(accent.ink)
+                    .frame(width: 36, height: 36)
+                    .overlay {
+                        Text(">_")
+                            .font(.system(size: 13, weight: .bold, design: .monospaced))
+                            .foregroundStyle(accent.primary)
+                    }
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                            .strokeBorder(accent.primary.opacity(0.5), lineWidth: 1)
+                    }
+
+                Text(accent.displayName)
+                    .font(.system(size: 15, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.primary)
+
+                Spacer()
+
+                if isSelected {
+                    Text("[x]")
+                        .font(.system(size: 14, weight: .bold, design: .monospaced))
+                        .foregroundStyle(accent.primary)
+                }
+            }
+            .padding(14)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Terminal Accent Preview
+private struct TerminalAccentPreview: View {
+    private var settings: AppSettings { AppSettings.shared }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Preview")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.secondary)
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    Circle().fill(DS.accentDanger).frame(width: 8, height: 8)
+                    Circle().fill(DS.amber).frame(width: 8, height: 8)
+                    Circle().fill(DS.phosphor).frame(width: 8, height: 8)
+                    Text("raven:~/chats")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(DS.mist.opacity(0.6))
+                }
+                .padding(.bottom, 4)
+
+                Text(previewLine1)
+                Text(previewLine2)
+
+                HStack(spacing: 6) {
+                    Text(">")
+                        .font(.system(size: 13, weight: .bold, design: .monospaced))
+                        .foregroundStyle(DS.phosphor)
+                    Text("type here")
+                        .font(.system(size: 13, design: .monospaced))
+                        .foregroundStyle(DS.mist.opacity(0.4))
+                    BlinkingCursor(color: DS.phosphor, height: 13)
+                }
+                .padding(.top, 4)
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(DS.ink)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(DS.hairline, lineWidth: 1)
+            )
+        }
+    }
+
+    private var previewLine1: AttributedString {
+        var time = AttributedString("[12:03] ")
+        time.foregroundColor = DS.mist.opacity(0.38)
+        time.font = .system(size: 11, design: .monospaced)
+        var nick = AttributedString("<nova> ")
+        nick.foregroundColor = DS.pathBlue
+        nick.font = .system(size: 13, weight: .bold, design: .monospaced)
+        let body = TerminalSyntax.highlight("check `raven --mesh` @you", fontSize: 13)
+        return time + nick + body
+    }
+
+    private var previewLine2: AttributedString {
+        var time = AttributedString("[12:04] ")
+        time.foregroundColor = DS.mist.opacity(0.38)
+        time.font = .system(size: 11, design: .monospaced)
+        var nick = AttributedString("<you> ")
+        nick.foregroundColor = DS.phosphor
+        nick.font = .system(size: 13, weight: .bold, design: .monospaced)
+        let body = TerminalSyntax.highlight("on it — 2 hops away", fontSize: 13)
+        var status = AttributedString("  ✓✓")
+        status.foregroundColor = DS.phosphor
+        status.font = .system(size: 11, weight: .bold, design: .monospaced)
+        return time + nick + body + status
     }
 }
 

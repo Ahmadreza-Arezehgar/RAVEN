@@ -29,6 +29,10 @@ enum ATSAMIndexedSessionProfile {
     static let suiteByte: UInt8 = 0x01
     static let signedAckLength = 101
     static let sealedAckLength = 143
+    /// Upper bound for stateless O(index) chain-key derivation. Mirrors
+    /// `MAX_PORTABLE_CHAIN_INDEX` in the Rust portable helper
+    /// (`atsam_aead.rs`) so both platforms refuse absurd indices.
+    static let maxPortableChainIndex: UInt32 = 4_096
 
     enum Direction: UInt8, CaseIterable {
         case initiatorToResponder = 0
@@ -51,6 +55,7 @@ enum ATSAMIndexedSessionProfile {
         case invalidSealedAckLength
         case invalidSealedAckHeader
         case authenticationFailed
+        case chainIndexExceedsLimit
     }
 
     struct SignedAck: Equatable {
@@ -530,6 +535,14 @@ enum ATSAMIndexedSessionProfile {
         recipient: String,
         index: UInt32
     ) throws -> Data {
+        // Stateless derivation is O(index) HKDF evaluations. An
+        // attacker-chosen index must not be able to pin a CPU for an
+        // unbounded time, so mirror the Rust portable-helper bound
+        // (`MAX_PORTABLE_CHAIN_INDEX` in atsam_aead.rs). Production
+        // ratchets use persisted chain state instead of this helper.
+        guard index <= maxPortableChainIndex else {
+            throw ProfileError.chainIndexExceedsLimit
+        }
         var chainKey = try initialChainKey(root: root, sender: sender, recipient: recipient)
         for _ in 0..<index {
             chainKey = try advanceChainKey(chainKey)

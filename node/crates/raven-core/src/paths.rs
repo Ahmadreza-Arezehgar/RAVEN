@@ -77,6 +77,8 @@ impl DataDirLock {
 }
 
 /// Atomically replace `path` (temp + rename) with owner-only mode on Unix.
+/// On Windows the temp file is created exclusively, synced, then renamed over
+/// the destination (MoveFileEx REPLACE_EXISTING) — never a torn partial write.
 pub fn atomic_write_private(path: &Path, contents: &[u8]) -> Result<(), String> {
     let parent = path
         .parent()
@@ -90,16 +92,16 @@ pub fn atomic_write_private(path: &Path, contents: &[u8]) -> Result<(), String> 
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(1);
+    let tmp = parent.join(format!(
+        ".{}.tmp.{:016x}",
+        path.file_name().and_then(|n| n.to_str()).unwrap_or("raven"),
+        rng
+    ));
 
     #[cfg(unix)]
     {
         use std::io::Write;
         use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-        let tmp = parent.join(format!(
-            ".{}.tmp.{:016x}",
-            path.file_name().and_then(|n| n.to_str()).unwrap_or("raven"),
-            rng
-        ));
         let write = (|| -> Result<(), String> {
             let mut f = std::fs::OpenOptions::new()
                 .write(true)
@@ -128,8 +130,79 @@ pub fn atomic_write_private(path: &Path, contents: &[u8]) -> Result<(), String> 
     }
     #[cfg(not(unix))]
     {
-        let _ = rng;
-        std::fs::write(path, contents).map_err(|e| e.to_string())
+        use std::io::Write;
+        let write = (|| -> Result<(), String> {
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&tmp)
+                .map_err(|e| e.to_string())?;
+            f.write_all(contents).map_err(|e| e.to_string())?;
+            f.sync_all().map_err(|e| e.to_string())?;
+            Ok(())
+        })();
+        if let Err(e) = write {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
+        }
+        if let Err(e) = std::fs::rename(&tmp, path) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e.to_string());
+        }
+        Ok(())
+    }
+}
+
+/// Create `path` exclusively with owner-only mode on Unix. Fails when the file
+/// already exists. First-install writes of secret material must use this —
+/// never a replace-capable write.
+pub fn create_new_private(path: &Path, contents: &[u8]) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "create-new write: missing parent".to_string())?;
+    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)
+            .map_err(|e| e.to_string())?;
+        if let Err(e) = (|| -> Result<(), String> {
+            f.set_permissions(std::fs::Permissions::from_mode(0o600))
+                .map_err(|e| e.to_string())?;
+            f.write_all(contents).map_err(|e| e.to_string())?;
+            f.sync_all().map_err(|e| e.to_string())?;
+            Ok(())
+        })() {
+            let _ = std::fs::remove_file(path);
+            return Err(e);
+        }
+        if let Ok(dir) = std::fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map_err(|e| e.to_string())?;
+        if let Err(e) = (|| -> Result<(), String> {
+            f.write_all(contents).map_err(|e| e.to_string())?;
+            f.sync_all().map_err(|e| e.to_string())?;
+            Ok(())
+        })() {
+            let _ = std::fs::remove_file(path);
+            return Err(e);
+        }
+        Ok(())
     }
 }
 
@@ -208,5 +281,32 @@ mod tests {
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
         assert_eq!(std::fs::read(&path).unwrap(), b"[]");
+    }
+
+    #[test]
+    fn create_new_private_never_overwrites() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("identity.seed");
+        create_new_private(&path, b"first").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"first");
+        assert!(create_new_private(&path, b"second").is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"first");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_replaces_existing_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        atomic_write_private(&path, b"v1").unwrap();
+        atomic_write_private(&path, b"v2-longer").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"v2-longer");
     }
 }

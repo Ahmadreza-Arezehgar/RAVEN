@@ -452,6 +452,7 @@ impl NodeState {
                                 return Ok(None);
                             }
                             self.recv_count += 1;
+                            eprintln!("DELIVERED bytes={}", env.message_ciphertext.len());
                             let ack = build_ack_envelope(&self.identity, env.message_id, &peer_pub);
                             return Ok(Some(ack.pack()));
                         }
@@ -544,6 +545,7 @@ impl NodeState {
                         .mark_state(&acked, DeliveryState::Delivered)
                         .map_err(|e| e.to_string())?;
                     self.got_ack = true;
+                    eprintln!("ACK delivered");
                     Ok(None)
                 }
             }
@@ -1089,6 +1091,7 @@ async fn main() {
                             std::process::exit(1);
                         })
                 };
+                eprintln!("ENVELOPE_FP mid={}", hex::encode(mid));
                 let packed = env.pack();
                 {
                     let st = state.lock().await;
@@ -1286,6 +1289,14 @@ async fn main() {
             ble_listen,
             timeout_secs,
         } => {
+            // Identity preflight MUST run before any profile-state creation:
+            // creating forward_queue.sqlite first would make a fresh profile
+            // fail require_proven_first_install (the queue file is not on the
+            // first-install allow-list), wedging first install permanently.
+            init_identity(&data_dir).unwrap_or_else(|e| {
+                eprintln!("service identity preflight failed: {e}");
+                std::process::exit(1);
+            });
             // Pre-create WAL schema so IPC + bridge do not race on first open.
             let fq = bridge_run::forward_queue_path(&data_dir);
             let _warmup = ForwardQueue::open(&fq).map_err(|e| {

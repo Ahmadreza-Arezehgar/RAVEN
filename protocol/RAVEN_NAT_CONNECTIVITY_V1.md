@@ -30,6 +30,19 @@ The reusable behaviour composes:
 - Identify using `/raven/connectivity/1.0.0` and Ping; and
 - `libp2p-connection-limits` inside the same behaviour tree.
 
+### 2.1 Realtime-media boundary
+
+This libp2p experiment is not WebRTC ICE, STUN, TURN, DTLS-SRTP, RTP/RTCP,
+SFrame or an SFU. A Circuit Relay v2 reservation cannot be relabeled a TURN
+allocation; DCUtR success cannot be relabeled ICE consent; Noise authentication
+cannot be relabeled the call-control/DTLS fingerprint binding required by
+[`RAVEN_PRIVATE_REALTIME_MEDIA_V1.md`](RAVEN_PRIVATE_REALTIME_MEDIA_V1.md).
+
+Any future realtime integration needs an independently pinned provider/library
+profile, explicit direct-versus-relay privacy consent, consent freshness,
+media-specific replay/counter/resource rules and physical tests. This binary
+does not advertise, parse, proxy or activate realtime media.
+
 AutoNAT is a reachability signal, not an authorization oracle. A successful
 probe must never authenticate a Raven contact, session, message, or relay.
 DCUtR only changes the path used by an already authenticated libp2p

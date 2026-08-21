@@ -11,7 +11,7 @@ use crate::forward_queue::{
     ForwardItem, ForwardQueue, ForwardQueueError, ForwardState, PeerRateDecision,
     MAX_ENVELOPE_BYTES,
 };
-use crate::transport::{select_path, PathChoice, PathContext, TransportKind};
+use crate::transport::{plan_paths, select_path, PathChoice, PathContext, TransportKind};
 
 #[derive(Debug, Clone)]
 pub struct InboundEnvelope {
@@ -90,7 +90,17 @@ impl MessageRouter {
     }
 
     pub fn path_choice(&self, peer_direct: bool, peer_inet: bool, peer_ble: bool) -> PathChoice {
-        select_path(&PathContext {
+        select_path(&self.path_context(peer_direct, peer_inet, peer_ble))
+    }
+
+    /// Ordered carrier attempts for the same immutable endpoint object.
+    /// Network workers remain responsible for retry and ACK verification.
+    pub fn path_plan(&self, peer_direct: bool, peer_inet: bool, peer_ble: bool) -> Vec<PathChoice> {
+        plan_paths(&self.path_context(peer_direct, peer_inet, peer_ble))
+    }
+
+    fn path_context(&self, peer_direct: bool, peer_inet: bool, peer_ble: bool) -> PathContext {
+        PathContext {
             local_has_internet: self.local_has_internet,
             local_has_ble: self.local_has_ble,
             peer_reachable_direct: peer_direct,
@@ -99,7 +109,7 @@ impl MessageRouter {
             bridge_enabled: self.bridge_enabled,
             store_enabled: self.store_enabled,
             relay_enabled: self.relay_enabled,
-        })
+        }
     }
 
     /// Ingress handler: validate bounds/TTL, perform a read-only immutable
@@ -498,5 +508,22 @@ mod tests {
         let recovered = router.recover_pending(&q, 20).unwrap();
         assert_eq!(recovered.len(), 1);
         assert_eq!(recovered[0].0.message_id, mid);
+    }
+
+    #[test]
+    fn route_plan_is_fail_closed_when_every_carrier_is_off() {
+        let router = MessageRouter {
+            bridge_enabled: false,
+            store_enabled: false,
+            relay_enabled: false,
+            endpoint_enabled: true,
+            local_has_internet: false,
+            local_has_ble: false,
+        };
+        assert!(router.path_plan(false, false, false).is_empty());
+        assert_eq!(
+            router.path_choice(false, false, false),
+            PathChoice::Unavailable
+        );
     }
 }

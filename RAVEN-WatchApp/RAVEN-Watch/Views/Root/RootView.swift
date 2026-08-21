@@ -4,9 +4,7 @@
 // Pages, in order:
 //
 //   1. Inbox        — DMs and group chats
-//   2. Feed         — Echo Wall posts
-//   3. Rooms        — active voice rooms (only shown when there's one)
-//   4. Notifications — mentions, reactions, comments
+//   2. Alerts       — group mentions, message reactions and delivery status
 //
 // A small "phone unreachable" pill floats over the top when WCSession
 // reports the iPhone isn't paired or installed. We never block the UI on

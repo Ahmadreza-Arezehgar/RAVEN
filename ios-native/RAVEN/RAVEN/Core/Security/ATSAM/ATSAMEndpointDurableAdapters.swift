@@ -1510,8 +1510,14 @@ final class SQLCipherAcceptanceDatabase: ATSAMEndpointTransactionV1.OutboundData
             return data.map { String(format: "%02x", $0) }.joined()
         }
         var key = Data(count: 32)
-        key.withUnsafeMutableBytes { buf in
-            _ = SecRandomCopyBytes(kSecRandomDefault, 32, buf.baseAddress!)
+        try key.withUnsafeMutableBytes { buf in
+            guard let base = buf.baseAddress else {
+                throw SQLCipherAcceptanceDatabaseError.encryptionKeyFailed
+            }
+            let status = SecRandomCopyBytes(kSecRandomDefault, 32, base)
+            guard status == errSecSuccess else {
+                throw SQLCipherAcceptanceDatabaseError.encryptionKeyFailed
+            }
         }
         let add: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,

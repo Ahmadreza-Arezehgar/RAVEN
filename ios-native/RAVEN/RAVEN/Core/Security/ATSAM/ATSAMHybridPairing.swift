@@ -177,6 +177,11 @@ enum ATSAMHybridPairing {
         let peerPubKey = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: peerXPub)
         let sharedSecret = try local.xPriv.sharedSecretFromKeyAgreement(with: peerPubKey)
         let zX = sharedSecret.withUnsafeBytes { Data($0) }
+        // Non-contributory guard: an all-zero X25519 result means the
+        // peer supplied a low-order public key. Fail closed (spec MUST).
+        guard !zX.allSatisfy({ $0 == 0 }) else {
+            throw ATSAMError.nonContributoryX25519
+        }
 
         // 2. Fresh pairing nonce (32 B random) unless caller supplied one.
         let nonceBytes: Data
@@ -312,6 +317,11 @@ enum ATSAMHybridPairing {
         let peerPubKey = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: peerXPub)
         let sharedSecret = try local.xPriv.sharedSecretFromKeyAgreement(with: peerPubKey)
         let zX = sharedSecret.withUnsafeBytes { Data($0) }
+        // Non-contributory guard: an all-zero X25519 result means the
+        // peer supplied a low-order public key. Fail closed (spec MUST).
+        guard !zX.allSatisfy({ $0 == 0 }) else {
+            throw ATSAMError.nonContributoryX25519
+        }
 
         // 2. Hybrid-vs-degraded policy gate (matches initiator).
         // 🔴 ROUND 26 — hybridRequired beats allowNonHybridFallback.

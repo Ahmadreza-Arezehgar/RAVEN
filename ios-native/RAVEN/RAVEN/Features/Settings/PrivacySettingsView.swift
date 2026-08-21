@@ -6,8 +6,6 @@ struct PrivacySettingsView: View {
     @AppStorage("whoCanMessage") private var whoCanMessage = "everyone"
     @AppStorage("whoCanSeeProfile") private var whoCanSeeProfile = "public"
     @AppStorage("readReceipts") private var readReceipts = true
-    @AppStorage("showLikedPosts") private var showLikedPosts = true
-    @AppStorage("showReplies") private var showReplies = true
     /// Whether other users may share my profile as a contact card into
     /// their chats. Default true — explicit opt-out, not opt-in. Server is
     /// the enforcement boundary; this row syncs the preference and the
@@ -69,13 +67,13 @@ struct PrivacySettingsView: View {
                     }
 
                     SettingsPickerRow(
-                        title: "Who can see my profile",
+                        title: "Who can view my contact card",
                         icon: "person.circle.fill",
                         iconColor: .orange,
                         selection: $whoCanSeeProfile,
                         options: [
-                            ("public", "Public"),
-                            ("friends", "Friends Only")
+                            ("public", "Everyone"),
+                            ("friends", "Contacts Only")
                         ]
                     )
                     .onChange(of: whoCanSeeProfile) { oldValue, _ in
@@ -91,31 +89,6 @@ struct PrivacySettingsView: View {
                     )
                     .onChange(of: allowContactShare) { oldValue, _ in
                         syncToServer(oldAllowContactShare: oldValue)
-                    }
-                }
-                
-                // Profile Tabs Visibility
-                SettingsSection(title: "Profile Tabs") {
-                    SettingsToggleRow(
-                        title: "Show Liked Posts",
-                        subtitle: "Others can see posts you've liked",
-                        icon: "heart.fill",
-                        iconColor: .pink,
-                        isOn: $showLikedPosts
-                    )
-                    .onChange(of: showLikedPosts) { oldValue, _ in
-                        syncToServer(oldShowLikedPosts: oldValue)
-                    }
-                    
-                    SettingsToggleRow(
-                        title: "Show Replies",
-                        subtitle: "Others can see posts you've replied to",
-                        icon: "arrowshape.turn.up.left.fill",
-                        iconColor: .blue,
-                        isOn: $showReplies
-                    )
-                    .onChange(of: showReplies) { oldValue, _ in
-                        syncToServer(oldShowReplies: oldValue)
                     }
                 }
                 
@@ -172,8 +145,6 @@ struct PrivacySettingsView: View {
         oldReadReceipts: Bool? = nil,
         oldWhoCanMessage: String? = nil,
         oldWhoCanSeeProfile: String? = nil,
-        oldShowLikedPosts: Bool? = nil,
-        oldShowReplies: Bool? = nil,
         oldAllowContactShare: Bool? = nil
     ) {
         // Guard: If we're rolling back from a failed sync, don't re-trigger
@@ -188,8 +159,6 @@ struct PrivacySettingsView: View {
         let rollbackReadReceipts = oldReadReceipts ?? readReceipts
         let rollbackWhoCanMessage = oldWhoCanMessage ?? whoCanMessage
         let rollbackWhoCanSeeProfile = oldWhoCanSeeProfile ?? whoCanSeeProfile
-        let rollbackShowLikedPosts = oldShowLikedPosts ?? showLikedPosts
-        let rollbackShowReplies = oldShowReplies ?? showReplies
         let rollbackAllowContactShare = oldAllowContactShare ?? allowContactShare
 
         syncTask = Task {
@@ -205,8 +174,6 @@ struct PrivacySettingsView: View {
                 readReceipts: readReceipts,
                 whoCanMessage: whoCanMessage,
                 whoCanSeeProfile: whoCanSeeProfile,
-                showLikedPosts: showLikedPosts,
-                showReplies: showReplies,
                 allowContactShare: allowContactShare
             )
 
@@ -230,8 +197,6 @@ struct PrivacySettingsView: View {
                     readReceipts = rollbackReadReceipts
                     whoCanMessage = rollbackWhoCanMessage
                     whoCanSeeProfile = rollbackWhoCanSeeProfile
-                    showLikedPosts = rollbackShowLikedPosts
-                    showReplies = rollbackShowReplies
                     allowContactShare = rollbackAllowContactShare
                     showSyncError = true
                     // Re-enable sync after a brief delay to let onChange settle
@@ -251,8 +216,6 @@ private struct PrivacySettingsPayload: Encodable {
     let readReceipts: Bool
     let whoCanMessage: String
     let whoCanSeeProfile: String
-    let showLikedPosts: Bool
-    let showReplies: Bool
     let allowContactShare: Bool
 
     enum CodingKeys: String, CodingKey {
@@ -260,8 +223,6 @@ private struct PrivacySettingsPayload: Encodable {
         case readReceipts = "read_receipts"
         case whoCanMessage = "who_can_message"
         case whoCanSeeProfile = "who_can_see_profile"
-        case showLikedPosts = "show_liked_posts"
-        case showReplies = "show_replies"
         case allowContactShare = "allow_contact_share"
     }
 }
@@ -514,4 +475,3 @@ struct BlockedUserRow: View {
         PrivacySettingsView()
     }
 }
-

@@ -24,9 +24,9 @@ Companion to `docs/MASTER_CHECKLIST_STATUS.md`. This is **not** Final DoD §60.
 
 | Item | Status | Evidence |
 |------|--------|----------|
-| InternetTransport dial | ✅ TCP path | `internet_dial_smoke.sh` |
+| InternetTransport endpoint delivery | ❌ PRODUCTION HOLD | `internet_dial_smoke.sh` proves exact ATSAM refusal |
 | Full libp2p QUIC/DHT/DCUtR public | ❌ BLOCKED_HARDWARE | local swarm smoke green |
-| Capability advertisement | ✅ | hello caps + node_policy caps |
+| Capability advertisement | 🟡 bounded | Internet only; default swarm no longer falsely advertises Relay |
 | Always-on node scripts | ✅ | launchd / systemd / Windows |
 | ash↔node IPC | ✅ | service survives ash exit (§59) |
 | NAT docker substitute | ✅ script | SKIP when Docker down |

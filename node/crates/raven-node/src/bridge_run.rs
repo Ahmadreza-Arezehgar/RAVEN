@@ -161,10 +161,14 @@ async fn on_frame(
                 let _ = st
                     .queue
                     .mark_object_state(&identity.object_digest, ForwardState::Forwarded);
+                let mid_hex = raven_core::envelope::Envelope::unpack(&fwd)
+                    .map(|e| hex::encode(e.message_id))
+                    .unwrap_or_default();
                 eprintln!(
-                    "raven-node: BRIDGE forward {}→{} (opaque)",
+                    "raven-node: BRIDGE forward {}→{} (opaque) mid={}",
                     ingress.as_str(),
-                    egress.as_str()
+                    egress.as_str(),
+                    mid_hex
                 );
             } else {
                 let _ = st

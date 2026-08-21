@@ -1003,12 +1003,18 @@ impl PlatformProtectedSessionBackend {
                     "secret-service collection failed: {error}"
                 ))
             })?;
-            if collection.is_locked() {
-                collection.unlock().map_err(|error| {
-                    IndexedSessionStoreError::ProtectedStore(format!(
-                        "secret-service unlock failed: {error}"
-                    ))
-                })?;
+            match collection.is_locked() {
+                Ok(false) => {}
+                Ok(true) => {
+                    return Err(IndexedSessionStoreError::ProtectedStore(
+                        "secret-service collection locked".into(),
+                    ));
+                }
+                Err(error) => {
+                    return Err(IndexedSessionStoreError::ProtectedStore(format!(
+                        "secret-service is_locked failed: {error}"
+                    )));
+                }
             }
         }
 
@@ -1095,6 +1101,7 @@ impl ProtectedSessionBackend for PlatformProtectedSessionBackend {
 impl ProtectedSessionBackend for PlatformProtectedSessionBackend {
     fn get(&self, account: &str) -> Result<Option<Vec<u8>>, IndexedSessionStoreError> {
         use secret_service::{EncryptionType, SecretService};
+        use std::collections::HashMap;
         let service = SecretService::new(EncryptionType::Dh).map_err(|error| {
             IndexedSessionStoreError::ProtectedStore(format!(
                 "secret-service connection failed: {error}"
@@ -1105,19 +1112,25 @@ impl ProtectedSessionBackend for PlatformProtectedSessionBackend {
                 "secret-service collection failed: {error}"
             ))
         })?;
-        if collection.is_locked() {
-            collection.unlock().map_err(|error| {
-                IndexedSessionStoreError::ProtectedStore(format!(
-                    "secret-service unlock failed: {error}"
-                ))
-            })?;
+        match collection.is_locked() {
+            Ok(false) => {}
+            Ok(true) => {
+                return Err(IndexedSessionStoreError::ProtectedStore(
+                    "secret-service collection locked".into(),
+                ));
+            }
+            Err(error) => {
+                return Err(IndexedSessionStoreError::ProtectedStore(format!(
+                    "secret-service is_locked failed: {error}"
+                )));
+            }
         }
         let scoped = self.scoped_account(account);
         let items = collection
-            .search_items(vec![
+            .search_items(HashMap::from([
                 ("service", PLATFORM_SERVICE),
                 ("account", scoped.as_str()),
-            ])
+            ]))
             .map_err(|error| {
                 IndexedSessionStoreError::ProtectedStore(format!(
                     "secret-service search failed: {error}"
@@ -1133,6 +1146,7 @@ impl ProtectedSessionBackend for PlatformProtectedSessionBackend {
 
     fn put(&self, account: &str, value: &[u8]) -> Result<(), IndexedSessionStoreError> {
         use secret_service::{EncryptionType, SecretService};
+        use std::collections::HashMap;
         let service = SecretService::new(EncryptionType::Dh).map_err(|error| {
             IndexedSessionStoreError::ProtectedStore(format!(
                 "secret-service connection failed: {error}"
@@ -1143,18 +1157,24 @@ impl ProtectedSessionBackend for PlatformProtectedSessionBackend {
                 "secret-service collection failed: {error}"
             ))
         })?;
-        if collection.is_locked() {
-            collection.unlock().map_err(|error| {
-                IndexedSessionStoreError::ProtectedStore(format!(
-                    "secret-service unlock failed: {error}"
-                ))
-            })?;
+        match collection.is_locked() {
+            Ok(false) => {}
+            Ok(true) => {
+                return Err(IndexedSessionStoreError::ProtectedStore(
+                    "secret-service collection locked".into(),
+                ));
+            }
+            Err(error) => {
+                return Err(IndexedSessionStoreError::ProtectedStore(format!(
+                    "secret-service is_locked failed: {error}"
+                )));
+            }
         }
         let scoped = self.scoped_account(account);
         collection
             .create_item(
                 "RAVEN ATSAM indexed session state",
-                vec![("service", PLATFORM_SERVICE), ("account", scoped.as_str())],
+                HashMap::from([("service", PLATFORM_SERVICE), ("account", scoped.as_str())]),
                 value,
                 true,
                 "application/octet-stream",
@@ -1169,6 +1189,7 @@ impl ProtectedSessionBackend for PlatformProtectedSessionBackend {
 
     fn delete(&self, account: &str) -> Result<(), IndexedSessionStoreError> {
         use secret_service::{EncryptionType, SecretService};
+        use std::collections::HashMap;
         let service = SecretService::new(EncryptionType::Dh).map_err(|error| {
             IndexedSessionStoreError::ProtectedStore(format!(
                 "secret-service connection failed: {error}"
@@ -1179,19 +1200,25 @@ impl ProtectedSessionBackend for PlatformProtectedSessionBackend {
                 "secret-service collection failed: {error}"
             ))
         })?;
-        if collection.is_locked() {
-            collection.unlock().map_err(|error| {
-                IndexedSessionStoreError::ProtectedStore(format!(
-                    "secret-service unlock failed: {error}"
-                ))
-            })?;
+        match collection.is_locked() {
+            Ok(false) => {}
+            Ok(true) => {
+                return Err(IndexedSessionStoreError::ProtectedStore(
+                    "secret-service collection locked".into(),
+                ));
+            }
+            Err(error) => {
+                return Err(IndexedSessionStoreError::ProtectedStore(format!(
+                    "secret-service is_locked failed: {error}"
+                )));
+            }
         }
         let scoped = self.scoped_account(account);
         let items = collection
-            .search_items(vec![
+            .search_items(HashMap::from([
                 ("service", PLATFORM_SERVICE),
                 ("account", scoped.as_str()),
-            ])
+            ]))
             .map_err(|error| {
                 IndexedSessionStoreError::ProtectedStore(format!(
                     "secret-service search failed: {error}"
@@ -1265,7 +1292,7 @@ fn dpapi_protect(value: &[u8]) -> Result<Vec<u8>, IndexedSessionStoreError> {
     use windows_sys::Win32::Security::Cryptography::{
         CryptProtectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
     };
-    let mut input = CRYPT_INTEGER_BLOB {
+    let input = CRYPT_INTEGER_BLOB {
         cbData: value
             .len()
             .try_into()
@@ -1278,7 +1305,7 @@ fn dpapi_protect(value: &[u8]) -> Result<Vec<u8>, IndexedSessionStoreError> {
     };
     let ok = unsafe {
         CryptProtectData(
-            &mut input,
+            &input,
             std::ptr::null(),
             std::ptr::null_mut(),
             std::ptr::null_mut(),
@@ -1306,7 +1333,7 @@ fn dpapi_unprotect(value: &[u8]) -> Result<Vec<u8>, IndexedSessionStoreError> {
     use windows_sys::Win32::Security::Cryptography::{
         CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
     };
-    let mut input = CRYPT_INTEGER_BLOB {
+    let input = CRYPT_INTEGER_BLOB {
         cbData: value
             .len()
             .try_into()
@@ -1319,7 +1346,7 @@ fn dpapi_unprotect(value: &[u8]) -> Result<Vec<u8>, IndexedSessionStoreError> {
     };
     let ok = unsafe {
         CryptUnprotectData(
-            &mut input,
+            &input,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
             std::ptr::null_mut(),

@@ -110,16 +110,6 @@ struct PrivacyPolicyView: View {
                 PPItem(id: next(), question: "pp.q47".localized, answer: "pp.a47".localized),
             ]),
             
-            // F — Posts & Feed (48–53)
-            PPSection(id: 5, title: "pp.section.5".localized, icon: "square.stack", items: [
-                PPItem(id: next(), question: "pp.q48".localized, answer: "pp.a48".localized),
-                PPItem(id: next(), question: "pp.q49".localized, answer: "pp.a49".localized),
-                PPItem(id: next(), question: "pp.q50".localized, answer: "pp.a50".localized),
-                PPItem(id: next(), question: "pp.q51".localized, answer: "pp.a51".localized),
-                PPItem(id: next(), question: "pp.q52".localized, answer: "pp.a52".localized),
-                PPItem(id: next(), question: "pp.q53".localized, answer: "pp.a53".localized),
-            ]),
-            
             // G — Mesh / Offline / Bridge (54–60)
             PPSection(id: 6, title: "pp.section.6".localized, icon: "antenna.radiowaves.left.and.right", items: [
                 PPItem(id: next(), question: "pp.q54".localized, answer: "pp.a54".localized),
@@ -145,18 +135,6 @@ struct PrivacyPolicyView: View {
                 PPItem(id: next(), question: "pp.q65".localized, answer: "pp.a65".localized),
             ]),
             
-            // J — Echo, Club, Vault & Discovery (66–74)
-            PPSection(id: 9, title: "pp.section.9".localized, icon: "waveform.circle", items: [
-                PPItem(id: next(), question: "pp.q66".localized, answer: "pp.a66".localized),
-                PPItem(id: next(), question: "pp.q67".localized, answer: "pp.a67".localized),
-                PPItem(id: next(), question: "pp.q68".localized, answer: "pp.a68".localized),
-                PPItem(id: next(), question: "pp.q69".localized, answer: "pp.a69".localized),
-                PPItem(id: next(), question: "pp.q70".localized, answer: "pp.a70".localized),
-                PPItem(id: next(), question: "pp.q71".localized, answer: "pp.a71".localized),
-                PPItem(id: next(), question: "pp.q72".localized, answer: "pp.a72".localized),
-                PPItem(id: next(), question: "pp.q73".localized, answer: "pp.a73".localized),
-                PPItem(id: next(), question: "pp.q74".localized, answer: "pp.a74".localized),
-            ]),
         ]
     }
     

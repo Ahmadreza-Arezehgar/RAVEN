@@ -1,0 +1,12 @@
+secret-service 2.0.2
+Copyright (c) secret-service-rs Developers
+
+Licensed under MIT OR Apache-2.0. See LICENSE-MIT and LICENSE-APACHE.
+
+RAVEN Task 0B.3 R0 adds a narrow no-prompt DH API surface and secret hygiene
+hardening. See PROVENANCE.md and RAVEN_DELTA.md.
+
+num-bigint-dig 0.9.1
+Copyright its contributors
+Licensed under MIT OR Apache-2.0.
+Cargo checksum: a7f9a86e097b0d187ad0e65667c2f58b9254671e86e7dbb78036b16692eae099

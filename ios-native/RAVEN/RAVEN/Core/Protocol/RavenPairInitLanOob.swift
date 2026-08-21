@@ -56,16 +56,28 @@ enum RavenPairInitLanOob {
             }
         }
         var messageId = Data(count: 16)
-        messageId.withUnsafeMutableBytes { buf in
-            _ = SecRandomCopyBytes(kSecRandomDefault, 16, buf.baseAddress!)
+        try messageId.withUnsafeMutableBytes { buf in
+            guard let baseAddress = buf.baseAddress else {
+                throw LanOobError.rngFailed(errSecParam)
+            }
+            let status = SecRandomCopyBytes(kSecRandomDefault, 16, baseAddress)
+            guard status == errSecSuccess else { throw LanOobError.rngFailed(status) }
         }
         var nonce = Data(count: 12)
-        nonce.withUnsafeMutableBytes { buf in
-            _ = SecRandomCopyBytes(kSecRandomDefault, 12, buf.baseAddress!)
+        try nonce.withUnsafeMutableBytes { buf in
+            guard let baseAddress = buf.baseAddress else {
+                throw LanOobError.rngFailed(errSecParam)
+            }
+            let status = SecRandomCopyBytes(kSecRandomDefault, 12, baseAddress)
+            guard status == errSecSuccess else { throw LanOobError.rngFailed(status) }
         }
         var tag = Data(count: 16)
-        tag.withUnsafeMutableBytes { buf in
-            _ = SecRandomCopyBytes(kSecRandomDefault, 16, buf.baseAddress!)
+        try tag.withUnsafeMutableBytes { buf in
+            guard let baseAddress = buf.baseAddress else {
+                throw LanOobError.rngFailed(errSecParam)
+            }
+            let status = SecRandomCopyBytes(kSecRandomDefault, 16, baseAddress)
+            guard status == errSecSuccess else { throw LanOobError.rngFailed(status) }
         }
         var env = RavenEnvelopeV1(
             envType: RavenEnvelopeV1.EnvType.message.rawValue,
@@ -88,5 +100,6 @@ enum RavenPairInitLanOob {
     enum LanOobError: Error {
         case badInitWire
         case badResponseWire
+        case rngFailed(OSStatus)
     }
 }

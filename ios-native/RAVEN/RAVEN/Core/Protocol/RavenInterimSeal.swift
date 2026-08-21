@@ -71,8 +71,16 @@ public enum RavenInterimSeal {
         precondition(messageId.count == 16)
         let aad = buildAAD(sender: senderAddr, recipient: recipientAddr, messageId: messageId)
         var nonce = Data(count: 12)
-        nonce.withUnsafeMutableBytes { buf in
-            _ = SecRandomCopyBytes(kSecRandomDefault, 12, buf.baseAddress!)
+        try nonce.withUnsafeMutableBytes { buf in
+            guard let baseAddress = buf.baseAddress else {
+                throw SealError.rngFailed(errSecParam)
+            }
+            let status = SecRandomCopyBytes(kSecRandomDefault, 12, baseAddress)
+            guard status == errSecSuccess else {
+                // An all-zero nonce under a reused key would be
+                // catastrophic; fail closed instead.
+                throw SealError.rngFailed(status)
+            }
         }
         let sealed = try ChaChaPoly.seal(
             plaintext,
@@ -132,5 +140,6 @@ public enum RavenInterimSeal {
         case unsafeInterimDisabled
         case truncated
         case unsupported
+        case rngFailed(OSStatus)
     }
 }

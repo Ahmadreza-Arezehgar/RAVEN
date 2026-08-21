@@ -1,16 +1,14 @@
 import SwiftUI
 
-// MARK: - Haptic Tab Bar (Liquid Glass capsule with morphing active pill)
-/// Matches the iOS 26 liquid-glass bottom-bar design:
-/// - Outer translucent capsule with `.ultraThinMaterial`
-/// - Inner glass pill that morphs between cells via `matchedGeometryEffect`
-/// - Chromatic refraction stroke (cyan / white / magenta / amber) on the
-///   active pill — approximates the iOS 26 `.glassEffect(.interactive())`
-///   look while remaining compatible with the iOS 17.0 deployment target
-/// - Active tab shows label text + green status dot; inactive cells are
-///   icon-only at reduced opacity
-/// - Long-press on a tab still surfaces the per-tab quick-action menu via
-///   the native SwiftUI `.contextMenu`
+// MARK: - Haptic Tab Bar ("RAVEN://TERMINAL" status bar)
+/// TERMINAL REDESIGN (2026-08): the liquid-glass capsule is replaced by a
+/// full-width console status bar:
+/// - Opaque near-black surface with a phosphor hairline on top
+/// - Monospace cell labels in tmux style — `1:peers 2:chats 3:mesh 4:cfg`
+/// - The active cell is an inverse block (phosphor fill, ink text) that
+///   slides between cells via `matchedGeometryEffect`
+/// - Unread badge renders as an inline `[n]` block counter
+/// - Long-press still surfaces the per-tab quick-action context menu
 struct HapticTabBar: View {
     @Binding var selected: AppTab
     let badgeCount: Int
@@ -36,47 +34,49 @@ struct HapticTabBar: View {
             }
         }
         .padding(.horizontal, 6)
-        .padding(.vertical, 6)
+        .padding(.vertical, 7)
         .background(barBackground)
-        .padding(.horizontal, 16)
-        .padding(.bottom, 8)
     }
 
-    // MARK: - Outer bar background (frosted glass capsule)
-    /// Uses the unified `liquidGlass(in:)` modifier so the bar shares its
-    /// material/stroke/shadow with every other glass surface in the app.
+    // MARK: Outer bar — console status surface
     private var barBackground: some View {
-        Color.clear.glassSurface(in: Capsule())
+        ZStack(alignment: .top) {
+            DS.inkElevated.opacity(0.98)
+            Rectangle()
+                .fill(DS.hairline)
+                .frame(height: 1)
+        }
+        .ignoresSafeArea(edges: .bottom)
     }
 
-    // MARK: - Tab cell
+    // MARK: Tab cell
 
     @ViewBuilder
     private func tabCell(for tab: AppTab) -> some View {
         let isActive = selected == tab
 
         ZStack {
-            // Active glass pill — only rendered on the selected cell.
-            // matchedGeometryEffect causes SwiftUI to interpolate its frame
-            // between the old and new cells, producing the morphing slide.
+            // Active inverse block — morphs between cells.
             if isActive {
-                activePill
+                RoundedRectangle(cornerRadius: DS.radiusPill, style: .continuous)
+                    .fill(DS.phosphor)
                     .matchedGeometryEffect(id: "activePill", in: pillNS)
+                    .shadow(color: DS.phosphor.opacity(0.35), radius: 6, y: 0)
             }
 
             tabContent(for: tab, isActive: isActive)
         }
         .frame(maxWidth: .infinity)
-        .frame(height: 50)
-        .contentShape(Capsule())
+        .frame(height: 44)
+        .contentShape(Rectangle())
         .onTapGesture {
             UIApplication.shared.sendAction(
                 #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil
             )
             Haptics.selection()
-            // 0.15s delay matches the prior ContextMenuTabItem behaviour —
-            // lets the keyboard finish dismissing before the tab actually flips.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            // Short delay lets the keyboard finish dismissing before the
+            // tab actually flips (carried over from the glass bar).
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
                 withAnimation(DS.tabSpring) {
                     selected = tab
                 }
@@ -87,33 +87,22 @@ struct HapticTabBar: View {
         .accessibilityAddTraits(isActive ? .isSelected : [])
     }
 
-    // MARK: - Active glass pill (chromatic refraction via shared accent modifier)
-    private var activePill: some View {
-        Color.clear
-            .glassAccent(in: Capsule())
-            .padding(.vertical, 2)
-            .padding(.horizontal, 2)
-    }
-
-    // MARK: - Tab content (icon for inactive, label + dot for active)
+    // MARK: Cell content
 
     @ViewBuilder
     private func tabContent(for tab: AppTab, isActive: Bool) -> some View {
         if isActive {
-            VStack(spacing: 3) {
-                activeContent(for: tab)
-                Circle()
-                    .fill(DS.cyan)
-                    .frame(width: 5, height: 5)
-                    .shadow(color: DS.cyan.opacity(0.7), radius: 4)
-            }
-            .transition(.opacity.combined(with: .scale(scale: 0.9)))
+            activeContent(for: tab)
+                .font(.system(.caption, design: .monospaced, weight: .bold))
+                .foregroundStyle(DS.ink)
+                .transition(.opacity.combined(with: .scale(scale: 0.92)))
         } else {
             inactiveContent(for: tab)
                 .transition(.opacity)
         }
     }
 
+    /// Active cell: `2:chats` inverse-block text (avatar for Settings).
     @ViewBuilder
     private func activeContent(for tab: AppTab) -> some View {
         if tab == .account, let url = userAvatarURL {
@@ -121,70 +110,97 @@ struct HapticTabBar: View {
                 if let img = phase.image {
                     img.resizable().scaledToFill()
                 } else {
-                    fallbackIcon(name: tab.selectedIcon, size: 18, weight: .semibold, opacity: 1.0)
+                    Text(tab.statusLabel.uppercased())
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
                 }
             }
-            .frame(width: 18, height: 18)
-            .clipShape(Circle())
-            .overlay(Circle().stroke(.white.opacity(0.45), lineWidth: 0.8))
+            .frame(width: 20, height: 20)
+            .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .strokeBorder(DS.ink.opacity(0.6), lineWidth: 1)
+            )
         } else {
-            Text(tab.title)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
+            HStack(spacing: 5) {
+                Text(tab.statusLabel)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                if tab == .messages && badgeCount > 0 {
+                    Text("[\(badgeCount > 9 ? "9+" : "\(badgeCount)")]")
+                        .minimumScaleFactor(0.8)
+                }
+            }
         }
     }
 
+    /// Inactive cell: dim monospace `n:label` + unread marker.
     @ViewBuilder
     private func inactiveContent(for tab: AppTab) -> some View {
-        ZStack {
+        HStack(spacing: 4) {
             if tab == .account, let url = userAvatarURL {
                 AsyncImage(url: url) { phase in
                     if let img = phase.image {
                         img.resizable().scaledToFill()
                     } else {
-                        fallbackIcon(name: tab.icon, size: 20, weight: .regular, opacity: 0.55)
+                        Text(tab.indexMarker)
+                            .font(.system(.caption, design: .monospaced))
                     }
                 }
-                .frame(width: 22, height: 22)
-                .clipShape(Circle())
-                .opacity(0.7)
+                .frame(width: 18, height: 18)
+                .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+                .opacity(0.85)
             } else {
-                fallbackIcon(name: tab.icon, size: 20, weight: .regular, opacity: 0.55)
+                Text(tab.statusLabel)
+                    .font(.system(.caption, design: .monospaced, weight: .medium))
+                    .foregroundStyle(DS.mist.opacity(0.55))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
             }
 
-            // Unread badge (only on Messages tab)
             if tab == .messages && badgeCount > 0 {
-                Text(badgeCount > 99 ? "99+" : "\(badgeCount)")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 2)
-                    .background(Capsule().fill(DS.violet))
-                    .offset(x: 12, y: -10)
-                    .transition(.scale.combined(with: .opacity))
+                Text("[\(badgeCount > 9 ? "9+" : "\(badgeCount)")]")
+                    .font(.system(.caption2, design: .monospaced, weight: .bold))
+                    .foregroundStyle(DS.phosphor)
             }
         }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: DS.radiusPill, style: .continuous)
+                .strokeBorder(DS.hairlineDim, lineWidth: 1)
+        )
+    }
+}
+
+// MARK: - Status-bar label helpers
+
+extension AppTab {
+    /// Zero-based console index, e.g. "1".
+    var indexNumber: Int {
+        (AppTab.allCases.firstIndex(of: self) ?? 0) + 1
     }
 
-    private func fallbackIcon(name: String, size: CGFloat, weight: Font.Weight, opacity: Double) -> some View {
-        Image(systemName: name)
-            .font(.system(size: size, weight: weight))
-            .foregroundStyle(.primary.opacity(opacity))
+    /// `n:` prefix shown before the label.
+    var indexMarker: String {
+        "\(indexNumber):"
+    }
+
+    /// Compact tmux-style status label — `1:peers`.
+    var statusLabel: String {
+        switch self {
+        case .contacts: return "\(indexMarker)peers"
+        case .messages: return "\(indexMarker)chats"
+        case .network: return "\(indexMarker)mesh"
+        case .account: return "\(indexMarker)cfg"
+        }
     }
 }
 
 // MARK: - Preview
 #Preview {
     ZStack {
-        LinearGradient(
-            colors: [.blue.opacity(0.4), .purple.opacity(0.4)],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
-        )
-        .ignoresSafeArea()
-
+        RavenScreenBackground()
         VStack {
             Spacer()
             HapticTabBar(

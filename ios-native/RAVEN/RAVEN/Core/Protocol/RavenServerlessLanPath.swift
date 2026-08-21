@@ -71,6 +71,7 @@ public enum RavenTransportPreference: Equatable, Sendable {
     case directLan
     case internetLibp2p
     case bleMesh
+    case unavailable
 }
 
 public enum RavenHybridTransport {
@@ -79,7 +80,7 @@ public enum RavenHybridTransport {
         if wifiUp && peerOnLan { return .directLan }
         if wifiUp { return .internetLibp2p }
         if blePeersNearby { return .bleMesh }
-        return .directLan
+        return .unavailable
     }
 }
 
@@ -118,7 +119,13 @@ public enum RavenServerlessLanPath {
         precondition(routingTag.count == 16)
         var nonce = Data(count: 12)
         nonce.withUnsafeMutableBytes { buf in
-            _ = SecRandomCopyBytes(kSecRandomDefault, 12, buf.baseAddress!)
+            guard let baseAddress = buf.baseAddress else {
+                preconditionFailure("SecRandomCopyBytes: nil buffer")
+            }
+            let status = SecRandomCopyBytes(kSecRandomDefault, 12, baseAddress)
+            // Fail closed: an all-zero AEAD nonce under a reused key is
+            // catastrophic, so a broken CSPRNG must stop the app.
+            precondition(status == errSecSuccess, "SecRandomCopyBytes failed: \(status)")
         }
         var flags: UInt16 = 0
         if hybridPQHint { flags |= 1 }

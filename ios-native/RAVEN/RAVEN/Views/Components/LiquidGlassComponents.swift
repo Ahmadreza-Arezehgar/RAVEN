@@ -1,12 +1,12 @@
 import SwiftUI
 
 // MARK: - Glass Capsule Button
+/// TERMINAL REDESIGN (2026-08): square console key — dark panel, phosphor
+/// hairline, monospace glyph. Name kept for call-site compatibility.
 struct GlassCapsuleButton: View {
     let icon: String
     var size: CGFloat = 44
     let action: () -> Void
-
-    @State private var isPressed = false
 
     var body: some View {
         Button {
@@ -16,24 +16,34 @@ struct GlassCapsuleButton: View {
         } label: {
             Image(systemName: icon)
                 .font(.system(size: size * 0.4, weight: .semibold))
-                .foregroundStyle(.primary)
+                .foregroundStyle(DS.phosphor)
                 .frame(width: size, height: size)
-                .contentShape(Capsule())
-                .glassSurface(in: Capsule()) // unified glass treatment
+                .contentShape(RoundedRectangle(cornerRadius: DS.radiusInner, style: .continuous))
+                .background(
+                    RoundedRectangle(cornerRadius: DS.radiusInner, style: .continuous)
+                        .fill(DS.inkElevated.opacity(0.95))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: DS.radiusInner, style: .continuous)
+                        .strokeBorder(DS.hairline, lineWidth: 1)
+                )
         }
-        .buttonStyle(GlassButtonStyle())
+        .buttonStyle(TerminalKeyStyle())
     }
 }
 
-// MARK: - Glass Button Style (Press Animation)
-struct GlassButtonStyle: ButtonStyle {
+// MARK: - Terminal Key Style (Press Animation)
+struct TerminalKeyStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .scaleEffect(configuration.isPressed ? 0.92 : 1.0)
-            .opacity(configuration.isPressed ? 0.8 : 1.0)
-            .animation(.spring(response: 0.25, dampingFraction: 0.7), value: configuration.isPressed)
+            .scaleEffect(configuration.isPressed ? 0.94 : 1.0)
+            .opacity(configuration.isPressed ? 0.7 : 1.0)
+            .animation(.spring(response: 0.22, dampingFraction: 0.7), value: configuration.isPressed)
     }
 }
+
+// Back-compat alias for existing call sites.
+typealias GlassButtonStyle = TerminalKeyStyle
 
 // MARK: - Glass Avatar
 struct GlassAvatar: View {
@@ -421,38 +431,40 @@ struct ConnectionStatusPill: View {
     
     var body: some View {
         HStack(spacing: 8) {
-            // Icon
-            Image(systemName: status.icon)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(status.tintColor.opacity(0.9))
-            
-            // Short label
-            Text(status.label)
-                .font(.caption)
-                .fontWeight(.medium)
-                .foregroundStyle(.primary.opacity(0.8))
+            // Status glyph — console LED.
+            Circle()
+                .fill(status.tintColor)
+                .frame(width: 8, height: 8)
+                .shadow(color: status.tintColor.opacity(0.7), radius: 4)
+
+            // Short label — log line style.
+            Text("sys: " + status.label.lowercased())
+                .font(.system(.caption2, design: .monospaced, weight: .medium))
+                .foregroundStyle(DS.mist.opacity(0.85))
                 .lineLimit(1)
-            
+
             // CTA button
             Button {
                 let impact = UIImpactFeedbackGenerator(style: .light)
                 impact.impactOccurred()
                 onCTA()
             } label: {
-                Text(status.ctaLabel)
-                    .font(.caption2)
-                    .fontWeight(.semibold)
+                Text("[ " + status.ctaLabel.lowercased() + " ]")
+                    .font(.system(.caption2, design: .monospaced, weight: .semibold))
                     .foregroundStyle(status.tintColor)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-                    .background(status.tintColor.opacity(0.12))
-                    .clipShape(Capsule())
             }
             .buttonStyle(.plain)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
-        .background(.regularMaterial, in: Capsule())
+        .background(
+            RoundedRectangle(cornerRadius: DS.radiusInner, style: .continuous)
+                .fill(DS.inkElevated.opacity(0.96))
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: DS.radiusInner, style: .continuous)
+                .strokeBorder(DS.hairline, lineWidth: 1)
+        }
         .onTapGesture {
             let impact = UIImpactFeedbackGenerator(style: .light)
             impact.impactOccurred()
