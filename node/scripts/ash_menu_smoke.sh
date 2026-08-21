@@ -26,10 +26,10 @@ echo "=== ash menu smoke workdir=$WORKDIR ==="
 # --- First-run: no identity → menu 4 creates identity ---
 DATA1="$WORKDIR/fresh"
 mkdir -p "$DATA1"
-# Drive: 4 (status/create) → 1 (messages empty) → 2 (send → n no contact) → 3 (list → Enter) → q
-printf '4\n1\n2\nn\n3\n\nq\n' | "$ASH" --data-dir "$DATA1" >"$WORKDIR/fresh.log" 2>&1 || true
+# Drive: y (first-run wizard creates identity) → 3 status → 1 send(no contact→n) → 5 contacts → q
+printf 'y\n3\n1\nn\n5\n\nq\n' | "$ASH" --data-dir "$DATA1" >"$WORKDIR/fresh.log" 2>&1 || true
 grep -q 'identity created\|● identity' "$WORKDIR/fresh.log"
-grep -q 'No outgoing queue yet\|Queue empty\|No local chat history' "$WORKDIR/fresh.log"
+grep -q 'serverless_rvn1' "$WORKDIR/fresh.log"
 grep -q 'no contacts yet\|Add someone first\|Add a contact first' "$WORKDIR/fresh.log"
 grep -q 'Contacts\|No contacts yet\|Contacts menu' "$WORKDIR/fresh.log"
 grep -q 'fly safe' "$WORKDIR/fresh.log"
@@ -62,10 +62,10 @@ grep -q 'lan_dial' "$WORKDIR/contact.out"
 grep -q 'Me' "$WORKDIR/clist.out"
 grep -q '127.0.0.1:17999' "$WORKDIR/clist.out"
 
-# Interactive: 1 messages → 3 list → Enter → 2 pick #1 → n (no chat) → empty msg → q
+# Interactive: 5 contacts list → 1 send → pick #1 → n (no chat) → empty msg → q
 # Empty message exits send without spawning raven-node (avoids hang when nothing listens).
 # Do NOT send a blank line before `n` — blank answers open-chat as default Yes.
-printf '1\n3\n\n2\n1\nn\n\nq\n' | "$ASH" --data-dir "$DATA2" >"$WORKDIR/ready.log" 2>&1 || true
+printf '5\n\n1\n1\nn\n\nq\n' | "$ASH" --data-dir "$DATA2" >"$WORKDIR/ready.log" 2>&1 || true
 grep -q 'Using saved LAN dial\|Saved LAN dial\|Send / Chat' "$WORKDIR/ready.log"
 grep -q 'empty message\|fly safe' "$WORKDIR/ready.log"
 grep -q 'fly safe' "$WORKDIR/ready.log"
@@ -73,7 +73,7 @@ echo "ready menus OK"
 
 # Banner / doctor non-interactive (avoid SIGPIPE panic from grep -q closing early)
 "$ASH" --data-dir "$DATA2" banner >"$WORKDIR/banner.out"
-grep -q 'Welcome to Raven Node' "$WORKDIR/banner.out"
+grep -q "R A V E N" "$WORKDIR/banner.out"
 "$ASH" --data-dir "$DATA2" doctor >"$WORKDIR/doctor.out" 2>&1 || true
 grep -qE 'messaging_path|identity' "$WORKDIR/doctor.out"
 

@@ -1,0 +1,118 @@
+[
+  {
+    "id": 94818386314,
+    "run_id": 31816207341,
+    "workflow_name": "build-raven-windows",
+    "head_branch": "feature/raven-serverless-v1",
+    "run_url": "https://api.github.com/repos/Raven-offline-messenger/RAVEN/actions/runs/31816207341",
+    "run_attempt": 1,
+    "node_id": "CR_kwDORayTjM8AAAAWE53Big",
+    "head_sha": "eebb77dabc33757a6e707fcb0afec6a78ddd6a58",
+    "url": "https://api.github.com/repos/Raven-offline-messenger/RAVEN/actions/jobs/94818386314",
+    "html_url": "https://github.com/Raven-offline-messenger/RAVEN/actions/runs/31816207341/job/94818386314",
+    "status": "completed",
+    "conclusion": "failure",
+    "created_at": "2026-08-14T15:47:21Z",
+    "started_at": "2026-08-14T15:47:27Z",
+    "completed_at": "2026-08-14T15:49:11Z",
+    "name": "build (x64)",
+    "steps": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1,
+        "started_at": "2026-08-14T15:47:29Z",
+        "completed_at": "2026-08-14T15:47:32Z"
+      },
+      {
+        "name": "Run actions/checkout@v4",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2,
+        "started_at": "2026-08-14T15:47:32Z",
+        "completed_at": "2026-08-14T15:47:41Z"
+      },
+      {
+        "name": "Setup .NET 8 SDK",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 3,
+        "started_at": "2026-08-14T15:47:41Z",
+        "completed_at": "2026-08-14T15:48:22Z"
+      },
+      {
+        "name": "Show SDK info",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 4,
+        "started_at": "2026-08-14T15:48:22Z",
+        "completed_at": "2026-08-14T15:48:31Z"
+      },
+      {
+        "name": "Run mesh interop tests",
+        "status": "completed",
+        "conclusion": "failure",
+        "number": 5,
+        "started_at": "2026-08-14T15:48:31Z",
+        "completed_at": "2026-08-14T15:49:08Z"
+      },
+      {
+        "name": "Publish single-file RAVEN.exe (x64)",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 6,
+        "started_at": "2026-08-14T15:49:08Z",
+        "completed_at": "2026-08-14T15:49:08Z"
+      },
+      {
+        "name": "Show build output",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 7,
+        "started_at": "2026-08-14T15:49:08Z",
+        "completed_at": "2026-08-14T15:49:08Z"
+      },
+      {
+        "name": "Upload artifact",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 8,
+        "started_at": "2026-08-14T15:49:08Z",
+        "completed_at": "2026-08-14T15:49:08Z"
+      },
+      {
+        "name": "Post Setup .NET 8 SDK",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 15,
+        "started_at": "2026-08-14T15:49:08Z",
+        "completed_at": "2026-08-14T15:49:08Z"
+      },
+      {
+        "name": "Post Run actions/checkout@v4",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 16,
+        "started_at": "2026-08-14T15:49:08Z",
+        "completed_at": "2026-08-14T15:49:09Z"
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 17,
+        "started_at": "2026-08-14T15:49:09Z",
+        "completed_at": "2026-08-14T15:49:09Z"
+      }
+    ],
+    "check_run_url": "https://api.github.com/repos/Raven-offline-messenger/RAVEN/check-runs/94818386314",
+    "labels": [
+      "windows-latest"
+    ],
+    "runner_id": 1000000073,
+    "runner_name": "GitHub Actions 1000000073",
+    "runner_group_id": 0,
+    "runner_group_name": "GitHub Actions"
+  }
+]

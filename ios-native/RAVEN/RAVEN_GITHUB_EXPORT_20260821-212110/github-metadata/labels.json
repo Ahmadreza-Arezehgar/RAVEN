@@ -1,0 +1,83 @@
+[
+  {
+    "id": 10309822552,
+    "node_id": "LA_kwDORayTjM8AAAACZoNoWA",
+    "url": "https://api.github.com/repos/Raven-offline-messenger/RAVEN/labels/bug",
+    "name": "bug",
+    "color": "d73a4a",
+    "default": true,
+    "description": "Something isn't working"
+  },
+  {
+    "id": 10309822557,
+    "node_id": "LA_kwDORayTjM8AAAACZoNoXQ",
+    "url": "https://api.github.com/repos/Raven-offline-messenger/RAVEN/labels/documentation",
+    "name": "documentation",
+    "color": "0075ca",
+    "default": true,
+    "description": "Improvements or additions to documentation"
+  },
+  {
+    "id": 10309822563,
+    "node_id": "LA_kwDORayTjM8AAAACZoNoYw",
+    "url": "https://api.github.com/repos/Raven-offline-messenger/RAVEN/labels/duplicate",
+    "name": "duplicate",
+    "color": "cfd3d7",
+    "default": true,
+    "description": "This issue or pull request already exists"
+  },
+  {
+    "id": 10309822570,
+    "node_id": "LA_kwDORayTjM8AAAACZoNoag",
+    "url": "https://api.github.com/repos/Raven-offline-messenger/RAVEN/labels/enhancement",
+    "name": "enhancement",
+    "color": "a2eeef",
+    "default": true,
+    "description": "New feature or request"
+  },
+  {
+    "id": 10309822582,
+    "node_id": "LA_kwDORayTjM8AAAACZoNodg",
+    "url": "https://api.github.com/repos/Raven-offline-messenger/RAVEN/labels/good%20first%20issue",
+    "name": "good first issue",
+    "color": "7057ff",
+    "default": true,
+    "description": "Good for newcomers"
+  },
+  {
+    "id": 10309822576,
+    "node_id": "LA_kwDORayTjM8AAAACZoNocA",
+    "url": "https://api.github.com/repos/Raven-offline-messenger/RAVEN/labels/help%20wanted",
+    "name": "help wanted",
+    "color": "008672",
+    "default": true,
+    "description": "Extra attention is needed"
+  },
+  {
+    "id": 10309822590,
+    "node_id": "LA_kwDORayTjM8AAAACZoNofg",
+    "url": "https://api.github.com/repos/Raven-offline-messenger/RAVEN/labels/invalid",
+    "name": "invalid",
+    "color": "e4e669",
+    "default": true,
+    "description": "This doesn't seem right"
+  },
+  {
+    "id": 10309822599,
+    "node_id": "LA_kwDORayTjM8AAAACZoNohw",
+    "url": "https://api.github.com/repos/Raven-offline-messenger/RAVEN/labels/question",
+    "name": "question",
+    "color": "d876e3",
+    "default": true,
+    "description": "Further information is requested"
+  },
+  {
+    "id": 10309822605,
+    "node_id": "LA_kwDORayTjM8AAAACZoNojQ",
+    "url": "https://api.github.com/repos/Raven-offline-messenger/RAVEN/labels/wontfix",
+    "name": "wontfix",
+    "color": "ffffff",
+    "default": true,
+    "description": "This will not be worked on"
+  }
+]

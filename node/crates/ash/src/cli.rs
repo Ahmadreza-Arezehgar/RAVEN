@@ -76,15 +76,53 @@ fn style() -> Style {
     }
 }
 
-// Monochrome palette (bold/dim). Former cyan/purple/green brand colors removed.
-// When NO_COLOR/TERM=dumb, prefer `style()` in new UX paths; these consts stay
-// bold/dim-only (still B&W) for legacy call sites.
+// Brand palette. Honors NO_COLOR / TERM=dumb via `style()`.
 const C_BOLD: &str = "\x1b[1m";
 const C_DIM: &str = "\x1b[2m";
 const C_RESET: &str = "\x1b[0m";
-const C_CYAN: &str = "\x1b[1m";
-const C_PURPLE: &str = "\x1b[1m";
-const C_GREEN: &str = "\x1b[1m";
+const C_CYAN: &str = "\x1b[1;36m";
+const C_PURPLE: &str = "\x1b[1;35m";
+const C_GREEN: &str = "\x1b[1;32m";
+
+fn c() -> Colors {
+    if color_enabled() {
+        Colors {
+            bold: "\x1b[1m",
+            dim: "\x1b[2m",
+            reset: "\x1b[0m",
+            cyan: "\x1b[1;36m",
+            purple: "\x1b[1;35m",
+            green: "\x1b[1;32m",
+            yellow: "\x1b[33m",
+            red: "\x1b[1;31m",
+            white_on_purple: "\x1b[97;45m",
+        }
+    } else {
+        Colors {
+            bold: "",
+            dim: "",
+            reset: "",
+            cyan: "",
+            purple: "",
+            green: "",
+            yellow: "",
+            red: "",
+            white_on_purple: "",
+        }
+    }
+}
+
+struct Colors {
+    bold: &'static str,
+    dim: &'static str,
+    reset: &'static str,
+    cyan: &'static str,
+    purple: &'static str,
+    green: &'static str,
+    yellow: &'static str,
+    red: &'static str,
+    white_on_purple: &'static str,
+}
 
 fn default_ash_data_dir() -> PathBuf {
     raven_core::default_raven_data_dir()
@@ -132,6 +170,7 @@ fn resolve_data_dir(raw: &str) -> PathBuf {
 }
 
 /// Public logo assets (no secrets) — credit raven-messager.com.
+#[allow(dead_code)]
 pub const LOGO_URL: &str = "https://raven-messager.com/raven_logo.png";
 #[allow(dead_code)]
 pub const LOGO_64_URL: &str = "https://raven-messager.com/raven_logo_64.png";
@@ -140,8 +179,32 @@ pub const LOGO_64_URL: &str = "https://raven-messager.com/raven_logo_64.png";
 #[command(
     name = "ash",
     about = "RAVEN Node — Messaging Beyond Connectivity",
-    long_about = "Local serverless Raven Node CLI. Run with no subcommand for the interactive shell.\n\
-                  Never prints private keys. Brand: https://raven-messager.com/"
+    long_about = "RAVEN — serverless mesh messaging, from your terminal.\n\
+                  \n\
+                  Run with no subcommand for the interactive menu (recommended).\n\
+                  No central server: identity is a local keypair, contacts are\n\
+                  pinned by fingerprint, and messages ride LAN / bridge / mailbox.\n\
+                  \n\
+                  QUICKSTART\n\
+                    ash                      # menu → 8 Tutorial (guided)\n\
+                    ash init                 # create identity\n\
+                    ash whoami               # share these 3 lines with a friend\n\
+                  \n\
+                  TWO-TERMINAL CHAT (direct LAN)\n\
+                    # receiver:\n\
+                    raven-node run --data-dir ~/.raven --listen 127.0.0.1:0 \\\n\
+                      --write-addr /tmp/a.addr --write-pub /tmp/a.pub \\\n\
+                      --exit-after-recv 1 --peer-pub-hex <sender pub_hex>\n\
+                    # sender:\n\
+                    echo hi | raven-node run --data-dir ~/.raven-b \\\n\
+                      --listen 127.0.0.1:0 --peer \"$(cat /tmp/a.addr)\" \\\n\
+                      --peer-pub-hex <receiver pub_hex> --send-stdin \\\n\
+                      --body-mode unsafe-interim --exit-after-ack\n\
+                  \n\
+                  VERIFY EVERYTHING\n\
+                    bash scripts/final_serverless_proof.sh   # → AUTOMATED_PROOF_GREEN\n\
+                  \n\
+                  Never prints private keys. https://raven-messager.com/"
 )]
 struct Cli {
     /// Stable local profile (default: ~/.raven, or ~/.raven-ash if that legacy
@@ -622,79 +685,105 @@ fn print_public_identity(id: &Identity) {
 /// Unique Raven Node welcome — monochrome ASCII raven/node motif.
 /// Never includes private material. Honors NO_COLOR / TERM=dumb.
 fn print_welcome(data_dir: &Path) {
-    let s = style();
-    let bold = s.bold;
-    let dim = s.dim;
-    let reset = s.reset;
+    let c = c();
+    let (bold, dim, reset) = (c.bold, c.dim, c.reset);
+    let (cyan, purple, green, yellow, red) = (c.cyan, c.purple, c.green, c.yellow, c.red);
+    let wop = c.white_on_purple;
 
     println!();
-    println!("{dim}      ┌──────────────────────────────────────────────────┐{reset}");
-    println!("{dim}      │{reset}                                                  {dim}│{reset}");
-    println!(
-        "{dim}      │{reset}  {bold}    .--.     ≺═══◈═══≻{reset}                         {dim}│{reset}"
-    );
-    println!(
-        "{dim}      │{reset}  {bold}   /  {reset}◉{bold}\\      NODE{reset}                            {dim}│{reset}"
-    );
-    println!(
-        "{dim}      │{reset}  {bold}  /  /\\ \\{reset}                                       {dim}│{reset}"
-    );
-    println!(
-        "{dim}      │{reset}  {bold} /__/  \\_\\{reset}   {bold}Welcome to Raven Node{reset}            {dim}│{reset}"
-    );
-    println!(
-        "{dim}      │{reset}              {dim}Messaging Beyond Connectivity{reset}     {dim}│{reset}"
-    );
-    println!("{dim}      │{reset}                                                  {dim}│{reset}");
-    println!(
-        "{dim}      │{reset}  {dim}serverless · ATSAM · peer-to-peer{reset}               {dim}│{reset}"
-    );
-    println!("{dim}      └──────────────────────────────────────────────────┘{reset}");
+    // ── Brand banner ──────────────────────────────────────────────
+    println!("{purple}   ╭────────────────────────────────────────────────╮{reset}");
+    println!("{purple}   │{reset}                                                  {purple}│{reset}");
+    println!("{purple}   │{reset}      {bold}.--.{reset}        {wop}  R A V E N  {reset}               {purple}│{reset}");
+    println!("{purple}   │{reset}     {cyan}/  ◉\\{reset}       {bold}NODE{reset}                            {purple}│{reset}");
+    println!("{purple}   │{reset}    {cyan}/  /\\ \\{reset}                                      {purple}│{reset}");
+    println!("{purple}   │{reset}   {cyan}/__/  \\_\\{reset}     {dim}Messaging Beyond Connectivity{reset}     {purple}│{reset}");
+    println!("{purple}   │{reset}                                                  {purple}│{reset}");
+    println!("{purple}   │{reset}   {green}◆ serverless{reset}  {cyan}◆ ATSAM hybrid crypto{reset}  {yellow}◆ p2p{reset}       {purple}│{reset}");
+    println!("{purple}   ╰────────────────────────────────────────────────╯{reset}");
     println!();
-    println!("{dim}Brand logo (PNG):{reset} {LOGO_URL}");
-    println!("{dim}Site:{reset}             https://raven-messager.com/");
-    println!("{dim}data_dir:{reset}         {}", data_dir.display());
+    println!("{dim}   site: https://raven-messager.com · profile:{reset} {}", data_dir.display());
     println!();
 
+    // ── Identity state + first-run wizard hook ────────────────────
     match try_load_identity(data_dir) {
         Ok(Some(id)) => {
-            println!("{bold}●{reset} identity ready {dim}(public bits only — never a seed){reset}");
+            println!("{green}●{reset} {bold}identity ready{reset} {dim}(public bits only — never a seed){reset}");
             print_public_identity(&id);
+            println!();
+            println!("{dim}  Tip: run {reset}{bold}tutorial{reset}{dim} in the menu for a guided walkthrough.{reset}");
         }
         Ok(None) => {
-            println!("{bold}○ First run — no local identity yet{reset}");
-            println!("{dim}  Create one (public address + fingerprint only; private key stays local in protected storage):{reset}");
-            println!("  {bold}1.{reset} Run: {bold}ash --data-dir <dir> init{reset}");
-            println!("{dim}  Then add contacts (menu 3) before Send / Chat.{reset}");
+            println!("{yellow}○{reset} {bold}First run — no local identity yet{reset}");
+            println!();
         }
         Err(e) => println!(
-            "{bold}× identity unavailable{reset} {dim}({}){reset}",
+            "{red}×{reset} identity unavailable {dim}({}){reset}",
             sanitize_terminal_text(&e)
         ),
     }
     println!();
 }
 
+/// Offer inline identity creation on first run; returns true when an identity
+/// exists afterwards. Used by the interactive shell so newcomers don't need to
+/// know the `init` subcommand at all.
+fn offer_first_run_identity(data_dir: &Path) -> bool {
+    if try_load_identity(data_dir).ok().flatten().is_some() {
+        return true;
+    }
+    let c = c();
+    let (green, reset, red, dim) = (c.green, c.reset, c.red, c.dim);
+    print!("{}?{} Create your Raven identity now? [{}Y/n{}] ", c.yellow, reset, green, reset);
+    let _ = io::stdout().flush();
+    let ans = read_line();
+    if !(ans.is_empty() || ans.eq_ignore_ascii_case("y") || ans.eq_ignore_ascii_case("yes")) {
+        return false;
+    }
+    let id = ensure_identity(data_dir);
+    if let Err(e) = raven_core::ensure_local_prekey(data_dir, &id) {
+        eprintln!("{red}prekey: {}{reset}", sanitize_terminal_text(&e));
+    }
+    println!("{green}✔ identity created{reset}");
+    print_public_identity(&id);
+    println!(
+        "\n{dim}Private key stays on this machine. Share only the three public lines above.{reset}"
+    );
+    true
+}
+
+fn section(label: &str) {
+    let c = c();
+    let (purple, bold, reset) = (c.purple, c.bold, c.reset);
+    println!("\n{purple}◆{reset} {bold}{}{reset}", label.to_ascii_uppercase());
+}
+
+fn item(num: &str, title: &str, hint: &str) {
+    let c = c();
+    let (cyan, bold, dim, reset) = (c.cyan, c.bold, c.dim, c.reset);
+    println!(
+        "    {cyan}{}{reset}  {bold}{:<24}{reset} {dim}{}{reset}",
+        num, title, hint
+    );
+}
+
 fn print_menu() {
-    let s = style();
-    let bold = s.bold;
-    let dim = s.dim;
-    let reset = s.reset;
-    println!("{bold}  Menu{reset}");
-    println!(
-        "  {bold}1{reset}  Messages      {dim}outgoing queue + local chat history (ids only){reset}"
-    );
-    println!(
-        "  {bold}2{reset}  Send / Chat   {dim}message a contact — add contacts first if empty{reset}"
-    );
-    println!(
-        "  {bold}3{reset}  Contacts      {dim}add by rvn1… / @alias / petname + fingerprint{reset}"
-    );
-    println!(
-        "  {bold}4{reset}  Status        {dim}identity, bridge, transports (public fields){reset}"
-    );
-    println!("  {bold}q{reset}  Quit");
-    print!("\n{bold}raven>{reset} ");
+    section("messages");
+    item("1", "Chat / Send", "message a contact — guided");
+    item("2", "Inbox", "committed endpoint inbox");
+    section("network");
+    item("3", "Status", "identity · bridge · transports");
+    item("4", "Node", "bridge / store / relay policy");
+    section("people");
+    item("5", "Contacts", "add by rvn1… paste · list · verify");
+    section("tools");
+    item("6", "Mailbox", "opaque offline put/get");
+    item("7", "Nearby scan", "ephemeral BLE discovery");
+    item("8", "Tutorial", "guided walkthrough — start here");
+    let c = c();
+    println!();
+    println!("    {c_dim}q  quit{reset}", c_dim = c.dim, reset = c.reset);
+    print!("\n{}raven{} {}❯{} ", c.bold, c.reset, c.cyan, c.reset);
     let _ = io::stdout().flush();
 }
 
@@ -2571,7 +2660,7 @@ fn cmd_send_interactive(data_dir: &Path) {
         println!("{bold}Send / Chat{reset}");
         println!("{dim}You have no contacts yet — don't jump to host:port.{reset}");
         println!();
-        println!("  {bold}1.{reset} Add someone first: menu {bold}3 Contacts{reset}");
+        println!("  {bold}1.{reset} Add someone first: menu {bold}5 Contacts{reset}");
         println!("     (rvn1… address + pub_hex from their `ash whoami`, or @alias)");
         println!("  {bold}2.{reset} Advanced: direct peer host:port (LAN demo / power users)");
         println!();
@@ -2894,25 +2983,118 @@ fn run_send(data_dir: &Path, peer: &str, peer_pub_hex: &str, listen: &str, text:
 
 fn interactive(data_dir: &Path) {
     print_welcome(data_dir);
+    if !offer_first_run_identity(data_dir) {
+        println!("{C_DIM}tip: run `ash init` anytime to create an identity.{C_RESET}");
+    }
     loop {
         print_menu();
         let choice = read_line();
+        let c = c();
         match choice.as_str() {
-            "1" | "m" | "messages" => cmd_messages(data_dir),
-            "2" | "s" | "send" => cmd_send_interactive(data_dir),
-            "3" | "c" | "contacts" => cmd_contacts(data_dir),
-            "4" | "status" => {
+            "1" | "s" | "send" | "chat" => cmd_send_interactive(data_dir),
+            "2" | "i" | "inbox" => cmd_endpoint_inbox(data_dir),
+            "3" | "st" | "status" => {
                 let _ = cmd_status(data_dir);
             }
+            "4" | "n" | "node" => {
+                println!(
+                    "{C_DIM}policy lives under `ash node bridge on|off`, \
+                     `ash node store on|off` — see `ash node --help`.{C_RESET}"
+                );
+                let _ = cmd_status(data_dir);
+            }
+            "5" | "c" | "contacts" => cmd_contacts(data_dir),
+            "6" | "mailbox" => println!(
+                "{C_DIM}mailbox is subcommand-driven — see `ash mailbox --help`.{C_RESET}"
+            ),
+            "7" | "nearby" => println!(
+                "{C_DIM}nearby scan: run `ash nearby --help` in another shell \
+                 (menu stays responsive here).{C_RESET}"
+            ),
+            "8" | "t" | "tutorial" => cmd_tutorial(data_dir),
             "q" | "quit" | "exit" => {
-                println!("{C_DIM}fly safe.{C_RESET}");
+                println!("{0}fly safe.{1}", c.purple, c.reset);
                 break;
             }
             "" => continue,
-            other => println!("{C_DIM}unknown:{C_RESET} {other}"),
+            other => println!(
+                "{0}unknown:{1} {2} {0}— pick 1-8 or q{1}",
+                c.dim, c.reset, other
+            ),
         }
         println!();
     }
+}
+
+/// Guided walkthrough for newcomers. Every step prints what it does and why,
+/// then runs the safe ones inline. No private material is ever displayed.
+fn cmd_tutorial(data_dir: &Path) {
+    let c = c();
+    let _ = offer_first_run_identity(data_dir);
+
+    println!("\n{0}═══ RAVEN TUTORIAL ═══{1}", c.purple, c.reset);
+    println!("{0}Raven is serverless: you and your contacts ARE the network.{1}", c.dim, c.reset);
+    println!("{0}No phone number, no central account, messages relayed by peers.{1}\n", c.dim, c.reset);
+
+    // Step 1 — identity
+    println!("{0}[1/4] Identity{1}", c.bold, c.reset);
+    match try_load_identity(data_dir) {
+        Ok(Some(id)) => {
+            println!("  {0}✔{1} created. Your public bits:", c.green, c.reset);
+            print_public_identity(&id);
+            println!(
+                "  {0}Share address+fingerprint with friends over any channel;\n  they pin it, you pin theirs — that mutual pin IS the trust.{1}\n",
+                c.dim, c.reset
+            );
+        }
+        Ok(None) => {
+            println!("  {0}skipped (declined). Re-enter via menu 8 anytime.{1}\n", c.dim, c.reset);
+            return;
+        }
+        Err(e) => {
+            println!("  {0}× {1}\n", c.red, sanitize_terminal_text(&e));
+            return;
+        }
+    }
+
+    // Step 2 — add a contact
+    println!("{0}[2/4] Add your first contact{1}", c.bold, c.reset);
+    println!(
+        "  {0}Ask a friend to run {1}ash whoami{0} and paste their three lines here.\n  Paste detection accepts the whole block at once.{2}",
+        c.dim, c.bold, c.reset
+    );
+    print!("  {}Add now? [y/N] {}", c.yellow, c.reset);
+    let _ = io::stdout().flush();
+    let ans = read_line();
+    if ans.eq_ignore_ascii_case("y") || ans.eq_ignore_ascii_case("yes") {
+        cmd_contacts(data_dir);
+    } else {
+        println!("  {0}later: menu 5 → Contacts{1}", c.dim, c.reset);
+    }
+    println!();
+
+    // Step 3 — health check
+    println!("{0}[3/4] Health check{1}", c.bold, c.reset);
+    match cmd_status(data_dir) {
+        Ok(_) => println!(
+            "  {0}✔{1} messaging_path must read {2}serverless_rvn1{1}\n",
+            c.green, c.reset, c.bold
+        ),
+        Err(e) => println!("  {0}×{1} status: {2}\n", c.red, c.reset, e),
+    }
+
+    // Step 4 — send
+    println!("{0}[4/4] Send a message{1}", c.bold, c.reset);
+    println!(
+        "  {0}Menu 1 → pick contact → type message.\n  Direct LAN first; bridge relays when peers are apart;\n  mailbox stores opaque bytes while someone is offline.{1}\n",
+        c.dim, c.reset
+    );
+
+    println!("{0}Done!{1}", c.purple, c.reset);
+    println!(
+        "  {0}Full diagnostics anytime: {1}ash doctor{0}{1}",
+        c.reset, c.dim
+    );
 }
 
 pub fn run() {
@@ -3423,11 +3605,22 @@ mod tests {
 
     #[test]
     fn no_color_style_is_empty() {
-        // style() reads env once — verify monochrome consts have no brand RGB.
+        // Palette consts are plain SGR codes (no 24-bit brand RGB).
         assert!(!C_CYAN.contains("38;2"));
         assert!(!C_PURPLE.contains("38;2"));
         assert!(!C_GREEN.contains("38;2"));
-        assert_eq!(C_CYAN, C_BOLD);
+        // color_enabled() is cached per-process (OnceLock), so we can only
+        // assert consistency with the current environment, not both branches.
+        let colors = c();
+        let colored_expected =
+            std::env::var_os("NO_COLOR").is_none() && std::env::var_os("TERM").as_deref() != Some(std::ffi::OsStr::new("dumb"));
+        if colored_expected {
+            assert_eq!(colors.cyan, "\x1b[1;36m");
+            assert_eq!(colors.bold, "\x1b[1m");
+        } else {
+            assert_eq!(colors.cyan, "");
+            assert_eq!(colors.bold, "");
+        }
     }
 
     #[test]

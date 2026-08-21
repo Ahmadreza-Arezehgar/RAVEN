@@ -1,0 +1,38 @@
+[
+  {
+    "id": 334441336,
+    "node_id": "W_kwDORayTjM4T7yt4",
+    "name": "build-raven-windows",
+    "path": ".github/workflows/build-raven-windows.yml",
+    "state": "active",
+    "created_at": "2026-08-14T17:47:21.000+02:00",
+    "updated_at": "2026-08-14T17:47:21.000+02:00",
+    "url": "https://api.github.com/repos/Raven-offline-messenger/RAVEN/actions/workflows/334441336",
+    "html_url": "https://github.com/Raven-offline-messenger/RAVEN/blob/main/.github/workflows/build-raven-windows.yml",
+    "badge_url": "https://github.com/Raven-offline-messenger/RAVEN/workflows/build-raven-windows/badge.svg"
+  },
+  {
+    "id": 239711753,
+    "node_id": "W_kwDORayTjM4OSbYJ",
+    "name": "Integration Tests",
+    "path": ".github/workflows/integration_tests.yml",
+    "state": "active",
+    "created_at": "2026-02-28T01:59:41.000+01:00",
+    "updated_at": "2026-08-14T17:47:32.000+02:00",
+    "url": "https://api.github.com/repos/Raven-offline-messenger/RAVEN/actions/workflows/239711753",
+    "html_url": "https://github.com/Raven-offline-messenger/RAVEN/blob/main/.github/workflows/integration_tests.yml",
+    "badge_url": "https://github.com/Raven-offline-messenger/RAVEN/workflows/Integration%20Tests/badge.svg"
+  },
+  {
+    "id": 334441337,
+    "node_id": "W_kwDORayTjM4T7yt5",
+    "name": "Raven Serverless Node",
+    "path": ".github/workflows/raven-serverless.yml",
+    "state": "active",
+    "created_at": "2026-08-14T17:47:21.000+02:00",
+    "updated_at": "2026-08-14T17:47:21.000+02:00",
+    "url": "https://api.github.com/repos/Raven-offline-messenger/RAVEN/actions/workflows/334441337",
+    "html_url": "https://github.com/Raven-offline-messenger/RAVEN/blob/main/.github/workflows/raven-serverless.yml",
+    "badge_url": "https://github.com/Raven-offline-messenger/RAVEN/workflows/Raven%20Serverless%20Node/badge.svg"
+  }
+]

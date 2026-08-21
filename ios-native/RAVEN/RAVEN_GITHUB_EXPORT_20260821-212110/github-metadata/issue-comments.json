@@ -1,0 +1,48 @@
+[
+  {
+    "url": "https://api.github.com/repos/Raven-offline-messenger/RAVEN/issues/comments/5295313623",
+    "html_url": "https://github.com/Raven-offline-messenger/RAVEN/pull/2#issuecomment-5295313623",
+    "issue_url": "https://api.github.com/repos/Raven-offline-messenger/RAVEN/issues/2",
+    "id": 5295313623,
+    "node_id": "IC_kwDORayTjM8AAAABO6AS1w",
+    "user": {
+      "login": "Raven-offline-messenger",
+      "id": 264530529,
+      "node_id": "U_kgDOD8RqYQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/264530529?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/Raven-offline-messenger",
+      "html_url": "https://github.com/Raven-offline-messenger",
+      "followers_url": "https://api.github.com/users/Raven-offline-messenger/followers",
+      "following_url": "https://api.github.com/users/Raven-offline-messenger/following{/other_user}",
+      "gists_url": "https://api.github.com/users/Raven-offline-messenger/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/Raven-offline-messenger/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/Raven-offline-messenger/subscriptions",
+      "organizations_url": "https://api.github.com/users/Raven-offline-messenger/orgs",
+      "repos_url": "https://api.github.com/users/Raven-offline-messenger/repos",
+      "events_url": "https://api.github.com/users/Raven-offline-messenger/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/Raven-offline-messenger/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-08-14T15:48:15Z",
+    "updated_at": "2026-08-14T15:48:15Z",
+    "body": "Closing: scope corrected. Do not merge — this branch publishes the full messenger, not the ATSAM protocol-only package. ATSAM will ship in a dedicated protocol repo.",
+    "author_association": "OWNER",
+    "reactions": {
+      "url": "https://api.github.com/repos/Raven-offline-messenger/RAVEN/issues/comments/5295313623/reactions",
+      "total_count": 0,
+      "+1": 0,
+      "-1": 0,
+      "laugh": 0,
+      "hooray": 0,
+      "confused": 0,
+      "heart": 0,
+      "rocket": 0,
+      "eyes": 0
+    },
+    "performed_via_github_app": null,
+    "minimized": null
+  }
+]

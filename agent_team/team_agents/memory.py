@@ -1,216 +1,221 @@
-"""Git-synced shared memory for a collaborating agent team.
+"""Git-backed shared team memory: board, journal, facts and file locks.
 
-Layout inside the shared repo:
-
-    <repo>/.team/
-        board.json     task board (machine readable)
-        BOARD.md       human/agent readable mirror of the board
-        facts.md       durable learned facts
-        claims.json    advisory file locks ("who is editing what")
-        journal/work.log  append-only activity log
+All state lives under `<repo>/.team/` so teammates on other machines sync
+through plain git — no server, no database.
 """
 
 from __future__ import annotations
 
-import json
+import re
 import subprocess
 import time
-import uuid
 from pathlib import Path
 
+BOARD_HEADER = """# Team Board
 
-def now_iso() -> str:
-    return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+| id | title | owner | status | notes |
+|----|-------|-------|--------|-------|
+"""
+
+JOURNAL_HEADER = '# Team Journal\n'
+FACTS_HEADER = '# Team Facts\n'
+
+
+def _ts() -> str:
+    return time.strftime('%Y-%m-%d %H:%M:%S')
+
+
+def _cell(text: str) -> str:
+    return str(text).replace('|', '\\|')
+
+
+def _unescape(text: str) -> str:
+    return text.replace('\\|', '|')
 
 
 class TeamMemory:
     def __init__(self, repo_path: str | Path, auto_commit: bool = True) -> None:
-        self.repo_path = Path(repo_path).expanduser().resolve()
-        if not self.repo_path.exists():
-            raise FileNotFoundError(f'repo_path does not exist: {self.repo_path}')
+        self.repo_path = Path(repo_path).resolve()
         self.auto_commit = auto_commit
-        self.root = self.repo_path / '.team'
-        self.journal_dir = self.root / 'journal'
-        self.board_file = self.root / 'board.json'
-        self.board_md = self.root / 'BOARD.md'
-        self.facts_file = self.root / 'facts.md'
-        self.claims_file = self.root / 'claims.json'
-        self.work_log = self.journal_dir / 'work.log'
+        self.team_dir = self.repo_path / '.team'
+        self.board_md = self.team_dir / 'BOARD.md'
+        self.journal_md = self.team_dir / 'journal.md'
+        self.facts_md = self.team_dir / 'facts.md'
+        self.locks_dir = self.team_dir / 'locks'
 
-    # ------------------------------------------------------------- layout --
+    # ------------------------------------------------------------ layout --
     def ensure_layout(self) -> None:
-        self.journal_dir.mkdir(parents=True, exist_ok=True)
-        if not self.board_file.exists():
-            self._write_json(self.board_file, [])
-        if not self.claims_file.exists():
-            self._write_json(self.claims_file, {})
-        if not self.facts_file.exists():
-            self.facts_file.write_text(
-                '# Team Facts\n\nDurable facts discovered by team agents.\n',
-                encoding='utf-8',
-            )
-        if not self.board_md.exists():
-            self._render_board()
-
-    # ------------------------------------------------------------ helpers --
-    @staticmethod
-    def _write_json(path: Path, data: object) -> None:
-        tmp = path.with_suffix(path.suffix + f'.tmp{uuid.uuid4().hex[:6]}')
-        tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding='utf-8')
-        tmp.replace(path)
-
-    def _read_json(self, path: Path, default: object) -> object:
-        try:
-            return json.loads(path.read_text(encoding='utf-8'))
-        except (FileNotFoundError, json.JSONDecodeError):
-            return default
+        self.team_dir.mkdir(parents=True, exist_ok=True)
+        (self.team_dir / 'outputs').mkdir(exist_ok=True)
+        self.locks_dir.mkdir(exist_ok=True)
+        for path, header in (
+            (self.board_md, BOARD_HEADER),
+            (self.journal_md, JOURNAL_HEADER),
+            (self.facts_md, FACTS_HEADER),
+        ):
+            if not path.exists():
+                path.write_text(header, encoding='utf-8')
 
     def resolve_in_repo(self, relpath: str) -> Path:
-        """Resolve `relpath` inside the repo; refuse escapes."""
         p = (self.repo_path / relpath).resolve()
         if p != self.repo_path and self.repo_path not in p.parents:
             raise ValueError(f'path escapes repo: {relpath}')
         return p
 
-    # --------------------------------------------------------------- git ---
-    def _git(self, *args: str, check: bool = False) -> str:
-        r = subprocess.run(
-            ['git', *args], cwd=self.repo_path, capture_output=True, text=True
-        )
-        if check and r.returncode != 0:
-            raise RuntimeError(f'git {" ".join(args)} failed: {r.stderr.strip()}')
+    # --------------------------------------------------------------- git --
+    def _git(self, *args: str) -> str:
+        try:
+            r = subprocess.run(
+                ('git', '-C', str(self.repo_path), *args),
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        except subprocess.TimeoutExpired:
+            return ''
+        if r.returncode != 0:
+            return ''
         return (r.stdout + r.stderr).strip()
 
-    def has_remote(self) -> bool:
-        return bool(self._git('remote').strip())
-
     def commit_all(self, message: str) -> str:
-        """Stage everything and commit. Returns a status string."""
-        if not message:
-            message = 'chore(agent): update shared state'
+        if not (self.repo_path / '.git').exists():
+            return '(not a git repo)'
         self._git('add', '-A')
-        dirty = self._git('status', '--porcelain')
-        if not dirty:
-            return 'nothing to commit'
-        self._git('commit', '-m', message)
-        return f'committed: {message}'
+        out = self._git('commit', '-m', message)
+        return out or '(nothing to commit)'
 
     def sync(self) -> str:
-        """pull --rebase then push. Best effort; returns a report."""
-        report: list[str] = []
-        if not self.has_remote():
-            return 'no git remote configured; sync skipped'
+        """Best-effort git sync of the shared memory across machines."""
+        if not self.auto_commit:
+            return '(auto_commit disabled)'
+        if not (self.repo_path / '.git').exists():
+            return '(not a git repo)'
+        if not self._git('remote'):
+            return '(no remote)'
+        notes = [self.commit_all(f'chore(team-memory): sync at {_ts()}')]
         pull = self._git('pull', '--rebase', '--autostash')
-        report.append(f'pull: {pull.splitlines()[-1] if pull else "ok"}')
-        push = self._git('push', 'origin', 'HEAD')
-        report.append(f'push: {push.splitlines()[-1] if push else "ok"}')
-        return ' | '.join(report)
+        if pull:
+            notes.append(pull)
+        push = self._git('push')
+        if push:
+            notes.append(push)
+        return '\n'.join(notes)
 
-    # -------------------------------------------------------------- board --
-    def read_board(self) -> list[dict]:
-        return list(self._read_json(self.board_file, []))  # type: ignore[arg-type]
+    # ----------------------------------------------------------- journal --
+    def log_event(self, agent: str, text: str) -> None:
+        self.ensure_layout()
+        with self.journal_md.open('a', encoding='utf-8') as fh:
+            fh.write(f'- {_ts()} [{agent}] {text}\n')
+
+    # ------------------------------------------------------------- board --
+    def read_board(self) -> str:
+        self.ensure_layout()
+        return self.board_md.read_text(encoding='utf-8')
 
     def set_task(
         self,
         title: str,
-        *,
         task_id: str | None = None,
         owner: str = '',
         status: str = 'open',
         notes: str = '',
     ) -> dict:
-        board = self.read_board()
-        if task_id:
-            for t in board:
-                if t['id'] == task_id:
-                    t.update(
-                        title=title or t['title'],
-                        owner=owner or t.get('owner', ''),
-                        status=status,
-                        notes=notes or t.get('notes', ''),
-                        updated=now_iso(),
-                    )
-                    self._save_board(board)
-                    return t
-            raise KeyError(f'task not found: {task_id}')
-        task = {
-            'id': f'task-{uuid.uuid4().hex[:8]}',
+        self.ensure_layout()
+        rows = self._parse_board_rows()
+        if task_id is None:
+            task_id = f't-{len(rows) + 1}'
+            while any(r['id'] == task_id for r in rows):
+                task_id += 'x'
+        row = {
+            'id': task_id,
             'title': title,
             'owner': owner,
             'status': status,
             'notes': notes,
-            'created': now_iso(),
-            'updated': now_iso(),
         }
-        board.append(task)
-        self._save_board(board)
-        return task
-
-    def _save_board(self, board: list[dict]) -> None:
-        self.ensure_layout()
-        self._write_json(self.board_file, board)
-        self._render_board()
-        if self.auto_commit:
-            self.commit_all('chore(team-memory): update board')
-
-    def _render_board(self) -> None:
-        lines = ['# Team Task Board', '']
-        for t in self.read_board():
-            lines.append(
-                f"- [{t.get('status', '?')}] **{t.get('id')}** {t.get('title')} "
-                f"(owner: {t.get('owner') or '-'}, updated: {t.get('updated')})"
+        for i, existing in enumerate(rows):
+            if existing['id'] == task_id:
+                merged = {**existing, **{k: v for k, v in row.items() if v}}
+                rows[i] = merged
+                row = merged
+                break
+        else:
+            rows.append(row)
+        lines = (
+            '\n'.join(
+                f"| {r['id']} | {_cell(r['title'])} | {_cell(r['owner'])} "
+                f"| {_cell(r['status'])} | {_cell(r['notes'])} |"
+                for r in rows
             )
-            if t.get('notes'):
-                lines.append(f"  - note: {t['notes']}")
-        self.board_md.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+            + '\n'
+        )
+        self.board_md.write_text(BOARD_HEADER + lines, encoding='utf-8')
+        if self.auto_commit:
+            self.commit_all(f'chore(board): {task_id} → {row["status"]} by {owner or "system"}')
+        return row
 
-    # ------------------------------------------------------------ journal --
-    def log_event(self, node: str, text: str) -> None:
-        self.ensure_layout()
-        line = f'{now_iso()} [{node}] {text}\n'
-        with self.work_log.open('a', encoding='utf-8') as fh:
-            fh.write(line)
+    def _parse_board_rows(self) -> list[dict]:
+        rows: list[dict] = []
+        # split on unescaped pipes so titles containing '|' survive round-trips
+        for line in self.board_md.read_text(encoding='utf-8').splitlines():
+            if not line.startswith('|'):
+                continue
+            cells = [
+                _unescape(c.strip()) for c in re.split(r'(?<!\\)\|', line.strip('|'))
+            ]
+            if len(cells) != 5 or cells[0] in ('id', '') or set(cells[0]) <= {'-'}:
+                continue
+            rows.append(
+                {
+                    'id': cells[0],
+                    'title': cells[1],
+                    'owner': cells[2],
+                    'status': cells[3],
+                    'notes': cells[4],
+                }
+            )
+        return rows
 
-    def read_journal_tail(self, n: int = 40) -> str:
-        try:
-            lines = self.work_log.read_text(encoding='utf-8').splitlines()
-        except FileNotFoundError:
-            return '(empty journal)'
-        return '\n'.join(lines[-n:])
-
-    # --------------------------------------------------------------- facts -
+    # ------------------------------------------------------------- facts --
     def remember_fact(self, text: str) -> None:
         self.ensure_layout()
-        with self.facts_file.open('a', encoding='utf-8') as fh:
-            fh.write(f'- ({now_iso()}) {text}\n')
+        body = self.facts_md.read_text(encoding='utf-8').splitlines()
+        bullet = f'- {text.strip()}'
+        if bullet in body:
+            return
+        body.append(bullet)
+        self.facts_md.write_text('\n'.join(body) + '\n', encoding='utf-8')
 
     def read_facts(self) -> str:
-        try:
-            return self.facts_file.read_text(encoding='utf-8')
-        except FileNotFoundError:
-            return '(no facts yet)'
+        self.ensure_layout()
+        return self.facts_md.read_text(encoding='utf-8')
 
-    # -------------------------------------------------------------- claims -
+    # ------------------------------------------------------------- locks --
+    @staticmethod
+    def _lock_name(path: str) -> str:
+        return re.sub(r'[^A-Za-z0-9_.-]+', '_', path) + '.lock'
+
     def claim_file(self, path: str, owner: str) -> str:
-        claims = self._read_json(self.claims_file, {})  # type: ignore[arg-type]
-        assert isinstance(claims, dict)
-        holder = claims.get(path)
-        if holder and holder != owner:
-            return f'DENIED: {path} is claimed by {holder}'
-        claims[path] = owner
-        self._write_json(self.claims_file, claims)
+        self.ensure_layout()
+        lock = self.locks_dir / self._lock_name(path)
+        if lock.exists():
+            current = lock.read_text(encoding='utf-8').split('\n', 1)[0].strip()
+            if current == owner:
+                return f'ok (already yours): {path}'
+            return f'BUSY: {path} claimed by {current}'
+        lock.write_text(f'{owner}\nclaimed_at: {_ts()}\n', encoding='utf-8')
         if self.auto_commit:
-            self.commit_all(f'chore(team-memory): {owner} claims {path}')
-        return f'OK: {owner} claimed {path}'
+            self.commit_all(f'chore(locks): {owner} claims {path}')
+        return f'ok: claimed {path}'
 
     def release_file(self, path: str, owner: str) -> str:
-        claims = self._read_json(self.claims_file, {})  # type: ignore[arg-type]
-        assert isinstance(claims, dict)
-        holder = claims.get(path)
-        if holder and holder != owner:
-            return f'DENIED: {path} belongs to {holder}'
-        claims.pop(path, None)
-        self._write_json(self.claims_file, claims)
+        lock = self.locks_dir / self._lock_name(path)
+        if not lock.exists():
+            return f'not locked: {path}'
+        current = lock.read_text(encoding='utf-8').split('\n', 1)[0].strip()
+        if current != owner:
+            return f'DENIED: {path} belongs to {current}'
+        lock.unlink()
         if self.auto_commit:
-            self.commit_all(f'chore(team-memory): {owner} releases {path}')
-        return f'OK: released {path}'
+            self.commit_all(f'chore(locks): {owner} releases {path}')
+        return f'ok: released {path}'

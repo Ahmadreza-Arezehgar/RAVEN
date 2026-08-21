@@ -1,91 +1,123 @@
-"""Node configuration loading (YAML + environment variable expansion)."""
+"""Node configuration: identity, network, LLM backend and trust policy."""
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
-
-import yaml
 
 
 @dataclass
 class LLMConfig:
-    provider: str = 'echo'  # 'openai' (any OpenAI-compatible endpoint) or 'echo'
-    model: str = 'gpt-4o-mini'
+    """Backend for the agent brain.
+
+    provider='openai' → any OpenAI-compatible /chat/completions endpoint.
+    anything else     → deterministic EchoBrain (no key needed).
+    """
+
+    provider: str = 'echo'
+    model: str = ''
     base_url: str = 'https://api.openai.com/v1'
-    api_key_env: str = 'OPENAI_API_KEY'
-    max_steps: int = 12
     temperature: float = 0.2
+    max_steps: int = 12
+    _api_key: str = ''
 
     def api_key(self) -> str:
-        return os.environ.get(self.api_key_env, '')
+        return self._api_key or os.environ.get('OPENAI_API_KEY', '') or os.environ.get(
+            'LLM_API_KEY', ''
+        )
 
 
 @dataclass
-class SkillConfig:
+class Skill:
     id: str
     name: str
     description: str = ''
-    tags: list[str] = field(default_factory=list)
+    tags: tuple[str, ...] = ()
 
-
-def _expand(value: Any) -> Any:
-    """Recursively expand ${ENV_VARS} inside strings of parsed YAML."""
-    if isinstance(value, str):
-        return os.path.expandvars(os.path.expanduser(value))
-    if isinstance(value, list):
-        return [_expand(v) for v in value]
-    if isinstance(value, dict):
-        return {k: _expand(v) for k, v in value.items()}
-    return value
+    def as_card(self) -> dict:
+        return {
+            'id': self.id,
+            'name': self.name,
+            'description': self.description,
+            'tags': list(self.tags),
+        }
 
 
 @dataclass
 class NodeConfig:
-    name: str
+    """Everything one A2A agent node needs to run."""
+
+    # identity
+    name: str = 'node-1'
     role: str = ''
-    host: str = '0.0.0.0'
-    port: int = 9101
-    # URL other devices use to reach this node. For two real machines use the
-    # LAN IP or Tailscale hostname, e.g. http://my-laptop.tail1234.ts.net/
+
+    # network
+    host: str = '127.0.0.1'
+    port: int = 8081
     public_url: str = ''
-    auth_token: str | None = None
-    repo_path: Path = Path('./shared_repo')
-    allow_shell: bool = False
+
+    # shared team repo (git-backed memory)
+    repo_path: Path = field(default_factory=lambda: Path('.'))
     auto_commit_memory: bool = True
-    skills: list[SkillConfig] = field(default_factory=list)
+
+    # transport auth (optional bearer token on top of raven signatures)
+    auth_token: str = ''
+
+    # capabilities
+    allow_shell: bool = False
+    skills: list[Skill] = field(default_factory=list)
+
+    # brain
     llm: LLMConfig = field(default_factory=LLMConfig)
 
-    def resolved_public_url(self) -> str:
-        return self.public_url or f'http://127.0.0.1:{self.port}/'
+    # raven protocol trust policy: rvn1 address -> ed25519 pubkey hex
+    trusted_peers: dict[str, str] = field(default_factory=dict)
+    require_signed_tasks: bool = False
 
+    def resolved_public_url(self) -> str:
+        return self.public_url.rstrip('/') or f'http://{self.host}:{self.port}'
+
+    @property
+    def keys_dir(self) -> Path:
+        return Path(self.repo_path).resolve() / '.team' / 'keys'
+
+    # ------------------------------------------------------------- loaders --
     @classmethod
-    def load(cls, path: str | Path) -> 'NodeConfig':
-        raw = _expand(yaml.safe_load(Path(path).read_text(encoding='utf-8')))
-        llm_raw = raw.pop('llm', {}) or {}
-        skills_raw = raw.pop('skills', []) or []
-        repo_path = Path(raw.pop('repo_path', './shared_repo'))
+    def from_env(cls) -> 'NodeConfig':
         cfg = cls(
-            name=raw['name'],
-            role=raw.get('role', ''),
-            host=raw.get('host', '0.0.0.0'),
-            port=int(raw.get('port', 9101)),
-            public_url=raw.get('public_url', ''),
-            auth_token=raw.get('auth_token') or None,
-            repo_path=repo_path,
-            allow_shell=bool(raw.get('allow_shell', False)),
-            auto_commit_memory=bool(raw.get('auto_commit_memory', True)),
-            skills=[
-                SkillConfig(
-                    id=s['id'],
-                    name=s.get('name', s['id']),
-                    description=s.get('description', ''),
-                    tags=list(s.get('tags', [])),
-                )
-                for s in skills_raw
-            ],
-            llm=LLMConfig(**llm_raw),
+            name=os.environ.get('TEAM_NODE_NAME', cls.name),
+            role=os.environ.get('TEAM_NODE_ROLE', ''),
+            host=os.environ.get('TEAM_HOST', cls.host),
+            port=int(os.environ.get('TEAM_PORT', str(cls.port))),
+            public_url=os.environ.get('TEAM_PUBLIC_URL', ''),
+            repo_path=Path(os.environ.get('TEAM_REPO', '.')),
+            auth_token=os.environ.get('TEAM_AUTH_TOKEN', ''),
+            allow_shell=os.environ.get('TEAM_ALLOW_SHELL', '') == '1',
+            auto_commit_memory=os.environ.get('TEAM_AUTO_COMMIT', '1') == '1',
+            llm=LLMConfig(
+                provider=os.environ.get('TEAM_LLM_PROVIDER', 'echo'),
+                model=os.environ.get('TEAM_LLM_MODEL', ''),
+                base_url=os.environ.get(
+                    'TEAM_LLM_BASE_URL', LLMConfig.base_url
+                ),
+            ),
+            require_signed_tasks=os.environ.get('TEAM_REQUIRE_SIGNED', '') == '1',
         )
+        peers_file = os.environ.get('TEAM_TRUSTED_PEERS', '')
+        if peers_file:
+            cfg.trusted_peers = load_trusted_peers(Path(peers_file))
         return cfg
+
+
+def load_trusted_peers(path: Path) -> dict[str, str]:
+    """Accepts {"addr": "pubhex"} or {"alias": {"address": ..., "pubkey": ...}}."""
+    raw = json.loads(path.read_text(encoding='utf-8'))
+    peers: dict[str, str] = {}
+    for key, val in raw.items():
+        if isinstance(val, dict):
+            peers[val['address']] = val['pubkey']
+        else:
+            peers[key] = str(val)
+    return peers
