@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# RDAP one-command launcher: ensures venv + deps, then runs the wizard.
+set -e
+cd "$(dirname "$0")"
+if [ ! -d .venv ]; then python3 -m venv .venv; fi
+.venv/bin/pip -q install -r requirements.txt 2>/dev/null || true
+exec .venv/bin/python rdap.py "$@"

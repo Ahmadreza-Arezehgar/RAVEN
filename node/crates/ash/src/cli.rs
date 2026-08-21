@@ -648,7 +648,30 @@ fn ensure_identity(data_dir: &Path) -> Identity {
     match raven_core::load_or_create_identity(data_dir) {
         Ok((id, _)) => id,
         Err(e) => {
-            eprintln!("secure identity store: {}", e.redacted_display());
+            let raw = e.redacted_display();
+            eprintln!("secure identity store: {raw}");
+            if raw.contains("continuity violation") {
+                let c = c();
+                eprintln!();
+                eprintln!(
+                    "{0}This profile has leftover state but no identity record.{1}",
+                    c.yellow, c.reset
+                );
+                eprintln!(
+                    "{0}Raven refuses to bind a NEW key over old state silently\n\
+                     (that would look like identity theft to your contacts).{1}",
+                    c.dim, c.reset
+                );
+                eprintln!();
+                eprintln!(
+                    "{0}Recovery — pick one:{1}\n  \
+                     1) Fresh start: move the old profile aside, then re-run init.\n       \
+                     e.g.  mv ~/.raven ~/.raven.backup-20260101\n  \
+                     2) Restore:     if you have a backup of this profile's \
+                     identity files, put them back and retry.",
+                    c.bold, c.reset
+                );
+            }
             std::process::exit(1);
         }
     }

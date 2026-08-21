@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import socket
 
 import uvicorn
 from starlette.applications import Starlette
@@ -131,17 +132,37 @@ def build_app(config: NodeConfig) -> Starlette:
 
 
 def serve(config: NodeConfig) -> None:
+    # bind FIRST so concurrent nodes can never race for the same port
+    sock = None
+    start = config.port
+    for p in range(start, start + 20):
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind((config.host, p))
+            s.listen(128)
+            sock = s
+            config.port = p
+            break
+        except OSError:
+            s.close()
+            continue
+    if sock is None:
+        raise RuntimeError(f'no free port in {start}..{start + 19}')
+
     app = build_app(config)
     rav: RavenIdentity = app.state.raven
-    config = app.state.config
+    cfg: NodeConfig = app.state.config
     print(  # noqa: T201
-        f'* [{config.name}] serving A2A on {config.host}:{config.port} '
-        f'(public url: {config.resolved_public_url()}, repo: {config.repo_path}, '
-        f'llm: {config.llm.provider}/{config.llm.model or "-"})'
+        f'* [{cfg.name}] serving A2A on {cfg.host}:{cfg.port} '
+        f'(public url: {cfg.resolved_public_url()}, repo: {cfg.repo_path}, '
+        f'llm: {cfg.llm.provider}/{cfg.llm.model or "-"})',
+        flush=True,
     )
     print(  # noqa: T201
-        f'* [{config.name}] raven id {rav.address} ({rav.display_address}) '
-        f'fp:{rav.fingerprint} signed-only={config.require_signed_tasks} '
-        f'peers={len(config.trusted_peers)}'
+        f'* [{cfg.name}] raven id {rav.address} ({rav.display_address}) '
+        f'fp:{rav.fingerprint} signed-only={cfg.require_signed_tasks} '
+        f'peers={len(cfg.trusted_peers)}',
+        flush=True,
     )
-    uvicorn.run(app, host=config.host, port=config.port, log_level='warning')
+    uvicorn.run(app, host=cfg.host, port=cfg.port, log_level='warning', fd=sock.fileno())

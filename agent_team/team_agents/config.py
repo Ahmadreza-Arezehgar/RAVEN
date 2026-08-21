@@ -54,7 +54,8 @@ class NodeConfig:
     role: str = ''
 
     # network
-    host: str = '127.0.0.1'
+    host: str = '127.0.0.1'          # bind address
+    advertised_host: str = ''        # ip/url shown to peers (defaults to host)
     port: int = 8081
     public_url: str = ''
 
@@ -77,7 +78,10 @@ class NodeConfig:
     require_signed_tasks: bool = False
 
     def resolved_public_url(self) -> str:
-        return self.public_url.rstrip('/') or f'http://{self.host}:{self.port}'
+        if self.public_url:
+            return self.public_url.rstrip('/')
+        shown = self.advertised_host or self.host
+        return f'http://{shown}:{self.port}'
 
     @property
     def keys_dir(self) -> Path:
