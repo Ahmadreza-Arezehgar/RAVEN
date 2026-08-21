@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from pathlib import Path
 
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
@@ -61,6 +62,18 @@ class TeamAgentExecutor(AgentExecutor):
         self.require_signed = require_signed
         self._cancel = cancel_event or asyncio.Event()
 
+    def current_peers(self) -> dict[str, str]:
+        """Hot-reload trust list so new teammates work without restart."""
+        f = self.config.trusted_peers_file
+        if f:
+            try:
+                from .config import load_trusted_peers
+
+                return load_trusted_peers(Path(f))
+            except Exception:  # noqa: BLE001
+                pass
+        return self.trusted_peers
+
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         self._cancel.clear()
         task = context.current_task
@@ -90,7 +103,7 @@ class TeamAgentExecutor(AgentExecutor):
             ok, reason = verify_delegation(
                 meta,
                 text,
-                trusted_peers=self.trusted_peers,
+                trusted_peers=self.current_peers(),
                 required=self.require_signed,
             )
             if not ok:

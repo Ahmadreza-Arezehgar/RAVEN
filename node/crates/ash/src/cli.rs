@@ -244,6 +244,8 @@ enum Commands {
     Inbox,
     /// Print welcome banner only (safe — no secrets).
     Banner,
+    /// Receive: listen on the fixed LAN port for a pinned contact (no flags).
+    Listen,
     /// Show identity + Bridge/transports/forward queue (safe fields only).
     Status,
     /// Diagnose ash vs system ash conflict, paths, and node socket.
@@ -796,7 +798,7 @@ fn print_menu() {
     item("2", "Inbox", "committed endpoint inbox");
     section("network");
     item("3", "Status", "identity · bridge · transports");
-    item("4", "Node", "bridge / store / relay policy");
+    item("4", "Listen", "receive — one command, no flags");
     section("people");
     item("5", "Contacts", "add by rvn1… paste · list · verify");
     section("tools");
@@ -1113,6 +1115,142 @@ fn local_lan_ipv4_tip() -> Option<String> {
         }
     }
     None
+}
+
+/// `ash listen` / menu 4 — receive messages with ONE command.
+///
+/// Wraps `raven-node run` with everything pre-filled from the local profile:
+/// fixed LAN port, pinned-contact public keys (no flags to remember), and a
+/// share-banner showing exactly what the friend should dial.
+fn cmd_listen(data_dir: &Path) {
+    let c = c();
+    let id = require_identity(data_dir);
+    let contacts = load_contacts(data_dir).unwrap_or_default();
+
+    let contact = match contacts.len() {
+        0 => {
+            println!("{0}No pinned contacts yet.{1}", c.yellow, c.reset);
+            println!(
+                "{0}Add one first (menu 5), so I know whose keys to accept.{1}",
+                c.dim, c.reset
+            );
+            return;
+        }
+        1 => &contacts[0],
+        _ => {
+            println!("{}Listen for which contact?{}", c.bold, c.reset);
+            for (i, ct) in contacts.iter().enumerate() {
+                let fp = device_fingerprint_v1(&{
+                    let mut k = [0u8; 32];
+                    if let Ok(b) = hex::decode(&ct.pub_hex) { k.copy_from_slice(&b[..32.min(b.len())]); }
+                    k
+                });
+                println!("  {0} {1}  fp={2}", i + 1, ct.primary_label(), fp);
+            }
+            print!("number: ");
+            let _ = io::stdout().flush();
+            let pick: usize = read_line().parse().unwrap_or(0);
+            if pick == 0 || pick > contacts.len() {
+                println!("{0}cancelled.{1}", c.dim, c.reset);
+                return;
+            }
+            &contacts[pick - 1]
+        }
+    };
+
+    // Local IP(s) to share with the friend.
+    let ip = local_lan_ipv4_tip().unwrap_or_else(|| "<your-LAN-IP>".into());
+
+    println!();
+    println!("{0}═══ LISTENING ═══{1}", c.purple, c.reset);
+    println!(
+        "{0}Tell your friend to send to:{1}",
+        c.dim,
+        c.reset
+    );
+    println!("   {0}{ip}:{DEFAULT_LAN_PORT}{1}", c.cyan, c.reset);
+    println!(
+        "{0}…and use YOUR pub_hex when asked:{1}",
+        c.dim,
+        c.reset
+    );
+    println!("   {}", hex::encode(id.public_key_bytes()));
+    println!("{0}Waiting for {1} …{2}", c.dim, contact.primary_label(), c.reset);
+    println!();
+
+    let node = ext::raven_node_bin_public();
+
+    // Spawn first, then wait until the port actually accepts — otherwise the
+    // friend may dial before we're ready ("connection refused").
+    // Pre-flight: make sure the port is actually free before spawning.
+    {
+        use std::net::TcpListener;
+        match TcpListener::bind(("0.0.0.0", DEFAULT_LAN_PORT)) {
+            Ok(l) => drop(l),
+            Err(_) => {
+                println!(
+                    "{0}port {DEFAULT_LAN_PORT} is already taken by another process.\n\
+                     Find it:   lsof -i :{DEFAULT_LAN_PORT}\n\
+                     Stop it:   pkill -f raven-node{1}",
+                    c.red, c.reset
+                );
+                return;
+            }
+        }
+    }
+
+    let mut child = match Command::new(node)
+        .stdin(std::process::Stdio::null())
+        .arg("run")
+        .args(["--data-dir", &data_dir.display().to_string()])
+        .args(["--listen", &format!("0.0.0.0:{DEFAULT_LAN_PORT}")])
+        .args(["--exit-after-recv", "1"])
+        .args(["--timeout-secs", "3600"])
+        .args(["--peer-pub-hex", contact.pub_hex.trim()])
+        .args(["--origin-pub-hex", contact.pub_hex.trim()])
+        .spawn()
+    {
+        Ok(ch) => ch,
+        Err(e) => {
+            println!("{0}could not start raven-node: {1}{2}", c.red, e, c.reset);
+            return;
+        }
+    };
+
+    // Give the daemon a beat to bind; bail out if it died immediately.
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    if let Some(st) = child.try_wait().ok().flatten() {
+        let _ = child.wait();
+        println!(
+            "{0}listener exited early ({1}) — see message above.{2}",
+            c.yellow, st, c.reset
+        );
+        return;
+    }
+
+    println!();
+    println!("{0}═══ LISTENING ═══{1}", c.purple, c.reset);
+    println!("{0}Tell your friend to send to:{1}", c.dim, c.reset);
+    println!("   {0}{ip}:{DEFAULT_LAN_PORT}{1}", c.cyan, c.reset);
+    println!("{0}…and use YOUR pub_hex when asked:{1}", c.dim, c.reset);
+    println!("   {}", hex::encode(id.public_key_bytes()));
+    println!(
+        "{0}Waiting for {1} … (Ctrl+C to stop){2}",
+        c.dim,
+        contact.primary_label(),
+        c.reset
+    );
+    println!();
+
+    let status = child.wait();
+
+    match status {
+        Ok(s) if s.success() => {
+            println!("{0}✔ message received & ACKed.{1}", c.green, c.reset);
+        }
+        Ok(s) => println!("{0}listener exited ({1}).{2}", c.yellow, s, c.reset),
+        Err(e) => println!("{0}could not start raven-node: {1}{2}", c.red, e, c.reset),
+    }
 }
 
 fn print_lan_unresolved_hint(contact_label: &str) {
@@ -3019,13 +3157,7 @@ fn interactive(data_dir: &Path) {
             "3" | "st" | "status" => {
                 let _ = cmd_status(data_dir);
             }
-            "4" | "n" | "node" => {
-                println!(
-                    "{C_DIM}policy lives under `ash node bridge on|off`, \
-                     `ash node store on|off` — see `ash node --help`.{C_RESET}"
-                );
-                let _ = cmd_status(data_dir);
-            }
+            "4" | "l" | "listen" => cmd_listen(data_dir),
             "5" | "c" | "contacts" => cmd_contacts(data_dir),
             "6" | "mailbox" => println!(
                 "{C_DIM}mailbox is subcommand-driven — see `ash mailbox --help`.{C_RESET}"
@@ -3132,6 +3264,7 @@ pub fn run() {
     match cli.cmd {
         None => interactive(&data_dir),
         Some(Commands::Banner) => print_welcome(&data_dir),
+        Some(Commands::Listen) => cmd_listen(&data_dir),
         Some(Commands::Status) => {
             if let Err(e) = cmd_status(&data_dir) {
                 eprintln!("{e}");

@@ -75,6 +75,7 @@ class NodeConfig:
 
     # raven protocol trust policy: rvn1 address -> ed25519 pubkey hex
     trusted_peers: dict[str, str] = field(default_factory=dict)
+    trusted_peers_file: str = ''     # live-reloaded each request when set
     require_signed_tasks: bool = False
 
     def resolved_public_url(self) -> str:

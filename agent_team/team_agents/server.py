@@ -123,12 +123,73 @@ def build_app(config: NodeConfig) -> Starlette:
         Route('/health', health, methods=['GET']),
         Route('/raven/identity', raven_identity, methods=['GET']),
     ]
-    app = Starlette(routes=routes)
+    app = Starlette(routes=routes, on_startup=[lambda: _start_services(app)],
+                    on_shutdown=[lambda: _stop_services(app)])
     app.state.raven = identity
     app.state.config = config
+    app.state.brain = brain
     if config.auth_token:
         app = BearerAuthMiddleware(app, config.auth_token)  # type: ignore[assignment]
     return app
+
+
+# ------------------------------------------------- background services ----
+def _start_services(app) -> None:
+    """mDNS advertise + git store-and-forward relay poller."""
+    import os
+    import threading
+    import time
+
+    from . import discovery
+
+    cfg: NodeConfig = app.state.config
+
+    # --- mDNS (LAN discovery) -----------------------------------------
+    try:
+        zc, infos = discovery.advertise(
+            cfg.name.replace(' ', '-'), cfg.port,
+            app.state.raven.address, cfg.advertised_host or '')
+        app.state.zc, app.state.zc_infos = zc, infos
+        if zc:
+            print(f'* [{cfg.name}] mDNS advertised as _rdap._tcp '
+                  f'(find me: ./rdap discover)', flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f'* [{cfg.name}] mDNS unavailable: {exc!r}', flush=True)
+
+    # --- git relay worker thread (store-and-forward, DTN-style) --------
+    def _relay_worker():
+        from .relay import GitRelay
+
+        interval = float(os.environ.get('RDAP_POLL', '20'))
+        r = GitRelay(
+            TeamMemory(cfg.repo_path, auto_commit=cfg.auto_commit_memory),
+            app.state.raven,
+            trusted_peers_file=cfg.trusted_peers_file or None,
+            trusted_peers=cfg.trusted_peers,
+        )
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        while True:
+            time.sleep(interval)
+            try:
+                r.pull()
+                n = loop.run_until_complete(r.process_inbox(app.state.brain.run))
+                if n:
+                    print(f'* [{cfg.name}] relay processed {n} offline task(s)',
+                          flush=True)
+            except Exception as exc:  # noqa: BLE001
+                print(f'* [{cfg.name}] relay tick failed: {exc!r}', flush=True)
+
+    t = threading.Thread(target=_relay_worker, daemon=True,
+                         name=f'relay-{cfg.name}')
+    t.start()
+
+
+def _stop_services(app) -> None:
+    from . import discovery
+
+    discovery.stop_advertise(getattr(app.state, 'zc', None),
+                             getattr(app.state, 'zc_infos', None))
 
 
 def serve(config: NodeConfig) -> None:

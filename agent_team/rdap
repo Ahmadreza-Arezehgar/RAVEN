@@ -1,7 +1,35 @@
 #!/usr/bin/env bash
-# RDAP one-command launcher: ensures venv + deps, then runs the wizard.
+# RDAP one-command launcher: ensures a modern python + venv + deps, runs wizard.
 set -e
 cd "$(dirname "$0")"
-if [ ! -d .venv ]; then python3 -m venv .venv; fi
-.venv/bin/pip -q install -r requirements.txt 2>/dev/null || true
+
+# RDAP needs python >= 3.10 — pick the newest interpreter available
+PY=""
+for cand in python3.14 python3.13 python3.12 python3.11 python3.10 python3; do
+  if command -v "$cand" >/dev/null 2>&1; then
+    if "$cand" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
+      PY="$cand"
+      break
+    fi
+  fi
+done
+if [ -z "$PY" ]; then
+  echo "ERROR: python >= 3.10 required."
+  echo "Install it with:  brew install python@3.12"
+  exit 1
+fi
+
+# recreate the venv if it was built by an outdated interpreter
+if [ ! -d .venv ] || ! .venv/bin/python -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
+  echo "* creating virtualenv with $PY…"
+  rm -rf .venv
+  "$PY" -m venv .venv
+fi
+
+if ! .venv/bin/python -c "import a2a, uvicorn, starlette, cryptography, httpx" 2>/dev/null; then
+  echo "* installing dependencies (first run)…"
+  .venv/bin/pip install --upgrade pip -q
+  .venv/bin/pip install -r requirements.txt
+fi
+
 exec .venv/bin/python rdap.py "$@"

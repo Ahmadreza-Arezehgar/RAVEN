@@ -87,6 +87,10 @@ fn parse_pub_hex(s: &str) -> Result<[u8; 32], String> {
     Ok(a)
 }
 
+pub fn raven_node_bin_public() -> PathBuf {
+    raven_node_bin()
+}
+
 fn raven_node_bin() -> PathBuf {
     std::env::current_exe()
         .ok()
