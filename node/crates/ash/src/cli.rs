@@ -2847,7 +2847,6 @@ fn cmd_send_interactive(data_dir: &Path) {
         println!(
             "{dim}Use when you already know the peer's LAN listen address + public key.{reset}"
         );
-        println!("{dim}Prefer contacts for normal messaging (menu 3).{reset}");
         print!("peer host:port: ");
         let _ = io::stdout().flush();
         let peer = read_line();
@@ -2861,12 +2860,57 @@ fn cmd_send_interactive(data_dir: &Path) {
             eprintln!("empty message");
             return;
         }
-        if let Err(error) =
-            ext::run_send_secure(data_dir, &id, &peer, &pub_hex, "127.0.0.1:0", &text, "", "")
+
+        #[cfg(debug_assertions)]
         {
-            eprintln!("send refused: {error}");
+            // Lab transport lane: the exact path proven by the smoke harness
+            // (interim-sealed envelope over direct TCP). Release builds never
+            // reach this branch — they keep the ATSAM-session requirement.
+            let node = ext::raven_node_bin_public();
+            let mut child = match Command::new(node)
+                .arg("run")
+                .args(["--data-dir", &data_dir.display().to_string()])
+                .args(["--listen", "127.0.0.1:0"])
+                .args(["--peer", peer.trim()])
+                .args(["--peer-pub-hex", pub_hex.trim()])
+                .args(["--send-stdin"])
+                .args(["--body-mode", "unsafe-interim"])
+                .args(["--exit-after-ack"])
+                .args(["--timeout-secs", "45"])
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+            {
+                Ok(ch) => ch,
+                Err(e) => {
+                    let cc0 = c(); let (red, reset) = (cc0.red, cc0.reset); eprintln!("{red}could not start raven-node: {e}{reset}");
+                    return;
+                }
+            };
+            if let Some(mut stdin) = child.stdin.take() {
+                use std::io::Write as _;
+                let _ = stdin.write_all(text.as_bytes());
+                let _ = stdin.write_all(b"\n");
+            }
+            match child.wait() {
+                Ok(s) if s.success() => {}
+                Ok(s) => { let cc2 = c(); let (yellow, reset) = (cc2.yellow, cc2.reset); eprintln!("{yellow}send exited ({s}){reset}"); }
+                Err(e) => { let cc1 = c(); let (red, reset) = (cc1.red, cc1.reset); eprintln!("{red}send failed: {e}{reset}"); }
+            }
+            #[allow(unreachable_code)]
+            {
+                return;
+            }
         }
-        return;
+
+        #[cfg(not(debug_assertions))]
+        {
+            if let Err(error) =
+                ext::run_send_secure(data_dir, &id, &peer, &pub_hex, "127.0.0.1:0", &text, "", "")
+            {
+                eprintln!("send refused: {error}");
+            }
+            return;
+        }
     }
 
     println!("{bold}Send / Chat{reset}");

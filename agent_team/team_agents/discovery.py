@@ -33,33 +33,33 @@ def _lan_ips() -> list[str]:
 
 
 def advertise(name: str, port: int, raven_address: str, advertised_ip: str = ''):
-    """Start broadcasting this node. Returns (zc, info) — keep referenced."""
+    """Start broadcasting this node. Returns (zc, infos) — keep referenced."""
     try:
         from zeroconf import ServiceInfo, Zeroconf
     except ImportError:
         return None, None
 
+    ips = [advertised_ip] if advertised_ip else _lan_ips()
+    if not ips:
+        return None, None
     props: dict[str, Any] = {
         'addr': raven_address,
         'v': PROP_VERSION,
         'path': '/',
     }
-    ips = [advertised_ip] if advertised_ip else _lan_ips()
-    # register once per local IP so every interface answers
-    zc = Zeroconf()
-    infos = []
-    for i, ip in enumerate(ips):
-        info = ServiceInfo(
-            SERVICE_TYPE,
-            f'{name}.{SERVICE_TYPE}',
-            parsed_addresses=[ip],
-            port=port,
-            properties=props,
-            server=f'{name}-{i}.local.',
-        )
-        zc.register_service(info)
-        infos.append(info)
-    return zc, infos
+    # bind only the primary LAN interface — the wildcard bind collides with
+    # other apps that hold :5353 without REUSEPORT
+    zc = Zeroconf(interfaces=[ips[0]])
+    info = ServiceInfo(
+        SERVICE_TYPE,
+        f'{name}.{SERVICE_TYPE}',
+        parsed_addresses=[ips[0]],
+        port=port,
+        properties=props,
+        server=f'{name}.local.',
+    )
+    zc.register_service(info)
+    return zc, [info]
 
 
 def stop_advertise(zc, infos) -> None:
@@ -75,6 +75,8 @@ def stop_advertise(zc, infos) -> None:
 
 def browse(timeout: float = 4.0) -> list[dict]:
     """Return nearby RDAP nodes: [{name, ip, port, url, addr}]."""
+    import time
+
     from zeroconf import ServiceBrowser, Zeroconf
 
     found: dict[str, dict] = {}
@@ -103,12 +105,20 @@ def browse(timeout: float = 4.0) -> list[dict]:
         def remove_service(self, zc, type_, name) -> None:
             pass
 
-    zc = Zeroconf()
+    ips = _lan_ips() or ['127.0.0.1']
+    last_exc = None
+    for attempt_ips in (ips, ['0.0.0.0']):
+        try:
+            zc = Zeroconf(interfaces=attempt_ips)
+            break
+        except OSError as exc:      # some other app hogging mDNS sockets
+            last_exc = exc
+            continue
+    else:
+        raise RuntimeError(f'mDNS unavailable ({last_exc!r}) — '
+                           'fall back to `./rdap trust`')
     try:
         _ = ServiceBrowser(zc, SERVICE_TYPE, _Listener())
-        socket.setdefaulttimeout(timeout)
-        import time
-
         time.sleep(timeout)
     finally:
         zc.close()

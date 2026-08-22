@@ -123,8 +123,15 @@ def build_app(config: NodeConfig) -> Starlette:
         Route('/health', health, methods=['GET']),
         Route('/raven/identity', raven_identity, methods=['GET']),
     ]
-    app = Starlette(routes=routes, on_startup=[lambda: _start_services(app)],
-                    on_shutdown=[lambda: _stop_services(app)])
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def _lifespan(a):
+        _start_services(a)
+        yield
+        _stop_services(a)
+
+    app = Starlette(routes=routes, lifespan=_lifespan)
     app.state.raven = identity
     app.state.config = config
     app.state.brain = brain
@@ -144,17 +151,21 @@ def _start_services(app) -> None:
 
     cfg: NodeConfig = app.state.config
 
-    # --- mDNS (LAN discovery) -----------------------------------------
-    try:
-        zc, infos = discovery.advertise(
-            cfg.name.replace(' ', '-'), cfg.port,
-            app.state.raven.address, cfg.advertised_host or '')
-        app.state.zc, app.state.zc_infos = zc, infos
-        if zc:
-            print(f'* [{cfg.name}] mDNS advertised as _rdap._tcp '
-                  f'(find me: ./rdap discover)', flush=True)
-    except Exception as exc:  # noqa: BLE001
-        print(f'* [{cfg.name}] mDNS unavailable: {exc!r}', flush=True)
+    # --- mDNS (LAN discovery) — own thread: zeroconf is blocking -------
+    def _mdns_worker():
+        try:
+            zc, infos = discovery.advertise(
+                cfg.name.replace(' ', '-'), cfg.port,
+                app.state.raven.address, cfg.advertised_host or '')
+            app.state.zc, app.state.zc_infos = zc, infos
+            if zc:
+                print(f'* [{cfg.name}] mDNS advertised as _rdap._tcp '
+                      f'(find me: ./rdap discover)', flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f'* [{cfg.name}] mDNS unavailable: {exc!r}', flush=True)
+
+    threading.Thread(target=_mdns_worker, daemon=True,
+                     name=f'mdns-{cfg.name}').start()
 
     # --- git relay worker thread (store-and-forward, DTN-style) --------
     def _relay_worker():

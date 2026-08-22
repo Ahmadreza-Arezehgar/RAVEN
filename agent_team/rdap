@@ -26,7 +26,7 @@ if [ ! -d .venv ] || ! .venv/bin/python -c 'import sys; sys.exit(0 if sys.versio
   "$PY" -m venv .venv
 fi
 
-if ! .venv/bin/python -c "import a2a, uvicorn, starlette, cryptography, httpx" 2>/dev/null; then
+if ! .venv/bin/python -c "import a2a, uvicorn, starlette, cryptography, httpx, zeroconf" 2>/dev/null; then
   echo "* installing dependencies (first run)…"
   .venv/bin/pip install --upgrade pip -q
   .venv/bin/pip install -r requirements.txt

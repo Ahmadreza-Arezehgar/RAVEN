@@ -177,8 +177,8 @@ def cmd_start(args) -> None:
         sys.exit('run `./rdap init` first')
 
     repo = Path(st.get('repo') or BASE / 'team-repo')
-    peers_file = PEERS_FILE if PEERS_FILE.exists() else None
-    peers = load_peers()
+    # always wire the live peers file — trust list may grow while running
+    peers_now = load_trusted_peers(PEERS_FILE) if PEERS_FILE.exists() else {}
     saved_llm = st.get('llm', {})
     cfg = NodeConfig(
         name=st['name'],
@@ -196,8 +196,9 @@ def cmd_start(args) -> None:
             base_url=args.base_url or saved_llm.get('base_url',
                                                     LLMConfig.base_url),
         ),
-        trusted_peers=(load_trusted_peers(peers_file) if peers_file else {}),
-        require_signed_tasks=bool(peers) and not args.open,
+        trusted_peers=peers_now,
+        trusted_peers_file=str(PEERS_FILE),
+        require_signed_tasks=bool(peers_now) and not args.open,
     )
     serve(cfg)
 

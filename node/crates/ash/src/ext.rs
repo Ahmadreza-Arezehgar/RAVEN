@@ -136,7 +136,10 @@ pub fn ensure_mac_lan_daemon(data_dir: &Path) -> bool {
         let _ = std::fs::remove_file(&sock);
     }
     let node = raven_node_bin();
-    let listen = format!("0.0.0.0:{DEFAULT_LAN_PORT}");
+    // Outbound-IPC-only deployments (or same-host tests) may need a different
+    // or ephemeral LAN bind than the default receive port.
+    let listen = std::env::var("RAVEN_SERVICE_LAN_LISTEN")
+        .unwrap_or_else(|_| format!("0.0.0.0:{DEFAULT_LAN_PORT}"));
     let data = data_dir.to_str().unwrap_or(".");
     if let Err(e) = Command::new(&node)
         .args([
