@@ -2862,6 +2862,97 @@ fn cmd_send_interactive(data_dir: &Path) {
             return;
         }
 
+        // Lab transport lane — the exact path proven by the smoke harness
+        // (interim-sealed envelope over direct TCP). Release builds without the
+        // lab feature make raven-node refuse here with ATSAM_SESSION_REQUIRED,
+        // keeping production fail-closed.
+        {
+            let node = ext::raven_node_bin_public();
+            let cc0 = c();
+            let mut child = match Command::new(node)
+                .arg("run")
+                .args(["--data-dir", &data_dir.display().to_string()])
+                .args(["--listen", "127.0.0.1:0"])
+                .args(["--peer", peer.trim()])
+                .args(["--peer-pub-hex", pub_hex.trim()])
+                .args(["--send-stdin"])
+                .args(["--body-mode", "unsafe-interim"])
+                .args(["--exit-after-ack"])
+                .args(["--timeout-secs", "45"])
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+            {
+                Ok(ch) => ch,
+                Err(e) => {
+                    let (red, reset) = (cc0.red, cc0.reset);
+                    eprintln!("{red}could not start raven-node: {e}{reset}");
+                    return;
+                }
+            };
+            if let Some(mut stdin) = child.stdin.take() {
+                use std::io::Write as _;
+                let _ = stdin.write_all(text.as_bytes());
+                let _ = stdin.write_all(b"\n");
+            }
+            match child.wait() {
+                Ok(s) if s.success() => {}
+                Ok(s) => {
+                    let cc2 = c();
+                    let (yellow, reset) = (cc2.yellow, cc2.reset);
+                    eprintln!("{yellow}send exited ({s}){reset}");
+                }
+                Err(e) => {
+                    let cc3 = c();
+                    let (red, reset) = (cc3.red, cc3.reset);
+                    eprintln!("{red}send failed: {e}{reset}");
+                }
+            }
+            return;
+        }
+
+    println!("{bold}Send / Chat{reset}");
+        println!("{dim}You have no contacts yet — don't jump to host:port.{reset}");
+        println!();
+        println!("  {bold}1.{reset} Add someone first: menu {bold}5 Contacts{reset}");
+        println!("     (rvn1… address + pub_hex from their `ash whoami`, or @alias)");
+        println!("  {bold}2.{reset} Advanced: direct peer host:port (LAN demo / power users)");
+        println!();
+        print!("Add a contact now? [Y/n/advanced]: ");
+        let _ = io::stdout().flush();
+        let ans = read_line();
+        let a = ans.trim().to_ascii_lowercase();
+        if a.is_empty() || a == "y" || a == "yes" {
+            cmd_contact_add_interactive(data_dir);
+            return;
+        }
+        if a != "advanced" && a != "a" && a != "n" && a != "no" {
+            println!("{dim}cancelled — use menu 3 to add a contact.{reset}");
+            return;
+        }
+        if a == "n" || a == "no" {
+            println!("{dim}Add a contact first (menu 3), then try Send / Chat again.{reset}");
+            return;
+        }
+        // advanced direct peer
+        println!();
+        println!("{bold}Advanced — direct peer{reset}");
+        println!(
+            "{dim}Use when you already know the peer's LAN listen address + public key.{reset}"
+        );
+        print!("peer host:port: ");
+        let _ = io::stdout().flush();
+        let peer = read_line();
+        print!("peer pub_hex (64 chars, public only): ");
+        let _ = io::stdout().flush();
+        let pub_hex = read_line();
+        print!("message (stdin — never argv): ");
+        let _ = io::stdout().flush();
+        let text = read_line();
+        if text.is_empty() {
+            eprintln!("empty message");
+            return;
+        }
+
         #[cfg(debug_assertions)]
         {
             // Lab transport lane: the exact path proven by the smoke harness

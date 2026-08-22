@@ -16,6 +16,7 @@ import json
 import os
 import socket
 import sys
+import uuid
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -104,7 +105,10 @@ def cmd_init(args) -> None:
         role = input('role (optional, enter to skip): ').strip()
 
     repo.mkdir(parents=True, exist_ok=True)
-    (repo / '.gitignore').write_text('.team/keys/\n*.seed\n', encoding='utf-8')
+    (repo / '.gitignore').write_text(
+        '.team/keys/\n*.seed\n'
+        '.team/mesh-client/\n.team/mesh-store/\n.team/mesh-seen.json\n',
+        encoding='utf-8')
     if not (repo / '.git').exists():
         import subprocess as _sp
 
@@ -301,9 +305,23 @@ def cmd_discover(args) -> None:
         peers[addr] = pub
         save_peers(peers)
         mates = st.setdefault('teammates', {})
-        mates[n['name']] = {'address': addr, 'public_key': pub, 'url': n['url']}
-        print(f"✔ trusted {n['name']} ({addr[:18]}…) @ {n['url']}   [TOFU]")
+        mates[n['name']] = {'address': addr, 'public_key': pub,
+                            'url': n['url'], 'mailbox': idn.get('mailbox')}
+        print(f"✔ trusted {n['name']} ({addr[:18]}…) @ {n['url']}   [TOFU]"
+              + ('  +mesh' if idn.get('mailbox') else ''))
     _save_json(STATE_FILE, st)
+
+
+def cmd_mesh_build(args) -> None:
+    """Build the Raven swarm mailbox binary once (needs Rust/cargo)."""
+    from team_agents.mesh import build_swarm_bin, find_swarm_bin
+
+    existing = find_swarm_bin()
+    if existing and not args.force:
+        print('✔ already built:', existing)
+        return
+    print('* building raven-swarm mailbox (first build takes a few minutes)…')
+    print('✔ built:', build_swarm_bin())
 
 
 def cmd_replies(args) -> None:
@@ -377,7 +395,8 @@ def cmd_ask(args) -> None:
         target_name = args.name
         if not target:
             sys.exit(f'unknown teammate "{args.name}" — run `./rdap trust` first')
-        if not target.get('url') and not args.relay:
+        if not (target.get('url') or args.url) and not args.relay \
+                and not target.get('mailbox'):
             sys.exit(f'no url known for "{args.name}" — re-run `./rdap trust` '
                      'with --url, or use --relay to go offline')
     elif len(mates) == 1:
@@ -395,44 +414,78 @@ def cmd_ask(args) -> None:
     if args.url and target is not None:
         target['url'] = args.url
         _save_json(STATE_FILE, st)
-    if not args.relay:
-        if not url:
-            sys.exit(f'no url for {target_name} — pass --url http://<ip>:<port>')
+    peer_addr = (target or {}).get('address', '')
+    repo = Path(st.get('repo') or BASE / 'team-repo')
+    idn = RavenIdentity.load_or_create(repo / '.team' / 'keys')
 
-        print(f'→ checking {target_name} at {url} …')
-    info = _probe(url)
-    if not info:
-        peer_addr = (target or {}).get('address', '')
-        use_relay = args.relay
-        if not use_relay and sys.stdin.isatty():
-            ans = input(f'{target_name} unreachable — queue task via git '
-                        'relay? [Y/n]: ').strip().lower()
-            use_relay = ans not in ('n', 'no')
-        if not use_relay or not peer_addr:
-            print(f'✗ {target_name} is unreachable at {url}.')
-            print('  run:  ./rdap ping ' + url)
-            sys.exit(1)
-        from team_agents.memory import TeamMemory
-        from team_agents.raven_identity import RavenIdentity
-        from team_agents.relay import GitRelay
+    # ---------------- RDAP Transport Manager ladder -----------------------
+    # T1 direct A2A · T2/T3 raven-swarm mailbox · T4 git relay
+    def _sign_payload() -> tuple[str, str]:
+        from team_agents.raven_identity import sign_delegation
 
-        repo = Path(st.get('repo') or BASE / 'team-repo')
-        idn = RavenIdentity.load_or_create(repo / '.team' / 'keys')
-        r = GitRelay(TeamMemory(repo), idn,
-                     trusted_peers_file=(str(PEERS_FILE)
-                                         if PEERS_FILE.exists() else None),
-                     trusted_peers=load_peers())
-        f = r.send_task(peer_addr, args.text)
-        print(f'✔ queued offline via git relay → {f.relative_to(repo)}')
-        print('   they will process it on their next sync; collect answers:')
-        print('   ./rdap replies')
-        return
+        tid = uuid.uuid4().hex[:12]
+        payload = {
+            'id': tid, 'kind': 'task', 'from': idn.address,
+            'to': peer_addr, 'text': args.text,
+            'raven': sign_delegation(idn, args.text),
+        }
+        return tid, json.dumps(payload, ensure_ascii=False)
 
-    print(f'✔ {target_name} alive ({info["address"][:16]}…) — sending task …')
+    if not args.relay and url:
+        print(f'→ [T1 direct] checking {target_name} at {url} …')
+        info = _probe(url)
+        if info is not None:
+            mb = info.get('mailbox')
+            if mb and target is not None and target.get('mailbox') != mb:
+                target['mailbox'] = mb          # remember for future fallback
+                _save_json(STATE_FILE, st)
+            print(f'✔ {target_name} alive — sending task …')
+            result = asyncio.run(send_task(url, args.text,
+                                           identity=idn, timeout=90))
+            print(result)
+            return
+        print('✗ [T1] direct unreachable.')
 
-    idn = RavenIdentity.load_or_create(Path(st['repo']) / '.team' / 'keys')
-    result = asyncio.run(send_task(url, args.text, identity=idn, timeout=90))
-    print(result)
+    # T3 — raven swarm offline mailbox (task lands in THEIR store)
+    if not args.git_only:
+        from team_agents.mesh import find_swarm_bin, make_task_object, mailbox_put
+
+        binp = find_swarm_bin()
+        mb = (target or {}).get('mailbox')
+        if binp and mb and peer_addr:
+            try:
+                tid, payload_text = _sign_payload()
+                obj_hex = make_task_object(payload_text.encode(), peer_addr)
+                mailbox_put(binp, repo / '.team' / 'mesh-client',
+                            mb['multiaddr'], mb['peer_id'], obj_hex)
+                print(f'✔ [T3 mesh-mailbox] queued {tid} into '
+                      f"{target_name}'s Raven store")
+                print('   they drain it automatically; collect answers:')
+                print('   ./rdap replies')
+                return
+            except Exception as exc:  # noqa: BLE001
+                print(f'✗ [T3] mesh put failed ({exc!r}) — falling to git …')
+
+    # T4 — git relay
+    use_relay = True
+    if not args.relay and not args.git_only and sys.stdin.isatty():
+        ans = input(f'{target_name} unreachable — queue via git relay? '
+                    '[Y/n]: ').strip().lower()
+        use_relay = ans not in ('n', 'no')
+    if not use_relay or not peer_addr:
+        sys.exit(f'✗ no transport reached {target_name}.'
+                 + ('' if url else ' (no url known — pass --url)'))
+    from team_agents.memory import TeamMemory
+    from team_agents.relay import GitRelay
+
+    r = GitRelay(TeamMemory(repo), idn,
+                 trusted_peers_file=(str(PEERS_FILE)
+                                     if PEERS_FILE.exists() else None),
+                 trusted_peers=load_peers())
+    tid, payload_text = _sign_payload()
+    f = r.send_task(peer_addr, args.text)
+    print(f'✔ [T4 git-relay] queued {f.relative_to(repo)}')
+    print('   collect answers later with:  ./rdap replies')
 
 
 # ------------------------------------------------------------------ main --
@@ -478,6 +531,8 @@ def main() -> None:
     a.add_argument('--url', default='')
     a.add_argument('--relay', action='store_true',
                    help='skip live attempt, queue via git relay directly')
+    a.add_argument('--git-only', action='store_true',
+                   help='skip mesh mailbox, use git relay as the fallback')
     a.set_defaults(fn=cmd_ask)
 
     g = sub.add_parser('ping', help='check whether a teammate node is reachable')
@@ -495,6 +550,11 @@ def main() -> None:
 
     rr = sub.add_parser('replies', help='collect offline answers from git relay')
     rr.set_defaults(fn=cmd_replies)
+
+    mb = sub.add_parser('mesh-build',
+                        help='build the Raven swarm mailbox binary (Rust)')
+    mb.add_argument('--force', action='store_true')
+    mb.set_defaults(fn=cmd_mesh_build)
 
     args = p.parse_args()
     args.fn(args)
