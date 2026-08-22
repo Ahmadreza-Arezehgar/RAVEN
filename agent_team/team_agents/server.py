@@ -207,15 +207,41 @@ def _start_services(app) -> None:
                   flush=True)
 
         def _drain_mesh() -> int:
+            nonlocal store
+
             if not (store and binp):
                 return 0
             seen = _json.loads(seen_file.read_text(encoding='utf-8'))
             my_addr = app.state.raven.address
             tag_hex = mesh_mod.store_tag(my_addr).hex()
-            objs = mesh_mod.mailbox_get_all(
-                binp,
-                r.memory.resolve_in_repo('.team/mesh-client'),
-                store['multiaddr'], store['peer_id'], tag_hex)
+            client_dir = r.memory.resolve_in_repo('.team/mesh-client')
+            try:
+                objs = mesh_mod.mailbox_get_all(
+                    binp, client_dir,
+                    store['multiaddr'], store['peer_id'], tag_hex)
+            except Exception as exc:  # noqa: BLE001
+                msg = str(exc).lower()
+                if 'refused' in msg or 'dial' in msg or 'timeout' in msg:
+                    print(f'* [{cfg.name}] mesh store lost — restarting…',
+                          flush=True)
+                    try:
+                        store['proc'].kill()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    time.sleep(1)
+                    store = mesh_mod.serve_store(
+                        binp,
+                        r.memory.resolve_in_repo('.team/mesh-store'),
+                        cfg.advertised_host or '')
+                    app.state.mailbox_info = {
+                        'multiaddr': store['multiaddr'],
+                        'peer_id': store['peer_id'],
+                    }
+                    objs = mesh_mod.mailbox_get_all(
+                        binp, client_dir,
+                        store['multiaddr'], store['peer_id'], tag_hex)
+                else:
+                    raise
             n = 0
             for obj in objs:
                 try:

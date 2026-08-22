@@ -165,6 +165,20 @@ def cmd_trust(args) -> None:
     mates = st.setdefault('teammates', {})
     mate = mates.get(tname, {})
     mate.update(address=addr, public_key=pub, url=args.url or mate.get('url', ''))
+
+    # if a url is known, pull their live identity — captures mesh mailbox info
+    if args.url:
+        try:
+            import httpx
+
+            idn = httpx.get(args.url.rstrip('/') + '/raven/identity',
+                            timeout=6).json()
+            if idn.get('mailbox'):
+                mate['mailbox'] = idn['mailbox']
+                print(f"  +mesh captured ({idn['mailbox']['multiaddr'][:34]}…)")
+        except Exception:  # noqa: BLE001
+            print('  (identity fetch failed — mailbox info skipped)')
+
     mates[tname] = mate
     _save_json(STATE_FILE, st)
 
@@ -281,9 +295,10 @@ def cmd_discover(args) -> None:
     from team_agents.discovery import browse
 
     print('→ scanning LAN for RDAP agents (_rdap._tcp) …')
-    nodes = browse(timeout=args.timeout)
+    me = state().get('address')
+    nodes = [n for n in browse(timeout=args.timeout) if n.get('addr') != me]
     if not nodes:
-        print('none found. is the other node running ./rdap start?')
+        print('none found (other than you). is the other node running?')
         return
     for i, n in enumerate(nodes, 1):
         print(f"  {i}) {n['name']:20} {n['url']}  {n['addr'][:18]}…")

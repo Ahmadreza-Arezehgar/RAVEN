@@ -178,44 +178,71 @@ def serve_store(bin_path: Path, data_dir: Path,
     """Start a persistent mailbox store reachable from other machines."""
     import socket
 
-    data_dir.mkdir(parents=True, exist_ok=True)
     addr_file = data_dir / 'mailbox.multiaddr'
     peer_file = data_dir / 'mailbox.peer-id'
-    proc = subprocess.Popen(
-        [str(bin_path), '--allow-experimental-mailbox', 'serve',
-         '--data-dir', str(data_dir), '--listen', '/ip4/0.0.0.0/tcp/0',
-         '--write-multiaddr', str(addr_file), '--write-peer-id', str(peer_file)],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-    for _ in range(200):
-        if addr_file.exists() and peer_file.exists():
-            ma = addr_file.read_text().strip()
-            # the store binds wildcard but reports 127.0.0.1 — publish the
-            # LAN-dialable address instead
-            m = ma.split('/p2p/', 1)
-            head, peer_part = (m[0], '/p2p/' + m[1]) if len(m) == 2 else (ma, '')
-            pm = head.split('/')
-            if len(pm) >= 5 and pm[2] in ('127.0.0.1', '0.0.0.0'):
-                ip = advertise_ip
-                if not ip:
-                    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                    try:
-                        s.connect(('8.8.8.8', 80))
-                        ip = s.getsockname()[0]
-                    finally:
-                        s.close()
-                pm[2] = ip
-                ma = '/'.join(pm) + peer_part
-            return {
-                'proc': proc,
-                'multiaddr': ma,
-                'peer_id': peer_file.read_text().strip(),
-            }
-        if proc.poll() is not None:
-            raise RuntimeError('mailbox store exited immediately')
-        time.sleep(0.05)
-    proc.kill()
-    raise RuntimeError('mailbox store did not publish its address')
+    # NOTE: log must live OUTSIDE the data dir — a stray file inside makes
+    # the store's continuity check treat the profile as corrupted
+    log_file = data_dir.parent / 'mesh-store.log'
+
+    def _spawn() -> subprocess.Popen:
+        data_dir.mkdir(parents=True, exist_ok=True)
+        # stale files would make _wait() return instantly with OLD addresses
+        for f in (addr_file, peer_file):
+            f.unlink(missing_ok=True)
+        log_fh = open(log_file, 'ab')
+        return subprocess.Popen(
+            [str(bin_path), '--allow-experimental-mailbox', 'serve',
+             '--data-dir', str(data_dir), '--listen', '/ip4/0.0.0.0/tcp/0',
+             '--write-multiaddr', str(addr_file),
+             '--write-peer-id', str(peer_file)],
+            stdout=log_fh, stderr=log_fh,
+        )
+
+    def _wait(p: subprocess.Popen) -> None:
+        for _ in range(200):
+            if addr_file.exists() and peer_file.exists():
+                return
+            if p.poll() is not None:
+                raise RuntimeError('mailbox store exited immediately')
+            time.sleep(0.05)
+        p.kill()
+        raise RuntimeError('mailbox store did not publish its address')
+
+    proc = _spawn()
+    try:
+        _wait(proc)
+    except RuntimeError:
+        # stale/corrupt state — wipe and start clean (mailbox is transient)
+        import shutil as _sh
+
+        for f in data_dir.iterdir():
+            if f.name != 'store.log':
+                f.unlink() if f.is_file() else _sh.rmtree(f)
+        proc = _spawn()
+        _wait(proc)
+
+    ma = addr_file.read_text().strip()
+    # store binds wildcard but may report 127.0.0.1/0.0.0.0 — publish the
+    # LAN-dialable address instead
+    parts = ma.split('/p2p/', 1)
+    head, peer_part = parts[0], ('/p2p/' + parts[1] if len(parts) == 2 else '')
+    pm = head.split('/')
+    if len(pm) >= 5 and pm[2] in ('127.0.0.1', '0.0.0.0'):
+        ip = advertise_ip
+        if not ip:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                s.connect(('8.8.8.8', 80))
+                ip = s.getsockname()[0]
+            finally:
+                s.close()
+        pm[2] = ip
+        ma = '/'.join(pm) + peer_part
+    return {
+        'proc': proc,
+        'multiaddr': ma,
+        'peer_id': peer_file.read_text().strip(),
+    }
 
 
 def mailbox_put(bin_path: Path, client_dir: Path, store_multiaddr: str,

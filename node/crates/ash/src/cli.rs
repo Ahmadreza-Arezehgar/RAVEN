@@ -2912,7 +2912,22 @@ fn cmd_send_interactive(data_dir: &Path) {
 
     let peer = if ct.lan_dial.is_empty() {
         print_lan_unresolved_hint(&ct.primary_label());
+        if !stdin_is_tty() {
+            println!(
+                "{0}no LAN dial saved and stdin is not a terminal \u{2014} \
+                 re-add this contact with --lan-dial host:port{1}",
+                c.yellow,
+                c.reset
+            );
+            return;
+        }
+        let mut tries: u8 = 0;
         let hp = loop {
+            tries += 1;
+            if tries > 3 {
+                println!("{0}too many invalid entries \u{2014} cancelled.{1}", c.dim, c.reset);
+                return;
+            }
             print!(
                 "{0}?{1} Type the IP:PORT shown on their Listen screen (e.g. 192.168.1.20:7420): ",
                 c.yellow,
@@ -2956,6 +2971,15 @@ fn cmd_send_interactive(data_dir: &Path) {
 
 fn direct_peer_prompts() -> (Option<String>, Option<String>, Option<String>) {
     let c = c();
+    if !stdin_is_tty() {
+        println!(
+            "{0}direct peer needs interactive input \u{2014} \
+             use a contact with --lan-dial, or run inside a terminal.{1}",
+            c.yellow,
+            c.reset
+        );
+        return (None, None, None);
+    }
     println!();
     println!("{0}Advanced — direct peer{1}", c.bold, c.reset);
     println!("{0}Use when you already know the peer's LAN listen address + public key.{1}", c.dim, c.reset);
@@ -3225,6 +3249,13 @@ enum MenuKey {
     Digit(usize),
     Quit,
     Other,
+}
+
+/// Interactive prompts require a human terminal. Automated callers (scripts,
+/// rdap-style tools) must supply values up-front; we never spin on EOF.
+fn stdin_is_tty() -> bool {
+    use std::io::IsTerminal;
+    io::stdin().is_terminal()
 }
 
 fn stty(args: &[&str]) {
