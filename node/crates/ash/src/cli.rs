@@ -3252,6 +3252,7 @@ enum MenuKey {
     Up,
     Down,
     Enter,
+    Escape,
     Digit(usize),
     Quit,
     Other,
@@ -3302,6 +3303,25 @@ fn ok(v: bool) -> &'static str {
 }
 
 
+fn clear_screen() {
+    print!("\u{1b}[2J\u{1b}[H");
+    let _ = io::stdout().flush();
+}
+
+fn wait_back() -> bool {
+    // Returns false = quit app. True = go back to menu.
+    println!("\n  {d}[Esc] back{r}", d=c().dim, r=c().reset);
+    let _ = io::stdout().flush();
+    stty(&["raw", "-echo"]);
+    loop {
+        match read_key_raw() {
+            MenuKey::Escape | MenuKey::Enter => { stty(&["sane"]); return true; }
+            MenuKey::Quit => { stty(&["sane"]); return false; }
+            _ => {}
+        }
+    }
+}
+
 fn stty(args: &[&str]) {
     let _ = Command::new("stty").args(args).status();
 }
@@ -3324,11 +3344,12 @@ fn read_key_raw_inner() -> MenuKey {
         b'\r' | b'\n' => MenuKey::Enter,
         0x1b => {
             let mut b2 = [0u8; 1];
+            // Poll briefly — if no follow-up byte, this is a bare ESC press.
             if io::stdin().read(&mut b2).unwrap_or(0) == 0 {
-                return MenuKey::Other;
+                return MenuKey::Escape;
             }
             if b2[0] != b'[' {
-                return MenuKey::Other;
+                return MenuKey::Escape;
             }
             let mut b3 = [0u8; 1];
             if io::stdin().read(&mut b3).unwrap_or(0) == 0 {
@@ -3422,6 +3443,51 @@ fn render_arrow_menu(sel: usize, first: bool) {
 
 /// Guided walkthrough for newcomers. Every step prints what it does and why,
 /// then runs the safe ones inline. No private material is ever displayed.
+
+pub fn run() {
+    let path = resolve_terminal_messaging_path();
+    if let Err(e) = assert_no_silent_fastapi(path) {
+        eprintln!("{e}");
+        std::process::exit(1);
+    }
+    let cli = Cli::parse();
+    let data_dir = resolve_data_dir(&cli.data_dir);
+    let _ = std::fs::create_dir_all(&data_dir);
+    match cli.cmd {
+        None => interactive(&data_dir),
+        Some(Commands::Banner) => print_welcome(&data_dir),
+        Some(Commands::Listen) => cmd_listen(&data_dir),
+        Some(Commands::Init) => {
+            let id = ensure_identity(&data_dir);
+            println!("address={}", id.address());
+            println!("fingerprint={}",
+                device_fingerprint_v1(&id.public_key_bytes()));
+            println!("pub_hex={}", hex::encode(id.public_key_bytes()));
+            if let Err(e) = raven_core::ensure_local_prekey(&data_dir, &id) {
+                eprintln!("prekey: {e}");
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::Whoami) => {
+            match try_load_identity(&data_dir) {
+                Ok(Some(id)) => print_public_identity(&id),
+                Ok(None) => println!("no identity — run init"),
+                Err(e) => eprintln!("identity store: {}", sanitize_terminal_text(&e)),
+            }
+        }
+        Some(Commands::Status) => {
+            if let Err(e) = cmd_status(&data_dir) {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::Doctor) => cmd_doctor(&data_dir),
+        Some(Commands::IpcPing) => cmd_ipc_ping(&data_dir),
+        Some(Commands::Inbox) => cmd_endpoint_inbox(&data_dir),
+        _ => {} // other subcommands handled by their own dispatch
+    }
+}
+
 fn cmd_tutorial(data_dir: &Path) {
     let c = c();
     let _ = offer_first_run_identity(data_dir);
@@ -3489,336 +3555,58 @@ fn cmd_tutorial(data_dir: &Path) {
 
 
 fn arrow_menu_loop(data_dir: &Path) {
-    // Terminal stays COOKED for all drawing/output. Raw mode is enabled only
-    // for the duration of a single keypress read (see read_key_raw).
     let mut sel: usize = 0;
-    render_arrow_menu(sel, true);
+
     loop {
+        clear_screen();
+        print_welcome_minimal(data_dir);
+        render_arrow_menu(sel, true);
+
         let key = read_key_raw();
+
         match key {
             MenuKey::Up => {
-                if sel > 0 {
-                    sel -= 1;
-                    render_arrow_menu(sel, false);
-                }
+                if sel > 0 { sel -= 1; render_arrow_menu(sel, false); }
             }
             MenuKey::Down => {
-                if sel + 1 < MENU_ITEMS.len() {
-                    sel += 1;
-                    render_arrow_menu(sel, false);
-                }
-            }
-            MenuKey::Digit(d) => {
-                sel = d - 1;
-                render_arrow_menu(sel, false);
-                println!();
-                if !run_menu_choice(data_dir, MENU_ITEMS[sel].0) {
-                    break;
-                }
-                sel = 0;
-                render_arrow_menu(sel, true);
+                if sel + 1 < MENU_ITEMS.len() { sel += 1; render_arrow_menu(sel, false); }
             }
             MenuKey::Enter => {
-                println!(); // move off the prompt line so action output is clean
+                clear_screen();
                 let choice = MENU_ITEMS[sel].0.to_string();
-                if !run_menu_choice(data_dir, &choice) {
-                    break;
-                }
-                render_arrow_menu(sel, true);
+                run_menu_choice(data_dir, &choice);
+
+                if !wait_back() { break; }
             }
+            MenuKey::Digit(d) => {
+                sel = d.saturating_sub(1);
+                clear_screen();
+                let choice = MENU_ITEMS[sel].0.to_string();
+                run_menu_choice(data_dir, &choice);
+
+                if !wait_back() { break; }
+            }
+            MenuKey::Escape => {}
             MenuKey::Quit => {
+                clear_screen();
                 let cc = c();
-                println!("\n{0}fly safe.{1}", cc.purple, cc.reset);
+                println!("{0}R A V E N{1}", cc.bold, cc.reset);
+                println!("{0}fly safe.{1}", cc.dim, cc.reset);
                 break;
             }
             MenuKey::Other => {}
         }
     }
 
-
+    clear_screen();
 }
 
-pub fn run() {
-    let path = resolve_terminal_messaging_path();
-    if let Err(e) = assert_no_silent_fastapi(path) {
-        eprintln!("{e}");
-        std::process::exit(1);
-    }
-    let cli = Cli::parse();
-    let data_dir = resolve_data_dir(&cli.data_dir);
-    let _ = std::fs::create_dir_all(&data_dir);
-    match cli.cmd {
-        None => interactive(&data_dir),
-        Some(Commands::Banner) => print_welcome(&data_dir),
-        Some(Commands::Listen) => cmd_listen(&data_dir),
-        Some(Commands::Status) => {
-            if let Err(e) = cmd_status(&data_dir) {
-                eprintln!("{e}");
-                std::process::exit(1);
-            }
-        }
-        Some(Commands::Node { cmd }) => match cmd {
-            NodeCommands::Bridge { state } => {
-                set_node_flag(&data_dir, "bridge", matches!(state, OnOff::On))
-            }
-            NodeCommands::Store { state } => {
-                set_node_flag(&data_dir, "store", matches!(state, OnOff::On))
-            }
-            NodeCommands::Relay { state } => {
-                set_node_flag(&data_dir, "relay", matches!(state, OnOff::On))
-            }
-            NodeCommands::AddBootstrap { multiaddr, manual } => {
-                ext::cmd_bootstrap_add(&data_dir, &multiaddr, manual)
-            }
-            NodeCommands::DisableRavenDefaults => ext::cmd_bootstrap_disable_raven(&data_dir),
-            NodeCommands::ShowBootstrap => ext::cmd_bootstrap_show(&data_dir),
-            NodeCommands::InitBootstrap { no_raven_defaults } => {
-                ext::cmd_bootstrap_init(&data_dir, no_raven_defaults)
-            }
-        },
-        Some(Commands::Init) => {
-            let id = ensure_identity(&data_dir);
-            println!("address={}", id.address());
-            println!(
-                "fingerprint={}",
-                device_fingerprint_v1(&id.public_key_bytes())
-            );
-            println!("pub_hex={}", hex::encode(id.public_key_bytes()));
-            if let Err(e) = raven_core::ensure_local_prekey(&data_dir, &id) {
-                eprintln!("prekey: {e}");
-                std::process::exit(1);
-            }
-        }
-        Some(Commands::Whoami) => {
-            let id = match try_load_identity(&data_dir) {
-                Ok(Some(id)) => id,
-                Ok(None) => {
-                    eprintln!("identity missing — run: ash --data-dir <dir> init");
-                    std::process::exit(1);
-                }
-                Err(e) => {
-                    eprintln!("identity store unavailable: {}", sanitize_terminal_text(&e));
-                    std::process::exit(1);
-                }
-            };
-            print_public_identity(&id);
-        }
-        Some(Commands::Send {
-            peer,
-            peer_pub_hex,
-            listen,
-            contact,
-            stdin_text,
-            chat,
-        }) => {
-            let _ = stdin_text;
-            if std::env::args().any(|a| a == "--text" || (!a.starts_with('-') && false)) {
-                ext::refuse_argv_plaintext();
-            }
-            let id = require_identity(&data_dir);
-            let (peer, peer_pub_hex, listen) =
-                match resolve_send_target(&data_dir, &contact, &peer, &peer_pub_hex, &listen) {
-                    Ok(t) => t,
-                    Err(e) => {
-                        eprintln!("{e}");
-                        std::process::exit(1);
-                    }
-                };
-            if chat {
-                let contacts = contacts_or_die(&data_dir);
-                let c = contacts
-                    .iter()
-                    .find(|c| c.pub_hex.eq_ignore_ascii_case(&peer_pub_hex));
-                let pet = c.map(|c| c.primary_label()).unwrap_or_default();
-                let tag = c.map(|c| normalize_tag(&c.public_tag)).unwrap_or_default();
-                ext::cmd_chat_session(&data_dir, &id, &pet, &tag, &peer_pub_hex, &peer);
-            } else {
-                if io::stdin().is_terminal() {
-                    print!("message (stdin, never argv): ");
-                    let _ = io::stdout().flush();
-                }
-                let body = read_line();
-                if body.is_empty() {
-                    eprintln!("empty message");
-                    std::process::exit(1);
-                }
-                run_send(&data_dir, &peer, &peer_pub_hex, &listen, &body);
-            }
-        }
-        Some(Commands::Inbox) => cmd_endpoint_inbox(&data_dir),
-        Some(Commands::Doctor) => cmd_doctor(&data_dir),
-        Some(Commands::IpcPing) => cmd_ipc_ping(&data_dir),
-        Some(Commands::Contact { cmd }) => match cmd {
-            ContactCommands::Add {
-                address,
-                pub_hex,
-                petname,
-                tag,
-                alias,
-                verify_fp,
-                prekey_file,
-                lan_dial,
-            } => {
-                let tag = if !tag.is_empty() { tag } else { alias };
-                if let Err(e) = add_contact(
-                    &data_dir,
-                    &address,
-                    &pub_hex,
-                    &petname,
-                    &tag,
-                    verify_fp.as_deref(),
-                    &lan_dial,
-                ) {
-                    eprintln!("rejected: {e}");
-                    std::process::exit(1);
-                }
-                if prekey_file.is_some() || data_dir.join("prekey_store.json").exists() {
-                    match ext::contact_add_fetch_prekey(&data_dir, &pub_hex, prekey_file.as_deref())
-                    {
-                        Ok(()) => {}
-                        Err(e) => {
-                            eprintln!("{C_DIM}prekey note:{C_RESET} {e}");
-                        }
-                    }
-                }
-            }
-            ContactCommands::List => cmd_contact_list(&data_dir),
-            ContactCommands::Verify {
-                tag,
-                alias,
-                petname,
-                address,
-            } => cmd_contact_verify(
-                &data_dir,
-                tag.as_deref(),
-                alias.as_deref(),
-                petname.as_deref(),
-                address.as_deref(),
-            ),
-            ContactCommands::Resolve { tag } => cmd_contact_resolve(&data_dir, &tag),
-            ContactCommands::Request {
-                target,
-                message,
-                pick,
-            } => cmd_contact_request(&data_dir, &target, &message, pick),
-            ContactCommands::Pending => cmd_contact_pending(&data_dir),
-            ContactCommands::Ingest { file } => cmd_contact_ingest(&data_dir, &file),
-            ContactCommands::Accept {
-                request_id,
-                petname,
-            } => cmd_contact_accept(&data_dir, &request_id, &petname),
-            ContactCommands::Decline { request_id } => cmd_contact_decline(&data_dir, &request_id),
-            ContactCommands::Block { request_id } => cmd_contact_block(&data_dir, &request_id),
-        },
-        Some(Commands::Find {
-            query,
-            local,
-            exact_id,
-            exact_alias,
-            all,
-        }) => cmd_find(&data_dir, &query, local, exact_id, exact_alias, all),
-        Some(Commands::Nearby) => cmd_nearby(&data_dir),
-        Some(Commands::Alias { cmd }) => match cmd {
-            AliasCommands::Publish {
-                alias,
-                sequence,
-                expires_at,
-            } => {
-                let id = require_identity(&data_dir);
-                let exp = expires_at.unwrap_or_else(|| now_ms() + 30 * 24 * 3600 * 1000);
-                let rec = AliasRecord {
-                    alias,
-                    identity_address: String::new(),
-                    sequence,
-                    expires_at: exp,
-                    signature: [0u8; 64],
-                    ed25519_pub: [0u8; 32],
-                }
-                .sign(&id)
-                .unwrap_or_else(|e| {
-                    eprintln!("sign failed: {e}");
-                    std::process::exit(1);
-                });
-                let mut store = load_alias_store(&data_dir, now_ms());
-                if let Err(e) = store.put(rec.clone(), now_ms()) {
-                    eprintln!("rejected: {e}");
-                    std::process::exit(1);
-                }
-                if let Err(e) = save_alias_claim(&data_dir, &rec) {
-                    eprintln!("persist failed: {e}");
-                    std::process::exit(1);
-                }
-                println!(
-                    "{C_GREEN}alias published{C_RESET} @{} → {}",
-                    rec.alias,
-                    sanitize_terminal_text(&rec.identity_address)
-                );
-            }
-        },
-        Some(Commands::Prekey { cmd }) => match cmd {
-            PrekeyCommands::Publish { device_id, out } => {
-                cmd_prekey_publish(&data_dir, &device_id, out.as_deref())
-            }
-            PrekeyCommands::Fetch { pub_hex, file } => {
-                cmd_prekey_fetch(&data_dir, &pub_hex, file.as_deref())
-            }
-        },
-        Some(Commands::Device { cmd }) => {
-            let id = require_identity(&data_dir);
-            match cmd {
-                DeviceCommands::SyncExport { device_id, out } => {
-                    ext::cmd_device_sync_export(&data_dir, &id, &device_id, &out)
-                }
-                DeviceCommands::SyncImport { file } => {
-                    ext::cmd_device_sync_import(&data_dir, &id, &file)
-                }
-                DeviceCommands::Revoke { device_id, epoch } => {
-                    ext::cmd_device_revoke(&data_dir, &id, &device_id, epoch)
-                }
-            }
-        }
-        Some(Commands::Mailbox { cmd }) => match cmd {
-            MailboxCommands::Put {
-                k_route_hex,
-                epoch,
-                slot,
-                envelope_hex,
-            } => ext::cmd_mailbox_put(&data_dir, &k_route_hex, epoch, slot, &envelope_hex),
-            MailboxCommands::Get {
-                k_route_hex,
-                epoch,
-                slot,
-            } => ext::cmd_mailbox_get(&data_dir, &k_route_hex, epoch, slot),
-        },
-        Some(Commands::Lab { cmd }) => {
-            let id = require_identity(&data_dir);
-            match cmd {
-                LabCommands::ExportCert => {
-                    if let Err(e) = pair_init_lab::export_lab_device_cert(&data_dir, &id) {
-                        eprintln!("{e}");
-                        std::process::exit(1);
-                    }
-                }
-                LabCommands::ImportPeerCert { peer_pub_hex, file } => {
-                    if let Err(e) =
-                        pair_init_lab::import_peer_device_cert(&data_dir, &peer_pub_hex, &file)
-                    {
-                        eprintln!("{e}");
-                        std::process::exit(1);
-                    }
-                }
-                LabCommands::ImportPeerPrekey { peer_pub_hex, file } => {
-                    cmd_prekey_fetch(&data_dir, &peer_pub_hex, Some(&file));
-                }
-                LabCommands::Status => {
-                    print_production_gate_matrix();
-                    println!(
-                        "{C_DIM}hint{C_RESET}: export RAVEN_LAB_TEST_A=1 && rebuild debug ash"
-                    );
-                }
-            }
-        }
-    }
+/// Minimal header shown on every screen refresh (not the full banner).
+fn print_welcome_minimal(data_dir: &Path) {
+    let c = c();
+    let (b, d, r) = (c.bold, c.dim, c.reset);
+    println!("{b}R A V E N{r}  {d}\u{00b7}  serverless \u{00b7} P2P{r}");
+    println!();
 }
 
 fn cmd_ipc_ping(data_dir: &Path) {
