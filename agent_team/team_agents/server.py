@@ -85,15 +85,17 @@ async def health(request: Request) -> JSONResponse:
 async def raven_identity(request: Request) -> JSONResponse:
     rav: RavenIdentity = request.app.state.raven
     cfg: NodeConfig = request.app.state.config
-    return JSONResponse(
-        {
-            **rav.identity_card(),
-            'policy': {
-                'require_signed_tasks': cfg.require_signed_tasks,
-                'trusted_peers': sorted(cfg.trusted_peers),
-            },
-        }
-    )
+    payload = {
+        **rav.identity_card(),
+        'policy': {
+            'require_signed_tasks': cfg.require_signed_tasks,
+            'trusted_peers': sorted(cfg.trusted_peers),
+        },
+    }
+    mb = getattr(request.app.state, 'mailbox_info', None)
+    if mb:
+        payload['mailbox'] = mb
+    return JSONResponse(payload)
 
 
 def build_app(config: NodeConfig) -> Starlette:
@@ -167,8 +169,13 @@ def _start_services(app) -> None:
     threading.Thread(target=_mdns_worker, daemon=True,
                      name=f'mdns-{cfg.name}').start()
 
-    # --- git relay worker thread (store-and-forward, DTN-style) --------
+    # --- git relay + mesh mailbox worker thread (DTN-style always-on) ---
     def _relay_worker():
+        import json as _json
+        import os
+
+        from . import mesh as mesh_mod
+        from .raven_identity import verify_delegation
         from .relay import GitRelay
 
         interval = float(os.environ.get('RDAP_POLL', '20'))
@@ -178,6 +185,75 @@ def _start_services(app) -> None:
             trusted_peers_file=cfg.trusted_peers_file or None,
             trusted_peers=cfg.trusted_peers,
         )
+        # --- optional local swarm mailbox store (T3 transport) ----------
+        store = None
+        binp = None
+        seen_file = r.memory.resolve_in_repo('.team/mesh-seen.json')
+        try:
+            binp = mesh_mod.find_swarm_bin()
+            if binp:
+                store = mesh_mod.serve_store(
+                    binp, r.memory.resolve_in_repo('.team/mesh-store'))
+                app.state.mailbox_info = {
+                    'multiaddr': store['multiaddr'],
+                    'peer_id': store['peer_id'],
+                }
+                print(f'* [{cfg.name}] mesh mailbox up '
+                      f'{store["multiaddr"][:38]}…', flush=True)
+                if not seen_file.exists():
+                    seen_file.write_text('{}', encoding='utf-8')
+        except Exception as exc:  # noqa: BLE001
+            print(f'* [{cfg.name}] mesh mailbox unavailable: {exc!r}',
+                  flush=True)
+
+        def _drain_mesh() -> int:
+            if not (store and binp):
+                return 0
+            seen = _json.loads(seen_file.read_text(encoding='utf-8'))
+            my_addr = app.state.raven.address
+            tag_hex = mesh_mod.store_tag(my_addr).hex()
+            objs = mesh_mod.mailbox_get_all(
+                binp,
+                r.memory.resolve_in_repo('.team/mesh-client'),
+                store['multiaddr'], store['peer_id'], tag_hex)
+            n = 0
+            for obj in objs:
+                try:
+                    tid, payload_text = mesh_mod.unwrap_body(obj)
+                except Exception:  # noqa: BLE001
+                    continue
+                if tid in seen:
+                    continue
+                payload = _json.loads(payload_text)
+                ok, why = verify_delegation(
+                    payload.get('raven', {}), payload.get('text', ''),
+                    trusted_peers=r.peers(), required=True)
+                sender = payload.get('from', '?')
+                text = payload.get('text', '')
+                if not ok:
+                    r.memory.log_event(cfg.name,
+                                       f'mesh REJECT {tid}: {why}')
+                else:
+                    try:
+                        res = loop.run_until_complete(
+                            app.state.brain.run(text))
+                    except Exception as exc:  # noqa: BLE001
+                        res = f'{type(exc).__name__}: {exc}'
+                    out = r._slot('outbox', sender)
+                    (out / f'{tid}.json').write_text(_json.dumps({
+                        'id': tid, 'kind': 'answer',
+                        'from': my_addr, 'to': sender, 'text': res,
+                        'via': 'mesh',
+                    }), encoding='utf-8')
+                    n += 1
+                    r.memory.log_event(cfg.name, f'mesh✓ {tid} ← {sender[:14]}…')
+                seen[tid] = True
+            if n or objs:
+                seen_file.write_text(_json.dumps(seen), encoding='utf-8')
+            if n:
+                r._commit_push(f'relay(mesh answers): {n}')
+            return n
+
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         while True:
@@ -185,6 +261,7 @@ def _start_services(app) -> None:
             try:
                 r.pull()
                 n = loop.run_until_complete(r.process_inbox(app.state.brain.run))
+                n += _drain_mesh()
                 if n:
                     print(f'* [{cfg.name}] relay processed {n} offline task(s)',
                           flush=True)

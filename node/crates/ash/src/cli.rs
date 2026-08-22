@@ -3273,6 +3273,14 @@ fn stty(args: &[&str]) {
 }
 
 fn read_key_raw() -> MenuKey {
+    // Brief raw window: keystrokes arrive unbuffered (no Enter needed).
+    stty(&["raw", "-echo"]);
+    let key = read_key_raw_inner();
+    stty(&["sane"]);
+    key
+}
+
+fn read_key_raw_inner() -> MenuKey {
     use io::Read;
     let mut b = [0u8; 1];
     if io::stdin().read(&mut b).unwrap_or(0) == 0 {
@@ -3312,7 +3320,7 @@ fn render_arrow_menu(sel: usize, first: bool) {
         (cc.purple, cc.bold, cc.dim, cc.reset, "\u{25b8}");
 
     let mut lines: Vec<String> = Vec::new();
-    let mut section = |v: &mut Vec<String>, label: &str| {
+    let section = |v: &mut Vec<String>, label: &str| {
         v.push(format!(
             "{p}◆ {l}{r}",
             p = purple,
@@ -3320,7 +3328,7 @@ fn render_arrow_menu(sel: usize, first: bool) {
             r = reset
         ));
     };
-    let mut row = |v: &mut Vec<String>, idx: usize| {
+    let row = |v: &mut Vec<String>, idx: usize| {
         let (num, title, hint) = items[idx];
         if idx == sel {
             v.push(format!(
@@ -3364,12 +3372,18 @@ fn render_arrow_menu(sel: usize, first: bool) {
     ));
 
     let n = lines.len();
+    // Clear-to-end-of-line on every row so highlights never leave residue,
+    // then join with plain newlines (we always draw in cooked mode).
+    for l in lines.iter_mut() {
+        l.push_str("\x1b[K");
+    }
     let body = lines.join("\n");
     if first {
         println!();
         print!("{}", body);
     } else {
-        print!("\r\x1b[{}A\x1b[J{}", n, body);
+        // From the prompt row back to the first row of the block = n-1 up.
+        print!("\r\x1b[{}A{}", n.saturating_sub(1), body);
     }
     let _ = io::stdout().flush();
 }
@@ -3443,14 +3457,8 @@ fn cmd_tutorial(data_dir: &Path) {
 
 
 fn arrow_menu_loop(data_dir: &Path) {
-    // Raw mode via stty; save current settings for exact restore.
-    let saved = Command::new("stty")
-        .arg("-g")
-        .output()
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
-    stty(&["raw", "-echo"]);
-
+    // Terminal stays COOKED for all drawing/output. Raw mode is enabled only
+    // for the duration of a single keypress read (see read_key_raw).
     let mut sel: usize = 0;
     render_arrow_menu(sel, true);
     loop {
@@ -3495,11 +3503,7 @@ fn arrow_menu_loop(data_dir: &Path) {
         }
     }
 
-    // Always restore the terminal.
-    match saved {
-        Some(state) if !state.is_empty() => stty(&[&state]),
-        _ => stty(&["sane"]),
-    }
+
 }
 
 pub fn run() {
