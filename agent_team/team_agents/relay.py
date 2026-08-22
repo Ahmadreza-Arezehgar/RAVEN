@@ -139,6 +139,14 @@ class GitRelay:
             done += 1
             self.memory.log_event(self.identity.address[:10],
                                   f'relay✓ {env.get("id")} from {sender[:14]}…')
+            try:
+                from .chat import TeamChat
+
+                TeamChat(self.memory).post(
+                    self.identity.address[:12],
+                    f'✅ {env.get("id")}: {str(answer)[:110]}')
+            except Exception:  # noqa: BLE001
+                pass
         if done:
             self._commit_push(f'relay(answer): {done} task(s) processed')
         return done

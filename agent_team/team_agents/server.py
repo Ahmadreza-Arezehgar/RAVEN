@@ -273,6 +273,13 @@ def _start_services(app) -> None:
                     }), encoding='utf-8')
                     n += 1
                     r.memory.log_event(cfg.name, f'mesh✓ {tid} ← {sender[:14]}…')
+                    try:
+                        from .chat import TeamChat
+
+                        TeamChat(r.memory).post(
+                            cfg.name, f'✅ {tid}: {str(res)[:110]}')
+                    except Exception:  # noqa: BLE001
+                        pass
                 seen[tid] = True
             if n or objs:
                 seen_file.write_text(_json.dumps(seen), encoding='utf-8')

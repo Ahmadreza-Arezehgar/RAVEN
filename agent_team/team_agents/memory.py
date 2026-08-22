@@ -11,6 +11,8 @@ import subprocess
 import time
 from pathlib import Path
 
+from .deltas import DeltaStore
+
 BOARD_HEADER = """# Team Board
 
 | id | title | owner | status | notes |
@@ -103,14 +105,27 @@ class TeamMemory:
 
     # ----------------------------------------------------------- journal --
     def log_event(self, agent: str, text: str) -> None:
+        """Journal as append-only deltas — conflict-free at any team size."""
         self.ensure_layout()
-        with self.journal_md.open('a', encoding='utf-8') as fh:
-            fh.write(f'- {_ts()} [{agent}] {text}\n')
+        self._delta(agent).write('event', {'text': str(text)[:400]})
+
+    def journal_entries(self, limit: int = 100) -> list[dict]:
+        return [e for e in self._delta('system').read('event')][-limit:]
 
     # ------------------------------------------------------------- board --
     def read_board(self) -> str:
+        """BOARD.md is a *projection* of task deltas — deterministic on all
+        machines, regenerated from the same delta set."""
         self.ensure_layout()
-        return self.board_md.read_text(encoding='utf-8')
+        rows = self._board_rows()
+        lines = '\n'.join(
+            f"| {r['id']} | {_cell(r['title'])} | {_cell(r['owner'])} "
+            f"| {_cell(r['status'])} | {_cell(r['notes'])} |"
+            for r in rows)
+        return BOARD_HEADER + (lines + '\n' if lines else '')
+
+    def _delta(self, writer: str) -> DeltaStore:
+        return DeltaStore(self, writer)
 
     def set_task(
         self,
@@ -121,11 +136,13 @@ class TeamMemory:
         notes: str = '',
     ) -> dict:
         self.ensure_layout()
-        rows = self._parse_board_rows()
+        existing = {r['id'] for r in self._parse_board_rows()}
         if task_id is None:
-            task_id = f't-{len(rows) + 1}'
-            while any(r['id'] == task_id for r in rows):
-                task_id += 'x'
+            n = len(existing) + 1
+            task_id = f't-{n}'
+            while task_id in existing:
+                n += 1
+                task_id = f't-{n}'
         row = {
             'id': task_id,
             'title': title,
@@ -133,62 +150,51 @@ class TeamMemory:
             'status': status,
             'notes': notes,
         }
-        for i, existing in enumerate(rows):
-            if existing['id'] == task_id:
-                merged = {**existing, **{k: v for k, v in row.items() if v}}
-                rows[i] = merged
-                row = merged
-                break
-        else:
-            rows.append(row)
-        lines = (
-            '\n'.join(
-                f"| {r['id']} | {_cell(r['title'])} | {_cell(r['owner'])} "
-                f"| {_cell(r['status'])} | {_cell(r['notes'])} |"
-                for r in rows
-            )
-            + '\n'
-        )
-        self.board_md.write_text(BOARD_HEADER + lines, encoding='utf-8')
+        self._delta(owner or 'system').write('task', row)
+        # regenerate the human-readable projection
+        self.board_md.write_text(self.read_board(), encoding='utf-8')
         if self.auto_commit:
             self.commit_all(f'chore(board): {task_id} → {row["status"]} by {owner or "system"}')
         return row
 
     def _parse_board_rows(self) -> list[dict]:
-        rows: list[dict] = []
-        # split on unescaped pipes so titles containing '|' survive round-trips
-        for line in self.board_md.read_text(encoding='utf-8').splitlines():
-            if not line.startswith('|'):
+        """Project all task deltas — last-write-wins per id, stable order."""
+        tasks: list[dict] = []
+        seen: set[str] = set()
+        for rec in self._delta('system').read('task'):
+            tid = str(rec.get('id', ''))
+            if not tid:
                 continue
-            cells = [
-                _unescape(c.strip()) for c in re.split(r'(?<!\\)\|', line.strip('|'))
-            ]
-            if len(cells) != 5 or cells[0] in ('id', '') or set(cells[0]) <= {'-'}:
-                continue
-            rows.append(
-                {
-                    'id': cells[0],
-                    'title': cells[1],
-                    'owner': cells[2],
-                    'status': cells[3],
-                    'notes': cells[4],
-                }
-            )
-        return rows
+            row = {
+                'id': tid,
+                'title': rec.get('title', ''),
+                'owner': rec.get('owner', ''),
+                'status': rec.get('status', 'open'),
+                'notes': rec.get('notes', ''),
+            }
+            if tid in seen:
+                for i, r in enumerate(tasks):
+                    if r['id'] == tid:
+                        tasks[i] = row
+                        break
+            else:
+                seen.add(tid)
+                tasks.append(row)
+        return tasks
 
     # ------------------------------------------------------------- facts --
     def remember_fact(self, text: str) -> None:
         self.ensure_layout()
-        body = self.facts_md.read_text(encoding='utf-8').splitlines()
-        bullet = f'- {text.strip()}'
-        if bullet in body:
-            return
-        body.append(bullet)
-        self.facts_md.write_text('\n'.join(body) + '\n', encoding='utf-8')
+        self._delta('system').write('fact', {'text': text.strip()})
 
     def read_facts(self) -> str:
         self.ensure_layout()
-        return self.facts_md.read_text(encoding='utf-8')
+        lines = []
+        for rec in self._delta('system').read('fact'):
+            bullet = f'- {str(rec.get("text", "")).strip()}'
+            if bullet not in lines:
+                lines.append(bullet)
+        return FACTS_HEADER + '\n'.join(lines) + ('\n' if lines else '')
 
     # ------------------------------------------------------------- locks --
     @staticmethod

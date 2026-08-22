@@ -704,49 +704,47 @@ fn print_public_identity(id: &Identity) {
     kv("pub_hex", &hex::encode(id.public_key_bytes()));
 }
 
-/// Unique Raven Node welcome — monochrome ASCII raven/node motif.
-/// Never includes private material. Honors NO_COLOR / TERM=dumb.
+/// Raven Node welcome banner — monochrome.
 fn print_welcome(data_dir: &Path) {
     let c = c();
-    let (bold, dim, reset) = (c.bold, c.dim, c.reset);
-    let (cyan, purple, green, yellow, red) = (c.cyan, c.purple, c.green, c.yellow, c.red);
-    let wop = c.white_on_purple;
+    let (b, d, r) = (c.bold, c.dim, c.reset);
 
     println!();
-    // ── Brand banner ──────────────────────────────────────────────
-    println!("{purple}   ╭────────────────────────────────────────────────╮{reset}");
-    println!("{purple}   │{reset}                                                  {purple}│{reset}");
-    println!("{purple}   │{reset}      {bold}.--.{reset}        {wop}  R A V E N  {reset}               {purple}│{reset}");
-    println!("{purple}   │{reset}     {cyan}/  ◉\\{reset}       {bold}NODE{reset}                            {purple}│{reset}");
-    println!("{purple}   │{reset}    {cyan}/  /\\ \\{reset}                                      {purple}│{reset}");
-    println!("{purple}   │{reset}   {cyan}/__/  \\_\\{reset}     {dim}Messaging Beyond Connectivity{reset}     {purple}│{reset}");
-    println!("{purple}   │{reset}                                                  {purple}│{reset}");
-    println!("{purple}   │{reset}   {green}◆ serverless{reset}  {cyan}◆ ATSAM hybrid crypto{reset}  {yellow}◆ p2p{reset}       {purple}│{reset}");
-    println!("{purple}   ╰────────────────────────────────────────────────╯{reset}");
+    println!("{0}\u{256d}{1}\u{256e}{2}", b, "\u{2500}".repeat(50), r);
+    println!("{0}\u{2502}{1}\u{2502}{2}", b, " ".repeat(50), r);
+    println!("{0}\u{2502}  R A V E N{1}\u{2502}{2}", b, " ".repeat(41), r);
+    println!("{0}\u{2502}  N O D E{1}\u{2502}{2}", b, " ".repeat(44), r);
+    println!("{0}\u{2502}{1}\u{2502}{2}", b, " ".repeat(50), r);
+    println!("{0}\u{2502}  Messaging Beyond Connectivity{1}\u{2502}{2}", b, " ".repeat(21), r);
+    println!("{0}\u{2502}{1}\u{2502}{2}", b, " ".repeat(50), r);
+    println!("{0}\u{2502}  \u{25c6} serverless  \u{25c6} peer-to-peer  \u{25c6} private {1}\u{2502}{2}", b, " ".repeat(4), r);
+    println!("{0}\u{2502}{1}\u{2502}{2}", b, " ".repeat(50), r);
+    println!("{0}\u{2570}{1}\u{256f}{2}", b, "\u{2500}".repeat(50), r);
+
     println!();
-    println!("{dim}   site: https://raven-messager.com · profile:{reset} {}", data_dir.display());
+    println!("{0}   https://raven-messager.com{1}", d, r);
+    println!("{0}   profile: {1}{2}", d, data_dir.display(), r);
     println!();
 
-    // ── Identity state + first-run wizard hook ────────────────────
     match try_load_identity(data_dir) {
         Ok(Some(id)) => {
-            println!("{green}●{reset} {bold}identity ready{reset} {dim}(public bits only — never a seed){reset}");
-            print_public_identity(&id);
+            println!("{}\u{25cf} identity ready{}", b, r);
+            kv("address", &id.address());
+            kv("fingerprint", &device_fingerprint_v1(&id.public_key_bytes()));
+            kv("pub_hex", &hex::encode(id.public_key_bytes()));
             println!();
-            println!("{dim}  Tip: run {reset}{bold}tutorial{reset}{dim} in the menu for a guided walkthrough.{reset}");
+            println!("{0}Tip: menu 8 = Tutorial \u{00b7} menu 4 = Listen{1}", d, r);
+            println!();
         }
         Ok(None) => {
-            println!("{yellow}○{reset} {bold}First run — no local identity yet{reset}");
+            println!("{0}First run \u{2014} no identity yet.{1}", b, r);
             println!();
         }
-        Err(e) => println!(
-            "{red}×{reset} identity unavailable {dim}({}){reset}",
-            sanitize_terminal_text(&e)
-        ),
+        Err(e) => {
+            println!("identity unavailable: {}", sanitize_terminal_text(&e));
+        }
     }
-    println!();
 }
-
 /// Offer inline identity creation on first run; returns true when an identity
 /// exists afterwards. Used by the interactive shell so newcomers don't need to
 /// know the `init` subcommand at all.
