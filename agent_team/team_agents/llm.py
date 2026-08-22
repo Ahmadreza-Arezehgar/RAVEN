@@ -54,9 +54,13 @@ class OpenAIBrain:
         self.cancel_event = cancel_event or asyncio.Event()
 
     async def _chat(self, client: httpx.AsyncClient, messages: list[dict]) -> dict:
+        headers = {}
+        api_key = self.llm.api_key()
+        if api_key:
+            headers['Authorization'] = f'Bearer {api_key}'
         r = await client.post(
             f'{self.llm.base_url.rstrip("/")}/chat/completions',
-            headers={'Authorization': f'Bearer {self.llm.api_key()}'},
+            headers=headers,
             json={
                 'model': self.llm.model,
                 'messages': messages,

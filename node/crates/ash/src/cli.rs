@@ -2796,18 +2796,21 @@ fn set_node_flag(data_dir: &Path, which: &str, on: bool) {
     let _ = NodePolicy::default();
 }
 
+/// Guided Send / Chat. Two lanes:
+///   * pinned contact with saved lan_dial → direct send, no extra prompts
+///   * advanced → ask host:port + pub_hex once (lab interim transport)
 fn cmd_send_interactive(data_dir: &Path) {
-    let s = style();
-    let bold = s.bold;
-    let dim = s.dim;
-    let reset = s.reset;
-
-    // Ensure identity exists, but teach if this is effectively first-run.
+    let c = c();
     match try_load_identity(data_dir) {
         Ok(Some(_)) => {}
         Ok(None) => {
-            println!("{bold}No identity yet.{reset}");
-            println!("{dim}Create one explicitly with `ash --data-dir <dir> init` first.{reset}");
+            println!("{0}No identity yet.{1}", c.bold, c.reset);
+            println!(
+                "{0}Run {1}ash init{0} first (or restart the menu and accept the offer).{2}",
+                c.dim,
+                c.bold,
+                c.reset
+            );
             return;
         }
         Err(e) => {
@@ -2815,16 +2818,16 @@ fn cmd_send_interactive(data_dir: &Path) {
             return;
         }
     }
-    let id = require_identity(data_dir);
-    let contacts = contacts_or_die(data_dir);
+    let _id = require_identity(data_dir);
+    let contacts = load_contacts(data_dir).unwrap_or_default();
 
     if contacts.is_empty() {
-        println!("{bold}Send / Chat{reset}");
-        println!("{dim}You have no contacts yet — don't jump to host:port.{reset}");
+        println!("{0}Send / Chat{1}", c.bold, c.reset);
+        println!("{0}You have no contacts yet — don't jump to host:port.{1}", c.dim, c.reset);
         println!();
-        println!("  {bold}1.{reset} Add someone first: menu {bold}5 Contacts{reset}");
+        println!("  {0}1.{1} Add someone first: menu {0}5 Contacts{2}", c.bold, c.reset, c.reset);
         println!("     (rvn1… address + pub_hex from their `ash whoami`, or @alias)");
-        println!("  {bold}2.{reset} Advanced: direct peer host:port (LAN demo / power users)");
+        println!("  {0}2.{1} Advanced: direct peer host:port (LAN demo / power users)", c.bold, c.reset);
         println!();
         print!("Add a contact now? [Y/n/advanced]: ");
         let _ = io::stdout().flush();
@@ -2835,326 +2838,175 @@ fn cmd_send_interactive(data_dir: &Path) {
             return;
         }
         if a != "advanced" && a != "a" && a != "n" && a != "no" {
-            println!("{dim}cancelled — use menu 3 to add a contact.{reset}");
+            println!("{0}cancelled — use menu 5 to add a contact.{1}", c.dim, c.reset);
             return;
         }
         if a == "n" || a == "no" {
-            println!("{dim}Add a contact first (menu 3), then try Send / Chat again.{reset}");
+            println!(
+                "{0}Add a contact first (menu 5), then try Send / Chat again.{1}",
+                c.dim,
+                c.reset
+            );
             return;
         }
-        // advanced direct peer
-        println!();
-        println!("{bold}Advanced — direct peer{reset}");
-        println!(
-            "{dim}Use when you already know the peer's LAN listen address + public key.{reset}"
-        );
-        print!("peer host:port: ");
-        let _ = io::stdout().flush();
-        let peer = read_line();
-        print!("peer pub_hex (64 chars, public only): ");
-        let _ = io::stdout().flush();
-        let pub_hex = read_line();
-        print!("message (stdin — never argv): ");
-        let _ = io::stdout().flush();
-        let text = read_line();
-        if text.is_empty() {
-            eprintln!("empty message");
-            return;
+        let (peer, pub_hex, text) = direct_peer_prompts();
+        if let Some((peer, pub_hex, text)) = peer.zip(pub_hex).zip(text).map(|((p, k), t)| (p, k, t)) {
+            direct_interim_send(data_dir, &peer, &pub_hex, &text);
         }
-
-        // Lab transport lane — the exact path proven by the smoke harness
-        // (interim-sealed envelope over direct TCP). Release builds without the
-        // lab feature make raven-node refuse here with ATSAM_SESSION_REQUIRED,
-        // keeping production fail-closed.
-        {
-            let node = ext::raven_node_bin_public();
-            let cc0 = c();
-            let mut child = match Command::new(node)
-                .arg("run")
-                .args(["--data-dir", &data_dir.display().to_string()])
-                .args(["--listen", "127.0.0.1:0"])
-                .args(["--peer", peer.trim()])
-                .args(["--peer-pub-hex", pub_hex.trim()])
-                .args(["--send-stdin"])
-                .args(["--body-mode", "unsafe-interim"])
-                .args(["--exit-after-ack"])
-                .args(["--timeout-secs", "45"])
-                .stdin(std::process::Stdio::piped())
-                .spawn()
-            {
-                Ok(ch) => ch,
-                Err(e) => {
-                    let (red, reset) = (cc0.red, cc0.reset);
-                    eprintln!("{red}could not start raven-node: {e}{reset}");
-                    return;
-                }
-            };
-            if let Some(mut stdin) = child.stdin.take() {
-                use std::io::Write as _;
-                let _ = stdin.write_all(text.as_bytes());
-                let _ = stdin.write_all(b"\n");
-            }
-            match child.wait() {
-                Ok(s) if s.success() => {}
-                Ok(s) => {
-                    let cc2 = c();
-                    let (yellow, reset) = (cc2.yellow, cc2.reset);
-                    eprintln!("{yellow}send exited ({s}){reset}");
-                }
-                Err(e) => {
-                    let cc3 = c();
-                    let (red, reset) = (cc3.red, cc3.reset);
-                    eprintln!("{red}send failed: {e}{reset}");
-                }
-            }
-            return;
-        }
-
-    println!("{bold}Send / Chat{reset}");
-        println!("{dim}You have no contacts yet — don't jump to host:port.{reset}");
-        println!();
-        println!("  {bold}1.{reset} Add someone first: menu {bold}5 Contacts{reset}");
-        println!("     (rvn1… address + pub_hex from their `ash whoami`, or @alias)");
-        println!("  {bold}2.{reset} Advanced: direct peer host:port (LAN demo / power users)");
-        println!();
-        print!("Add a contact now? [Y/n/advanced]: ");
-        let _ = io::stdout().flush();
-        let ans = read_line();
-        let a = ans.trim().to_ascii_lowercase();
-        if a.is_empty() || a == "y" || a == "yes" {
-            cmd_contact_add_interactive(data_dir);
-            return;
-        }
-        if a != "advanced" && a != "a" && a != "n" && a != "no" {
-            println!("{dim}cancelled — use menu 3 to add a contact.{reset}");
-            return;
-        }
-        if a == "n" || a == "no" {
-            println!("{dim}Add a contact first (menu 3), then try Send / Chat again.{reset}");
-            return;
-        }
-        // advanced direct peer
-        println!();
-        println!("{bold}Advanced — direct peer{reset}");
-        println!(
-            "{dim}Use when you already know the peer's LAN listen address + public key.{reset}"
-        );
-        print!("peer host:port: ");
-        let _ = io::stdout().flush();
-        let peer = read_line();
-        print!("peer pub_hex (64 chars, public only): ");
-        let _ = io::stdout().flush();
-        let pub_hex = read_line();
-        print!("message (stdin — never argv): ");
-        let _ = io::stdout().flush();
-        let text = read_line();
-        if text.is_empty() {
-            eprintln!("empty message");
-            return;
-        }
-
-        #[cfg(debug_assertions)]
-        {
-            // Lab transport lane: the exact path proven by the smoke harness
-            // (interim-sealed envelope over direct TCP). Release builds never
-            // reach this branch — they keep the ATSAM-session requirement.
-            let node = ext::raven_node_bin_public();
-            let mut child = match Command::new(node)
-                .arg("run")
-                .args(["--data-dir", &data_dir.display().to_string()])
-                .args(["--listen", "127.0.0.1:0"])
-                .args(["--peer", peer.trim()])
-                .args(["--peer-pub-hex", pub_hex.trim()])
-                .args(["--send-stdin"])
-                .args(["--body-mode", "unsafe-interim"])
-                .args(["--exit-after-ack"])
-                .args(["--timeout-secs", "45"])
-                .stdin(std::process::Stdio::piped())
-                .spawn()
-            {
-                Ok(ch) => ch,
-                Err(e) => {
-                    let cc0 = c(); let (red, reset) = (cc0.red, cc0.reset); eprintln!("{red}could not start raven-node: {e}{reset}");
-                    return;
-                }
-            };
-            if let Some(mut stdin) = child.stdin.take() {
-                use std::io::Write as _;
-                let _ = stdin.write_all(text.as_bytes());
-                let _ = stdin.write_all(b"\n");
-            }
-            match child.wait() {
-                Ok(s) if s.success() => {}
-                Ok(s) => { let cc2 = c(); let (yellow, reset) = (cc2.yellow, cc2.reset); eprintln!("{yellow}send exited ({s}){reset}"); }
-                Err(e) => { let cc1 = c(); let (red, reset) = (cc1.red, cc1.reset); eprintln!("{red}send failed: {e}{reset}"); }
-            }
-            #[allow(unreachable_code)]
-            {
-                return;
-            }
-        }
-
-        #[cfg(not(debug_assertions))]
-        {
-            if let Err(error) =
-                ext::run_send_secure(data_dir, &id, &peer, &pub_hex, "127.0.0.1:0", &text, "", "")
-            {
-                eprintln!("send refused: {error}");
-            }
-            return;
-        }
+        return;
     }
 
-    println!("{bold}Send / Chat{reset}");
-    println!("{dim}Pick a contact by number or @tag. Direct host:port is advanced only.{reset}");
-    for (i, c) in contacts.iter().enumerate() {
-        let sub = c
+    // ── Contact picker ──
+    println!("{0}Send / Chat{1}", c.bold, c.reset);
+    println!(
+        "{0}Pick a contact by number or @tag. Direct host:port is advanced only.{1}",
+        c.dim,
+        c.reset
+    );
+    for (i, ct) in contacts.iter().enumerate() {
+        let sub = ct
             .tag_subtitle()
-            .map(|t| format!("  {dim}{t}{reset}"))
+            .map(|t| format!("  {0}{t}{1}", c.dim, c.reset))
             .unwrap_or_default();
-        let dial = if c.lan_dial.is_empty() {
-            format!("  {dim}(no LAN dial yet){reset}")
+        let dial = if ct.lan_dial.is_empty() {
+            format!("  {0}(no LAN dial yet){1}", c.dim, c.reset)
         } else {
-            format!("  {dim}→ {}{reset}", sanitize_terminal_text(&c.lan_dial))
+            format!("  {0}→ {1}{2}", c.dim, sanitize_terminal_text(&ct.lan_dial), c.reset)
         };
         println!(
-            "  {bold}{}{reset}  {}{}{}{}",
-            i + 1,
-            c.primary_label(),
-            sub,
-            dial,
-            if c.pinned { " [pinned]" } else { "" }
+            "  {b}{n}{r}  {label}{sub}{dial}{pinned}",
+            b = c.bold,
+            n = i + 1,
+            r = c.reset,
+            label = ct.primary_label(),
+            pinned = if ct.pinned { " [pinned]" } else { "" }
         );
     }
     print!("contact # | @tag | advanced: ");
     let _ = io::stdout().flush();
     let choice = read_line();
+    let trimmed = choice.trim();
 
-    let (resolved_peer, peer_pub_hex, petname, tag, open_chat) = if choice
-        .trim()
-        .eq_ignore_ascii_case("advanced")
-        || (looks_like_lan_dial(choice.trim())
-            && choice.parse::<usize>().is_err()
-            && !choice.trim().starts_with('@'))
-    {
-        if choice.trim().eq_ignore_ascii_case("advanced") {
-            println!("{dim}Direct peer — enter LAN listen host:port and their public key.{reset}");
-            print!("peer host:port: ");
-            let _ = io::stdout().flush();
-            let peer = read_line();
-            print!("peer pub_hex: ");
-            let _ = io::stdout().flush();
-            let pub_hex = read_line();
-            (
-                ResolvedLanPeer::Dial(peer),
-                pub_hex,
-                String::new(),
-                String::new(),
-                false,
-            )
-        } else {
-            print!("peer pub_hex: ");
-            let _ = io::stdout().flush();
-            let pub_hex = read_line();
-            (
-                ResolvedLanPeer::Dial(choice),
-                pub_hex,
-                String::new(),
-                String::new(),
-                false,
-            )
+    if trimmed.eq_ignore_ascii_case("advanced") || looks_like_lan_dial(trimmed) {
+        let (peer, pub_hex, text) = direct_peer_prompts();
+        if let Some((peer, pub_hex, text)) = peer.zip(pub_hex).zip(text).map(|((p, k), t)| (p, k, t)) {
+            direct_interim_send(data_dir, &peer, &pub_hex, &text);
         }
-    } else if let Ok(n) = choice.parse::<usize>() {
-        if n >= 1 && n <= contacts.len() {
-            let c = &contacts[n - 1];
-            let Some(resolved) = resolve_or_reuse_lan_dial(data_dir, c) else {
-                return;
-            };
-            print!("open chat session? [Y/n]: ");
-            let _ = io::stdout().flush();
-            let yn = read_line();
-            let chat =
-                yn.is_empty() || yn.eq_ignore_ascii_case("y") || yn.eq_ignore_ascii_case("yes");
-            (
-                resolved,
-                c.pub_hex.clone(),
-                c.primary_label(),
-                normalize_tag(&c.public_tag),
-                chat,
-            )
-        } else {
-            eprintln!("invalid contact #");
-            return;
-        }
-    } else if choice.trim().starts_with('@')
-        || (resolve_alias_contacts(&contacts, choice.trim()).len() == 1 && !choice.contains(':'))
-    {
-        let alias = choice.trim().trim_start_matches('@');
-        let hits = resolve_alias_contacts(&contacts, alias);
-        if hits.is_empty() {
-            eprintln!("no contact for @{alias}");
-            eprintln!("{dim}Add them via menu 3, or check `ash contact list`.{reset}");
-            return;
-        }
-        if hits.len() > 1 {
-            eprintln!(
-                "{bold}alias ambiguity{reset}: {} matches — pick # or verify fingerprints",
-                hits.len()
-            );
-            for (i, c) in hits.iter().enumerate() {
-                eprintln!(
-                    "  {}  {}  fp={}",
-                    i + 1,
-                    c.primary_label(),
-                    contact_fingerprint(c)
-                );
-            }
-            return;
-        }
-        let Some(resolved) = resolve_or_reuse_lan_dial(data_dir, hits[0]) else {
-            return;
-        };
-        (
-            resolved,
-            hits[0].pub_hex.clone(),
-            hits[0].primary_label(),
-            normalize_tag(&hits[0].public_tag),
-            true,
-        )
+        return;
+    }
+
+    // Resolve the picked contact.
+    let picked: Option<&Contact> = if let Ok(n) = trimmed.parse::<usize>() {
+        contacts.get(n.checked_sub(1).unwrap_or(usize::MAX))
+    } else if let Some(tag) = trimmed.strip_prefix('@') {
+        contacts
+            .iter()
+            .find(|x| x.public_tag.eq_ignore_ascii_case(tag) || x.alias.eq_ignore_ascii_case(tag))
     } else {
-        eprintln!("{dim}Unknown choice. Pick a contact #, @tag, or type `advanced`.{reset}");
+        contacts.iter().find(|x| x.petname.eq_ignore_ascii_case(trimmed))
+    };
+    let Some(ct) = picked else {
+        println!("{0}unknown choice — pick a number, @tag, or type advanced.{1}", c.dim, c.reset);
         return;
     };
 
-    let ResolvedLanPeer::Dial(peer) = &resolved_peer;
-    let listen_bind = "127.0.0.1:0".to_string();
+    let peer = if ct.lan_dial.is_empty() {
+        print_lan_unresolved_hint(&ct.primary_label());
+        print!(
+            "{0}?{1} Enter their listen host:port now (e.g. 192.168.1.20:7420): ",
+            c.yellow,
+            c.reset
+        );
+        let _ = io::stdout().flush();
+        let hp = read_line();
+        if hp.trim().is_empty() {
+            return;
+        }
+        hp.trim().to_string()
+    } else {
+        ct.lan_dial.clone()
+    };
 
-    if open_chat {
-        ext::cmd_chat_session(data_dir, &id, &petname, &tag, &peer_pub_hex, peer);
-        return;
-    }
-    print!("message (stdin — never argv): ");
+    println!(
+        "{0}message for {1}:{2} ",
+        c.dim,
+        ct.primary_label(),
+        c.reset
+    );
+    print!("> ");
     let _ = io::stdout().flush();
     let text = read_line();
     if text.is_empty() {
         eprintln!("empty message");
         return;
     }
-    if let Err(error) = ext::run_send_secure(
-        data_dir,
-        &id,
-        peer,
-        &peer_pub_hex,
-        &listen_bind,
-        &text,
-        &petname,
-        &tag,
-    ) {
-        eprintln!("send refused: {error}");
+    direct_interim_send(data_dir, &peer, &ct.pub_hex.clone(), &text);
+}
+
+fn direct_peer_prompts() -> (Option<String>, Option<String>, Option<String>) {
+    let c = c();
+    println!();
+    println!("{0}Advanced — direct peer{1}", c.bold, c.reset);
+    println!("{0}Use when you already know the peer's LAN listen address + public key.{1}", c.dim, c.reset);
+    print!("peer host:port: ");
+    let _ = io::stdout().flush();
+    let peer = read_line();
+    print!("peer pub_hex (64 chars, public only): ");
+    let _ = io::stdout().flush();
+    let pub_hex = read_line();
+    print!("message (stdin — never argv): ");
+    let _ = io::stdout().flush();
+    let text = read_line();
+    if peer.trim().is_empty() {
+        return (None, None, None);
+    }
+    (Some(peer.trim().to_string()), Some(pub_hex.trim().to_string()), Some(text))
+}
+
+/// Proven lab transport lane: spawn raven-node with an interim-sealed envelope
+/// over direct TCP. Release builds without the lab feature make the daemon
+/// refuse here (ATSAM_SESSION_REQUIRED) \\u{2014} production stays fail-closed.
+fn direct_interim_send(data_dir: &Path, peer: &str, pub_hex: &str, text: &str) {
+    let c = c();
+    let node = ext::raven_node_bin_public();
+    let mut child = match Command::new(node)
+        .arg("run")
+        .args(["--data-dir", &data_dir.display().to_string()])
+        .args(["--listen", "127.0.0.1:0"])
+        .args(["--peer", peer.trim()])
+        .args(["--peer-pub-hex", pub_hex.trim()])
+        .args(["--send-stdin"])
+        .args(["--body-mode", "unsafe-interim"])
+        .args(["--exit-after-ack"])
+        .args(["--timeout-secs", "45"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(ch) => ch,
+        Err(e) => {
+            let (red, reset) = (c.red, c.reset);
+            eprintln!("{red}could not start raven-node: {e}{reset}");
+            return;
+        }
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write as _;
+        let _ = stdin.write_all(text.as_bytes());
+        let _ = stdin.write_all(b"\\n");
+    }
+    match child.wait() {
+        Ok(s) if s.success() => {}
+        Ok(s) => {
+            let (yellow, reset) = (c.yellow, c.reset);
+            eprintln!("{yellow}send exited ({s}){reset}");
+        }
+        Err(e) => {
+            let (red, reset) = (c.red, c.reset);
+            eprintln!("{red}send failed: {e}{reset}");
+        }
     }
 }
 
-/// Silent reuse / auto-resolve LAN peer for an existing contact — never blocks on host:port stdin.
 fn resolve_or_reuse_lan_dial(data_dir: &Path, c: &Contact) -> Option<ResolvedLanPeer> {
     let s = style();
     let bold = s.bold;
@@ -3339,7 +3191,12 @@ fn interactive(data_dir: &Path) {
 fn line_menu_loop(data_dir: &Path) {
     loop {
         print_menu();
-        let choice = read_line();
+        let mut choice = String::new();
+        match io::stdin().read_line(&mut choice) {
+            Ok(0) => break, // stdin closed — stop instead of spinning
+            _ => {}
+        }
+        let choice = choice.trim().to_string();
         if !run_menu_choice(data_dir, &choice) {
             break;
         }

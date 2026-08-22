@@ -197,8 +197,9 @@ def cmd_start(args) -> None:
         llm=LLMConfig(
             provider=args.provider or saved_llm.get('provider', 'echo'),
             model=args.model or saved_llm.get('model', ''),
-            base_url=args.base_url or saved_llm.get('base_url',
-                                                    LLMConfig.base_url),
+            base_url=(args.base_url
+                      or saved_llm.get('base_url')
+                      or LLMConfig.base_url),
         ),
         trusted_peers=peers_now,
         trusted_peers_file=str(PEERS_FILE),
@@ -253,7 +254,7 @@ def cmd_model(args) -> None:
     st['llm'] = {
         'provider': args.provider,
         'model': args.model or '',
-        'base_url': args.base_url or '',
+        'base_url': args.base_url or LLMConfig.base_url,
     }
     _save_json(STATE_FILE, st)
     print(f"✔ {st['name']} will now think with "

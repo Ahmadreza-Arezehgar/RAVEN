@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import secrets
+import shutil
 import struct
 import subprocess
 import time
@@ -40,18 +41,45 @@ def find_swarm_bin() -> Path | None:
     return None
 
 
+def _rdap_base() -> Path:
+    return Path(os.environ.get('RDAP_HOME', str(Path.home() / 'rdap')))
+
+
+def _node_sources() -> Path:
+    """Locate (or clone) the RAVEN node sources containing raven-swarm."""
+    local = Path(__file__).resolve().parents[2] / 'node'
+    if (local / 'Cargo.toml').exists():
+        return local
+    base = _rdap_base()
+    dst = base / 'raven-src'
+    if not (dst / 'node' / 'Cargo.toml').exists():
+        print('* cloning RAVEN sources (shallow)…')
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ['git', 'clone', '--depth', '1',
+             'https://github.com/Ahmadreza-Arezehgar/RAVEN.git', str(dst)],
+            check=True,
+        )
+    return dst / 'node'
+
+
 def build_swarm_bin(node_dir: Path | None = None) -> Path:
-    node_dir = node_dir or Path(__file__).resolve().parents[2] / 'node'
+    node_dir = Path(node_dir) if node_dir else _node_sources()
     subprocess.run(
         ['cargo', 'build', '-q', '-p', 'raven-swarm',
          '--features', 'experimental-offline-mailbox',
          '--bin', BIN_NAME],
         cwd=node_dir, check=True,
     )
-    out = node_dir / 'target' / 'debug' / BIN_NAME
-    if not out.exists():
+    built = node_dir / 'target' / 'debug' / BIN_NAME
+    if not built.exists():
         raise RuntimeError('cargo reported success but binary is missing')
-    return out
+    # stage where find_swarm_bin() looks for it
+    bin_dir = _rdap_base() / 'bin'
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    dest = bin_dir / BIN_NAME
+    shutil.copy2(built, dest)
+    return dest
 
 
 # ------------------------------------------------------------- wire bits --
