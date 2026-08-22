@@ -708,46 +708,44 @@ fn print_public_identity(id: &Identity) {
 fn print_welcome(data_dir: &Path) {
     let c = c();
     let (b, d, r) = (c.bold, c.dim, c.reset);
+    println!();
+    println!("  \u{256d}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{256e}");
+    println!("  \u{2502}                                                  \u{2502}");
+    println!("  \u{2502}  R A V E N                                      \u{2502}");
+    println!("  \u{2502}  N O D E                                        \u{2502}");
+    println!("  \u{2502}                                                  \u{2502}");
+    println!("  \u{2502}  Messaging Beyond Connectivity                  \u{2502}");
+    println!("  \u{2502}                                                  \u{2502}");
+    println!("  \u{2502}  \u{25c6} serverless \u{00b7} P2P \u{00b7} private                   \u{2502}");
+    println!("  \u{2502}                                                  \u{2502}");
+    println!("  \u{2502}  \"The Raven bears witness as the Phoenix        \u{2502}");
+    println!("  \u{2502}   rises from the ASH\"                          \u{2502}");
+    println!("  \u{2502}                                                  \u{2502}");
+    println!("  \u{2570}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{256f}");
 
     println!();
-    // ── Wordmark ──
-    println!("{0}R A V E N{1}", b, r);
-    println!("{0}N O D E{1}", d, r);
-    println!("{0}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}{1}", d, r);
-    println!("{0}Messaging Beyond Connectivity{1}", b, r);
+    println!("{d}   https://raven-messager.com{r}", d=d, r=r);
+    println!("{d}   profile: {path}{r}", d=d, path=data_dir.display(), r=r);
     println!();
-    println!("{0}\u{25c6} serverless \u{00b7} P2P \u{00b7} private \u{00b7} no servers{1}", b, r);
 
-    // ── Tagline ──
-    println!();
-    println!("{0}\"The Raven bears witness{1}", d, r);
-    println!("{0} as the Phoenix rises from the ASH\"{1}", d, r);
-
-    // ── Rule ──
-    println!();
-    println!("{0}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}{1}", d, r);
-
-    // ── Identity ──
     match try_load_identity(data_dir) {
         Ok(Some(id)) => {
-            println!();
-            println!("{0}\u{25cf} identity ready{1}", b, r);
+            println!("{b}\u{25cf} identity ready{r}", b=b, r=r);
             kv("address", &id.address());
             kv("fingerprint", &device_fingerprint_v1(&id.public_key_bytes()));
             kv("pub_hex", &hex::encode(id.public_key_bytes()));
             println!();
+            println!("{d}Tip: menu 8 = Tutorial \u{00b7} menu 4 = Listen{r}", d=d, r=r);
+            println!();
         }
         Ok(None) => {
-            println!();
-            println!("{0}\u{25cb} First run \u{2014} no identity yet.{1}", c.bold, c.reset);
-            println!();
+            println!("{b}First run \u{2014} no identity yet.{r} Create one below.\n", b=b, r=r);
         }
         Err(e) => {
             println!("identity unavailable: {}", sanitize_terminal_text(&e));
         }
     }
 }
-
 /// Offer inline identity creation on first run; returns true when an identity
 /// exists afterwards. Used by the interactive shell so newcomers don't need to
 /// know the `init` subcommand at all.
