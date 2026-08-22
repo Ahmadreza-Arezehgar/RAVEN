@@ -61,9 +61,14 @@ async def send_task(
     timeout: float = 180.0,
 ) -> str:
     base_url = url.rstrip('/') + '/'
-    async with httpx.AsyncClient(timeout=timeout) as http:
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(timeout, connect=10.0)
+    ) as http:
         card = await A2ACardResolver(httpx_client=http, base_url=base_url).get_agent_card()
-        factory = ClientFactory(ClientConfig(streaming=False, polling=False))
+        # share OUR long-timeout client with the SDK transport — local LLMs
+        # can take minutes on first load
+        factory = ClientFactory(ClientConfig(streaming=False, polling=False,
+                                             httpx_client=http))
         client = factory.create(card)
         try:
             message = a2a_client_mod.SendMessageRequest().message.__class__()

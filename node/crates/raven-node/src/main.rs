@@ -463,6 +463,7 @@ impl NodeState {
                             // Show the actual message to the human, plus who sent it.
                             let peer_fp = crate::fingerprint_of(&peer_pub);
                             let body = String::from_utf8_lossy(&plaintext);
+                            let body = body.trim_end_matches(['\r', '\n']);
                             eprintln!("\n── INCOMING from {} ──", peer_fp);
                             for line in body.lines() {
                                 eprintln!("│ {}", line);

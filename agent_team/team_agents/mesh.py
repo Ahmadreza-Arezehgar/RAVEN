@@ -173,22 +173,42 @@ def _run(bin_path: Path, args: list[str], data_dir: Path) -> str:
     return r.stdout
 
 
-def serve_store(bin_path: Path, data_dir: Path) -> dict:
-    """Start a persistent mailbox store. Returns handle with proc/addr/peer."""
+def serve_store(bin_path: Path, data_dir: Path,
+                advertise_ip: str = '') -> dict:
+    """Start a persistent mailbox store reachable from other machines."""
+    import socket
+
     data_dir.mkdir(parents=True, exist_ok=True)
     addr_file = data_dir / 'mailbox.multiaddr'
     peer_file = data_dir / 'mailbox.peer-id'
     proc = subprocess.Popen(
         [str(bin_path), '--allow-experimental-mailbox', 'serve',
-         '--data-dir', str(data_dir), '--listen', '/ip4/127.0.0.1/tcp/0',
+         '--data-dir', str(data_dir), '--listen', '/ip4/0.0.0.0/tcp/0',
          '--write-multiaddr', str(addr_file), '--write-peer-id', str(peer_file)],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     for _ in range(200):
         if addr_file.exists() and peer_file.exists():
+            ma = addr_file.read_text().strip()
+            # the store binds wildcard but reports 127.0.0.1 — publish the
+            # LAN-dialable address instead
+            m = ma.split('/p2p/', 1)
+            head, peer_part = (m[0], '/p2p/' + m[1]) if len(m) == 2 else (ma, '')
+            pm = head.split('/')
+            if len(pm) >= 5 and pm[2] in ('127.0.0.1', '0.0.0.0'):
+                ip = advertise_ip
+                if not ip:
+                    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    try:
+                        s.connect(('8.8.8.8', 80))
+                        ip = s.getsockname()[0]
+                    finally:
+                        s.close()
+                pm[2] = ip
+                ma = '/'.join(pm) + peer_part
             return {
                 'proc': proc,
-                'multiaddr': addr_file.read_text().strip(),
+                'multiaddr': ma,
                 'peer_id': peer_file.read_text().strip(),
             }
         if proc.poll() is not None:

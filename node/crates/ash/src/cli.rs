@@ -1205,8 +1205,8 @@ fn cmd_listen(data_dir: &Path) {
         .arg("run")
         .args(["--data-dir", &data_dir.display().to_string()])
         .args(["--listen", &format!("0.0.0.0:{DEFAULT_LAN_PORT}")])
-        .args(["--exit-after-recv", "1"])
-        .args(["--timeout-secs", "3600"])
+        // Keep receiving every message this session (Ctrl+C stops).
+        .args(["--timeout-secs", "21600"])
         .args(["--peer-pub-hex", contact.pub_hex.trim()])
         .args(["--origin-pub-hex", contact.pub_hex.trim()])
         .spawn()
