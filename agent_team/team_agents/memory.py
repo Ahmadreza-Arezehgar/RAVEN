@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 import subprocess
 import time
+import uuid
 from pathlib import Path
 
 from .deltas import DeltaStore
@@ -117,7 +118,7 @@ class TeamMemory:
         """BOARD.md is a *projection* of task deltas — deterministic on all
         machines, regenerated from the same delta set."""
         self.ensure_layout()
-        rows = self._board_rows()
+        rows = self._parse_board_rows()
         lines = '\n'.join(
             f"| {r['id']} | {_cell(r['title'])} | {_cell(r['owner'])} "
             f"| {_cell(r['status'])} | {_cell(r['notes'])} |"
@@ -139,10 +140,8 @@ class TeamMemory:
         existing = {r['id'] for r in self._parse_board_rows()}
         if task_id is None:
             n = len(existing) + 1
-            task_id = f't-{n}'
-            while task_id in existing:
-                n += 1
-                task_id = f't-{n}'
+            # random suffix → concurrent writers can never allocate the same id
+            task_id = f't-{n}-{uuid.uuid4().hex[:4]}'
         row = {
             'id': task_id,
             'title': title,

@@ -454,8 +454,6 @@ def cmd_say(args) -> None:
             chat.post(tname, f'📮 task {tid} parked in git relay')
             print(f'[T4→{tname}] queued {f.relative_to(repo)} via git relay')
 
-            print(f'[T4→{tname}] queued {f.relative_to(repo)} via git relay')
-
 
 def cmd_chat(args) -> None:
     """Show the shared team thread and current goal."""

@@ -717,7 +717,10 @@ fn print_welcome(data_dir: &Path) {
     println!("{0}\u{2502}{1}\u{2502}{2}", b, " ".repeat(50), r);
     println!("{0}\u{2502}  Messaging Beyond Connectivity{1}\u{2502}{2}", b, " ".repeat(21), r);
     println!("{0}\u{2502}{1}\u{2502}{2}", b, " ".repeat(50), r);
-    println!("{0}\u{2502}  \u{25c6} serverless  \u{25c6} peer-to-peer  \u{25c6} private {1}\u{2502}{2}", b, " ".repeat(4), r);
+    println!("{0}\u{2502}  \u{25c6} serverless  \u{25c6} P2P  \u{25c6} private{1}\u{2502}{2}", b, " ".repeat(4), r);
+    println!("{0}\u{2502}{1}\u{2502}{2}", b, " ".repeat(50), r);
+    println!("{0}\u{2502}{1}The Raven bears witness as the Phoenix{2}{3}", d, d, "", r);
+    println!("{0}\u{2502}{1}rises from the ASH.{2}{3}", d, d, " ".repeat(27), r);
     println!("{0}\u{2502}{1}\u{2502}{2}", b, " ".repeat(50), r);
     println!("{0}\u{2570}{1}\u{256f}{2}", b, "\u{2500}".repeat(50), r);
 
