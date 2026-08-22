@@ -43,13 +43,46 @@ The Ed25519 device key derives everything locally — display fingerprint
 libp2p PeerID (`12D3Koo…`, identity multihash), and signatures.
 **The private keys never leave the machine.**
 
+### One-string invite codes (`rvn1i…`)
+
+Everything needed to pin a contact now fits into **one copy-pasteable line** —
+no more juggling address + pub_hex + fingerprint:
+
+```sh
+raven invite          # print your single-line contact code (~240 chars)
+raven invite --qr     # same code as a scannable QR
+raven words           # your four-word key face, e.g. "copper raven north lantern"
+```
+
+The code is Bech32m (BIP-350 — same checksum family as `rvn1…` addresses,
+typo-detecting) carrying a TLV payload: Ed25519 identity key, X25519 agreement
+key, issue time, display name, and an Ed25519 signature over the **same
+`qr-v2:` transcript as the iPhone card**. Fingerprint, address and PeerID are
+re-derived from the embedded key on receipt — never trusted from the string.
+Codes expire after 24 h like cards. Parsers skip unknown TLV types, so future
+fields (mailbox hints…) can ship without breaking old terminals.
+
+Add someone by pasting whatever they sent you — bare code, quoted, trailing
+punctuation, or wrapped in a share URL all work:
+
+```sh
+raven add --petname bob     # paste bob's rvn1i… line on Enter
+```
+
+Verify out loud when the channel is untrusted: both sides run
+`raven words [CODE]` and compare the four words.
+
 ### Pair two terminals
 
 ```sh
-# alice shows her card URI; bob pastes it:
-raven whoami                      # copy the raven://friend?v=2&d=… line
-raven add --petname bob           # paste bob's card on Enter
+# alice shows her code; bob pastes it:
+raven invite                      # alice copies the rvn1i1… line
+raven add --petname bob           # bob pastes it (old raven:// / JSON also accepted)
 ```
+
+The long `raven://friend?v=2&d=…` card URI (printed by `whoami`) stays fully
+supported — it is the identical signed payload in JSON clothes, and the format
+the iPhone QR scanner consumes.
 
 Cards carry both public keys and an Ed25519 signature over
 `qr-v2:{userId}:{agreementPub}:{identityPub}:{ts}` — identical to the iOS

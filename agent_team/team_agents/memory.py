@@ -32,10 +32,6 @@ def _cell(text: str) -> str:
     return str(text).replace('|', '\\|')
 
 
-def _unescape(text: str) -> str:
-    return text.replace('\\|', '|')
-
-
 class TeamMemory:
     def __init__(self, repo_path: str | Path, auto_commit: bool = True) -> None:
         self.repo_path = Path(repo_path).resolve()

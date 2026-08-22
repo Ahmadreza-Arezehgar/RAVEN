@@ -81,6 +81,15 @@ def ensure_keys(repo: Path) -> tuple[str, str]:
     return idn.address, idn.public_hex
 
 
+def rvn_display(address: str) -> str:
+    try:
+        from raven_protocol import address as rvn_address
+
+        return rvn_address.to_display(address)
+    except Exception:  # noqa: BLE001
+        return ''
+
+
 def load_peers() -> dict:
     return _load_json(PEERS_FILE, {})
 
@@ -91,9 +100,12 @@ def save_peers(peers: dict) -> None:
 
 # ----------------------------------------------------------------- init --
 def cmd_init(args) -> None:
+    import team_agents.ui as ui
+
     st = state()
     if st.get('name'):
-        print(f'already initialized as "{st["name"]}". invite:\n{invite_line(st)}')
+        ui.ok(f'already initialized as "{st["name"]}"')
+        print(ui.dim('invite: ') + invite_line(st))
         return
 
     repo = BASE / 'team-repo'
@@ -104,6 +116,7 @@ def cmd_init(args) -> None:
     else:
         role = input('role (optional, enter to skip): ').strip()
 
+    print(ui.dim('* generating raven identity…'))
     repo.mkdir(parents=True, exist_ok=True)
     (repo / '.gitignore').write_text(
         '.team/keys/\n*.seed\n'
@@ -132,9 +145,14 @@ def cmd_init(args) -> None:
     st.update(name=name, role=role, repo=str(repo), address=address, public_key=pub)
     _save_json(STATE_FILE, st)
 
-    print('\n✔ agent ready\n')
-    print('Your INVITE — send this line to your teammates:')
-    print(invite_line(st))
+    ui.box([
+        ('identity ', address),
+        ('display  ', rvn_display(address)),
+        ('keys     ', str(Path(repo) / '.team' / 'keys')),
+        ('online   ', 'yes' if has_net else 'local-only'),
+    ], title=f'{name} is ready')
+    print(f'\n{ui.bold("share this invite with teammates:")}')
+    print(ui.cyan(invite_line(st)))
     if not st.get('llm'):
         print("\npick a brain now:  ./rdap model")
 
@@ -219,6 +237,8 @@ def cmd_start(args) -> None:
         trusted_peers_file=str(PEERS_FILE),
         require_signed_tasks=bool(peers_now) and not args.open,
     )
+    if args.poll:
+        os.environ['RDAP_POLL'] = str(args.poll)
     serve(cfg)
 
 
@@ -422,10 +442,10 @@ def cmd_say(args) -> None:
                     result = asyncio.run(send_task(url, args.text,
                                                    identity=idn, timeout=120))
                     chat.post(tname, f'✅ done: {result.splitlines()[0][:100]}')
-                    print(f'[T1→{tname}] {result.splitlines()[0]}')
+                    ui.ok(f'[direct] {tname}: ' + result.splitlines()[0][:110])
                     sent = True
                 except Exception as exc:  # noqa: BLE001
-                    print(f'✗ [T1→{tname}] {exc!r}')
+                    ui.err(f'[direct] {tname}: {exc!r}'[:120])
 
         if not sent and binp and target.get('mailbox') and peer_addr:
             try:
@@ -437,10 +457,10 @@ def cmd_say(args) -> None:
                             target['mailbox']['peer_id'],
                             make_task_object(payload_text.encode(), peer_addr))
                 chat.post(tname, f'📬 task {tid} waiting in your raven box')
-                print(f'[T3→{tname}] queued {tid} via raven mesh')
+                ui.ok(f"[mesh] task {tid} waiting in {tname}'s raven box")
                 sent = True
             except Exception as exc:  # noqa: BLE001
-                print(f'✗ [T3→{tname}] {exc!r}')
+                ui.err(f'[mesh] {tname}: ' + str(exc)[:100])
 
         if not sent and peer_addr:
             from team_agents.relay import GitRelay
@@ -452,7 +472,7 @@ def cmd_say(args) -> None:
             tid, _ = _sign(args.text)
             f = r.send_task(peer_addr, args.text)
             chat.post(tname, f'📮 task {tid} parked in git relay')
-            print(f'[T4→{tname}] queued {f.relative_to(repo)} via git relay')
+            ui.warn(f'[git] task parked for {tname} → collect with ./rdap replies')
 
 
 def cmd_chat(args) -> None:
@@ -525,6 +545,8 @@ def cmd_ping(args) -> None:
 def cmd_ask(args) -> None:
     import asyncio
 
+    import team_agents.ui as ui
+
     from team_agents.client import send_task
     from team_agents.raven_identity import RavenIdentity
 
@@ -576,7 +598,7 @@ def cmd_ask(args) -> None:
         return tid, json.dumps(payload, ensure_ascii=False)
 
     if not args.relay and url:
-        print(f'→ [T1 direct] checking {target_name} at {url} …')
+        print(ui.dim(ARROW + f' checking {target_name} at {url} …'))
         info = _probe(url)
         if info is not None:
             mb = info.get('mailbox')
@@ -588,7 +610,7 @@ def cmd_ask(args) -> None:
                                            identity=idn, timeout=90))
             print(result)
             return
-        print('✗ [T1] direct unreachable.')
+        ui.err('[direct] unreachable')
 
     # T3 — raven swarm offline mailbox (task lands in THEIR store)
     if not args.git_only:
@@ -633,8 +655,87 @@ def cmd_ask(args) -> None:
 
 
 # ------------------------------------------------------------------ main --
+from team_agents.ui import ARROW, dim  # noqa: F401
+
+
+def _menu() -> None:
+    """Friendly dashboard when ./rdap is run with no arguments."""
+    import team_agents.ui as ui
+
+    st = state()
+    if not st.get('name'):
+        print(ui.bold('\n  Welcome to RDAP — agents that never lose connection\n'))
+        print('  1. set up this agent      ' + ui.cyan('./rdap init --name you'))
+        print('  2. pick a brain           ' + ui.cyan('./rdap model'))
+        print('\n  then: start the node and say hi to teammates.')
+        return
+
+    goal = ''
+    try:
+        from team_agents.chat import TeamChat
+        from team_agents.memory import TeamMemory
+
+        chat = TeamChat(TeamMemory(Path(st.get('repo') or BASE / 'team-repo')))
+        goal = chat.get_goal()
+    except Exception:  # noqa: BLE001
+        pass
+    mates = list(st.get('teammates', {}))
+
+    from team_agents import __version__
+
+    ui.box([
+        ('agent   ', f"{st['name']}" + (f" · {st['role']}" if st.get('role') else '')),
+        ('raven id', st.get('address', '?')),
+        ('goal    ', (goal[:38] + '…') if len(goal) > 40 else (goal or 'not set')),
+        ('team    ', ', '.join(mates) if mates else 'nobody yet'),
+        ('version ', f'v{__version__}'),
+    ], title='RDAP')
+
+    print()
+    for cmd, desc, ex in (
+        ('start', 'run your agent', './rdap start'),
+        ('ask', 'delegate a task', './rdap ask "@name do X"'),
+        ('say', 'group chat', './rdap say "@all hi"'),
+        ('chat', 'read the shared thread', './rdap chat'),
+        ('status', "what's happening", './rdap status'),
+    ):
+        print(f'  {bold(cmd.ljust(8))} {dim(desc.ljust(26))} {cyan(ex)}')
+    print()
+
+def cmd_status(args) -> None:
+    """One-glance dashboard: who am I, goal, team, transports."""
+    import team_agents.ui as ui
+
+    st = state()
+    if not st.get('name'):
+        sys.exit('run `./rdap init` first')
+    goal = ''
+    try:
+        from team_agents.chat import TeamChat
+        from team_agents.memory import TeamMemory
+
+        chat = TeamChat(TeamMemory(Path(st.get('repo') or BASE / 'team-repo')))
+        goal = chat.get_goal()
+    except Exception:  # noqa: BLE001
+        pass
+    mates = st.get('teammates', {})
+    from team_agents.mesh import find_swarm_bin
+
+    ui.box([
+        ('agent   ', f"{st['name']}" + (f" · {st['role']}" if st.get('role') else '')),
+        ('raven id', st.get('address', '?')),
+        ('goal    ', (goal[:40] + '…') if len(goal) > 44 else (goal or 'not set')),
+        ('team    ', ', '.join(mates) if mates else 'nobody yet'),
+        ('mesh    ', 'ready' if find_swarm_bin() else 'not built (./rdap mesh-build)'),
+        ('repo    ', str(st.get('repo', ''))),
+    ], title='RDAP status')
+
+
 def main() -> None:
     import argparse
+
+    if len(sys.argv) == 1:
+        return _menu()
 
     p = argparse.ArgumentParser(prog='rdap', description='RDAP wizard')
     sub = p.add_subparsers(dest='cmd', required=True)
@@ -658,6 +759,8 @@ def main() -> None:
     s.add_argument('--model', default='')
     s.add_argument('--base-url', default='', help='OpenAI-compatible endpoint')
     s.add_argument('--allow-shell', action='store_true')
+    s.add_argument('--poll', type=int, default=0,
+                   help='mesh/git drain interval seconds (default 20)')
     s.add_argument('--open', action='store_true', help='accept unsigned tasks too')
     s.set_defaults(fn=cmd_start)
 
@@ -708,6 +811,9 @@ def main() -> None:
     ch = sub.add_parser('chat', help='show the shared team thread')
     ch.add_argument('--lines', type=int, default=30)
     ch.set_defaults(fn=cmd_chat)
+
+    stt = sub.add_parser('status', help='one-glance dashboard')
+    stt.set_defaults(fn=cmd_status)
 
     mb = sub.add_parser('mesh-build',
                         help='build the Raven swarm mailbox binary (Rust)')

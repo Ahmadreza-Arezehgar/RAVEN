@@ -710,37 +710,36 @@ fn print_welcome(data_dir: &Path) {
     let (b, d, r) = (c.bold, c.dim, c.reset);
 
     println!();
-    println!("{0}\u{256d}{1}\u{256e}{2}", b, "\u{2500}".repeat(50), r);
-    println!("{0}\u{2502}{1}\u{2502}{2}", b, " ".repeat(50), r);
-    println!("{0}\u{2502}  R A V E N{1}\u{2502}{2}", b, " ".repeat(41), r);
-    println!("{0}\u{2502}  N O D E{1}\u{2502}{2}", b, " ".repeat(44), r);
-    println!("{0}\u{2502}{1}\u{2502}{2}", b, " ".repeat(50), r);
-    println!("{0}\u{2502}  Messaging Beyond Connectivity{1}\u{2502}{2}", b, " ".repeat(21), r);
-    println!("{0}\u{2502}{1}\u{2502}{2}", b, " ".repeat(50), r);
-    println!("{0}\u{2502}  \u{25c6} serverless  \u{25c6} P2P  \u{25c6} private{1}\u{2502}{2}", b, " ".repeat(4), r);
-    println!("{0}\u{2502}{1}\u{2502}{2}", b, " ".repeat(50), r);
-    println!("{0}\u{2502}{1}The Raven bears witness as the Phoenix{2}{3}", d, d, "", r);
-    println!("{0}\u{2502}{1}rises from the ASH.{2}{3}", d, d, " ".repeat(27), r);
-    println!("{0}\u{2502}{1}\u{2502}{2}", b, " ".repeat(50), r);
-    println!("{0}\u{2570}{1}\u{256f}{2}", b, "\u{2500}".repeat(50), r);
-
+    // ── Wordmark ──
+    println!("{0}R A V E N{1}", b, r);
+    println!("{0}N O D E{1}", d, r);
+    println!("{0}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}{1}", d, r);
+    println!("{0}Messaging Beyond Connectivity{1}", b, r);
     println!();
-    println!("{0}   https://raven-messager.com{1}", d, r);
-    println!("{0}   profile: {1}{2}", d, data_dir.display(), r);
-    println!();
+    println!("{0}\u{25c6} serverless \u{00b7} P2P \u{00b7} private \u{00b7} no servers{1}", b, r);
 
+    // ── Tagline ──
+    println!();
+    println!("{0}\"The Raven bears witness{1}", d, r);
+    println!("{0} as the Phoenix rises from the ASH\"{1}", d, r);
+
+    // ── Rule ──
+    println!();
+    println!("{0}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}{1}", d, r);
+
+    // ── Identity ──
     match try_load_identity(data_dir) {
         Ok(Some(id)) => {
-            println!("{}\u{25cf} identity ready{}", b, r);
+            println!();
+            println!("{0}\u{25cf} identity ready{1}", b, r);
             kv("address", &id.address());
             kv("fingerprint", &device_fingerprint_v1(&id.public_key_bytes()));
             kv("pub_hex", &hex::encode(id.public_key_bytes()));
             println!();
-            println!("{0}Tip: menu 8 = Tutorial \u{00b7} menu 4 = Listen{1}", d, r);
-            println!();
         }
         Ok(None) => {
-            println!("{0}First run \u{2014} no identity yet.{1}", b, r);
+            println!();
+            println!("{0}\u{25cb} First run \u{2014} no identity yet.{1}", c.bold, c.reset);
             println!();
         }
         Err(e) => {
@@ -748,6 +747,7 @@ fn print_welcome(data_dir: &Path) {
         }
     }
 }
+
 /// Offer inline identity creation on first run; returns true when an identity
 /// exists afterwards. Used by the interactive shell so newcomers don't need to
 /// know the `init` subcommand at all.
@@ -2191,7 +2191,7 @@ fn cmd_contacts(data_dir: &Path) {
 
     cmd_contact_list(data_dir);
     println!();
-    println!("{bold}Contacts menu{reset}");
+    screen_header("Contacts");
     println!(
         "  {bold}a{reset}  Add contact     {dim}rvn1… or @alias + petname + fingerprint{reset}"
     );
@@ -2832,8 +2832,8 @@ fn cmd_send_interactive(data_dir: &Path) {
     let contacts = load_contacts(data_dir).unwrap_or_default();
 
     if contacts.is_empty() {
-        println!("{0}Send / Chat{1}", c.bold, c.reset);
-        println!("{0}You have no contacts yet — don't jump to host:port.{1}", c.dim, c.reset);
+        screen_header("Send");
+        println!("{0}no pinned contacts — add one to get started{1}", c.dim, c.reset);
         println!();
         println!("  {0}1.{1} Add someone first: menu {0}5 Contacts{2}", c.bold, c.reset, c.reset);
         println!("     (rvn1… address + pub_hex from their `ash whoami`, or @alias)");
@@ -2867,7 +2867,7 @@ fn cmd_send_interactive(data_dir: &Path) {
     }
 
     // ── Contact picker ──
-    println!("{0}Send / Chat{1}", c.bold, c.reset);
+    screen_header("Send");
     println!(
         "{0}Pick a contact by number or @tag. Direct host:port is advanced only.{1}",
         c.dim,
@@ -3276,6 +3276,15 @@ fn stdin_is_tty() -> bool {
 const W_KEY: usize = 14; // column width for key/value rows
 
 /// Aligned key-value row: dim padded label, plain value.
+/// Sub-screen header for consistent inner views.
+fn screen_header(title: &str) {
+    let c = c();
+    let label = format!(" ── {} ", title);
+    let fill_len = 56usize.saturating_sub(label.chars().count());
+    let fill: String = std::iter::repeat('─').take(fill_len).collect();
+    println!("\n{}{}{}{}", c.dim, label, fill, c.reset);
+}
+
 fn kv(label: &str, value: &str) {
     let c = c();
     println!(

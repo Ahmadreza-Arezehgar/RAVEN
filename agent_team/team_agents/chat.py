@@ -18,9 +18,6 @@ from pathlib import Path
 from .deltas import DeltaStore
 from .memory import TeamMemory
 
-MAX_CHAT_LINES = 500
-
-
 class TeamChat:
     def __init__(self, memory: TeamMemory, writer: str = 'user') -> None:
         self.memory = memory

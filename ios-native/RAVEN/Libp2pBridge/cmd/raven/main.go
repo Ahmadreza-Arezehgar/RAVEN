@@ -26,6 +26,7 @@ import (
 	qrcode "github.com/skip2/go-qrcode"
 
 	"github.com/raven/ravenbridge/pkg/contacts"
+	inv "github.com/raven/ravenbridge/pkg/invite"
 	mbox "github.com/raven/ravenbridge/pkg/mailbox"
 	"github.com/raven/ravenbridge/pkg/session"
 )
@@ -48,21 +49,25 @@ func main() {
 	if v := flagValue(args, "--data-dir"); v != "" {
 		dir = v
 	}
-	cmd := args[0]
+	cmd, rest := splitCommand(args)
 	var err error
 	switch cmd {
 	case "init":
 		err = cmdInit(dir)
 	case "whoami":
 		err = cmdWhoami(dir)
+	case "invite":
+		err = cmdInvite(rest)
+	case "words":
+		err = cmdWords(dir, rest)
 	case "add":
-		err = cmdAdd(dir, args[1:])
+		err = cmdAdd(dir, rest)
 	case "list":
 		err = cmdList(dir)
 	case "send":
-		err = cmdSend(dir, args[1:])
+		err = cmdSend(dir, rest)
 	case "chat":
-		err = cmdChat(dir, args[1:])
+		err = cmdChat(dir, rest)
 	case "listen":
 		err = cmdListen(dir)
 	case "relay":
@@ -88,7 +93,12 @@ usage: raven [--data-dir DIR] <command>
 
   init                 create identity in DIR (~/.raven by default)
   whoami               show identity; --qr renders an iPhone-scannable QR
-  add --petname NAME   pin a contact from pasted raven:// card / card JSON
+  invite               ONE-LINE contact code (rvn1i…) — keys+signature inside;
+                       --qr renders it; this single string replaces
+                       address + pub_hex + fingerprint copy-paste
+  words [CODE]         four-word key face ("copper raven …") for verifying a
+                       contact out loud — yours, or of a pasted code
+  add --petname NAME   pin a contact from pasted rvn1i code / raven:// card / JSON
   list                 list contacts
   send WHO TEXT        one-shot E2E message over the internet bridge
   chat WHO             interactive chat (sends + receives)
@@ -104,6 +114,25 @@ environment:
   RAVEN_MAILBOX        comma-separated mailbox multiaddrs for offline delivery
   RAVEN_NAME           display name used in envelopes
 `)
+}
+
+// splitCommand finds the first non-flag token as the subcommand and returns
+// the remaining args, so `raven --data-dir X invite` and
+// `raven invite --data-dir X` both work.
+func splitCommand(args []string) (string, []string) {
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--data-dir":
+			i++
+		case strings.HasPrefix(args[i], "-"):
+		default:
+			rest := make([]string, 0, len(args)-1)
+			rest = append(rest, args[:i]...)
+			rest = append(rest, args[i+1:]...)
+			return args[i], rest
+		}
+	}
+	return "", args
 }
 
 func dataDir() string {
@@ -174,16 +203,16 @@ func cmdInit(dir string) error {
 	} else {
 		fmt.Println("existing identity loaded")
 	}
-	printIdentity(id)
+	printIdentity(id, dir)
 	return nil
 }
 
-func printIdentity(id idType) {
+func printIdentity(id idType, dir string) {
 	fmt.Printf("  fingerprint : %s\n", id.Fingerprint())
 	fmt.Printf("  peer id     : %s\n", peerIDOf(id))
 	fmt.Printf("  ed25519 pub : %s\n", b64(id.PublicKey()))
 	fmt.Printf("  x25519 pub  : %s\n", b64(id.X25519Pub))
-	fmt.Printf("  data dir    : %s\n", dataDir())
+	fmt.Printf("  data dir    : %s\n", dir)
 }
 
 func cmdWhoami(dir string) error {
@@ -192,11 +221,19 @@ func cmdWhoami(dir string) error {
 		return err
 	}
 	cfg := loadConfig(dir)
-	printIdentity(id)
+	printIdentity(id, dir)
+
+	code, err := inviteCode(id, cfg.Name)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("\ninvite code — ONE line, share this (keys + signature inside):\n  %s\n", code)
+	fmt.Printf("words: %s\n", inv.Words(id.PublicKey()))
+
 	card := buildCard(id, cfg.Name)
 	b64url := cardURIBody(card)
 	uri := "raven://friend?v=2&d=" + b64url
-	fmt.Printf("\ncard uri (paste into another terminal):\n  %s\n", uri)
+	fmt.Printf("\ncard uri (legacy, iPhone-compatible):\n  %s\n", uri)
 	if hasFlag(os.Args[1:], "--qr") {
 		qr, err := qrcode.New(uri, qrcode.Low)
 		if err == nil {
@@ -204,6 +241,70 @@ func cmdWhoami(dir string) error {
 			fmt.Println(qr.ToSmallString(false))
 		}
 	}
+	return nil
+}
+
+// inviteCode builds the compact one-string contact code for this identity.
+func inviteCode(id idType, name string) (string, error) {
+	ivc, err := inv.Build(id.Seed, id.PublicKey(), id.X25519Pub, name, time.Now())
+	if err != nil {
+		return "", err
+	}
+	return ivc.Encode()
+}
+
+// cmdInvite prints just the one-line rvn1i… code (pipe-friendly).
+func cmdInvite(args []string) error {
+	dir := dataDir()
+	if v := flagValue(args, "--data-dir"); v != "" {
+		dir = v
+	}
+	id, _, err := idEnsure(dir)
+	if err != nil {
+		return err
+	}
+	cfg := loadConfig(dir)
+	code, err := inviteCode(id, cfg.Name)
+	if err != nil {
+		return err
+	}
+	fmt.Println(code)
+	if hasFlag(args, "--qr") {
+		qr, err := qrcode.New(code, qrcode.Low)
+		if err == nil {
+			fmt.Println("\nscan with another raven terminal (`raven add`):")
+			fmt.Println(qr.ToSmallString(false))
+		}
+	}
+	return nil
+}
+
+// cmdWords prints the speakable four-word key face — yours by default, or of
+// a pasted invite code for out-loud comparison ("read me your words").
+func cmdWords(dir string, args []string) error {
+	id, _, err := idEnsure(dir)
+	if err != nil {
+		return err
+	}
+	var targetPub []byte
+	label := "you"
+	for _, a := range args {
+		if strings.HasPrefix(strings.TrimSpace(a), inv.HRP+"1") {
+			parsed, err := inv.Decode(a)
+			if err != nil {
+				return fmt.Errorf("bad invite code: %w", err)
+			}
+			targetPub = parsed.IdentityPub
+			label = parsed.Name
+			if label == "" {
+				label = fingerprintOf(parsed.IdentityPub)
+			}
+		}
+	}
+	if targetPub == nil {
+		targetPub = id.PublicKey()
+	}
+	fmt.Printf("%s: %s\nfingerprint: %s\n", label, inv.Words(targetPub), fingerprintOf(targetPub))
 	return nil
 }
 
@@ -317,12 +418,27 @@ func cmdAdd(dir string, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Println("paste contact card (raven:// URI or JSON), then Enter:")
+	fmt.Println("paste contact code (rvn1i… / raven:// URI / JSON), then Enter:")
 	rd := bufio.NewReader(os.Stdin)
 	line, _ := rd.ReadString('\n')
 	c, err := parseCard(line)
 	if err != nil {
-		return err
+		// fall back to the compact one-string invite (already fully verified
+		// by Decode: signature, derived fingerprint, 24h window)
+		parsed, ierr := inv.Decode(line)
+		if ierr != nil {
+			return fmt.Errorf("not a valid contact code — tried card (%v) and invite (%v)", err, ierr)
+		}
+		fp := inv.FingerprintOf(parsed.IdentityPub)
+		c = &cardJSON{
+			UserID:          fp,
+			Name:            parsed.Name,
+			AgreementPubB64: b64(parsed.AgreementPub),
+			IdentityPubB64:  b64(parsed.IdentityPub),
+			FingerprintSafe: fp,
+			IssuedAt:        parsed.IssuedAt,
+			SignatureB64:    b64(parsed.Signature),
+		}
 	}
 	if petname == "" && c.Name != "" {
 		petname = strings.ToLower(strings.TrimSpace(c.Name))
