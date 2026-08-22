@@ -2105,7 +2105,7 @@ fn cmd_contact_list(data_dir: &Path) {
     let c = c();
     let contacts = contacts_or_die(data_dir);
     println!();
-    section("contacts");
+    println!("{}CONTACTS \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}{}", c.bold, c.reset);
     println!(
         "  {d}{count} saved{r}",
         d = c.dim,
@@ -2163,10 +2163,8 @@ fn cmd_contact_list(data_dir: &Path) {
         };
 
         println!(
-            "  {b}{i}.{r} {name:<nw$}  {tag:<tw$}  {pin}{dial}",
-            b = c.bold,
+            "  {i}. {name:<nw$}  {tag:<tw$}  {pin}{dial}",
             i = i + 1,
-            r = c.reset,
             name = name,
             nw = w_name,
             tag = tag,
@@ -2701,7 +2699,7 @@ fn print_production_gate_matrix() {
 fn cmd_status(data_dir: &Path) -> Result<(), String> {
     let c = c();
     println!();
-    section("status");
+    println!("{}STATUS \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}{}", c.bold, c.reset);
 
     kv("profile", &data_dir.display().to_string());
     print_messaging_path_diag();
@@ -2709,7 +2707,7 @@ fn cmd_status(data_dir: &Path) -> Result<(), String> {
     match try_load_identity(data_dir) {
         Ok(Some(id)) => {
             println!();
-            section("identity");
+            println!("{}IDENTITY \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}{}", c.bold, c.reset);
             println!(
                 "  {0}\u{25cf}{1} ready {2}(public bits only \u{2014} never a seed){3}",
                 c.green, c.reset, c.dim, c.reset
@@ -2730,7 +2728,7 @@ fn cmd_status(data_dir: &Path) -> Result<(), String> {
 
     let contacts = contacts_or_die(data_dir);
     println!();
-    section("contacts");
+    println!("{}CONTACTS \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}{}", c.bold, c.reset);
     kv("count", &contacts.len().to_string());
 
     let policy = load_policy(data_dir);
@@ -2746,7 +2744,7 @@ fn cmd_status(data_dir: &Path) -> Result<(), String> {
     let snap = BridgeStatusSnapshot::from_policy(&policy, &["lan", "mock_ble"], pending, total);
 
     println!();
-    section("bridge");
+    println!("{}BRIDGE \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}{}", c.bold, c.reset);
     kv("bridge", ok(snap.bridge));
     kv("store", ok(snap.store));
     kv("relay", ok(snap.relay));
@@ -2884,10 +2882,8 @@ fn cmd_send_interactive(data_dir: &Path) {
             format!("  {0}→ {1}{2}", c.dim, sanitize_terminal_text(&ct.lan_dial), c.reset)
         };
         println!(
-            "  {b}{n}{r}  {label}{sub}{dial}{pinned}",
-            b = c.bold,
+            "  {n}  {label}{sub}{dial}{pinned}",
             n = i + 1,
-            r = c.reset,
             label = ct.primary_label(),
             pinned = if ct.pinned { " [pinned]" } else { "" }
         );
@@ -3397,15 +3393,13 @@ fn render_arrow_menu(sel: usize, first: bool) {
     row(&mut lines, 7);
     lines.push(String::new());
     lines.push(format!(
-        "{b}q{r}  quit   {d}(up/down + Enter · number = jump){r}",
-        b = bold,
-        r = reset,
-        d = dim
+        "q  quit   {d}q  quit{r}   {d}(up/down + Enter · number = jump){r}",
+        d = dim,
+        r = reset
     ));
     lines.push(format!(
-        "{b}raven{r} {c}❯{r} ",
-        b = bold,
-        r = reset,
+        "raven {c}❯ ",
+        
         c = cc.cyan
     ));
 
