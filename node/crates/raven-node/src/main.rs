@@ -267,6 +267,14 @@ async fn read_frame_with_limits<R: AsyncRead + Unpin>(
     Ok(buf)
 }
 
+
+fn fingerprint_of(pub_bytes: &[u8]) -> String {
+    let mut k = [0u8; 32];
+    let n = pub_bytes.len().min(32);
+    k[..n].copy_from_slice(&pub_bytes[..n]);
+    raven_core::fingerprint::device_fingerprint_v1(&k)
+}
+
 fn parse_pub_hex(s: &str) -> Result<[u8; 32], String> {
     let v = hex::decode(s.trim()).map_err(|e| e.to_string())?;
     if v.len() != 32 {
@@ -437,7 +445,7 @@ impl NodeState {
                             let peer_addr = raven_core::encode_address(&peer_pub);
                             let key =
                                 derive_pairwise_key(&self.identity.public_key_bytes(), &peer_pub);
-                            let _plaintext = unseal_message(
+                            let plaintext = unseal_message(
                                 &key,
                                 &env.message_ciphertext,
                                 &peer_addr,
@@ -452,6 +460,14 @@ impl NodeState {
                                 return Ok(None);
                             }
                             self.recv_count += 1;
+                            // Show the actual message to the human, plus who sent it.
+                            let peer_fp = crate::fingerprint_of(&peer_pub);
+                            let body = String::from_utf8_lossy(&plaintext);
+                            eprintln!("\n── INCOMING from {} ──", peer_fp);
+                            for line in body.lines() {
+                                eprintln!("│ {}", line);
+                            }
+                            eprintln!("────────────────────");
                             eprintln!("DELIVERED bytes={}", env.message_ciphertext.len());
                             let ack = build_ack_envelope(&self.identity, env.message_id, &peer_pub);
                             return Ok(Some(ack.pack()));

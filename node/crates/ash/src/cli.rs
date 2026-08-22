@@ -86,16 +86,17 @@ const C_GREEN: &str = "\x1b[1;32m";
 
 fn c() -> Colors {
     if color_enabled() {
+        // Black & white design: emphasis via bold/dim only.
         Colors {
             bold: "\x1b[1m",
             dim: "\x1b[2m",
             reset: "\x1b[0m",
-            cyan: "\x1b[1;36m",
-            purple: "\x1b[1;35m",
-            green: "\x1b[1;32m",
-            yellow: "\x1b[33m",
-            red: "\x1b[1;31m",
-            white_on_purple: "\x1b[97;45m",
+            cyan: "\x1b[1m",
+            purple: "\x1b[1m",
+            green: "\x1b[1m",
+            yellow: "\x1b[2m",
+            red: "\x1b[1m",
+            white_on_purple: "\x1b[7m",
         }
     } else {
         Colors {
@@ -3186,43 +3187,191 @@ fn run_send(data_dir: &Path, peer: &str, peer_pub_hex: &str, listen: &str, text:
     }
 }
 
+/// Flat menu model shared by both navigation modes.
+const MENU_ITEMS: [(&str, &str, &str); 8] = [
+    ("1", "Chat / Send", "message a contact — guided"),
+    ("2", "Inbox", "committed endpoint inbox"),
+    ("3", "Status", "identity · bridge · transports"),
+    ("4", "Listen", "receive — one command, no flags"),
+    ("5", "Contacts", "add by rvn1… paste · list · verify"),
+    ("6", "Mailbox", "opaque offline put/get"),
+    ("7", "Nearby scan", "ephemeral BLE discovery"),
+    ("8", "Tutorial", "guided walkthrough — start here"),
+];
+
+/// Execute a menu choice; returns false when the user asked to quit.
+fn run_menu_choice(data_dir: &Path, choice: &str) -> bool {
+    let c = c();
+    match choice {
+        "1" | "s" | "send" | "chat" => cmd_send_interactive(data_dir),
+        "2" | "i" | "inbox" => cmd_endpoint_inbox(data_dir),
+        "3" | "st" | "status" => {
+            let _ = cmd_status(data_dir);
+        }
+        "4" | "l" | "listen" => cmd_listen(data_dir),
+        "5" | "c" | "contacts" => cmd_contacts(data_dir),
+        "6" | "mailbox" => println!(
+            "{0}mailbox is subcommand-driven — see `ash mailbox --help`.{1}",
+            c.dim, c.reset
+        ),
+        "7" | "nearby" => println!(
+            "{0}nearby scan: run `ash nearby --help` in another shell              (menu stays responsive here).{1}",
+            c.dim, c.reset
+        ),
+        "8" | "t" | "tutorial" => cmd_tutorial(data_dir),
+        "q" | "quit" | "exit" => {
+            println!("{0}fly safe.{1}", c.purple, c.reset);
+            return false;
+        }
+        "" => {}
+        other => println!(
+            "{0}unknown:{1} {2} {0}— pick 1-8 or q{1}",
+            c.dim, c.reset, other
+        ),
+    }
+    true
+}
+
 fn interactive(data_dir: &Path) {
     print_welcome(data_dir);
     if !offer_first_run_identity(data_dir) {
         println!("{C_DIM}tip: run `ash init` anytime to create an identity.{C_RESET}");
     }
+    if io::stdin().is_terminal() && !cfg!(windows) {
+        arrow_menu_loop(data_dir);
+    } else {
+        line_menu_loop(data_dir);
+    }
+}
+
+/// Classic numbered input — used when stdin is piped (tests) or on Windows.
+fn line_menu_loop(data_dir: &Path) {
     loop {
         print_menu();
         let choice = read_line();
-        let c = c();
-        match choice.as_str() {
-            "1" | "s" | "send" | "chat" => cmd_send_interactive(data_dir),
-            "2" | "i" | "inbox" => cmd_endpoint_inbox(data_dir),
-            "3" | "st" | "status" => {
-                let _ = cmd_status(data_dir);
-            }
-            "4" | "l" | "listen" => cmd_listen(data_dir),
-            "5" | "c" | "contacts" => cmd_contacts(data_dir),
-            "6" | "mailbox" => println!(
-                "{C_DIM}mailbox is subcommand-driven — see `ash mailbox --help`.{C_RESET}"
-            ),
-            "7" | "nearby" => println!(
-                "{C_DIM}nearby scan: run `ash nearby --help` in another shell \
-                 (menu stays responsive here).{C_RESET}"
-            ),
-            "8" | "t" | "tutorial" => cmd_tutorial(data_dir),
-            "q" | "quit" | "exit" => {
-                println!("{0}fly safe.{1}", c.purple, c.reset);
-                break;
-            }
-            "" => continue,
-            other => println!(
-                "{0}unknown:{1} {2} {0}— pick 1-8 or q{1}",
-                c.dim, c.reset, other
-            ),
+        if !run_menu_choice(data_dir, &choice) {
+            break;
         }
         println!();
     }
+}
+
+// ── Arrow-key navigation (interactive terminals only) ─────────────────────
+
+#[derive(PartialEq)]
+enum MenuKey {
+    Up,
+    Down,
+    Enter,
+    Digit(usize),
+    Quit,
+    Other,
+}
+
+fn stty(args: &[&str]) {
+    let _ = Command::new("stty").args(args).status();
+}
+
+fn read_key_raw() -> MenuKey {
+    use io::Read;
+    let mut b = [0u8; 1];
+    if io::stdin().read(&mut b).unwrap_or(0) == 0 {
+        return MenuKey::Quit;
+    }
+    match b[0] {
+        b'\r' | b'\n' => MenuKey::Enter,
+        0x1b => {
+            let mut b2 = [0u8; 1];
+            if io::stdin().read(&mut b2).unwrap_or(0) == 0 {
+                return MenuKey::Other;
+            }
+            if b2[0] != b'[' {
+                return MenuKey::Other;
+            }
+            let mut b3 = [0u8; 1];
+            if io::stdin().read(&mut b3).unwrap_or(0) == 0 {
+                return MenuKey::Other;
+            }
+            match b3[0] {
+                b'A' => MenuKey::Up,
+                b'B' => MenuKey::Down,
+                _ => MenuKey::Other,
+            }
+        }
+        b'q' | b'Q' => MenuKey::Quit,
+        b'\x03' => MenuKey::Quit, // Ctrl+C
+        d @ b'1'..=b'8' => MenuKey::Digit((d - b'0') as usize),
+        _ => MenuKey::Other,
+    }
+}
+
+fn render_arrow_menu(sel: usize, first: bool) {
+    let items = MENU_ITEMS;
+    let cc = c();
+    let (purple, bold, dim, reset, marker) =
+        (cc.purple, cc.bold, cc.dim, cc.reset, "\u{25b8}");
+
+    let mut lines: Vec<String> = Vec::new();
+    let mut section = |v: &mut Vec<String>, label: &str| {
+        v.push(format!(
+            "{p}◆ {l}{r}",
+            p = purple,
+            l = label.to_ascii_uppercase(),
+            r = reset
+        ));
+    };
+    let mut row = |v: &mut Vec<String>, idx: usize| {
+        let (num, title, hint) = items[idx];
+        if idx == sel {
+            v.push(format!(
+                "  {m} {n}  {t}{r}  {d}{h}{r}",
+                m = marker,
+                n = num,
+                t = title,
+                d = dim,
+                h = hint,
+                r = reset
+            ));
+        } else {
+            v.push(format!("    {n}  {t}", n = num, t = title));
+        }
+    };
+
+    section(&mut lines, "messages");
+    row(&mut lines, 0);
+    row(&mut lines, 1);
+    section(&mut lines, "network");
+    row(&mut lines, 2);
+    row(&mut lines, 3);
+    section(&mut lines, "people");
+    row(&mut lines, 4);
+    section(&mut lines, "tools");
+    row(&mut lines, 5);
+    row(&mut lines, 6);
+    row(&mut lines, 7);
+    lines.push(String::new());
+    lines.push(format!(
+        "{b}q{r}  quit   {d}(up/down + Enter · number = jump){r}",
+        b = bold,
+        r = reset,
+        d = dim
+    ));
+    lines.push(format!(
+        "{b}raven{r} {c}❯{r} ",
+        b = bold,
+        r = reset,
+        c = cc.cyan
+    ));
+
+    let n = lines.len();
+    let body = lines.join("\n");
+    if first {
+        println!();
+        print!("{}", body);
+    } else {
+        print!("\r\x1b[{}A\x1b[J{}", n, body);
+    }
+    let _ = io::stdout().flush();
 }
 
 /// Guided walkthrough for newcomers. Every step prints what it does and why,
@@ -3231,18 +3380,17 @@ fn cmd_tutorial(data_dir: &Path) {
     let c = c();
     let _ = offer_first_run_identity(data_dir);
 
-    println!("\n{0}═══ RAVEN TUTORIAL ═══{1}", c.purple, c.reset);
+    println!("\n{0}\u{2550}\u{2550}\u{2550} RAVEN TUTORIAL \u{2550}\u{2550}\u{2550}{1}", c.purple, c.reset);
     println!("{0}Raven is serverless: you and your contacts ARE the network.{1}", c.dim, c.reset);
     println!("{0}No phone number, no central account, messages relayed by peers.{1}\n", c.dim, c.reset);
 
-    // Step 1 — identity
     println!("{0}[1/4] Identity{1}", c.bold, c.reset);
     match try_load_identity(data_dir) {
         Ok(Some(id)) => {
-            println!("  {0}✔{1} created. Your public bits:", c.green, c.reset);
+            println!("  {0}\u{2714}{1} created. Your public bits:", c.green, c.reset);
             print_public_identity(&id);
             println!(
-                "  {0}Share address+fingerprint with friends over any channel;\n  they pin it, you pin theirs — that mutual pin IS the trust.{1}\n",
+                "  {0}Share address+fingerprint with friends over any channel;\n  they pin it, you pin theirs \u{2014} that mutual pin IS the trust.{1}\n",
                 c.dim, c.reset
             );
         }
@@ -3251,12 +3399,11 @@ fn cmd_tutorial(data_dir: &Path) {
             return;
         }
         Err(e) => {
-            println!("  {0}× {1}\n", c.red, sanitize_terminal_text(&e));
+            println!("  {0}\u{00d7} {1}\n", c.red, sanitize_terminal_text(&e));
             return;
         }
     }
 
-    // Step 2 — add a contact
     println!("{0}[2/4] Add your first contact{1}", c.bold, c.reset);
     println!(
         "  {0}Ask a friend to run {1}ash whoami{0} and paste their three lines here.\n  Paste detection accepts the whole block at once.{2}",
@@ -3268,24 +3415,22 @@ fn cmd_tutorial(data_dir: &Path) {
     if ans.eq_ignore_ascii_case("y") || ans.eq_ignore_ascii_case("yes") {
         cmd_contacts(data_dir);
     } else {
-        println!("  {0}later: menu 5 → Contacts{1}", c.dim, c.reset);
+        println!("  {0}later: menu 5 \u{2192} Contacts{1}", c.dim, c.reset);
     }
     println!();
 
-    // Step 3 — health check
     println!("{0}[3/4] Health check{1}", c.bold, c.reset);
     match cmd_status(data_dir) {
         Ok(_) => println!(
-            "  {0}✔{1} messaging_path must read {2}serverless_rvn1{1}\n",
+            "  {0}\u{2714}{1} messaging_path must read {2}serverless_rvn1{1}\n",
             c.green, c.reset, c.bold
         ),
-        Err(e) => println!("  {0}×{1} status: {2}\n", c.red, c.reset, e),
+        Err(e) => println!("  {0}\u{00d7}{1} status: {2}\n", c.red, c.reset, e),
     }
 
-    // Step 4 — send
     println!("{0}[4/4] Send a message{1}", c.bold, c.reset);
     println!(
-        "  {0}Menu 1 → pick contact → type message.\n  Direct LAN first; bridge relays when peers are apart;\n  mailbox stores opaque bytes while someone is offline.{1}\n",
+        "  {0}Menu 1 \u{2192} pick contact \u{2192} type message.\n  Direct LAN first; bridge relays when peers are apart;\n  mailbox stores opaque bytes while someone is offline.{1}\n",
         c.dim, c.reset
     );
 
@@ -3294,6 +3439,67 @@ fn cmd_tutorial(data_dir: &Path) {
         "  {0}Full diagnostics anytime: {1}ash doctor{0}{1}",
         c.reset, c.dim
     );
+}
+
+
+fn arrow_menu_loop(data_dir: &Path) {
+    // Raw mode via stty; save current settings for exact restore.
+    let saved = Command::new("stty")
+        .arg("-g")
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+    stty(&["raw", "-echo"]);
+
+    let mut sel: usize = 0;
+    render_arrow_menu(sel, true);
+    loop {
+        let key = read_key_raw();
+        match key {
+            MenuKey::Up => {
+                if sel > 0 {
+                    sel -= 1;
+                    render_arrow_menu(sel, false);
+                }
+            }
+            MenuKey::Down => {
+                if sel + 1 < MENU_ITEMS.len() {
+                    sel += 1;
+                    render_arrow_menu(sel, false);
+                }
+            }
+            MenuKey::Digit(d) => {
+                sel = d - 1;
+                render_arrow_menu(sel, false);
+                println!();
+                if !run_menu_choice(data_dir, MENU_ITEMS[sel].0) {
+                    break;
+                }
+                sel = 0;
+                render_arrow_menu(sel, true);
+            }
+            MenuKey::Enter => {
+                println!(); // move off the prompt line so action output is clean
+                let choice = MENU_ITEMS[sel].0.to_string();
+                if !run_menu_choice(data_dir, &choice) {
+                    break;
+                }
+                render_arrow_menu(sel, true);
+            }
+            MenuKey::Quit => {
+                let cc = c();
+                println!("\n{0}fly safe.{1}", cc.purple, cc.reset);
+                break;
+            }
+            MenuKey::Other => {}
+        }
+    }
+
+    // Always restore the terminal.
+    match saved {
+        Some(state) if !state.is_empty() => stty(&[&state]),
+        _ => stty(&["sane"]),
+    }
 }
 
 pub fn run() {
@@ -3815,8 +4021,10 @@ mod tests {
         let colored_expected =
             std::env::var_os("NO_COLOR").is_none() && std::env::var_os("TERM").as_deref() != Some(std::ffi::OsStr::new("dumb"));
         if colored_expected {
-            assert_eq!(colors.cyan, "\x1b[1;36m");
-            assert_eq!(colors.bold, "\x1b[1m");
+            // Black & white design: accent fields collapse to bold/dim.
+            assert_eq!(colors.cyan, colors.bold);
+            assert_eq!(colors.purple, colors.bold);
+            assert_ne!(colors.yellow, colors.bold);
         } else {
             assert_eq!(colors.cyan, "");
             assert_eq!(colors.bold, "");

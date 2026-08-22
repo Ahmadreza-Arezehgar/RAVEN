@@ -36,8 +36,9 @@ def advertise(name: str, port: int, raven_address: str, advertised_ip: str = '')
     """Start broadcasting this node. Returns (zc, infos) — keep referenced."""
     try:
         from zeroconf import ServiceInfo, Zeroconf
-    except ImportError:
-        return None, None
+    except ImportError as exc:  # loud, never silent
+        raise RuntimeError(
+            'zeroconf not installed — re-run ./rdap (launcher installs it)') from exc
 
     ips = [advertised_ip] if advertised_ip else _lan_ips()
     if not ips:
