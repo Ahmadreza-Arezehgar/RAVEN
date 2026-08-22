@@ -2912,17 +2912,28 @@ fn cmd_send_interactive(data_dir: &Path) {
 
     let peer = if ct.lan_dial.is_empty() {
         print_lan_unresolved_hint(&ct.primary_label());
-        print!(
-            "{0}?{1} Enter their listen host:port now (e.g. 192.168.1.20:7420): ",
-            c.yellow,
-            c.reset
-        );
-        let _ = io::stdout().flush();
-        let hp = read_line();
-        if hp.trim().is_empty() {
-            return;
-        }
-        hp.trim().to_string()
+        let hp = loop {
+            print!(
+                "{0}?{1} Type the IP:PORT shown on their Listen screen (e.g. 192.168.1.20:7420): ",
+                c.yellow,
+                c.reset
+            );
+            let _ = io::stdout().flush();
+            let hp = read_line();
+            let t = hp.trim();
+            if t.is_empty() {
+                return;
+            }
+            if looks_like_lan_dial(t) {
+                break t.to_string();
+            }
+            println!(
+                "{0}not an IP:PORT — copy the line from their Listen screen (like 192.168.1.20:7420){1}",
+                c.red,
+                c.reset
+            );
+        };
+        hp
     } else {
         ct.lan_dial.clone()
     };
