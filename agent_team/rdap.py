@@ -340,10 +340,140 @@ def cmd_mesh_build(args) -> None:
     print('✔ built:', build_swarm_bin())
 
 
+def cmd_goal(args) -> None:
+    """Set THE unified mission every agent works toward."""
+    from team_agents.chat import TeamChat
+    from team_agents.memory import TeamMemory
+
+    st = state()
+    if not st.get('name'):
+        sys.exit('run `./rdap init` first')
+    chat = TeamChat(TeamMemory(Path(st.get('repo') or BASE / 'team-repo')))
+    if args.text:
+        chat.set_goal(args.text)
+        chat.post(st['name'], f'📌 set the TEAM GOAL')
+    print('TEAM GOAL:', chat.get_goal() or '(not set)')
+    print('every delegated task is now framed by this mission.')
+
+
+def cmd_say(args) -> None:
+    """Group-chat: `@agent task` routes it; `@all` fans out to everyone."""
+    import asyncio
+
+    from team_agents.client import send_task
+    from team_agents.chat import TeamChat, parse_mentions
+    from team_agents.memory import TeamMemory
+    from team_agents.raven_identity import RavenIdentity, sign_delegation
+
+    st = state()
+    if not st.get('name'):
+        sys.exit('run `./rdap init` first')
+    mates = st.get('teammates', {})
+    repo = Path(st.get('repo') or BASE / 'team-repo')
+
+    mentions = parse_mentions(args.text, list(mates))
+    chat = TeamChat(TeamMemory(repo))
+    chat.ensure()
+    idn = RavenIdentity.load_or_create(repo / '.team' / 'keys')
+
+    # always visible in the shared thread (synced via git)
+    chat.post(st['name'], args.text)
+
+    if not mentions:
+        print('✔ posted to team chat (no @mention — nobody tasked). '
+              'use @name or @all inside the message.')
+        return
+
+    if mentions == ['@all']:
+        targets = list(mates.items())
+    else:
+        unknown = [m for m in mentions if m not in mates]
+        if unknown:
+            sys.exit(f'unknown teammate(s): {", ".join(unknown)}')
+        targets = [(n, mates[n]) for n in mentions]
+
+    def _sign(text: str):
+        tid = uuid.uuid4().hex[:12]
+        payload = {'id': tid, 'kind': 'task', 'from': idn.address,
+                   'to': '', 'text': text,
+                   'raven': sign_delegation(idn, text)}
+        return tid, json.dumps(payload, ensure_ascii=False)
+
+    binp = None
+    try:
+        from team_agents.mesh import find_swarm_bin
+        binp = find_swarm_bin()
+    except Exception:  # noqa: BLE001
+        pass
+
+    for tname, target in targets:
+        peer_addr = target.get('address', '')
+        url = target.get('url') or args.url
+        sent = False
+
+        if not args.relay and url:
+            info = _probe(url)
+            if info is not None:
+                mb = info.get('mailbox')
+                if mb and target.get('mailbox') != mb:
+                    target['mailbox'] = mb
+                    _save_json(STATE_FILE, st)
+                try:
+                    result = asyncio.run(send_task(url, args.text,
+                                                   identity=idn, timeout=120))
+                    chat.post(tname, f'✅ done: {result.splitlines()[0][:100]}')
+                    print(f'[T1→{tname}] {result.splitlines()[0]}')
+                    sent = True
+                except Exception as exc:  # noqa: BLE001
+                    print(f'✗ [T1→{tname}] {exc!r}')
+
+        if not sent and binp and target.get('mailbox') and peer_addr:
+            try:
+                from team_agents.mesh import make_task_object, mailbox_put
+
+                tid, payload_text = _sign(args.text)
+                mailbox_put(binp, repo / '.team' / 'mesh-client',
+                            target['mailbox']['multiaddr'],
+                            target['mailbox']['peer_id'],
+                            make_task_object(payload_text.encode(), peer_addr))
+                chat.post(tname, f'📬 task {tid} waiting in your raven box')
+                print(f'[T3→{tname}] queued {tid} via raven mesh')
+                sent = True
+            except Exception as exc:  # noqa: BLE001
+                print(f'✗ [T3→{tname}] {exc!r}')
+
+        if not sent and peer_addr:
+            from team_agents.relay import GitRelay
+
+            r = GitRelay(TeamMemory(repo), idn,
+                         trusted_peers_file=(str(PEERS_FILE)
+                                             if PEERS_FILE.exists() else None),
+                         trusted_peers=load_peers())
+            tid, _ = _sign(args.text)
+            f = r.send_task(peer_addr, args.text)
+            chat.post(tname, f'📮 task {tid} parked in git relay')
+            print(f'[T4→{tname}] queued {f.relative_to(repo)} via git relay')
+
+            print(f'[T4→{tname}] queued {f.relative_to(repo)} via git relay')
+
+
+def cmd_chat(args) -> None:
+    """Show the shared team thread and current goal."""
+    from team_agents.chat import TeamChat
+    from team_agents.memory import TeamMemory
+
+    st = state()
+    if not st.get('name'):
+        sys.exit('run `./rdap init` first')
+    chat = TeamChat(TeamMemory(Path(st.get('repo') or BASE / 'team-repo')))
+    goal = chat.get_goal()
+    if goal:
+        print(f'🎯 GOAL: {goal}\n')
+    print(chat.tail(args.lines))
+
+
 def cmd_replies(args) -> None:
     """Collect offline answers that arrived through the git relay."""
-    import asyncio as _a
-
     from team_agents.memory import TeamMemory
     from team_agents.raven_identity import RavenIdentity
     from team_agents.relay import GitRelay
@@ -566,6 +696,20 @@ def main() -> None:
 
     rr = sub.add_parser('replies', help='collect offline answers from git relay')
     rr.set_defaults(fn=cmd_replies)
+
+    gl = sub.add_parser('goal', help='set THE unified mission for all agents')
+    gl.add_argument('text', nargs='?', default='')
+    gl.set_defaults(fn=cmd_goal)
+
+    sy = sub.add_parser('say', help='group chat: @agent task | @all broadcast')
+    sy.add_argument('text', help='e.g. "@raphael build the login API"')
+    sy.add_argument('--url', default='')
+    sy.add_argument('--relay', action='store_true')
+    sy.set_defaults(fn=cmd_say)
+
+    ch = sub.add_parser('chat', help='show the shared team thread')
+    ch.add_argument('--lines', type=int, default=30)
+    ch.set_defaults(fn=cmd_chat)
 
     mb = sub.add_parser('mesh-build',
                         help='build the Raven swarm mailbox binary (Rust)')

@@ -699,13 +699,9 @@ fn try_load_identity(data_dir: &Path) -> Result<Option<Identity>, String> {
 }
 
 fn print_public_identity(id: &Identity) {
-    let s = style();
-    let dim = s.dim;
-    let reset = s.reset;
-    let pubk = id.public_key_bytes();
-    println!("{dim}address{reset}     {}", id.address());
-    println!("{dim}fingerprint{reset} {}", device_fingerprint_v1(&pubk));
-    println!("{dim}pub_hex{reset}     {}", hex::encode(pubk));
+    kv("address", &id.address());
+    kv("fingerprint", &device_fingerprint_v1(&id.public_key_bytes()));
+    kv("pub_hex", &hex::encode(id.public_key_bytes()));
 }
 
 /// Unique Raven Node welcome — monochrome ASCII raven/node motif.
@@ -2105,48 +2101,77 @@ fn add_contact(
 }
 
 fn cmd_contact_list(data_dir: &Path) {
-    let s = style();
-    let bold = s.bold;
-    let dim = s.dim;
-    let reset = s.reset;
+    let c = c();
     let contacts = contacts_or_die(data_dir);
+    println!();
+    section("contacts");
     println!(
-        "{bold}Contacts{reset} ({}) — petname first (Raven Tag V1)",
-        contacts.len()
+        "  {d}{count} saved{r}",
+        d = c.dim,
+        count = contacts.len(),
+        r = c.reset
     );
+
     if contacts.is_empty() {
-        println!("{dim}No contacts yet. Soft Unique Tags in brief:{reset}");
-        println!("  {dim}• rvn1… address = durable identity (from QR / whoami){reset}");
-        println!("  {dim}• @alias = public Soft Unique tag (conflicts → picker){reset}");
-        println!("  {dim}• petname = your private label (e.g. \"Poline\"){reset}");
-        println!("  {dim}• verify fingerprint OOB before pinning{reset}");
         println!();
-        println!("{dim}Add interactively below, or:{reset}");
+        println!("{0}No contacts yet.{1}", c.dim, c.reset);
         println!(
-            "  {bold}ash contact add --address rvn1… --pub-hex <64 hex> --petname \"Poline\"{reset}"
+            "  {0}rvn1… address  = durable identity (from QR / whoami){1}",
+            c.dim, c.reset
         );
-        println!("  {dim}ash contact add --help{reset}  for Soft Unique Tag examples");
+        println!("  {0}@alias         = public Soft Unique tag{1}", c.dim, c.reset);
+        println!(
+            "  {0}petname        = your private label (e.g. \"Poline\"){1}",
+            c.dim, c.reset
+        );
+        println!(
+            "  {0}verify the fingerprint out-of-band before pinning{1}",
+            c.dim, c.reset
+        );
         return;
     }
-    for (i, c) in contacts.iter().enumerate() {
-        let sub = c
-            .tag_subtitle()
-            .map(|t| format!("  {dim}{t}{reset}"))
-            .unwrap_or_default();
-        let pin = if c.pinned { " [pinned]" } else { "" };
+
+    // Dynamic column widths from data (alignment is readability).
+    let w_name = contacts
+        .iter()
+        .map(|x| x.primary_label().chars().count())
+        .max()
+        .unwrap_or(4)
+        .max(7);
+    let w_tag = contacts
+        .iter()
+        .map(|x| x.tag_subtitle().map(|t| t.chars().count()).unwrap_or(2))
+        .max()
+        .unwrap_or(5)
+        .max(5);
+
+    println!();
+    for (i, ct) in contacts.iter().enumerate() {
+        let name = ct.primary_label();
+        let tag = ct.tag_subtitle().unwrap_or_else(|| "—".into());
+        let pin = if ct.pinned {
+            format!("{0}✓ pinned{1}", c.bold, c.reset)
+        } else {
+            format!("{0}○ unpinned{1}", c.dim, c.reset)
+        };
+        let fp = contact_fingerprint(ct);
+        let dial = if ct.lan_dial.is_empty() {
+            String::new()
+        } else {
+            format!("  {0}→ {1}{2}", c.dim, sanitize_terminal_text(&ct.lan_dial), c.reset)
+        };
+
         println!(
-            "  {bold}{}{reset}  {}{}{pin}",
-            i + 1,
-            c.primary_label(),
-            sub
+            "  {b}{i}.{r} {name:<nw$}  {tag:<tw$}  {pin}{dial}",
+            b = c.bold,
+            i = i + 1,
+            r = c.reset,
+            name = name,
+            nw = w_name,
+            tag = tag,
+            tw = w_tag
         );
-        if !c.lan_dial.is_empty() {
-            println!(
-                "      {dim}lan={}{reset}",
-                sanitize_terminal_text(&c.lan_dial)
-            );
-        }
-        println!("      {dim}fp={}{reset}", contact_fingerprint(c));
+        println!("     {d}fp {fp}{r}{dial_extra}", d = c.dim, r = c.reset, fp = fp, dial_extra = "");
     }
 }
 
@@ -2601,14 +2626,13 @@ fn cmd_prekey_fetch(data_dir: &Path, pub_hex: &str, file: Option<&Path>) {
 fn print_messaging_path_diag() {
     let path = resolve_terminal_messaging_path();
     let _ = assert_no_silent_fastapi(path);
-    println!(
-        "{C_DIM}messaging_path{C_RESET} {} ({})",
-        path.as_diag_label(),
-        path.human()
-    );
-    println!(
-        "{C_DIM}path_rule{C_RESET}     serverless never silently uses FastAPI ({})",
-        MessagingPath::LegacyFastApi.as_diag_label()
+    kv("messaging", &format!("{} ({})", path.as_diag_label(), path.human()));
+    kv(
+        "path_rule",
+        &format!(
+            "never silently uses FastAPI ({})",
+            MessagingPath::LegacyFastApi.as_diag_label()
+        ),
     );
 }
 
@@ -2674,16 +2698,26 @@ fn print_production_gate_matrix() {
 }
 
 fn cmd_status(data_dir: &Path) -> Result<(), String> {
-    println!("{C_BOLD}Status{C_RESET}");
-    println!("{C_DIM}data_dir{C_RESET} {}", data_dir.display());
+    let c = c();
+    println!();
+    section("status");
+
+    kv("profile", &data_dir.display().to_string());
     print_messaging_path_diag();
+
     match try_load_identity(data_dir) {
         Ok(Some(id)) => {
-            println!("{C_GREEN}●{C_RESET} identity");
+            println!();
+            section("identity");
+            println!(
+                "  {0}\u{25cf}{1} ready {2}(public bits only \u{2014} never a seed){3}",
+                c.green, c.reset, c.dim, c.reset
+            );
             print_public_identity(&id);
         }
         Ok(None) => println!(
-            "{C_DIM}○{C_RESET} identity missing — run `ash --data-dir <dir> init` explicitly"
+            "\n{0}\u{25cb} identity missing{1} \u{2014} run {2}ash init{3}",
+            c.dim, c.reset, c.bold, c.reset
         ),
         Err(e) => {
             return Err(format!(
@@ -2692,8 +2726,11 @@ fn cmd_status(data_dir: &Path) -> Result<(), String> {
             ));
         }
     }
+
     let contacts = contacts_or_die(data_dir);
-    println!("{C_DIM}contacts{C_RESET} {}", contacts.len());
+    println!();
+    section("contacts");
+    kv("count", &contacts.len().to_string());
 
     let policy = load_policy(data_dir);
     let fwd_path = data_dir.join("forward_queue.sqlite");
@@ -2706,37 +2743,25 @@ fn cmd_status(data_dir: &Path) -> Result<(), String> {
         (0, 0)
     };
     let snap = BridgeStatusSnapshot::from_policy(&policy, &["lan", "mock_ble"], pending, total);
-    let on = |b: bool| {
-        if b {
-            format!("{C_GREEN}on{C_RESET}")
-        } else {
-            format!("{C_DIM}off{C_RESET}")
-        }
-    };
-    println!("{C_BOLD}Bridge{C_RESET}");
-    println!("  {C_DIM}bridge{C_RESET}     {}", on(snap.bridge));
-    println!("  {C_DIM}store{C_RESET}      {}", on(snap.store));
-    println!("  {C_DIM}relay{C_RESET}      {}", on(snap.relay));
-    println!("  {C_DIM}endpoint{C_RESET}   {}", on(snap.endpoint));
-    println!(
-        "  {C_DIM}policy{C_RESET}     {}",
-        if snap.auto_policy {
-            "AUTO (override with ash node bridge on|off)"
-        } else {
-            "manual"
-        }
+
+    println!();
+    section("bridge");
+    kv("bridge", ok(snap.bridge));
+    kv("store", ok(snap.store));
+    kv("relay", ok(snap.relay));
+    kv("endpoint", ok(snap.endpoint));
+    kv(
+        "policy",
+        if snap.auto_policy { "AUTO" } else { "manual" },
     );
-    println!(
-        "  {C_DIM}transports{C_RESET} {}",
-        snap.transports.join(", ")
-    );
-    println!(
-        "  {C_DIM}caps{C_RESET}       {}",
-        snap.capabilities.join(", ")
-    );
-    println!(
-        "  {C_DIM}forward_q{C_RESET}  {} pending / {} total",
-        snap.forward_queue_pending, snap.forward_queue_total
+    kv("transports", &snap.transports.join(", "));
+    kv("caps", &snap.capabilities.join(", "));
+    kv(
+        "forward_q",
+        &format!(
+            "{} pending / {} total",
+            snap.forward_queue_pending, snap.forward_queue_total
+        ),
     );
 
     let qpath = data_dir.join("queue.db");
@@ -2749,25 +2774,9 @@ fn cmd_status(data_dir: &Path) -> Result<(), String> {
         None
     };
     if let Some(qp) = out_q {
-        if let Ok(q) = OutgoingQueue::open(&qp) {
-            if let Ok(items) = q.list_all() {
-                let delivered = items
-                    .iter()
-                    .filter(|i| i.state == DeliveryState::Delivered)
-                    .count();
-                println!(
-                    "{C_DIM}outbox{C_RESET}    {} items ({} delivered)",
-                    items.len(),
-                    delivered
-                );
-            }
-        }
-    } else {
-        println!("{C_DIM}outbox{C_RESET}    (none)");
+        println!("outbox file: {}", qp.display());
     }
-    println!(
-        "{C_DIM}note{C_RESET}      ash configures only — raven-node bridge keeps running after ash exits"
-    );
+
     Ok(())
 }
 
@@ -3257,6 +3266,35 @@ fn stdin_is_tty() -> bool {
     use std::io::IsTerminal;
     io::stdin().is_terminal()
 }
+
+// ── Terminal design system v1 (monochrome) ─────────────────────────────
+// Symbols: ◆ section · ▸ selected · ✓ ok · ✗ fail · ● ready · → action
+// Type:    bold = emphasis/values, dim = hints/secondary
+// Layout:  2-space base indent inside sections, blank line between groups.
+
+const W_KEY: usize = 14; // column width for key/value rows
+
+/// Aligned key-value row: dim padded label, plain value.
+fn kv(label: &str, value: &str) {
+    let c = c();
+    println!(
+        "  {d}{l:<w$}{r}{v}",
+        d = c.dim,
+        l = label,
+        w = W_KEY,
+        r = c.reset,
+        v = value
+    );
+}
+
+fn ok(v: bool) -> &'static str {
+    if v {
+        "on"
+    } else {
+        "off"
+    }
+}
+
 
 fn stty(args: &[&str]) {
     let _ = Command::new("stty").args(args).status();

@@ -16,6 +16,16 @@ from .memory import TeamMemory
 from .tools import ToolBox
 
 
+def _team_goal(memory) -> str:
+    """Unified mission every task must serve (from .team/GOAL.md)."""
+    try:
+        raw = memory.resolve_in_repo('.team/GOAL.md').read_text(encoding='utf-8')
+        return '\n'.join(l for l in raw.splitlines()
+                         if not l.startswith('# ')).strip()
+    except Exception:  # noqa: BLE001
+        return ''
+
+
 class Brain(Protocol):
     async def run(self, task_text: str) -> str: ...
 
@@ -73,12 +83,19 @@ class OpenAIBrain:
         return r.json()['choices'][0]['message']
 
     async def run(self, task_text: str) -> str:
+        goal = _team_goal(self.toolbox.memory) if self.toolbox else ''
+        system_content = SYSTEM_PROMPT.format(
+            name=self.config.name, role=self.config.role
+        )
+        if goal:
+            system_content += (
+                f'\n\nTEAM GOAL — every action you take must serve this '
+                f'shared mission:\n{goal}'
+            )
         messages: list[dict] = [
             {
                 'role': 'system',
-                'content': SYSTEM_PROMPT.format(
-                    name=self.config.name, role=self.config.role
-                ),
+                'content': system_content,
             },
             {'role': 'user', 'content': task_text},
         ]
@@ -132,6 +149,9 @@ class EchoBrain:
         self.memory = memory
 
     async def run(self, task_text: str) -> str:
+        goal = _team_goal(self.memory)
+        if goal:
+            task_text = f'[Team mission: {goal}]\n\n{task_text}'
         slug = re.sub(r'[^a-z0-9]+', '-', task_text.lower()).strip('-')[:40] or 'task'
         relpath = f'.team/outputs/{self.config.name}/{slug}-{uuid.uuid4().hex[:6]}.md'
         content = (
