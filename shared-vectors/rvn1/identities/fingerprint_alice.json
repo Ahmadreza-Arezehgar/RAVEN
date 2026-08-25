@@ -1,0 +1,13 @@
+{
+  "description": "canonical device fp (app scheme) + deprecated MeshV1 hex",
+  "deterministic": true,
+  "expected": {
+    "device_fingerprint_v1": "If4x-36FU-omFi",
+    "mesh_v1_hex_deprecated": "21FE-31DF-A154"
+  },
+  "inputs": {
+    "ed_public_hex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+  },
+  "name": "Fingerprints \u2014 alice (clean base64 branch)",
+  "protocol_version": "rvn1"
+}

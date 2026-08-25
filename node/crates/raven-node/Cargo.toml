@@ -1,0 +1,32 @@
+[package]
+name = "raven-node"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "RAVEN local node — queue, TCP peer, envelope DM"
+
+[[bin]]
+name = "raven-node"
+path = "src/main.rs"
+
+[features]
+default = []
+# Experimental macOS CoreBluetooth seam (no live radio in CI). See src/corebluetooth_exp.rs.
+corebluetooth = []
+# Explicit lab opt-in for the publicly-derivable pre-ATSAM demo cipher.
+unsafe-demo-crypto = ["raven-core/unsafe-demo-crypto"]
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+
+[dependencies]
+raven-core = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+hex = { workspace = true }
+base64 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rand = { workspace = true }
+libc = "0.2"

@@ -1,0 +1,71 @@
+{
+  "description": "1001 rejects with zero allocation and zero state advance",
+  "deterministic": true,
+  "expected": {
+    "cases": [
+      {
+        "final_ck_hex": "eaac9f63c2e749e9ea2ce8b86a807f3bbe0940095aad12b3b7800c093a4137bb",
+        "final_n": 0,
+        "first_mk_hex": null,
+        "fp_after_hex": "081f80047c05cece2cb98db009e9bd01c20b1fce7dbac0172df239d7c8fbde4d",
+        "fp_before_hex": "081f80047c05cece2cb98db009e9bd01c20b1fce7dbac0172df239d7c8fbde4d",
+        "last_mk_hex": null,
+        "result": "ok",
+        "skip_count": 0,
+        "skipped_stored": 0
+      },
+      {
+        "final_ck_hex": "17bb5aec3f5d2403c4ee290e1d1668632c222b69ccdbb58789f45983063a98da",
+        "final_n": 1,
+        "first_mk_hex": "6f56e01da188878b6cb80c63ff2cf549fdf97c567e2b01acc79698c60a560800",
+        "fp_after_hex": "10a5e9777a832d9039f67c5ebbbea611a83b8a811ad22c1ee986873ba1df5374",
+        "fp_before_hex": "081f80047c05cece2cb98db009e9bd01c20b1fce7dbac0172df239d7c8fbde4d",
+        "last_mk_hex": "6f56e01da188878b6cb80c63ff2cf549fdf97c567e2b01acc79698c60a560800",
+        "result": "ok",
+        "skip_count": 1,
+        "skipped_stored": 1
+      },
+      {
+        "final_ck_hex": "2d7e673d9687e1eff1a0b06c3eb15ef8f3522397bd1ffc5a7ff2db942c4292ab",
+        "final_n": 999,
+        "first_mk_hex": "6f56e01da188878b6cb80c63ff2cf549fdf97c567e2b01acc79698c60a560800",
+        "fp_after_hex": "7eb302c629e3e102dbdbe6b998cb67608e12e1b01c70e5031455b6914f72e239",
+        "fp_before_hex": "081f80047c05cece2cb98db009e9bd01c20b1fce7dbac0172df239d7c8fbde4d",
+        "last_mk_hex": "a31d42c2433965da562dfa19a2a4376853e974b66c605287a3e31141f9ded76e",
+        "result": "ok",
+        "skip_count": 999,
+        "skipped_stored": 999
+      },
+      {
+        "final_ck_hex": "6b8031955b91ad1c8e04ea09a89da872a050fa5a26770e325949bc37ef2db089",
+        "final_n": 1000,
+        "first_mk_hex": "6f56e01da188878b6cb80c63ff2cf549fdf97c567e2b01acc79698c60a560800",
+        "fp_after_hex": "59a87d9a287e99b95bb170ab91997adf69e6efd8f186aba2e3378599cb8a23f2",
+        "fp_before_hex": "081f80047c05cece2cb98db009e9bd01c20b1fce7dbac0172df239d7c8fbde4d",
+        "last_mk_hex": "f39e458fc91a69e3e62eee605569be07ae7100598fd7d11039594a1c9426442b",
+        "result": "ok",
+        "skip_count": 1000,
+        "skipped_stored": 1000
+      },
+      {
+        "allocation": false,
+        "fp_after_hex": "081f80047c05cece2cb98db009e9bd01c20b1fce7dbac0172df239d7c8fbde4d",
+        "fp_before_hex": "081f80047c05cece2cb98db009e9bd01c20b1fce7dbac0172df239d7c8fbde4d",
+        "reason": "MAX_SKIP exceeded",
+        "result": "reject",
+        "skip_count": 1001,
+        "state_advance": false,
+        "state_unchanged": true
+      }
+    ],
+    "max_skip": 1000
+  },
+  "inputs": {
+    "ck_hex": "eaac9f63c2e749e9ea2ce8b86a807f3bbe0940095aad12b3b7800c093a4137bb",
+    "dh_pub_hex": "d19b2d0e43c3f73ad3530249463a0491064a3a633d571f32d1784374f134dc65"
+  },
+  "name": "MAX_SKIP boundary 0/1/999/1000/1001",
+  "production_enabled": false,
+  "profile": "ATSAM/hybrid-ratchet/v2",
+  "protocol_version": "rvn1"
+}

@@ -1,0 +1,17 @@
+{
+  "name": "Pairing code — Alice ↔ Bob, fixed nonce",
+  "description": "6-digit code from §F. Pubkeys sorted as base64 strings, concatenated UTF-8, append nonce, SHA-256, first 4 BE bytes mod 1_000_000.",
+  "protocol_version": "v1",
+  "spec_reference": "MESH_PROTOCOL.md §F",
+  "created_at": "2026-05-15T00:00:00Z",
+  "deterministic": true,
+  "inputs": {
+    "pub1_b64": "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=",
+    "pub2_b64": "PUAXw+hDiVqStwqnTRt+vJyYLM8uxJaMwM1V8Sr0Zgw=",
+    "nonce_hex": "01020304050607080910111213141516"
+  },
+  "expected": {
+    "code_int": 231701,
+    "code_str": "231701"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "description": "seq 41 vs cached 42",
+  "deterministic": true,
+  "expected": {
+    "resolver_action": "reject_stale"
+  },
+  "inputs": {
+    "cached_sequence": 42,
+    "incoming_sequence": 41,
+    "incoming_signing_bytes_hex": "72766e312f616c696173000561686d6164002c72766e317179736c7576776c353932327963747a643075396770723036676e336b376c6466766563756c653000000000000000290000018bf3f1ec00"
+  },
+  "name": "Older-sequence alias record must not replace a newer one",
+  "protocol_version": "rvn1"
+}

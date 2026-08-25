@@ -1,0 +1,15 @@
+{
+  "id": "mailbox_tag_001",
+  "description": "Opaque rotating mailbox tag + store_tag (not username)",
+  "input": {
+    "k_route_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "epoch": 1700000000,
+    "slot": 0,
+    "mailbox_label_utf8": "rvn1/mailbox",
+    "store_domain_utf8": "raven/relay-tag/v1"
+  },
+  "expected": {
+    "mailbox_tag_hex": "cb693b77e3f986fe8394872d73f35428",
+    "store_tag_hex": "648ba67cde1b71c8257b0c7e3c8315b3"
+  }
+}

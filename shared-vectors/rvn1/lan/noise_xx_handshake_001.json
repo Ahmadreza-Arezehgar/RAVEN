@@ -1,0 +1,30 @@
+{
+  "description": "Fixed ephemerals via snow fixed_ephemeral_key_for_testing_only; empty prologue",
+  "deterministic": true,
+  "expected": {
+    "first_application_ciphertext_hex": "22bbe90c5cda6a3e45f77516dcb8279a0f44f2038ae2cfcc3ed4da7094d38e18f5d91b18f2c6dd",
+    "first_application_plaintext_hex": "72766e312f6c616e2d766563746f722f6170702d303031",
+    "handshake_hash_hex": "dea48c41dbc060e617c85daf06652b62b7c38982cf21f2ba7a94fd696a7e0d2c",
+    "initiator_bind_transport_hex": "2fc0ec02b93da48f75fafd35aa96d520ba5b93c51eeff795fc4c31806c06f78bb89d1cc946b891e9db4fe750748916311b0ba8bf23753c784ba24c22d74208927b266f0f7b9fdfe391421765881df0e26c2494a1420e7fa660041de42de1c686ac021fac47fd5a3333a0e44114c2f597",
+    "initiator_remote_static_hex": "394e42e53849c365c8d4badc57283efe1ad84214a47be75aa7b71c068543521f",
+    "initiator_static_pub_hex": "949ca75c2a4fc7eb72eb91ae1aa4c8a39b172f7739f040afd0c591ea9fef5c5d",
+    "m1_hex": "7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13",
+    "m2_hex": "0faa684ed28867b97f4a6a2dee5df8ce974e76b7018e3f22a1c4cf2678570f2066d3dfed30d35fb45150e04674c8e66da9f89896afc7fb1ae4164c0e2b2b40a962aa2093f57f10fe36d4fef6a2e15b5121b7e83d117da1db7dd774efa52756ba",
+    "m3_hex": "938775b23a5412a92460ecdd26e2e2374acf2f9e9d7977e4b5587694e4f3baef9db8649bc86e4c41126e1fc30d08503076172a1b04080d7a08b3f7a7c1045a73",
+    "responder_bind_transport_hex": "d3b498f77efd3baa5971b6ee7c1dfbfa6e598f726fb3f6f08a1be1b0ed0ad0bd1a69fc12d3613677881321587f31a2d060f5ef90f905e44d94db0e5b3f0c385e7a69058fb79112ce60b9f6d6126b525b3d0d818dfd245b03e0dfaacd7c214432cb81228df6699d8ec0ae949bfad0a683",
+    "responder_remote_static_hex": "949ca75c2a4fc7eb72eb91ae1aa4c8a39b172f7739f040afd0c591ea9fef5c5d",
+    "responder_static_pub_hex": "394e42e53849c365c8d4badc57283efe1ad84214a47be75aa7b71c068543521f"
+  },
+  "inputs": {
+    "first_application_plaintext_utf8": "rvn1/lan-vector/app-001",
+    "initiator_device_seed_hex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+    "initiator_ephemeral_priv_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+    "noise_pattern": "Noise_XX_25519_ChaChaPoly_BLAKE2s",
+    "prologue": "",
+    "responder_device_seed_hex": "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+    "responder_ephemeral_priv_hex": "2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "kat_production": "snow-0.9.6 fixed_ephemeral_key_for_testing_only per side",
+  "name": "LAN Noise XX handshake KAT",
+  "protocol_version": "rvn1"
+}

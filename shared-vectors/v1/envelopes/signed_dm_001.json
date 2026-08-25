@@ -1,0 +1,45 @@
+{
+  "name": "SignedMeshPayload — Alice → Bob, plain text",
+  "description": "Round-trip the full §C.1 payload. Includes the signing bytes + signature so any port can validate.",
+  "protocol_version": "v1",
+  "spec_reference": "MESH_PROTOCOL.md §C.1",
+  "created_at": "2026-05-15T00:00:00Z",
+  "deterministic": true,
+  "inputs": {
+    "signed_dm": {
+      "e": {
+        "clientMessageId": "dm-001",
+        "roomId": "room:alice-bob",
+        "senderId": "alice",
+        "senderName": "Alice",
+        "recipientId": "bob",
+        "type": 0,
+        "nonceB64": "ABEiM0RVZneImaq7zN3u/w==",
+        "senderPublicKeyB64": "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=",
+        "timestampMs": 1700000000000,
+        "originDeviceId": "alice-device-1",
+        "text": "hello from alice",
+        "mediaUrl": null,
+        "thumbnailUrl": null,
+        "fileName": null,
+        "mimeType": null,
+        "fileSize": null,
+        "audioDurationSec": null,
+        "replyToMessageId": null,
+        "replyToTextPreview": null,
+        "replyToSenderName": null,
+        "geoFence": null
+      },
+      "s": "vGFnmNY0vt1z3ZKsWXy1C2kUnN/5tiRghSJw62owkBZWvAbXpIszBcteYBnKVKsyA8grD9hlc4G/TZ8qoqnyCw==",
+      "spk": "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=",
+      "os": null,
+      "ospk": null
+    },
+    "signer": "alice"
+  },
+  "expected": {
+    "signing_bytes_hex": "646d2d3030317c726f6f6d3a616c6963652d626f627c616c6963657c416c6963657c626f627c307c414245694d3052565a6e65496d6171377a4e33752f773d3d7c3131715941594b7843726656532f3754795751484f6737686376506170694d6c727749616150634855526f3d7c313730303030303030303030307c616c6963652d6465766963652d317c68656c6c6f2066726f6d20616c6963657c7c7c7c7c7c7c7c7c",
+    "signature_hex": "bc616798d634bedd73dd92ac597cb50b69149cdff9b62460852270eb6a30901656bc06d7a48b3305cb5e6019ca54ab3203c82b0fd8657381bf4d9f2aa2a9f20b",
+    "signature_b64": "vGFnmNY0vt1z3ZKsWXy1C2kUnN/5tiRghSJw62owkBZWvAbXpIszBcteYBnKVKsyA8grD9hlc4G/TZ8qoqnyCw=="
+  }
+}

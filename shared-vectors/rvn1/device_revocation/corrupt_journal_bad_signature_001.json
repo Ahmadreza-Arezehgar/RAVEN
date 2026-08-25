@@ -1,0 +1,38 @@
+{
+  "description": "Parseable wire with invalid identity signature",
+  "deterministic": true,
+  "expected": {
+    "must_fail_closed": true,
+    "must_not_clear_without_corrupt_marker": true,
+    "reason": "bad_signature",
+    "reason_code": 3,
+    "reverify_result": "corrupt",
+    "store": {
+      "claims_wire_hex": [],
+      "corrupt": [
+        {
+          "reason_code": 3,
+          "scope": "rvn1qysluvwl5922yctzd0u9gpr06gn3k7ldfvecule0"
+        }
+      ],
+      "exhausted": [],
+      "forks": [],
+      "generation": 1,
+      "journal": null,
+      "revocation_id_collisions": [],
+      "revocation_store_hash_hex": "2044d93582f5466e57e483e92292439bdf8d84ec7498fe7421b22818f652d00c",
+      "revoked_targets": []
+    }
+  },
+  "inputs": {
+    "identity_address": "rvn1qysluvwl5922yctzd0u9gpr06gn3k7ldfvecule0",
+    "identity_ed_pub_hex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+    "journal_before": {
+      "claim_digest_hex": "62b7c307e151fb92b07ba98c92b31fc832ab41dfd79eff36ea263a1532372857",
+      "exact_record_bytes_hex": "5256445231000000010172766e317179736c7576776c353932327963747a643075396770723036676e336b376c6466766563756c6530000c626f622d6465766963652d313d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660cde9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4fb6c42a759334231f85bcca4134233c0491ecd7e08c01de7728ed6ee4df15eddd000d616c6963652d7072696d61727900000000000000010102030405060708090a0b0c0d0e0f10010000018bcfe56800d25bac212192c5807ceded9142bee895a08359ebccfbfd65f5c5ee98d8ca7a111377eb2827e3ab7990bcc263fbb0fe5d730f8d1e8f903194022a45d4167615f7",
+      "kind": "PENDING_REVOKE"
+    }
+  },
+  "name": "Corrupt journal bad signature",
+  "protocol_version": "rvn1"
+}

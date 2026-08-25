@@ -1,0 +1,3 @@
+node/target/
+proof_artifacts/
+*.log

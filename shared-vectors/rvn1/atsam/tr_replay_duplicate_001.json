@@ -1,0 +1,29 @@
+{
+  "description": "Accept key consumed once; exact-byte duplicate returns retained AckV2",
+  "deterministic": true,
+  "expected": {
+    "duplicate_ack_hex": "0102030405060708090a0b0c0d0e0f10da65359d0d91d07285ff824a137d1df182251f11e45382f644c45e0c577e3b1901a0a1a2a3a4a5a6a7a8a9aaab0000018bcfe56fd0d2e5f069551af196424b740763878394aa81eb98bd5faaa82a19859f70d799d8dfc99c74f376127a4c4a1c5130f97ea435939e04ff086aba7d23c545dad2a8c36f1bef9e0128f59bd89a9efc37b2f01bdb45ea9b8581236348ff44e0dc0d9bc07923f0db20fb4b32bec9e38d54fe02a5682d605ffcabab03f0becd4849607401",
+    "duplicate_ack_matches_retained": true,
+    "first_result": "accepted",
+    "fp_after_accept_hex": "2e7ee26b65ce7e4144801633dd8573c672ee732ce3b4b37642adffdb4336832d",
+    "fp_after_replay_hex": "2e7ee26b65ce7e4144801633dd8573c672ee732ce3b4b37642adffdb4336832d",
+    "mutation_count": 1,
+    "replay_fp_unchanged": true,
+    "replay_result": "replay_no_mutation"
+  },
+  "inputs": {
+    "accept_key": {
+      "n": 0,
+      "scka_ctr": 0,
+      "scka_epoch": 0
+    },
+    "dh_pub_hex": "d19b2d0e43c3f73ad3530249463a0491064a3a633d571f32d1784374f134dc65",
+    "object_digest_hex": "da65359d0d91d07285ff824a137d1df182251f11e45382f644c45e0c577e3b19",
+    "retained_ack_hex": "0102030405060708090a0b0c0d0e0f10da65359d0d91d07285ff824a137d1df182251f11e45382f644c45e0c577e3b1901a0a1a2a3a4a5a6a7a8a9aaab0000018bcfe56fd0d2e5f069551af196424b740763878394aa81eb98bd5faaa82a19859f70d799d8dfc99c74f376127a4c4a1c5130f97ea435939e04ff086aba7d23c545dad2a8c36f1bef9e0128f59bd89a9efc37b2f01bdb45ea9b8581236348ff44e0dc0d9bc07923f0db20fb4b32bec9e38d54fe02a5682d605ffcabab03f0becd4849607401",
+    "session_id_hex": "dfc99c74f376127a4c4a1c5130f97ea435939e04ff086aba7d23c545dad2a8c3"
+  },
+  "name": "One-shot accept; replay no mutation; duplicate \u2192 exact ACK",
+  "production_enabled": false,
+  "profile": "ATSAM/hybrid-ratchet/v2",
+  "protocol_version": "rvn1"
+}

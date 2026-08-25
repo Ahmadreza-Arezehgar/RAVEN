@@ -1,0 +1,59 @@
+{
+  "description": "OOO across DH boundary; KDF_RK; all-zero X25519 rejected",
+  "deterministic": true,
+  "expected": {
+    "alice_mks_hex": [
+      "10b1e7d71446fb7dbf81633d06ac333646f3b85d11884768aad561deb7afdd14",
+      "a8a7a3e828d30541ddb78e026953c34f5eb4fcf63f62cb8e0457922a0c539caf"
+    ],
+    "alice_pub0_hex": "8e14d7f5ab578b5e4abb86626854d9c23efa9a0e58d98858ad8b9bd8cfdae229",
+    "alice_pub1_hex": "85135218dfc856c4376d2a2a699ff10555fa5bbc64ad28ae33a9210195a8b241",
+    "alice_recovered_bob_mk_hex": "39a12e89aa6e6847e7cf2dd3c61dfa252e7a7d6e346923b07a56878c38702a22",
+    "bob_header": {
+      "dh_pub_hex": "41346377c1b562f4b2d3f4140b6611ada8f4897ee01f28ffb2984693bc04cf0d",
+      "n": 0,
+      "pn": 0
+    },
+    "bob_pub0_hex": "7c563283d8bb188079b568d8e87fdac0342cba381ba41be188be584645016418",
+    "bob_pub1_hex": "41346377c1b562f4b2d3f4140b6611ada8f4897ee01f28ffb2984693bc04cf0d",
+    "bob_recovered_mks_hex": [
+      "10b1e7d71446fb7dbf81633d06ac333646f3b85d11884768aad561deb7afdd14",
+      "a8a7a3e828d30541ddb78e026953c34f5eb4fcf63f62cb8e0457922a0c539caf"
+    ],
+    "bob_send_mk_hex": "39a12e89aa6e6847e7cf2dd3c61dfa252e7a7d6e346923b07a56878c38702a22",
+    "cross_boundary_ok": true,
+    "final_alice_fp_hex": "7b5a77348139801dd8325f51899cf1066c15ade07d1d2d1426e4ca23f4d1ca5f",
+    "final_bob_fp_hex": "953d52ba8fb661e4f0ca00f60b84617bb19491d53c6ae5ae7b78309d023e2c02",
+    "headers": [
+      {
+        "dh_pub_hex": "8e14d7f5ab578b5e4abb86626854d9c23efa9a0e58d98858ad8b9bd8cfdae229",
+        "n": 0,
+        "pn": 0
+      },
+      {
+        "dh_pub_hex": "8e14d7f5ab578b5e4abb86626854d9c23efa9a0e58d98858ad8b9bd8cfdae229",
+        "n": 1,
+        "pn": 0
+      }
+    ],
+    "negatives": {
+      "all_zero_priv": "all-zero X25519 rejected",
+      "all_zero_pub": "all-zero X25519 rejected"
+    },
+    "recv_order": [
+      1,
+      0
+    ]
+  },
+  "inputs": {
+    "alice_priv0_hex": "aa7fe00c664cd03956fb6aae1b9773579f91a5a697cba1fee60466383bb43924",
+    "alice_priv1_hex": "a24e9e984578336c72a094790c8349d55dfade4c3e8efe09fa6d4e4d70d93ff7",
+    "bob_priv0_hex": "2abebec35adde27e7376e19bc534adbb714015c7182bafbfd5c870fc2fcd552b",
+    "bob_priv1_hex": "248b69ced5521c459a143bc7e1d8dcbc7b9d01961c53660c477ca25be7ed77db",
+    "rk0_hex": "8a7e10a8eb9608595e17f4c2a618107e1d9d9a0de9552a26adcc646d2d00ac74"
+  },
+  "name": "EC Double Ratchet DH transition + PN/N + cross-boundary skip",
+  "production_enabled": false,
+  "profile": "ATSAM/hybrid-ratchet/v2",
+  "protocol_version": "rvn1"
+}

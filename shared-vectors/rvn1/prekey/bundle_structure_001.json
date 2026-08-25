@@ -1,0 +1,16 @@
+{
+  "id": "bundle_structure_001",
+  "description": "Prekey bundle field sizes and domain (EK is test pattern, not a live ML-KEM key)",
+  "input": {
+    "domain_utf8": "rvn1/prekey",
+    "version": 1,
+    "device_id": "dev1",
+    "mlkem768_ek_len": 1184,
+    "signed_prekey_id": 1,
+    "one_time_prekey_id": 0
+  },
+  "expected": {
+    "mlkem768_ek_len": 1184,
+    "signature_len": 64
+  }
+}

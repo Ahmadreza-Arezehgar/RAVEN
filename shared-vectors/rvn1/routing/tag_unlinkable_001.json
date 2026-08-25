@@ -1,0 +1,14 @@
+{
+  "description": "unlinkability across counters",
+  "deterministic": true,
+  "expected": {
+    "tag_hex": "67c458fa19224559ee16946fba7c9155"
+  },
+  "inputs": {
+    "counter": 1,
+    "epoch": 1700000000,
+    "k_route_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+  },
+  "name": "RavenRoutingTagV1 \u2014 counter 1 differs",
+  "protocol_version": "rvn1"
+}

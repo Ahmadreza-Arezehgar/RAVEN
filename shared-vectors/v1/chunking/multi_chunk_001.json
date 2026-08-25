@@ -1,0 +1,22 @@
+{
+  "name": "Multi-chunk encoded packets — payload spans 3 chunks",
+  "description": "10-byte payload, 4-byte chunk payload size, messageHash=0xDEADBEEF (little-endian).",
+  "protocol_version": "v1",
+  "spec_reference": "MESH_PROTOCOL.md §B + §I.1 — opaque messageHash",
+  "created_at": "2026-05-15T00:00:00Z",
+  "deterministic": true,
+  "inputs": {
+    "payload_hex": "4142434445464748494a",
+    "payload_utf8": "ABCDEFGHIJ",
+    "chunk_payload_size": 4,
+    "message_hash_hex": "deadbeef"
+  },
+  "expected": {
+    "total_chunks": 3,
+    "chunks_hex": [
+      "01efbeadde030041424344",
+      "01efbeadde030145464748",
+      "01efbeadde0302494a"
+    ]
+  }
+}

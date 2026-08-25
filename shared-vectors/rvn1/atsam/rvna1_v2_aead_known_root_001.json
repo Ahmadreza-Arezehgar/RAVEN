@@ -1,0 +1,16 @@
+{
+  "aad_v1_hex": "f3b5f625fc1a9abad05e6fc10c2a36c9d8218275894b827088daefe7bb7684d6",
+  "aad_v2_hex": "e2e4769596faf7c8b947af2852fc8b4a6e2fe57eb1930e50762f41fd37e14dc7",
+  "description": "RVNA1 v2 ChaCha20-Poly1305 + AAD given known K_root (no ML-KEM pairing)",
+  "gap": "Does not cover ML-KEM hybrid pairing or skipped-key cache; only AEAD+AAD+chain index 0.",
+  "id": "rvn1_atsam_rvna1_v2_aead_known_root_001",
+  "index": 0,
+  "k_msg_hex": "d74716298bd6d3a7211ace359f053f6417f9ad6d6b485257a0846d14da9cd5a0",
+  "msg_id": "msg-001",
+  "nonce_hex": "abababababababababababab",
+  "plaintext_hex": "706f727461626c652d617473616d2d7632",
+  "recipient": "bob",
+  "root_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+  "sender": "alice",
+  "wire_hex": "52564e4131000000020100000000ababababababababababababa1aeb599e00ccd3fc4eee2082617b156772395f5891e73791f0ff2e7eade8b151a"
+}

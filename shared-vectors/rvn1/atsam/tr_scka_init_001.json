@@ -1,0 +1,25 @@
+{
+  "description": "A2B vs B2A CK assignment; shared SK_scka",
+  "deterministic": true,
+  "expected": {
+    "alice": {
+      "ck_recv_hex": "5ab0614387fedaf734a50f5eed7f0c8252611da286365d819f4055f531f07454",
+      "ck_send_hex": "6e228e07dc505f03afab3272986483edce399a9d2103e9d6f1f414e976d0747c",
+      "rk_hex": "f1ba3bc96714b1bd7074068d7ab39ba0e9452c5e60501732ca93fd50cdfcfb45"
+    },
+    "alice_send_equals_bob_recv": true,
+    "bob": {
+      "ck_recv_hex": "6e228e07dc505f03afab3272986483edce399a9d2103e9d6f1f414e976d0747c",
+      "ck_send_hex": "5ab0614387fedaf734a50f5eed7f0c8252611da286365d819f4055f531f07454",
+      "rk_hex": "f1ba3bc96714b1bd7074068d7ab39ba0e9452c5e60501732ca93fd50cdfcfb45"
+    },
+    "send_chains_differ": true
+  },
+  "inputs": {
+    "sk_scka_hex": "e964d0298c9859983182ddd928bb9021de281b590e720006e50d516c12974393"
+  },
+  "name": "Role-specific RatchetInitAliceSCKA / RatchetInitBobSCKA",
+  "production_enabled": false,
+  "profile": "ATSAM/hybrid-ratchet/v2",
+  "protocol_version": "rvn1"
+}

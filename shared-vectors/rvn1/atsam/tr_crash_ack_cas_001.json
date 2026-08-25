@@ -1,0 +1,44 @@
+{
+  "description": "Exact ACK materialize order; no Materialized without retained bytes",
+  "deterministic": true,
+  "name": "PENDING_ACK_SEND before CAS Materialized",
+  "negatives": [
+    "CAS_Materialized_without_PENDING_ACK_SEND",
+    "rebuild_ack_bytes_on_retry",
+    "ack_of_ack"
+  ],
+  "production_enabled": false,
+  "profile": "ATSAM/hybrid-ratchet/v2",
+  "protocol_version": "rvn1",
+  "steps": [
+    {
+      "action": "clone_candidate_send_state",
+      "id": 1
+    },
+    {
+      "action": "seal_AckV2",
+      "id": 2,
+      "retain": "exact_bytes"
+    },
+    {
+      "action": "write_PENDING_ACK_SEND",
+      "binds": "acked_object_digest",
+      "id": 3
+    },
+    {
+      "action": "CAS_Materialized",
+      "forbidden_without_pending": true,
+      "id": 4,
+      "requires": "PENDING_ACK_SEND"
+    },
+    {
+      "action": "network_send_OUTSIDE_lease",
+      "exact_retry": true,
+      "id": 5
+    },
+    {
+      "action": "clear_PENDING_ACK_SEND_on_success",
+      "id": 6
+    }
+  ]
+}

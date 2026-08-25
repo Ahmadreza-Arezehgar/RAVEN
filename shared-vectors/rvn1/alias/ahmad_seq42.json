@@ -1,0 +1,17 @@
+{
+  "description": "identity-signed alias record",
+  "deterministic": true,
+  "expected": {
+    "signature_hex": "4be8f167efb06199594beb9a26995e07920e4cd9e1e8bea45f65181b523728b698e3abb96be937d076c59a07a5769f53d0a076b5e24d32e36e8bfb104e54c70a",
+    "signing_bytes_hex": "72766e312f616c696173000561686d6164002c72766e317179736c7576776c353932327963747a643075396770723036676e336b376c6466766563756c6530000000000000002a0000018bf3f1ec00"
+  },
+  "inputs": {
+    "alias": "ahmad",
+    "expires_at_ms": 1700604800000,
+    "identity_address": "rvn1qysluvwl5922yctzd0u9gpr06gn3k7ldfvecule0",
+    "identity_ed_public_hex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+    "sequence": 42
+  },
+  "name": "RavenAliasRecordV1 \u2014 @ahmad seq 42",
+  "protocol_version": "rvn1"
+}

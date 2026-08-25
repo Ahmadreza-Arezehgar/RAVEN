@@ -1,0 +1,20 @@
+[package]
+name = "raven-fb-ffi"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Lab-only staticlib binder for Hybrid Ratchet V2 Full Braid (raven_fb_*). DEBUG builds only."
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "raven_fb_ffi"
+crate-type = ["staticlib", "rlib"]
+path = "src/lib.rs"
+
+[features]
+default = ["lab"]
+# Lab path pulls raven-core full-braid. Release builds must fail before linking.
+lab = ["dep:raven-core"]
+
+[dependencies]
+raven-core = { path = "../raven-core", default-features = false, features = ["full-braid-lab"], optional = true }

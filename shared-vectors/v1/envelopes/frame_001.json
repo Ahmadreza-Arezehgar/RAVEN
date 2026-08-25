@@ -1,0 +1,32 @@
+{
+  "name": "MeshMessageFrame — minimal payload",
+  "description": "Generic feature frame with payload p={x:1,y:hello}. Signature uses JSON-canonical form.",
+  "protocol_version": "v1",
+  "spec_reference": "MESH_PROTOCOL.md §C.6 + §D Rule 3",
+  "created_at": "2026-05-15T00:00:00Z",
+  "deterministic": true,
+  "inputs": {
+    "raw_frame": {
+      "mk": "raven.example.v1",
+      "p": {
+        "x": 1,
+        "y": "hello"
+      },
+      "sid": "alice-device-1",
+      "mid": "frame-001",
+      "hc": 0,
+      "hl": 10,
+      "sc": 5,
+      "ts": 1700000000000,
+      "rp": [],
+      "ttl": 86400,
+      "s": "ThOIArq8qKGJu79obG5kvu3zi1eoDLtbv+cr92JUZWR540682VpCgJyNc97wz4R4PkwSc4dHU6gzQ8k6/LptBg==",
+      "spk": "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo="
+    },
+    "signer": "alice"
+  },
+  "expected": {
+    "canonical_utf8": "{\"hc\":0,\"hl\":10,\"mid\":\"frame-001\",\"mk\":\"raven.example.v1\",\"p\":{\"x\":1,\"y\":\"hello\"},\"rp\":[],\"sc\":5,\"sid\":\"alice-device-1\",\"ts\":1700000000000,\"ttl\":86400}",
+    "signature_hex": "4e138802babca8a189bbbf686c6e64beedf38b57a80cbb5bbfe72bf76254656479e34ebcd95a42809c8d73def0cf84783e4c1273874753a83343c93afcba6d06"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "description": "single-char corruption",
+  "deterministic": true,
+  "expected": {
+    "decode_result": "reject"
+  },
+  "inputs": {
+    "address": "rvn1qysluvwl5922yctzd0u9gpr06gn3k7ldfveculeq"
+  },
+  "name": "Address with corrupted checksum must fail to decode",
+  "protocol_version": "rvn1"
+}

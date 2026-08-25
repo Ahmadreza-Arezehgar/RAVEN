@@ -1,0 +1,55 @@
+{
+  "description": "Under lease: re-verify EXHAUSTED journal bytes; convert PENDING_REVOKE_EXHAUSTED\u2192PENDING_REVOKE (same exact bytes); SQL atomic: insert claim + delete exhausted marker + bump gen; FINALIZED_REVOKE_ANCHOR; clear PENDING_REVOKE. Helper accepts only PENDING_REVOKE.",
+  "deterministic": true,
+  "expected_after": {
+    "claims_wire_hex": [
+      "5256445231000000010172766e317179736c7576776c353932327963747a643075396770723036676e336b376c6466766563756c6530000c626f622d6465766963652d313d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660cde9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4fb6c42a759334231f85bcca4134233c0491ecd7e08c01de7728ed6ee4df15eddd000d616c6963652d7072696d61727900000000000000010102030405060708090a0b0c0d0e0f10010000018bcfe56800d25bac212192c5807ceded9142bee895a08359ebccfbfd65f5c5ee98d8ca7a111377eb2827e3ab7990bcc263fbb0fe5d730f8d1e8f903194022a45d416761508"
+    ],
+    "exhausted": [],
+    "generation": 3,
+    "revocation_store_hash_hex": "1547b6d3bd03fafa8422a12767e6a59b303ea14b2033638f5bf362a040ed4458"
+  },
+  "name": "Exhausted expand replay crash order",
+  "protocol_version": "rvn1",
+  "steps": [
+    {
+      "generation": 2,
+      "id": 1,
+      "state": "PENDING_REVOKE_EXHAUSTED+IDENTITY_REVOKE_EXHAUSTED",
+      "store_hash_hex": "0a54b0873193af1d94b7caec0982b201f9e4a5e52dd0e92937f0098e59be1d2e"
+    },
+    {
+      "action": "reverify_exact_bytes",
+      "id": 2,
+      "source": "PENDING_REVOKE_EXHAUSTED"
+    },
+    {
+      "action": "journal_convert",
+      "from": "PENDING_REVOKE_EXHAUSTED",
+      "id": 3,
+      "same_exact_bytes": true,
+      "to": "PENDING_REVOKE"
+    },
+    {
+      "action": "sql_atomic",
+      "id": 4,
+      "ops": [
+        "insert_claim",
+        "append_revoked_targets",
+        "delete_IDENTITY_REVOKE_EXHAUSTED",
+        "upsert_cleanup",
+        "bump_generation"
+      ]
+    },
+    {
+      "action": "write_FINALIZED_REVOKE_ANCHOR",
+      "generation": 3,
+      "id": 5,
+      "store_hash_hex": "1547b6d3bd03fafa8422a12767e6a59b303ea14b2033638f5bf362a040ed4458"
+    },
+    {
+      "action": "clear_PENDING_REVOKE",
+      "id": 6
+    }
+  ]
+}

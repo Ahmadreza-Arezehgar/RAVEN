@@ -1,0 +1,65 @@
+{
+  "description": "Until explicit repair, every surface denies",
+  "deterministic": true,
+  "expected": {
+    "all_unauthorized": true,
+    "gates": [
+      {
+        "authorized": false,
+        "reason": "REVOCATION_STORE_CORRUPT",
+        "surface": "pair_init_v1"
+      },
+      {
+        "authorized": false,
+        "reason": "REVOCATION_STORE_CORRUPT",
+        "surface": "pair_init_v2"
+      },
+      {
+        "authorized": false,
+        "reason": "REVOCATION_STORE_CORRUPT",
+        "surface": "session"
+      },
+      {
+        "authorized": false,
+        "reason": "REVOCATION_STORE_CORRUPT",
+        "surface": "message"
+      },
+      {
+        "authorized": false,
+        "reason": "REVOCATION_STORE_CORRUPT",
+        "surface": "ack"
+      },
+      {
+        "authorized": false,
+        "reason": "REVOCATION_STORE_CORRUPT",
+        "surface": "noise_bind"
+      }
+    ]
+  },
+  "inputs": {
+    "corrupt": [
+      {
+        "reason_code": 3,
+        "scope": "rvn1qysluvwl5922yctzd0u9gpr06gn3k7ldfvecule0"
+      }
+    ],
+    "identity_address": "rvn1qysluvwl5922yctzd0u9gpr06gn3k7ldfvecule0",
+    "identity_ed_pub_hex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+    "peer": {
+      "device_cert_hash_hex": "b6c42a759334231f85bcca4134233c0491ecd7e08c01de7728ed6ee4df15eddd",
+      "device_ed_pub_hex": "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
+      "device_id_utf8": "bob-device-1",
+      "device_x_pub_hex": "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f"
+    },
+    "surfaces": [
+      "pair_init_v1",
+      "pair_init_v2",
+      "session",
+      "message",
+      "ack",
+      "noise_bind"
+    ]
+  },
+  "name": "Corrupt marker fail-closed authorization",
+  "protocol_version": "rvn1"
+}

@@ -1,0 +1,13 @@
+{
+  "description": "bech32m over version||SHA256(edPub)[:20]",
+  "deterministic": true,
+  "expected": {
+    "address": "rvn1qysluvwl5922yctzd0u9gpr06gn3k7ldfvecule0",
+    "display": "rvn1:QYSL-UVWL-5922-YCTZ-D0U9-GPR0-6GN3-K7LD-FVEC-ULE0"
+  },
+  "inputs": {
+    "ed_public_hex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+  },
+  "name": "RavenAddressV1 encode \u2014 alice",
+  "protocol_version": "rvn1"
+}

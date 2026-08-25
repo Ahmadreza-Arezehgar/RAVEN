@@ -1,0 +1,14 @@
+{
+  "description": "signed by bob, verified against alice-identity",
+  "deterministic": true,
+  "expected": {
+    "verify_result": "reject"
+  },
+  "inputs": {
+    "claimed_user_identity_ed_public_hex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+    "signature_hex": "09e2d65dee7eb28995e93de9c484547effd2a869d6b3a8f35708d325c9bc77803526bad08bfa0bb4fbda877d5186a324a020fc24c600bec03fcf334938966805",
+    "signing_bytes_hex": "72766e312f6465766365727400203d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c0020de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f000c626f622d6465766963652d310000018bcfe5680000000193279694000000000000000007"
+  },
+  "name": "Device certificate not signed by the claimed user identity must fail",
+  "protocol_version": "rvn1"
+}

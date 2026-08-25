@@ -1,0 +1,45 @@
+{
+  "description": "MKSKIPPED durable with SQL commit before head finalize",
+  "deterministic": true,
+  "name": "Skipped-key persistence before finalize",
+  "negatives": [
+    "FINALIZE_before_sql"
+  ],
+  "production_enabled": false,
+  "profile": "ATSAM/hybrid-ratchet/v2",
+  "protocol_version": "rvn1",
+  "steps": [
+    {
+      "action": "clone_candidate",
+      "id": 1
+    },
+    {
+      "action": "derive_keys_on_candidate",
+      "id": 2
+    },
+    {
+      "action": "aead_ok",
+      "id": 3
+    },
+    {
+      "action": "write_PENDING_inbound",
+      "id": 4
+    },
+    {
+      "action": "sql_commit_receipt_dedup",
+      "id": 5
+    },
+    {
+      "action": "persist_MKSKIPPED",
+      "id": 6
+    },
+    {
+      "action": "FINALIZE_head",
+      "id": 7
+    },
+    {
+      "action": "clear_PENDING",
+      "id": 8
+    }
+  ]
+}

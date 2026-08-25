@@ -1,0 +1,16 @@
+{
+  "description": "identity-signed capability set for downgrade protection",
+  "deterministic": true,
+  "expected": {
+    "signature_hex": "26d5430a34b3e45f977a9214dc9de8469f3e85b0838fbd163549a4e95bbffe68f9c879080b0166bb818aa3ff4d28cf260810598561a1b8a3cbd758657841bc0a",
+    "signing_bytes_hex": "72766e312f63617073002c72766e317179736c7576776c353932327963747a643075396770723036676e336b376c6466766563756c6530000000000000000f0000018bf3f1ec00"
+  },
+  "inputs": {
+    "capability_bits": 15,
+    "expires_at_ms": 1700604800000,
+    "identity_address": "rvn1qysluvwl5922yctzd0u9gpr06gn3k7ldfvecule0",
+    "identity_ed_public_hex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+  },
+  "name": "RavenProtocolCapabilitiesV1 \u2014 alice",
+  "protocol_version": "rvn1"
+}

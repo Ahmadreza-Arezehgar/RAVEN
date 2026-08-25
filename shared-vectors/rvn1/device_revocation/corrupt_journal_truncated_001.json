@@ -1,0 +1,38 @@
+{
+  "description": "Short journal bytes \u2192 REVOCATION_STORE_CORRUPT then clear journal",
+  "deterministic": true,
+  "expected": {
+    "must_fail_closed": true,
+    "must_not_clear_without_corrupt_marker": true,
+    "reason": "truncated",
+    "reason_code": 1,
+    "reverify_result": "corrupt",
+    "store": {
+      "claims_wire_hex": [],
+      "corrupt": [
+        {
+          "reason_code": 1,
+          "scope": "rvn1qysluvwl5922yctzd0u9gpr06gn3k7ldfvecule0"
+        }
+      ],
+      "exhausted": [],
+      "forks": [],
+      "generation": 1,
+      "journal": null,
+      "revocation_id_collisions": [],
+      "revocation_store_hash_hex": "8a74dfcf3b172f8bb1c98de2cba01b14c878fc7bb91e1a4933d260274cdf0885",
+      "revoked_targets": []
+    }
+  },
+  "inputs": {
+    "identity_address": "rvn1qysluvwl5922yctzd0u9gpr06gn3k7ldfvecule0",
+    "identity_ed_pub_hex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+    "journal_before": {
+      "claim_digest_hex": "a0441bb28b380bf3d834ebfba05a8d5d753559a5d325cfcf60a18a35c53064bd",
+      "exact_record_bytes_hex": "5256445231000000010172766e317179736c7576776c353932327963747a64307539677072303667",
+      "kind": "PENDING_REVOKE"
+    }
+  },
+  "name": "Corrupt journal truncated",
+  "protocol_version": "rvn1"
+}

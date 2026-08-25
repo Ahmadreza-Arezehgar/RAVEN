@@ -1,0 +1,20 @@
+# Exact Raven delta over the crates.io secret-service 2.0.2 package.
+# Paths are relative to this directory and sorted bytewise.
+
+[modified]
+Cargo.lock
+Cargo.toml
+src/collection.rs
+src/error.rs
+src/item.rs
+src/proxy/mod.rs
+src/session.rs
+src/util.rs
+
+[added]
+NOTICE
+PROVENANCE.md
+RAVEN_DELTA.md
+RAVEN_PATCH_DIGEST
+RAVEN_PATCH_MANIFEST
+tests/raven_r0_hard_stop.rs
