@@ -6,10 +6,12 @@ through plain git — no server, no database.
 
 from __future__ import annotations
 
+import fcntl
 import re
 import subprocess
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 from .deltas import DeltaStore
@@ -63,18 +65,49 @@ class TeamMemory:
 
     # --------------------------------------------------------------- git --
     def _git(self, *args: str) -> str:
+        """Run git with automatic retry on index.lock contention."""
+        for attempt in range(6):
+            try:
+                r = subprocess.run(
+                    ('git', '-C', str(self.repo_path), *args),
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
+            except subprocess.TimeoutExpired:
+                return ''
+            if r.returncode == 0:
+                return (r.stdout + r.stderr).strip()
+            err = (r.stderr or '') + (r.stdout or '')
+            if 'index.lock' in err:
+                time.sleep(0.15 * (attempt + 1))
+                continue
+            return ''
+        return ''
+
+    @contextmanager
+    def _git_lock(self):
+        """Serialize mutating git sections across threads/processes."""
+        self.ensure_layout()
+        f = open(self.team_dir / '.gitlock', 'w')
         try:
-            r = subprocess.run(
-                ('git', '-C', str(self.repo_path), *args),
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-        except subprocess.TimeoutExpired:
-            return ''
-        if r.returncode != 0:
-            return ''
-        return (r.stdout + r.stderr).strip()
+            fcntl.flock(f, fcntl.LOCK_EX)
+            yield
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+            f.close()
+
+    def commit_push(self, message: str) -> str:
+        """Locked commit + push with one rebase-retry (concurrent pushes)."""
+        with self._git_lock():
+            out = self.commit_all(message)
+        if not self._git('remote'):
+            return out
+        pushed = self._git('push')
+        if not pushed and 'Everything up-to-date' not in pushed:
+            self._git('pull', '--rebase', '--autostash')
+            pushed = self._git('push')
+        return out
 
     def commit_all(self, message: str) -> str:
         if not (self.repo_path / '.git').exists():

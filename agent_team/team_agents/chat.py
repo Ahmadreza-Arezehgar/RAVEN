@@ -40,8 +40,7 @@ class TeamChat:
         body = (text.strip() or '(not set — every agent works independently)')
         self.goal_md.write_text(f'{header}{body}\n', encoding='utf-8')
         if self.memory.auto_commit:
-            self.memory.commit_all('chore(goal): update team mission')
-            self.memory._git('push')   # share mission across machines now
+            self.memory.commit_push('chore(goal): update team mission')
 
     def get_goal(self) -> str:
         try:
@@ -58,8 +57,7 @@ class TeamChat:
         self.ensure()
         self.delta.write('chat', {'sender': sender, 'text': text.replace('\n', ' ')[:500]})
         if self.memory.auto_commit:
-            self.memory.commit_all(f'chat: {sender}')
-            self.memory._git('push')   # best-effort live sync
+            self.memory.commit_push(f'chat: {sender}')   # locked commit+push
 
     def tail(self, n: int = 30) -> str:
         self.ensure()

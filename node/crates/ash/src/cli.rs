@@ -702,6 +702,15 @@ fn print_public_identity(id: &Identity) {
     kv("address", &id.address());
     kv("fingerprint", &device_fingerprint_v1(&id.public_key_bytes()));
     kv("pub_hex", &hex::encode(id.public_key_bytes()));
+    println!(
+        "{0}invite{1}        {2}raven:{3}:{4}{5}",
+        c().dim,
+        c().reset,
+        c().bold,
+        id.address(),
+        hex::encode(id.public_key_bytes()),
+        c().reset
+    );
 }
 
 /// Raven Node welcome banner — monochrome.
@@ -2258,6 +2267,46 @@ fn cmd_contact_add_interactive(data_dir: &Path) {
     let tag;
 
     let trimmed = who.trim();
+
+    // One-text invite: paste `raven:addr:pubhex` to skip manual entry
+    if trimmed.starts_with("raven:") {
+        let parts: Vec<&str> = trimmed.strip_prefix("raven:").unwrap().split(':').collect();
+        if parts.len() >= 2 && parts[0].starts_with("rvn1") && parts[1].len() == 64 {
+            let addr = parts[0].to_string();
+            let pub_hex = parts[1].to_string();
+            println!("{0}\u{2713} invite parsed \u{2014} {1}{2}", C_GREEN, addr, C_RESET);
+            print!("petname (e.g. \"Alice\"): ");
+            let _ = io::stdout().flush();
+            let petname = read_line();
+            let petname = if petname.is_empty() { "friend".to_string() } else { petname };
+            let mut key = [0u8; 32];
+            if let Ok(decoded) = hex::decode(&pub_hex) {
+                if decoded.len() == 32 { key.copy_from_slice(&decoded); }
+            }
+            let fp = device_fingerprint_v1(&key);
+            println!("{dim}fingerprint{r} {fp}", dim=C_DIM, r=C_RESET, fp=fp);
+            print!("[V]erify & pin / [C]ontinue unpinned / [A]bort: ");
+            let _ = io::stdout().flush();
+            let choice = read_line();
+            let pinned = choice.trim().to_ascii_lowercase().starts_with('v');
+            let ct = Contact {
+                petname,
+                public_tag: String::new(),
+                alias: String::new(),
+                address: addr,
+                pub_hex: pub_hex,
+                pinned,
+                lan_dial: String::new(),
+            }.migrate();
+            save_contacts(data_dir, std::slice::from_ref(&ct)).ok();
+            if pinned {
+                println!("{green}\u{2713} contact saved & pinned{r}", green=C_GREEN, r=C_RESET);
+            } else {
+                println!("{dim}contact saved (unpinned){r}", dim=C_DIM, r=C_RESET);
+            }
+            return;
+        }
+    }
     // Full whoami paste: has both address + pub_hex lines.
     if let (Some(addr), Some(ph)) = (
         extract_address_field(trimmed),

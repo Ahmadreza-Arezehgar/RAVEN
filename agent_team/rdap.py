@@ -731,6 +731,26 @@ def cmd_status(args) -> None:
     ], title='RDAP status')
 
 
+def cmd_board(args) -> None:
+    """Show the shared task board (projection of task deltas)."""
+    import team_agents.ui as ui
+    from team_agents.memory import TeamMemory
+
+    st = state()
+    if not st.get('name'):
+        sys.exit('run `./rdap init` first')
+    m = TeamMemory(Path(st.get('repo') or BASE / 'team-repo'))
+    rows = m._parse_board_rows()
+    if not rows:
+        print(ui.dim('board is empty — agents add tasks with board_set_task'))
+        return
+    for r in rows:
+        icon = {'done': ui.green('●'), 'in_progress': ui.cyan('◐'),
+                'blocked': ui.red('○')}.get(r['status'], ui.dim('○'))
+        print(f"  {icon} {ui.bold(r['id']):<14} {r['title'][:44]:<46} "
+              f"{ui.dim(r['owner'])} {ui.dim(r['status'])}")
+
+
 def main() -> None:
     import argparse
 
@@ -814,6 +834,9 @@ def main() -> None:
 
     stt = sub.add_parser('status', help='one-glance dashboard')
     stt.set_defaults(fn=cmd_status)
+
+    bd = sub.add_parser('board', help='show the shared task board')
+    bd.set_defaults(fn=cmd_board)
 
     mb = sub.add_parser('mesh-build',
                         help='build the Raven swarm mailbox binary (Rust)')

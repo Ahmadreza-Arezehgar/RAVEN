@@ -59,9 +59,8 @@ class GitRelay:
         return p
 
     def _commit_push(self, msg: str) -> bool:
-        out = self.memory.commit_all(msg)
-        pushed = self.memory._git('push')
-        return ('nothing to commit' not in out) or bool(pushed)
+        out = self.memory.commit_push(msg)
+        return 'nothing to commit' not in out
 
     def pull(self) -> None:
         if self.memory._git('remote'):
