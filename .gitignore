@@ -199,3 +199,9 @@ artifacts/
 
 # RDAP runtime state — NEVER commit (contains private key seeds)
 agent_team/.team/
+
+# RDAP local wizard state / team repos (contain key seeds)
+agent_team/peers.json
+agent_team/rdap.json
+agent_team/team-repo/
+node/raven-data/
