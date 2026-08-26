@@ -12,10 +12,12 @@ No flags needed for the happy path. Advanced flags still exist in
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import socket
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -526,6 +528,22 @@ def _probe(url: str, seconds: float = 6.0):
 
 
 def cmd_ping(args) -> None:
+    st = state()
+    if getattr(args, 'name', ''):
+        if args.name.lower() == 'all':
+            targets = [m.get('url', '') for m in
+                       st.get('teammates', {}).values() if m.get('url')]
+            if not targets:
+                sys.exit('no teammates with a url')
+            for u in targets:
+                print(f'→ {u}')
+                cmd_ping(argparse.Namespace(url=u))
+            return
+        nm, mate = _resolve_mate(st, args.name)
+        url = mate.get('url', '')
+        if not url:
+            sys.exit(f'no url for "{nm}" — re-run `./rdap discover --trust all`')
+        args.url = url
     url = args.url
     print(f'→ probing {url} …')
     info = _probe(url)
@@ -751,8 +769,146 @@ def cmd_board(args) -> None:
               f"{ui.dim(r['owner'])} {ui.dim(r['status'])}")
 
 
+def _expand_dotargv(argv: list[str]) -> list[str]:
+    """Sugar: ./rdap worker.do hello  →  ./rdap do --name worker hello.
+
+    Also pm.ping / laptop.ask. Returns argv unchanged when no match.
+    """
+    import re
+
+    if len(argv) > 1:
+        m = re.fullmatch(r'([A-Za-z0-9_.-]+)\.(do|ask|ping)', argv[1])
+        if m:
+            return [argv[0], m.group(2), '--name', m.group(1)] + argv[2:]
+    return argv
+
+
+def _resolve_mate(st: dict, want: str) -> tuple[str, dict]:
+    """Fuzzy teammate lookup: case/separator-insensitive, prefix match."""
+    mates = st.get('teammates', {})
+    key = want.lower().replace('-', '').replace('_', '').replace(' ', '')
+    for nm, mate in mates.items():
+        k = nm.lower().replace('-', '').replace('_', '').replace(' ', '')
+        if k == key or k.startswith(key):
+            return nm, mate
+    sys.exit(f'unknown teammate "{want}" — known: {", ".join(mates) or "(none)"}')
+
+
+def cmd_do(args) -> None:
+    """Shortest path to delegate:  ./rdap do WORKER "text"  |  do all "text"."""
+    import asyncio
+
+    from team_agents.client import send_task
+    from team_agents.raven_identity import RavenIdentity
+
+    st = state()
+    if not st.get('name'):
+        sys.exit('run `./rdap init` first')
+    repo = Path(st.get('repo') or BASE / 'team-repo')
+    idn = RavenIdentity.load_or_create(repo / '.team' / 'keys')
+
+    if args.target.lower() == 'all':
+        targets = {nm: m for nm, m in st.get('teammates', {}).items() if m.get('url')}
+        if not targets:
+            sys.exit('no teammates with a url — run `./rdap discover --trust all`')
+    else:
+        nm, mate = _resolve_mate(st, args.target)
+        if not mate.get('url'):
+            sys.exit(f'no url for "{nm}" — re-run `./rdap discover --trust all`')
+        targets = {nm: mate}
+
+    async def _run():
+        import asyncio as _aio
+
+        results = await _aio.gather(
+            *(send_task(m['url'], args.text, identity=idn, timeout=90)
+              for m in targets.values()),
+            return_exceptions=True)
+        return list(zip(targets, results))
+
+    for nm, res in asyncio.run(_run()):
+        head = res.splitlines()[0] if isinstance(res, str) and res else repr(res)
+        print(f'{nm}: {head}')
+
+
+def cmd_ls(args) -> None:
+    """One line per teammate: name, url, alive, last activity."""
+    import httpx
+
+    st = state()
+    me = st.get('name', '?')
+    print(f'me: {me}  ({st.get("address", "?")[:18]}…)')
+    mates = st.get('teammates', {})
+    if not mates:
+        print('teammates: (none) — ./rdap discover --trust all')
+        return
+    for nm, m in sorted(mates.items()):
+        url = m.get('url', '')
+        last = '(no url)'
+        if url:
+            try:
+                evs = httpx.get(url.rstrip('/') + '/raven/activity',
+                                params={'limit': 1}, timeout=4).json().get('events', [])
+                last = f'{evs[0]["text"][:60]}' if evs else 'alive, quiet'
+            except Exception:  # noqa: BLE001
+                last = '✗ unreachable'
+        print(f'  {nm:22} {url or "-":32} {last}')
+
+
+def cmd_watch(args) -> None:
+    """Live dashboard of every agent — zero input, Ctrl+C to leave."""
+    import httpx
+
+    st = state()
+    if not st.get('name'):
+        sys.exit('run `./rdap init` first')
+    repo = Path(st.get('repo') or BASE / 'team-repo')
+
+    from team_agents.memory import TeamMemory
+
+    mem = TeamMemory(repo)
+
+    def fetch(url: str):
+        try:
+            r = httpx.get(url.rstrip('/') + '/raven/activity',
+                          params={'limit': args.lines}, timeout=4)
+            r.raise_for_status()
+            return r.json().get('events', [])
+        except Exception:  # noqa: BLE001
+            return None
+
+    def fmt(evs) -> list[str]:
+        out = []
+        for e in evs or []:
+            t = time.strftime('%H:%M:%S', time.localtime(e.get('at', 0)))
+            who = str(e.get('w', '?'))
+            out.append(f'      {t}  {who[:14]:14} {str(e.get("text", ""))[:70]}')
+        return out or ['      (quiet)']
+
+    try:
+        while True:
+            panels = [f'\033[2J\033[H',   # clear screen + home
+                      f'RDAP live — {time.strftime("%Y-%m-%d %H:%M:%S")}'
+                      f'   (Ctrl+C to exit)']
+            local = mem.recent_events(args.lines)
+            panels.append(f'── {st["name"]} @ local ──────────────')
+            panels += fmt(local)
+            for nm, m in sorted(st.get('teammates', {}).items()):
+                url = m.get('url', '')
+                evs = fetch(url) if url else None
+                state_txt = '' if evs is not None else '  ✗ unreachable'
+                panels.append(f'── {nm} @ {url or "?"}{state_txt} ──────')
+                panels += fmt([] if evs is None else evs)
+            print('\n'.join(panels), flush=True)
+            time.sleep(args.interval)
+    except KeyboardInterrupt:
+        print('\nbye.')
+
+
 def main() -> None:
     import argparse
+
+    sys.argv = _expand_dotargv(sys.argv)
 
     if len(sys.argv) == 1:
         return _menu()
@@ -803,7 +959,8 @@ def main() -> None:
     a.set_defaults(fn=cmd_ask)
 
     g = sub.add_parser('ping', help='check whether a teammate node is reachable')
-    g.add_argument('url', help='http://<ip>:<port>')
+    g.add_argument('url', nargs='?', default='', help='http://<ip>:<port>')
+    g.add_argument('--name', dest='name', default='', help='teammate name (fuzzy) or "all"')
     g.set_defaults(fn=cmd_ping)
 
     v = sub.add_parser('invite', help='print your invite line (add --port for url)')
@@ -833,7 +990,18 @@ def main() -> None:
     ch.set_defaults(fn=cmd_chat)
 
     stt = sub.add_parser('status', help='one-glance dashboard')
+
+    w = sub.add_parser('watch', help='live dashboard of all agents (no input)')
+    w.add_argument('--interval', type=float, default=3.0, help='refresh seconds')
+    w.add_argument('--lines', type=int, default=6, help='events per panel')
+    d2 = sub.add_parser('do', help='short delegation: do WORKER "text" | do all "text"')
+    d2.add_argument('target', help='teammate name (fuzzy) or "all"')
+    d2.add_argument('text')
+    l2 = sub.add_parser('ls', help='list teammates + last activity')
     stt.set_defaults(fn=cmd_status)
+    w.set_defaults(fn=cmd_watch)
+    d2.set_defaults(fn=cmd_do)
+    l2.set_defaults(fn=cmd_ls)
 
     bd = sub.add_parser('board', help='show the shared task board')
     bd.set_defaults(fn=cmd_board)

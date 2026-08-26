@@ -142,6 +142,25 @@ class TeamMemory:
     def journal_entries(self, limit: int = 100) -> list[dict]:
         return [e for e in self._delta('system').read('event')][-limit:]
 
+    def recent_events(self, limit: int = 50) -> list[dict]:
+        """Every agent's events, newest first — powers live monitoring."""
+        import json
+
+        self.ensure_layout()
+        out: list[dict] = []
+        base = self.resolve_in_repo('.team/deltas')
+        if base.exists():
+            for d in base.iterdir():
+                if not d.is_dir():
+                    continue
+                for f in sorted(d.glob('event-*.json')):
+                    try:
+                        out.append(json.loads(f.read_text(encoding='utf-8')))
+                    except Exception:  # noqa: BLE001
+                        continue
+        out.sort(key=lambda r: r.get('at', 0), reverse=True)
+        return out[:limit]
+
     # ------------------------------------------------------------- board --
     def read_board(self) -> str:
         """BOARD.md is a *projection* of task deltas — deterministic on all

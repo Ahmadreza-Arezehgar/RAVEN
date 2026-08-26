@@ -180,6 +180,16 @@ async def raven_identity(request: Request) -> JSONResponse:
     return JSONResponse(payload)
 
 
+async def raven_activity(request: Request) -> JSONResponse:
+    """Recent events from every agent writing to this repo — for ./rdap watch."""
+    mem = request.app.state.memory
+    try:
+        limit = max(1, min(int(request.query_params.get('limit', 30)), 200))
+    except ValueError:
+        limit = 30
+    return JSONResponse({'events': mem.recent_events(limit)})
+
+
 def build_app(config: NodeConfig) -> Starlette:
     memory = TeamMemory(config.repo_path, auto_commit=config.auto_commit_memory)
     toolbox = ToolBox(config, memory)
@@ -208,6 +218,7 @@ def build_app(config: NodeConfig) -> Starlette:
         *create_jsonrpc_routes(handler, rpc_url='/'),
         Route('/health', health, methods=['GET']),
         Route('/raven/identity', raven_identity, methods=['GET']),
+        Route('/raven/activity', raven_activity, methods=['GET']),
     ]
     from contextlib import asynccontextmanager
 
@@ -221,6 +232,7 @@ def build_app(config: NodeConfig) -> Starlette:
     app.state.raven = identity
     app.state.config = config
     app.state.brain = brain
+    app.state.memory = memory
     if config.auth_token:
         app = BearerAuthMiddleware(app, config.auth_token)  # type: ignore[assignment]
     return app
