@@ -16,16 +16,23 @@ import uuid
 from pathlib import Path
 
 from .memory import TeamMemory
-from .raven_identity import RavenIdentity, sign_delegation, verify_delegation
+from .raven_identity import (
+    RavenIdentity,
+    load_revocations,
+    sign_delegation,
+    verify_delegation,
+)
 
 
 class GitRelay:
     def __init__(self, memory: TeamMemory, identity: RavenIdentity,
-                 trusted_peers_file=None, trusted_peers: dict | None = None) -> None:
+                 trusted_peers_file=None, trusted_peers: dict | None = None,
+                 revocations_file: str | None = None) -> None:
         self.memory = memory
         self.identity = identity
         self.peers_file = trusted_peers_file
         self.static_peers = trusted_peers or {}
+        self.revocations_file = revocations_file or ''
 
     # ------------------------------------------------------------- peers --
     def peers(self) -> dict[str, str]:
@@ -88,6 +95,14 @@ class GitRelay:
         return f
 
     # -------------------------------------------------------------- drain --
+    def _revoked(self) -> set[str]:
+        if self.revocations_file:
+            try:
+                return load_revocations(Path(self.revocations_file))
+            except Exception:  # noqa: BLE001
+                pass
+        return set()
+
     def inbox_for_me(self) -> list[dict]:
         slot = self._slot('inbox', self.identity.address)
         out = []
@@ -109,6 +124,7 @@ class GitRelay:
             ok, reason = verify_delegation(
                 env.get('raven', {}), env.get('text', ''),
                 trusted_peers=self.peers(), required=True,
+                revoked=self._revoked(),
             )
             sender = env.get('from', '?')
             if not ok:

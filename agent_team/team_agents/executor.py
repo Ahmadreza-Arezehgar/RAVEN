@@ -19,7 +19,7 @@ from .raven_identity import verify_delegation
 
 logger = logging.getLogger(__name__)
 
-RAVEN_META_KEYS = ('sender', 'timestamp', 'signature', 'algorithm', 'context')
+RAVEN_META_KEYS = ('sender', 'timestamp', 'signature', 'algorithm', 'context', 'nonce')
 
 
 def _scalar(value) -> object:
@@ -74,6 +74,18 @@ class TeamAgentExecutor(AgentExecutor):
                 pass
         return self.trusted_peers
 
+    def current_revocations(self) -> set[str]:
+        """Hot-reload revoked RVN1 addresses."""
+        f = self.config.revocations_file
+        if f:
+            try:
+                from .raven_identity import load_revocations
+
+                return load_revocations(Path(f))
+            except Exception:  # noqa: BLE001
+                pass
+        return set()
+
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         self._cancel.clear()
         task = context.current_task
@@ -105,6 +117,7 @@ class TeamAgentExecutor(AgentExecutor):
                 text,
                 trusted_peers=self.current_peers(),
                 required=self.require_signed,
+                revoked=self.current_revocations(),
             )
             if not ok:
                 sender = meta.get('sender', '?')
@@ -122,6 +135,12 @@ class TeamAgentExecutor(AgentExecutor):
                     self.config.name, f'delegation verified: {meta["sender"]}'
                 )
 
+            await updater.update_status(
+                TaskState.TASK_STATE_WORKING,
+                message=updater.new_agent_message(
+                    [Part(text='delegation verified — running brain…')]
+                ),
+            )
             answer = await self.brain.run(text)
             await updater.add_artifact([Part(text=answer)], name='result')
             await updater.complete()

@@ -3,15 +3,59 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 
 import httpx
+import jwt
+from jwt import PyJWK
 
 import a2a.client.client as a2a_client_mod
 from a2a.client import A2ACardResolver, ClientConfig, ClientFactory
 from a2a.types import Role
+from a2a.utils.signing import create_signature_verifier
 
 from .raven_identity import RavenIdentity, sign_delegation
+
+
+class CardVerificationError(RuntimeError):
+    """Agent card signature missing, mismatched with /raven/identity, or invalid."""
+
+
+async def verify_card_signature(
+    card, http: httpx.AsyncClient, base_url: str, algorithms: list[str] | None = None
+) -> str:
+    """Verify the card's detached JWS against the node's published identity.
+
+    kid must equal the fingerprint recomputed from the Ed25519 public key that
+    `/raven/identity` publishes — binding the card to the RVN1 identity.
+    Returns the verified fingerprint.
+    """
+    sigs = getattr(card, 'signatures', None)
+    if not sigs:
+        raise CardVerificationError('agent card has no signature')
+    ident = (await http.get(base_url.rstrip('/') + '/raven/identity')).json()
+    pub_hex = str(ident.get('public_key', ''))
+    fingerprint = str(ident.get('fingerprint', ''))
+    expected_kid = str(ident.get('card_kid', fingerprint + '-card'))
+    protected = jwt.utils.base64url_decode(sigs[0].protected.encode()).decode()
+    header = json.loads(protected)
+    if header.get('kid') != expected_kid:
+        raise CardVerificationError(
+            f'card kid {header.get("kid")!r} != identity kid {expected_kid!r}'
+        )
+    jwk = PyJWK.from_dict({
+        'kty': 'OKP',
+        'crv': 'Ed25519',
+        'x': jwt.utils.base64url_encode(bytes.fromhex(pub_hex)).decode(),
+        'alg': 'EdDSA',
+    })
+    verifier = create_signature_verifier(
+        key_provider=lambda kid, jku: jwk,
+        algorithms=algorithms or ['EdDSA'],
+    )
+    verifier(card)
+    return fingerprint
 
 
 def _response_text(response) -> str:
@@ -65,6 +109,8 @@ async def send_task(
         timeout=httpx.Timeout(timeout, connect=10.0)
     ) as http:
         card = await A2ACardResolver(httpx_client=http, base_url=base_url).get_agent_card()
+        fp = await verify_card_signature(card, http, url.rstrip('/'))
+        print(f'* card signature verified (kid fingerprint: {fp[:16]}…)', flush=True)
         # share OUR long-timeout client with the SDK transport — local LLMs
         # can take minutes on first load
         factory = ClientFactory(ClientConfig(streaming=False, polling=False,

@@ -77,6 +77,7 @@ class NodeConfig:
     trusted_peers: dict[str, str] = field(default_factory=dict)
     trusted_peers_file: str = ''     # live-reloaded each request when set
     require_signed_tasks: bool = False
+    revocations_file: str = ''       # JSON list of revoked rvn1 addresses
 
     def resolved_public_url(self) -> str:
         if self.public_url:
@@ -113,6 +114,7 @@ class NodeConfig:
         peers_file = os.environ.get('TEAM_TRUSTED_PEERS', '')
         if peers_file:
             cfg.trusted_peers = load_trusted_peers(Path(peers_file))
+        cfg.revocations_file = os.environ.get('TEAM_REVOCATIONS', '')
         return cfg
 
 

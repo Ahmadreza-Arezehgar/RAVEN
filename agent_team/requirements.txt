@@ -3,3 +3,4 @@ cryptography>=44
 httpx>=0.28
 uvicorn>=0.30
 zeroconf>=0.131
+PyJWT[crypto]>=2.8

@@ -18,9 +18,11 @@ from a2a.server.tasks import InMemoryTaskStore
 from a2a.types import (
     AgentCapabilities,
     AgentCard,
+    AgentExtension,
     AgentInterface,
     AgentSkill,
 )
+from a2a.utils.signing import create_agent_card_signer
 
 from .config import NodeConfig
 from .executor import TeamAgentExecutor
@@ -29,12 +31,36 @@ from .memory import TeamMemory
 from .raven_identity import RavenIdentity
 from .tools import ToolBox
 
+MESH_EXTENSION_URI = 'https://raven.app/extensions/mesh-mailbox/v1'
+CARD_KID_SUFFIX = '-card'
 
-def build_agent_card(config: NodeConfig) -> AgentCard:
-    return AgentCard(
+
+def _apply_security(card: AgentCard) -> None:
+    """Declare Bearer as the accepted auth scheme (OpenAPI-aligned)."""
+    scheme = card.security_schemes['bearer']
+    scheme.http_auth_security_scheme.scheme = 'Bearer'
+    req = card.security_requirements.add()
+    req.schemes['bearer'].list.extend([])  # empty scope list = no scopes
+
+
+def _sign_card(card: AgentCard, identity: RavenIdentity) -> AgentCard:
+    """Attach a detached JWS (RFC 7515) signed with the node's Raven key."""
+    signer = create_agent_card_signer(
+        signing_key=identity.jwk_private(),
+        protected_header={
+            'kid': identity.fingerprint + CARD_KID_SUFFIX,
+            'alg': 'EdDSA',
+            'typ': 'JOSE',
+        },
+    )
+    return signer(card)
+
+
+def build_agent_card(config: NodeConfig, identity: RavenIdentity | None = None) -> AgentCard:
+    card = AgentCard(
         name=config.name,
         description=config.role or f'{config.name} agent node',
-        version='1.0.0',
+        version='1.1.0',
         supported_interfaces=[
             AgentInterface(
                 url=config.resolved_public_url(),
@@ -42,7 +68,20 @@ def build_agent_card(config: NodeConfig) -> AgentCard:
                 protocol_version='1.0',
             )
         ],
-        capabilities=AgentCapabilities(streaming=False),
+        capabilities=AgentCapabilities(
+            streaming=True,
+            extended_agent_card=True,
+            extensions=[
+                AgentExtension(
+                    uri=MESH_EXTENSION_URI,
+                    description=(
+                        'Offline DTN mailbox transport: tasks may arrive via '
+                        'libp2p store-and-forward when HTTP is unreachable.'
+                    ),
+                    required=False,
+                )
+            ],
+        ),
         default_input_modes=['text/plain'],
         default_output_modes=['text/plain'],
         skills=[
@@ -55,6 +94,39 @@ def build_agent_card(config: NodeConfig) -> AgentCard:
             for s in config.skills
         ],
     )
+    _apply_security(card)
+    if identity is not None:
+        card = _sign_card(card, identity)
+    return card
+
+
+def build_extended_card(config: NodeConfig, identity: RavenIdentity) -> AgentCard:
+    """Authenticated view: policy internals the public card must not leak."""
+    ext = AgentCard(
+        name=config.name,
+        description=(
+            f'{config.role or f"{config.name} agent node"} [extended] '
+            f'llm={config.llm.provider}/{config.llm.model or "-"} '
+            f'shell={"on" if config.allow_shell else "off"}'
+        ),
+        version='1.1.0',
+        supported_interfaces=[
+            AgentInterface(
+                url=config.resolved_public_url(),
+                protocol_binding='JSONRPC',
+                protocol_version='1.0',
+            )
+        ],
+        capabilities=AgentCapabilities(streaming=True),
+        default_input_modes=['text/plain'],
+        default_output_modes=['text/plain'],
+        skills=[
+            AgentSkill(id=s.id, name=s.name, description=s.description, tags=list(s.tags))
+            for s in config.skills
+        ],
+    )
+    _apply_security(ext)
+    return _sign_card(ext, identity)
 
 
 class BearerAuthMiddleware:
@@ -85,11 +157,21 @@ async def health(request: Request) -> JSONResponse:
 async def raven_identity(request: Request) -> JSONResponse:
     rav: RavenIdentity = request.app.state.raven
     cfg: NodeConfig = request.app.state.config
+    revoked: list[str] = []
+    if cfg.revocations_file:
+        try:
+            from .raven_identity import load_revocations
+
+            revoked = sorted(load_revocations(cfg.revocations_file))
+        except Exception:  # noqa: BLE001
+            pass
     payload = {
         **rav.identity_card(),
+        'card_kid': rav.fingerprint + CARD_KID_SUFFIX,
         'policy': {
             'require_signed_tasks': cfg.require_signed_tasks,
             'trusted_peers': sorted(cfg.trusted_peers),
+            'revoked': revoked,
         },
     }
     mb = getattr(request.app.state, 'mailbox_info', None)
@@ -103,6 +185,7 @@ def build_app(config: NodeConfig) -> Starlette:
     toolbox = ToolBox(config, memory)
     cancel_event = asyncio.Event()
     brain = build_brain(config, toolbox, cancel_event)
+    identity = RavenIdentity.load_or_create(config.keys_dir)
     executor = TeamAgentExecutor(
         config,
         brain,
@@ -111,13 +194,14 @@ def build_app(config: NodeConfig) -> Starlette:
         require_signed=config.require_signed_tasks,
         cancel_event=cancel_event,
     )
-    card = build_agent_card(config)
-    identity = RavenIdentity.load_or_create(config.keys_dir)
+    card = build_agent_card(config, identity)
+    ext_card = build_extended_card(config, identity)
 
     handler = DefaultRequestHandler(
         agent_executor=executor,
         task_store=InMemoryTaskStore(),
         agent_card=card,
+        extended_agent_card=ext_card,
     )
     routes = [
         *create_agent_card_routes(card),
@@ -143,6 +227,18 @@ def build_app(config: NodeConfig) -> Starlette:
 
 
 # ------------------------------------------------- background services ----
+def _revocations(cfg: NodeConfig) -> set[str]:
+    """Best-effort hot-reload of the revocation list (empty set on failure)."""
+    if not cfg.revocations_file:
+        return set()
+    try:
+        from .raven_identity import load_revocations
+
+        return load_revocations(cfg.revocations_file)
+    except Exception:  # noqa: BLE001
+        return set()
+
+
 def _start_services(app) -> None:
     """mDNS advertise + git store-and-forward relay poller."""
     import os
@@ -184,6 +280,7 @@ def _start_services(app) -> None:
             app.state.raven,
             trusted_peers_file=cfg.trusted_peers_file or None,
             trusted_peers=cfg.trusted_peers,
+            revocations_file=cfg.revocations_file or None,
         )
         # --- optional local swarm mailbox store (T3 transport) ----------
         store = None
@@ -253,7 +350,9 @@ def _start_services(app) -> None:
                 payload = _json.loads(payload_text)
                 ok, why = verify_delegation(
                     payload.get('raven', {}), payload.get('text', ''),
-                    trusted_peers=r.peers(), required=True)
+                    trusted_peers=r.peers(), required=True,
+                    revoked=_revocations(cfg),
+                )
                 sender = payload.get('from', '?')
                 text = payload.get('text', '')
                 if not ok:

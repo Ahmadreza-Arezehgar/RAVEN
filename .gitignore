@@ -196,3 +196,6 @@ dist/
 
 .superpowers/
 artifacts/
+
+# RDAP runtime state — NEVER commit (contains private key seeds)
+agent_team/.team/
