@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use raven_core::ack::Ack;
 use raven_core::atsam_aead::{seal_rvna1_v2, unseal_rvna1_v2};
 use raven_core::atsam_indexed_session::{
-    ack_key_at_index, derive_route_tag, encode_signed_ack, message_key_at_index, open_ack,
+    derive_route_tag, encode_signed_ack, message_key_at_index, open_ack,
     open_indexed_message_with_key, route_coordinates, seal_ack, seal_indexed_message_with_key,
     Direction, SignedAck,
 };
@@ -36,13 +36,13 @@ fn dr_setup() -> (Identity, Identity, [u8; 32]) {
 
 #[test]
 fn a1_replayed_consumed_message_is_rejected() {
-    let (_alice, bob, rk0) = dr_setup();
+    let (_alice, _bob, rk0) = dr_setup();
     let a_priv = [0x11; 32];
     let b_priv = [0x22; 32];
     let b_pub = PublicKey::from(&StaticSecret::from(b_priv)).to_bytes();
 
     let alice = ec_dr_init_alice(&rk0, &a_priv, &b_pub).unwrap();
-    let (alice, hdr0, _mk0) = ec_dr_encrypt(&alice).unwrap();
+    let (_alice, hdr0, _mk0) = ec_dr_encrypt(&alice).unwrap();
 
     let bob_st = ec_dr_init_bob(&rk0, &b_priv).unwrap();
     let b_ratchet_priv = [0x33; 32];
@@ -97,9 +97,18 @@ fn a3_adversarial_reordering_is_fully_recoverable() {
     let mut bob = ec_dr_init_bob(&rk0, &b_priv).unwrap();
     let mut delivered = Vec::new();
     for order in [3usize, 1, 4, 0, 2] {
-        let (st, _mk) =
-            ec_dr_decrypt(&bob, &sealed[order].0, 10, if order == 3 { Some(&b_ratchet_priv) } else { None }, 2000)
-                .expect("reordered delivery must succeed");
+        let (st, _mk) = ec_dr_decrypt(
+            &bob,
+            &sealed[order].0,
+            10,
+            if order == 3 {
+                Some(&b_ratchet_priv)
+            } else {
+                None
+            },
+            2000,
+        )
+        .expect("reordered delivery must succeed");
         bob = st;
         delivered.push(sealed[order].1);
     }
@@ -116,9 +125,9 @@ fn a4_max_skip_flood_leaves_state_usable() {
     let b_pub = PublicKey::from(&StaticSecret::from(b_priv)).to_bytes();
     let b_ratchet_priv = [0x33; 32];
 
-    let mut alice = ec_dr_init_alice(&rk0, &a_priv, &b_pub).unwrap();
+    let alice = ec_dr_init_alice(&rk0, &a_priv, &b_pub).unwrap();
     let (alice, hdr0, _) = ec_dr_encrypt(&alice).unwrap();
-    let (mut alice, hdr1) = {
+    let (_alice, hdr1) = {
         let (st, h, _) = ec_dr_encrypt(&alice).unwrap();
         (st, h)
     };
@@ -148,9 +157,9 @@ fn a5_skipped_store_exhaustion_is_bounded_and_recovers() {
     let b_pub = PublicKey::from(&StaticSecret::from(b_priv)).to_bytes();
     let b_ratchet_priv = [0x33; 32];
 
-    let mut alice = ec_dr_init_alice(&rk0, &a_priv, &b_pub).unwrap();
+    let alice = ec_dr_init_alice(&rk0, &a_priv, &b_pub).unwrap();
     let (alice, hdr0, _) = ec_dr_encrypt(&alice).unwrap();
-    let (alice, hdr1) = {
+    let (_alice, hdr1) = {
         let (st, h, _) = ec_dr_encrypt(&alice).unwrap();
         (st, h)
     };
@@ -219,7 +228,14 @@ fn b4_outer_msg_id_substitution_detected() {
     let outer_id = [0x55; 16];
     let key = message_key_at_index(&root, &ia, &ra, dir, idx).unwrap();
     let wire = seal_indexed_message_with_key(
-        &key, &ia, &ra, dir, idx, &outer_id, b"attributed payload", &[0xCD; 12],
+        &key,
+        &ia,
+        &ra,
+        dir,
+        idx,
+        &outer_id,
+        b"attributed payload",
+        &[0xCD; 12],
     )
     .unwrap();
 
@@ -244,14 +260,27 @@ fn b6_direction_flip_confusion_detected() {
     let idx = 2;
     let outer_id = [0x66; 16];
 
-    let key_i2r = message_key_at_index(&root, &ia, &ra, Direction::InitiatorToResponder, idx).unwrap();
+    let key_i2r =
+        message_key_at_index(&root, &ia, &ra, Direction::InitiatorToResponder, idx).unwrap();
     let wire = seal_indexed_message_with_key(
-        &key_i2r, &ia, &ra, Direction::InitiatorToResponder, idx, &outer_id, b"d", &[0xEE; 12],
+        &key_i2r,
+        &ia,
+        &ra,
+        Direction::InitiatorToResponder,
+        idx,
+        &outer_id,
+        b"d",
+        &[0xEE; 12],
     )
     .unwrap();
 
     let flipped = open_indexed_message_with_key(
-        &key_i2r, &ia, &ra, Direction::ResponderToInitiator, &outer_id, &wire,
+        &key_i2r,
+        &ia,
+        &ra,
+        Direction::ResponderToInitiator,
+        &outer_id,
+        &wire,
     );
     assert!(flipped.is_err(), "direction confusion must fail");
 }
@@ -275,21 +304,37 @@ fn b7_ack_lane_and_msg_lane_are_isolated() {
     };
     let plain101 = encode_signed_ack(&signed).unwrap();
     let ack_wire = seal_ack(&root, &ia, &ra, dir, idx, &outer_id, &plain101, &[0x11; 12]).unwrap();
-    assert_eq!(open_ack(&root, &ia, &ra, dir, &outer_id, &ack_wire).unwrap(), plain101);
+    assert_eq!(
+        open_ack(&root, &ia, &ra, dir, &outer_id, &ack_wire).unwrap(),
+        plain101
+    );
 
     // Open the ACK frame through the message lane.
     let msg_key = message_key_at_index(&root, &ia, &ra, dir, idx).unwrap();
     let as_msg = open_indexed_message_with_key(&msg_key, &ia, &ra, dir, &outer_id, &ack_wire);
-    assert!(as_msg.is_err(), "ACK frame must not open under message lane");
+    assert!(
+        as_msg.is_err(),
+        "ACK frame must not open under message lane"
+    );
 
     // And a message frame (same 101-byte body shape) must not open as an ACK.
     let msg_pt = [0x20; 101];
     let msg_wire = seal_indexed_message_with_key(
-        &msg_key, &ia, &ra, dir, idx, &outer_id, &msg_pt, &[0x12; 12],
+        &msg_key,
+        &ia,
+        &ra,
+        dir,
+        idx,
+        &outer_id,
+        &msg_pt,
+        &[0x12; 12],
     )
     .unwrap();
     let as_ack = open_ack(&root, &ia, &ra, dir, &outer_id, &msg_wire);
-    assert!(as_ack.is_err(), "message frame must not open under ACK lane");
+    assert!(
+        as_ack.is_err(),
+        "message frame must not open under ACK lane"
+    );
 }
 
 #[test]
@@ -313,7 +358,9 @@ fn b8_proto_suite_downgrade_rejected() {
 #[test]
 fn c1_route_coordinates_reject_invalid_env_types() {
     for bad in [0u8, 5, 255] {
-        assert!(route_coordinates(1_700_000_000_000, 0, bad, Direction::InitiatorToResponder).is_err());
+        assert!(
+            route_coordinates(1_700_000_000_000, 0, bad, Direction::InitiatorToResponder).is_err()
+        );
     }
 }
 
@@ -325,7 +372,10 @@ fn c2_route_tags_are_unique_across_all_axes() {
     for epoch_ms in [base_ms, base_ms + 1_500] {
         for index in [0u32, 1] {
             for env in [1u8, 2] {
-                for dir in [Direction::InitiatorToResponder, Direction::ResponderToInitiator] {
+                for dir in [
+                    Direction::InitiatorToResponder,
+                    Direction::ResponderToInitiator,
+                ] {
                     let tag = derive_route_tag(&root, epoch_ms, index, env, dir).unwrap();
                     assert!(seen.insert(tag), "route tag collision across axes");
                 }

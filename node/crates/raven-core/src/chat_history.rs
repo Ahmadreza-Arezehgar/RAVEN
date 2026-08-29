@@ -694,9 +694,9 @@ fn scoped_aad(data_dir: &Path, domain: &[u8]) -> [u8; 32] {
 }
 
 #[cfg(any(
-    test,
     target_os = "macos",
-    all(target_os = "linux", target_env = "gnu")
+    all(target_os = "linux", target_env = "gnu"),
+    all(test, not(windows))
 ))]
 fn history_scope(data_dir: &Path) -> [u8; 32] {
     scoped_aad(data_dir, HISTORY_AAD_DOMAIN)

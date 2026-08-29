@@ -6,7 +6,7 @@
 
 ```bash
 cd node
-cargo build -p raven-node -p ash --release
+cargo build --locked -p raven-node -p ash --release
 bash scripts/install/macos_launchd.sh
 # ash/raven → ~/.local/bin ; raven-node launchd agent
 export PATH="$HOME/.local/bin:$PATH"
@@ -40,11 +40,16 @@ Unsigned binaries will be quarantined if downloaded from the Internet. Either:
 - complete Developer ID + notarization (checklist), or
 - (dev only) remove quarantine: `xattr -dr com.apple.quarantine ./bin`
 
-## Proof
+## Verification
 
 ```bash
-bash scripts/final_serverless_proof.sh
+cargo test --locked -p raven-core -p raven-node -p ash -p raven-swarm
+cargo clippy --locked -p raven-core -p raven-node -p ash -p raven-swarm --all-targets -- -D warnings
 ```
+
+There is no aggregate production-proof script in the current tree. See
+[`FINAL_SERVERLESS_PROOF.md`](FINAL_SERVERLESS_PROOF.md) for the exact scope and
+remaining human/hardware gates.
 
 ## Identity seed
 

@@ -37,6 +37,10 @@
 
 | Substitute | Evidence |
 |------------|----------|
-| Docker dual-network isolation | `scripts/nat_docker_sim.sh` (SKIP if daemon down) |
-| Docs | `docs/NAT_SOFTWARE_SIM.md` |
-| §59 automated path | `scripts/final_serverless_proof.sh` store-forward + bridge |
+| Docker dual-network isolation | Historical archived result; its generator is absent from the current tree |
+| Docs | Historical design notes in `docs/NAT_SOFTWARE_SIM.md` |
+| Current checks | `cargo test -p raven-core` plus `scripts/internet_dial_smoke.sh` (negative fail-closed gate only) |
+
+The archived §59 17/17 run is not current NAT evidence. See
+[`FINAL_SERVERLESS_PROOF.md`](FINAL_SERVERLESS_PROOF.md). None of these software
+checks establishes live CGNAT/DCUtR interoperability.

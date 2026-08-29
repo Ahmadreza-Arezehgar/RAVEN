@@ -3,6 +3,12 @@
 Product CLI binary is named **`ash`** (`ash.exe` on Windows). Daemon/node binary is **`raven-node`** (`raven-node.exe`).  
 This is **not** the WinUI `RAVEN-Windows` app; that mesh client lives under `RAVEN-Windows/` and has its own workflow.
 
+> **Validation hold:** secure terminal send now has native Windows named-pipe
+> `LanDial` IPC, but the release gate still requires a real two-profile Windows
+> PairInit/indexed-message/authenticated-ACK run. Cross-compilation proves the
+> Windows code is type-correct; it does not replace that native execution. The
+> legacy raw/demo send path remains forbidden.
+
 **Safety:** demos use ephemeral `--data-dir` only. Never commit `identity.seed`, queue DBs, or paste private keys into logs. On Windows the seed file is DPAPI-wrapped (`RVNDPAPI` magic); see [`IDENTITY_SEED_STORAGE.md`](IDENTITY_SEED_STORAGE.md).
 
 ## Native Windows (recommended)
@@ -38,11 +44,33 @@ $DATA = New-Item -ItemType Directory -Path "$env:TEMP\raven-ash-$([guid]::NewGui
 .\target\release\ash.exe --data-dir $DATA.FullName   # interactive welcome
 ```
 
+Start the complete per-profile daemon and check the authenticated local pipe:
+
+```powershell
+$DATA = Join-Path $env:LOCALAPPDATA "RavenNode"
+.\target\release\raven-node.exe service --data-dir $DATA `
+  --lan-listen 0.0.0.0:7420 --ble-listen 127.0.0.1:0
+# In another terminal:
+.\target\release\ash.exe --data-dir $DATA ipc-ping
+```
+
+The pipe name is a deterministic hash of the canonical profile path. Its
+protected DACL grants access only to the current user; remote clients are
+rejected, and both endpoints additionally verify the peer process user SID and
+Windows session. Any lookup or authorization failure closes the connection.
+
 Tests:
 
 ```powershell
 cargo test -p raven-core -p ash
 cargo test -p raven-core --test reliability
+```
+
+Windows-native tests in `raven-node` exercise pipe creation, mutual peer
+authorization, framing, and first-instance squatting protection:
+
+```powershell
+cargo test -p raven-node
 ```
 
 ## Cross-compile from macOS / Linux → Windows
@@ -106,4 +134,6 @@ Do not rename to `raven-ash` for demos — docs and welcome banner assume `ash`.
 | Windows LAN settings UI in WinUI app | **Not ready** (iOS Account → Serverless LAN only) |
 | BLE raw `RavenEnvelopeV1` on Windows GATT | **Not ready** |
 
-For a local LAN smoke against a Windows `raven-node.exe`, mirror `TERMINAL_DEMO.md` listen/`--peer-pub-hex` steps (public hex only).
+Do not use the legacy raw/`unsafe-interim` demo as a substitute. The Windows
+release gate is a real PairInit/indexed-session message plus authenticated ACK
+through native named-pipe IPC on two Windows profiles.

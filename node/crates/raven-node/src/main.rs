@@ -5,7 +5,7 @@
 mod bridge_run;
 #[cfg(feature = "corebluetooth")]
 mod corebluetooth_exp;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod ipc_server;
 mod lan_direct;
 
@@ -94,6 +94,13 @@ enum Commands {
         /// Optional peer to dial (host:port).
         #[arg(long)]
         peer: Option<String>,
+        /// Authenticate this connection as an explicit bridge pull. The bridge
+        /// must already trust this node's identity in its contact book.
+        #[arg(long, default_value_t = false)]
+        bridge_pull: bool,
+        /// Expected Raven identity public key of the bridge (32-byte hex).
+        #[arg(long, requires = "bridge_pull")]
+        bridge_pub_hex: Option<String>,
         /// Peer Ed25519 public key hex (32 bytes) for seal + verify.
         #[arg(long)]
         peer_pub_hex: Option<String>,
@@ -166,8 +173,8 @@ enum Commands {
         #[arg(long, default_value_t = 15)]
         timeout_secs: u64,
     },
-    /// Always-on local IPC (UDS) for ash ↔ raven-node. macOS/Linux.
-    #[cfg(unix)]
+    /// Always-on same-user local IPC for ash ↔ raven-node (UDS / named pipe).
+    #[cfg(any(unix, windows))]
     Ipc {
         #[arg(long, default_value = "./raven-data")]
         data_dir: PathBuf,
@@ -175,8 +182,8 @@ enum Commands {
         #[arg(long)]
         forward_db: Option<PathBuf>,
     },
-    /// Always-on daemon: bridge + IPC together (launchd/systemd target).
-    #[cfg(unix)]
+    /// Always-on daemon: bridge + LAN-direct + IPC together.
+    #[cfg(any(unix, windows))]
     Service {
         #[arg(long, default_value_os_t = raven_core::default_raven_data_dir())]
         data_dir: PathBuf,
@@ -200,6 +207,13 @@ fn now_ms() -> u64 {
 
 fn queue_path(data_dir: &Path) -> PathBuf {
     data_dir.join("queue.sqlite")
+}
+
+fn read_bridge_status(data_dir: &Path) -> BridgeStatusSnapshot {
+    let policy = load_policy(data_dir);
+    let (pending, total) =
+        ForwardQueue::inspect_counts(&bridge_run::forward_queue_path(data_dir)).unwrap_or((0, 0));
+    BridgeStatusSnapshot::from_policy(&policy, &["lan", "mock_ble"], pending, total)
 }
 
 fn load_or_err(data_dir: &Path) -> Result<Identity, String> {
@@ -236,6 +250,21 @@ async fn write_frame(stream: &mut TcpStream, bytes: &[u8]) -> Result<(), String>
     write_frame_with_timeout(stream, bytes, DEFAULT_CONNECTION_LIMITS.write_timeout).await
 }
 
+async fn write_raw_with_timeout(
+    stream: &mut TcpStream,
+    bytes: &[u8],
+    write_timeout: Duration,
+) -> Result<(), String> {
+    let write = async {
+        stream.write_all(bytes).await.map_err(|e| e.to_string())?;
+        stream.flush().await.map_err(|e| e.to_string())?;
+        Ok(())
+    };
+    tokio::time::timeout(write_timeout, write)
+        .await
+        .map_err(|_| "raw write deadline exceeded".to_string())?
+}
+
 async fn read_frame_with_limits<R: AsyncRead + Unpin>(
     stream: &mut R,
     limits: ConnectionLimits,
@@ -267,7 +296,7 @@ async fn read_frame_with_limits<R: AsyncRead + Unpin>(
     Ok(buf)
 }
 
-
+#[cfg(feature = "unsafe-demo-crypto")]
 fn fingerprint_of(pub_bytes: &[u8]) -> String {
     let mut k = [0u8; 32];
     let n = pub_bytes.len().min(32);
@@ -395,6 +424,8 @@ fn build_ack_envelope(
 }
 
 struct NodeState {
+    #[cfg_attr(not(feature = "unsafe-demo-crypto"), allow(dead_code))]
+    data_dir: PathBuf,
     identity: Identity,
     queue: OutgoingQueue,
     /// Default peer pub (legacy two-node).
@@ -408,6 +439,17 @@ struct NodeState {
     got_ack: bool,
 }
 
+/// Result of endpoint processing. Bridge receipts are emitted only for
+/// `Accepted`, after the relevant durable dedup/delivery-state mutation has
+/// succeeded. Expired or unsupported frames remain `Ignored` and cannot
+/// release upstream custody.
+#[derive(Debug)]
+enum InboundOutcome {
+    #[cfg_attr(not(feature = "unsafe-demo-crypto"), allow(dead_code))]
+    Accepted(Option<Vec<u8>>),
+    Ignored,
+}
+
 impl NodeState {
     fn msg_verify_pub(&self) -> Option<[u8; 32]> {
         self.origin_pub.or(self.peer_pub)
@@ -418,10 +460,20 @@ impl NodeState {
         self.ack_pub.or(self.peer_pub)
     }
 
-    fn handle_inbound(&mut self, raw: &[u8]) -> Result<Option<Vec<u8>>, String> {
+    #[cfg(feature = "unsafe-demo-crypto")]
+    fn persist_lab_endpoint_custody(&self, env: &Envelope, raw: &[u8]) -> Result<(), String> {
+        let digest = raven_core::bridge::authenticated_object_digest(env);
+        let path = self
+            .data_dir
+            .join("lab_endpoint_custody")
+            .join(hex::encode(digest));
+        raven_core::atomic_write_private(&path, raw)
+    }
+
+    fn handle_inbound(&mut self, raw: &[u8]) -> Result<InboundOutcome, String> {
         let env = Envelope::unpack(raw).ok_or_else(|| "malformed envelope".to_string())?;
         if now_ms() > env.expires_at {
-            return Ok(None);
+            return Ok(InboundOutcome::Ignored);
         }
 
         match env.env_type {
@@ -452,12 +504,17 @@ impl NodeState {
                                 &my_addr,
                                 &env.message_id,
                             )?;
+                            // The experimental endpoint persists the exact
+                            // encrypted frame before it can authorize a bridge
+                            // acceptance receipt. A terminal print or an
+                            // in-memory channel handoff is not durable custody.
+                            self.persist_lab_endpoint_custody(&env, raw)?;
                             let dup = self
                                 .queue
                                 .dedup_check_and_insert(&env.message_id, now_ms())
                                 .map_err(|e| e.to_string())?;
                             if dup {
-                                return Ok(None);
+                                return Ok(InboundOutcome::Accepted(None));
                             }
                             self.recv_count += 1;
                             // Show the actual message to the human, plus who sent it.
@@ -471,7 +528,7 @@ impl NodeState {
                             eprintln!("────────────────────");
                             eprintln!("DELIVERED bytes={}", env.message_ciphertext.len());
                             let ack = build_ack_envelope(&self.identity, env.message_id, &peer_pub);
-                            return Ok(Some(ack.pack()));
+                            return Ok(InboundOutcome::Accepted(Some(ack.pack())));
                         }
                     }
                     SealClass::OpaqueAtsam { proto } => {
@@ -489,7 +546,7 @@ impl NodeState {
                     }
                 }
                 #[allow(unreachable_code)]
-                Ok(None)
+                Ok(InboundOutcome::Ignored)
             }
             x if x == EnvType::Ack as u8 => {
                 #[cfg(not(feature = "unsafe-demo-crypto"))]
@@ -549,24 +606,24 @@ impl NodeState {
                         return Err("ack signer is not the queued recipient".into());
                     }
                     if queued.state == DeliveryState::Delivered {
-                        return Ok(None);
+                        return Ok(InboundOutcome::Accepted(None));
                     }
                     let dup = self
                         .queue
                         .dedup_check_and_insert(&env.message_id, now_ms())
                         .map_err(|e| e.to_string())?;
                     if dup {
-                        return Ok(None);
+                        return Ok(InboundOutcome::Accepted(None));
                     }
                     self.queue
                         .mark_state(&acked, DeliveryState::Delivered)
                         .map_err(|e| e.to_string())?;
                     self.got_ack = true;
                     eprintln!("ACK delivered");
-                    Ok(None)
+                    Ok(InboundOutcome::Accepted(None))
                 }
             }
-            _ => Ok(None),
+            _ => Ok(InboundOutcome::Ignored),
         }
     }
 }
@@ -601,6 +658,7 @@ mod security_tests {
 
     fn node_state(path: &Path, recipient: Identity, sender: &Identity) -> NodeState {
         NodeState {
+            data_dir: path.parent().unwrap().to_path_buf(),
             identity: recipient,
             queue: OutgoingQueue::open(path).unwrap(),
             peer_pub: Some(sender.public_key_bytes()),
@@ -625,6 +683,17 @@ mod security_tests {
         let address = listener.local_addr().unwrap();
         let (client, accepted) = tokio::join!(TcpStream::connect(address), listener.accept());
         (accepted.unwrap().0, client.unwrap())
+    }
+
+    #[test]
+    fn status_on_fresh_path_is_strictly_read_only() {
+        let dir = tempdir().unwrap();
+        let profile = dir.path().join("never-created-profile");
+        let snapshot = read_bridge_status(&profile);
+        assert_eq!(snapshot.forward_queue_pending, 0);
+        assert_eq!(snapshot.forward_queue_total, 0);
+        assert!(!profile.exists());
+        assert!(!bridge_run::forward_queue_path(&profile).exists());
     }
 
     #[cfg(not(feature = "unsafe-demo-crypto"))]
@@ -748,8 +817,44 @@ mod security_tests {
             .contains("auth failed"));
 
         let valid = signed_envelope(&sender, mid, wire);
-        assert!(state.handle_inbound(&valid.pack()).unwrap().is_some());
+        let digest = raven_core::bridge::authenticated_object_digest(&valid);
+        let valid_packed = valid.pack();
+        assert!(matches!(
+            state.handle_inbound(&valid_packed).unwrap(),
+            InboundOutcome::Accepted(Some(_))
+        ));
         assert_eq!(state.recv_count, 1);
+        assert_eq!(
+            std::fs::read(
+                dir.path()
+                    .join("lab_endpoint_custody")
+                    .join(hex::encode(digest))
+            )
+            .unwrap(),
+            valid_packed
+        );
+    }
+
+    #[test]
+    fn expired_and_unsupported_frames_are_not_accepted_for_bridge_receipts() {
+        let dir = tempdir().unwrap();
+        let sender = Identity::from_seed(&[13u8; 32]);
+        let recipient = Identity::from_seed(&[14u8; 32]);
+        let mut state = node_state(&dir.path().join("q.sqlite"), recipient, &sender);
+
+        let mut expired = signed_envelope(&sender, [15u8; 16], vec![1, 2, 3]);
+        expired.created_at = 1;
+        expired.expires_at = 2;
+        expired.sign_with(&sender);
+        assert!(matches!(
+            state.handle_inbound(&expired.pack()).unwrap(),
+            InboundOutcome::Ignored
+        ));
+
+        let mut unsupported = signed_envelope(&sender, [16u8; 16], vec![1, 2, 3]);
+        unsupported.env_type = 0xff;
+        unsupported.sign_with(&sender);
+        assert!(state.handle_inbound(&unsupported.pack()).is_err());
     }
 
     #[tokio::test]
@@ -902,6 +1007,7 @@ async fn handle_connection_until(
     state: Arc<Mutex<NodeState>>,
     limits: ConnectionLimits,
     lifetime_deadline: tokio::time::Instant,
+    bridge_pull_session: Option<bridge_run::BridgePullSession>,
 ) -> Result<(), String> {
     let connection = async {
         loop {
@@ -919,14 +1025,30 @@ async fn handle_connection_until(
                     return Err("frame read deadline exceeded".to_string())
                 }
             };
-            let reply = {
+            let (reply, custody_receipt) = {
                 let mut st = state.lock().await;
                 // Detailed parser/authentication failures are deliberately not logged:
                 // untrusted peers must not create a log-amplification channel.
-                st.handle_inbound(&frame).ok().flatten()
+                match st.handle_inbound(&frame) {
+                    Ok(InboundOutcome::Accepted(reply)) => {
+                        let receipt = bridge_pull_session.as_ref().and_then(|session| {
+                            Envelope::unpack(&frame).map(|envelope| {
+                                let digest =
+                                    raven_core::bridge::authenticated_object_digest(&envelope);
+                                session.signed_receipt(&st.identity, &digest)
+                            })
+                        });
+                        (reply, receipt)
+                    }
+                    Ok(InboundOutcome::Ignored) => (None, None),
+                    Err(_) => (None, None),
+                }
             };
             if let Some(ack_bytes) = reply {
                 write_frame_with_timeout(&mut stream, &ack_bytes, limits.write_timeout).await?;
+            }
+            if let Some(receipt) = custody_receipt {
+                write_raw_with_timeout(&mut stream, &receipt, limits.write_timeout).await?;
             }
         }
         Ok(())
@@ -943,6 +1065,16 @@ fn spawn_connection_handler(
     limiter: Arc<Semaphore>,
     limits: ConnectionLimits,
 ) -> Result<JoinHandle<Result<(), String>>, ()> {
+    spawn_connection_handler_with_session(stream, state, limiter, limits, None)
+}
+
+fn spawn_connection_handler_with_session(
+    stream: TcpStream,
+    state: Arc<Mutex<NodeState>>,
+    limiter: Arc<Semaphore>,
+    limits: ConnectionLimits,
+    bridge_pull_session: Option<bridge_run::BridgePullSession>,
+) -> Result<JoinHandle<Result<(), String>>, ()> {
     let permit = limiter.try_acquire_owned().map_err(|_| ())?;
     // Measure lifetime from admission, not from whenever the executor first
     // polls the spawned task.
@@ -951,7 +1083,14 @@ fn spawn_connection_handler(
         // The owned permit is released by RAII on normal return, timeout,
         // cancellation, or panic unwinding.
         let _permit = permit;
-        handle_connection_until(stream, state, limits, lifetime_deadline).await
+        handle_connection_until(
+            stream,
+            state,
+            limits,
+            lifetime_deadline,
+            bridge_pull_session,
+        )
+        .await
     }))
 }
 
@@ -961,6 +1100,21 @@ fn spawn_default_connection_handler(
     limiter: Arc<Semaphore>,
 ) -> Result<JoinHandle<Result<(), String>>, ()> {
     spawn_connection_handler(stream, state, limiter, DEFAULT_CONNECTION_LIMITS)
+}
+
+fn spawn_bridge_connection_handler(
+    stream: TcpStream,
+    state: Arc<Mutex<NodeState>>,
+    limiter: Arc<Semaphore>,
+    bridge_pull_session: bridge_run::BridgePullSession,
+) -> Result<JoinHandle<Result<(), String>>, ()> {
+    spawn_connection_handler_with_session(
+        stream,
+        state,
+        limiter,
+        DEFAULT_CONNECTION_LIMITS,
+        Some(bridge_pull_session),
+    )
 }
 
 fn abort_handler(handle: &JoinHandle<Result<(), String>>) {
@@ -998,6 +1152,8 @@ async fn main() {
             data_dir,
             listen,
             peer,
+            bridge_pull,
+            bridge_pub_hex,
             peer_pub_hex,
             send,
             send_stdin,
@@ -1018,6 +1174,25 @@ async fn main() {
             if let Some(path) = write_pub {
                 let _ = std::fs::write(path, hex::encode(identity.public_key_bytes()));
             }
+            let bridge_pub = bridge_pub_hex.as_ref().map(|value| {
+                parse_pub_hex(value).unwrap_or_else(|e| {
+                    eprintln!("bridge pub: {e}");
+                    std::process::exit(1);
+                })
+            });
+            if bridge_pull && bridge_pub.is_none() {
+                eprintln!("--bridge-pull requires --bridge-pub-hex");
+                std::process::exit(2);
+            }
+            // Do not hold NodeState's mutex across a network handshake.
+            let bridge_pull_identity = if bridge_pull {
+                Some(load_or_err(&data_dir).unwrap_or_else(|e| {
+                    eprintln!("bridge pull identity: {e}");
+                    std::process::exit(1);
+                }))
+            } else {
+                None
+            };
             let queue = OutgoingQueue::open(&queue_path(&data_dir)).unwrap_or_else(|e| {
                 eprintln!("queue: {e}");
                 std::process::exit(1);
@@ -1030,6 +1205,7 @@ async fn main() {
                 .and_then(|s| parse_pub_hex(s).ok())
                 .or(peer_pub);
             let state = Arc::new(Mutex::new(NodeState {
+                data_dir: data_dir.clone(),
                 identity,
                 queue,
                 peer_pub,
@@ -1130,14 +1306,42 @@ async fn main() {
                     eprintln!("connect: {e}");
                     std::process::exit(1);
                 });
+                let bridge_session = if let (Some(pull_identity), Some(expected_bridge)) =
+                    (bridge_pull_identity.as_ref(), bridge_pub.as_ref())
+                {
+                    Some(
+                        bridge_run::authenticate_bridge_pull_client(
+                            &mut stream,
+                            pull_identity,
+                            expected_bridge,
+                        )
+                        .await
+                        .unwrap_or_else(|e| {
+                            eprintln!("bridge pull authentication failed: {e}");
+                            std::process::exit(1);
+                        }),
+                    )
+                } else {
+                    None
+                };
                 write_frame(&mut stream, &packed).await.unwrap();
                 {
                     let st = state.lock().await;
                     st.queue.mark_state(&mid, DeliveryState::Sent).unwrap();
                 }
                 let st = state.clone();
-                if spawn_default_connection_handler(stream, st, connection_limiter.clone()).is_err()
-                {
+                let spawned = match bridge_session {
+                    Some(session) => spawn_bridge_connection_handler(
+                        stream,
+                        st,
+                        connection_limiter.clone(),
+                        session,
+                    ),
+                    None => {
+                        spawn_default_connection_handler(stream, st, connection_limiter.clone())
+                    }
+                };
+                if spawned.is_err() {
                     eprintln!("raven-node: connection handler capacity reached");
                 }
             } else if let Some(peer_s) = peer.as_ref() {
@@ -1146,13 +1350,41 @@ async fn main() {
                     eprintln!("peer parse: {e}");
                     std::process::exit(1);
                 });
-                let stream = TcpStream::connect(addr).await.unwrap_or_else(|e| {
+                let mut stream = TcpStream::connect(addr).await.unwrap_or_else(|e| {
                     eprintln!("connect: {e}");
                     std::process::exit(1);
                 });
-                let st = state.clone();
-                if spawn_default_connection_handler(stream, st, connection_limiter.clone()).is_err()
+                let bridge_session = if let (Some(pull_identity), Some(expected_bridge)) =
+                    (bridge_pull_identity.as_ref(), bridge_pub.as_ref())
                 {
+                    Some(
+                        bridge_run::authenticate_bridge_pull_client(
+                            &mut stream,
+                            pull_identity,
+                            expected_bridge,
+                        )
+                        .await
+                        .unwrap_or_else(|e| {
+                            eprintln!("bridge pull authentication failed: {e}");
+                            std::process::exit(1);
+                        }),
+                    )
+                } else {
+                    None
+                };
+                let st = state.clone();
+                let spawned = match bridge_session {
+                    Some(session) => spawn_bridge_connection_handler(
+                        stream,
+                        st,
+                        connection_limiter.clone(),
+                        session,
+                    ),
+                    None => {
+                        spawn_default_connection_handler(stream, st, connection_limiter.clone())
+                    }
+                };
+                if spawned.is_err() {
                     eprintln!("raven-node: connection handler capacity reached");
                 }
             }
@@ -1203,14 +1435,7 @@ async fn main() {
             }
         }
         Commands::Status { data_dir } => {
-            let policy = load_policy(&data_dir);
-            let (pending, total) =
-                match ForwardQueue::open(&bridge_run::forward_queue_path(&data_dir)) {
-                    Ok(q) => (q.count_pending().unwrap_or(0), q.count_all().unwrap_or(0)),
-                    Err(_) => (0, 0),
-                };
-            let snap =
-                BridgeStatusSnapshot::from_policy(&policy, &["lan", "mock_ble"], pending, total);
+            let snap = read_bridge_status(&data_dir);
             println!("bridge={}", snap.bridge);
             println!("store={}", snap.store);
             println!("relay={}", snap.relay);
@@ -1237,6 +1462,7 @@ async fn main() {
             eprintln!("raven-node: flushing {} pending", pending.len());
             let addr: SocketAddr = peer.parse().unwrap();
             let state = Arc::new(Mutex::new(NodeState {
+                data_dir: data_dir.clone(),
                 identity,
                 queue,
                 peer_pub: Some(peer_pub),
@@ -1281,7 +1507,7 @@ async fn main() {
                 eprintln!("raven-node: flush done (check pending)");
             }
         }
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         Commands::Ipc {
             data_dir,
             forward_db,
@@ -1299,7 +1525,7 @@ async fn main() {
                 std::process::exit(1);
             }
         }
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         Commands::Service {
             data_dir,
             lan_listen,

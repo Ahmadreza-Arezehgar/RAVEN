@@ -1,5 +1,10 @@
 # Master Engineering Checklist — Walk In Progress
 
+> **Historical walk, not current acceptance.** This document records an
+> August 2026 checklist pass against an older tree. Its aggregate generators
+> are no longer present, and its percentage/result claims have not been
+> recomputed. Use [current verification status](FINAL_SERVERLESS_PROOF.md).
+
 **Branch:** `feature/raven-serverless-v1`  
 **Walk started:** 2026-08-12  
 **Walk closed (document):** 2026-08-12 (this continuation)  
@@ -8,24 +13,24 @@
 **This continuation:** PeerKeyDirectory → Keychain (§14), logout pin wipe, ATSAM Keychain non-sync, checklist §1–60 fill  
 **Operator:** automated desktop agent (evidence-backed; human review still required)
 
-> Formal §1–§60 walk. Status values: `PASS` | `FAIL` | `BLOCKED_HUMAN` | `BLOCKED_HARDWARE` | `IN_PROGRESS`.  
+> Formal §1–§60 walk. Original status values: `PASS` | `FAIL` | `BLOCKED_HUMAN` | `BLOCKED_HARDWARE` | `IN_PROGRESS`; `HISTORICAL SNAPSHOT` now marks results that are no longer reproducible from this tree.
 > No item marked PASS without concrete evidence (test name, script, SHA, or file).  
 > Combined rows from earlier draft are **expanded** so every section number appears once.
 
 ---
 
-## Session evidence pack (this machine)
+## Historical session evidence pack (this machine)
 
 | Proof | Result | Artifact / command |
 |-------|--------|-------------------|
-| Reliability matrix 20× | **RELIABILITY_20_GREEN** | `scripts/reliability_matrix_20.sh` → `node/proof_artifacts/reliability_20_*` / `LATEST_RELIABILITY` |
-| §59 harness | **17/17 PASS** (prior) | `scripts/final_serverless_proof.sh` → `node/proof_artifacts/LATEST` |
+| Reliability matrix 20× | Historical `RELIABILITY_20_GREEN` | Archived artifacts; generator removed |
+| §59 harness | Historical 17/17 snapshot (2026-08-21) | `node/proof_artifacts/LATEST`; generator removed |
 | raven-core + ash tests | PASS | `cargo test -p raven-core -p ash` |
 | bridge / mailbox / swarm / two_node / lan | PASS | matrix scenarios 01–11 + node/scripts/* |
 | macOS build | PASS | `cargo build -p raven-core -p ash -p raven-node` |
 | Windows cross | PASS_SOFTWARE_SUBSTITUTE | PE32+ `ash.exe` self-check (wine blocked on sudo/gstreamer) |
 | Linux runtime | PASS | musl ash in Lima `ash-amd64-preflight` + Docker NAT via Lima sock |
-| Docker NAT sim | **PASS** | `nat_docker_sim.sh` auto-wires Lima `DOCKER_HOST` |
+| Docker NAT sim | Historical PASS | Archived artifact; generator removed |
 | iOS iPhone XCTest | PASS ×2 | Discovery* + ContactRequest* + RavenEnvelope* + RavenBleRvn1* on `RAVEN-iPhone-15` |
 | iOS iPad XCTest | PASS ×2 | Same suite on `iPad Air 11-inch (M4)` |
 | Service survives ash | PASS | SQLite busy_timeout + service queue warmup; matrix 11 |
@@ -69,7 +74,7 @@
 | 28 | Internet P2P | HOLD | raw path refuses ATSAM origination; libp2p/NAT composition is experimental only |
 | 29 | DHT / Peer Discovery | PASS_SOFTWARE_SUBSTITUTE | DiscoveryResolver + local Kad; public Internet Kad **BLOCKED_HARDWARE** |
 | 30 | Bootstrap Nodes | PASS | disable-raven-defaults + manual peer smoke |
-| 31 | NAT Traversal | PASS_SOFTWARE_SUBSTITUTE | `nat_docker_sim.sh` **PASS** via Lima Docker; live CGNAT/DCUtR **BLOCKED_HARDWARE** |
+| 31 | NAT Traversal | HISTORICAL PASS_SOFTWARE_SUBSTITUTE | Archived Docker result only; current generator absent; live CGNAT/DCUtR **BLOCKED_HARDWARE** |
 | 32 | Offline Store-and-Forward | PASS | Harness step 06 + mailbox + matrix 04/07 |
 | 33 | Raven Bridge Definition | PASS | DTN gateway sense; bridge never decrypts |
 | 34 | Transport Adapter Architecture | PASS | mock_ble + LAN + Internet + store |
@@ -88,7 +93,7 @@
 | 47 | Cross-Platform Interop | PASS | macOS + Win PE substitute + Linux Lima/musl + Docker NAT |
 | 48 | Mandatory Network Tests | PASS | Demos + matrix network scenarios |
 | 49 | Mandatory Security Tests | PASS | Refuse argv, UDS peer-UID, envelope KATs, anti-spam, tamper |
-| 50 | Reliability and Scale Tests | PASS | `reliability_matrix_20.sh` ≥20 cycles green |
+| 50 | Reliability and Scale Tests | HISTORICAL PASS | Archived ≥20-cycle result; current generator absent |
 | 51 | Terminal-Specific Security Tests | PASS | ash/raven-node argv refuse + doctor redaction |
 | 52 | Packaging | PASS (unsigned) | `scripts/release/build_unsigned.sh` prior; MSI/notarize **BLOCKED_HUMAN** |
 | 53 | Node Operator Controls | PASS | ash node bridge/store/relay/bootstrap |
@@ -97,21 +102,22 @@
 | 56 | Documentation | PASS | SERVERLESS_MODEL, INSTALL_*, CHECKLIST_100_AUTOMATABLE, this walk |
 | 57 | CI Requirements | PASS (declared) | `.github/workflows/raven-serverless.yml` matrix |
 | 58 | Phase Exit Gates | PASS (software) | Software maximized; A human freeze **BLOCKED_HUMAN** |
-| 59 | Final Serverless Proof | PASS (automated) | Harness + reliability 20×; physical multi-device **BLOCKED_HARDWARE** |
+| 59 | Final Serverless Proof | HISTORICAL SNAPSHOT | Archived 17/17 result is not rerunnable in the current tree; physical multi-device **BLOCKED_HARDWARE** |
 | 60 | Final Definition of Done | BLOCKED_HUMAN | External auditors / notarize / phones |
 
 ---
 
-## Progress estimate
+## Historical progress estimate
 
 - **Sections with a terminal status recorded:** **60 / 60 (100% walked)**  
-- **Automatable PASS / soft-PASS / FROZEN / PASS_SOFTWARE_SUBSTITUTE:** **100%** of automatable rows (see `docs/CHECKLIST_100_AUTOMATABLE.md`)  
+- **Recorded automatable PASS / soft-PASS / FROZEN / PASS_SOFTWARE_SUBSTITUTE:** **100% at the time; not currently revalidated**
 - **Explicit absolute-DoD leftovers:** §60 BLOCKED_HUMAN; nested hardware notes on §29/§31/§36–37/§59; nested human notes on §5/§8/§18/§45/§52/§58  
 
-**Checklist automatable 100%?** **YES**  
+**Checklist automatable 100%?** **Historical answer: YES; current answer: not recomputed.**
 **Absolute marketing DoD closed?** **NO** (phones / notarize / external review)
 
-**READY for user physical test?** **YES for terminal + sim software on this Mac.** **NO for multi-device BLE / notarized installers / public CGNAT.**
+**Current readiness:** not established by this historical walk; multi-device BLE,
+notarized installers, public CGNAT, and independent review remain outside it.
 
 ---
 
@@ -122,6 +128,6 @@
 3. `ATSAMRootStorage` Keychain queries set `kSecAttrSynchronizable = false`  
 4. Desktop `raven_core::identity_store` — macOS Keychain / Windows DPAPI / Linux Secret Service + locked-file `0600`; plaintext `identity.seed` migrate; ash/raven-node/raven-swarm wired  
 5. `ForwardQueue` SQLite `busy_timeout` + `raven-node service` queue warmup (fixes IPC/bridge race → ash-close flake)  
-6. `scripts/reliability_matrix_20.sh` + Lima Docker NAT auto-wire; iPhone/iPad sim loops  
+6. Historical reliability/Lima artifacts + iPhone/iPad simulator loops (their aggregate generator is no longer present)
 
 Prior wave (`113bf33`): OAuth state/PKCE, SessionStore clear, raven-node `--send` refuse, UDS peer-UID, anti-spam.

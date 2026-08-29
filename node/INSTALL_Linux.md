@@ -1,31 +1,33 @@
 # Install Raven Serverless (Linux)
 
-## From source
+## Current status: R1 security hold
+
+Fresh Linux Release installation is intentionally blocked. The production-facing identity store can read an existing GNU/Linux Secret Service identity, but creation of a new protected identity is disabled until the reviewed add-only, prompt-free R1 backend and provider content-type policy are approved.
+
+Raven does **not** fall back to a plaintext seed or the debug-only locked-file backend in Release. Consequently, `scripts/install.sh`, `scripts/install/linux_systemd_user.sh`, and the unsigned archive builder must not be presented as working fresh-install paths on Linux yet.
+
+## Build and test from source
 
 ```bash
 cd node
-cargo build -p raven-node -p ash --release
-bash scripts/install/linux_systemd_user.sh
-export PATH="$HOME/.local/bin:$PATH"
-ash init
-ash doctor
+cargo build --locked -p raven-node -p ash --release
+cargo test --locked -p raven-core -p raven-node -p ash -p raven-swarm
 ```
 
-User systemd unit runs `raven-node service` (bridge + IPC). Does not require root.
+The release binaries build, but a fresh `raven init` will fail closed at the protected identity-store gate. Existing profiles whose identity is already present in Secret Service may still load after continuity validation.
 
-## Unsigned tarball
+## Review-only unsigned archive
 
 ```bash
-bash scripts/release/build_unsigned.sh
-tar xzf dist/raven-serverless-*-linux-*.tar.gz
-cd raven-serverless-*/
-./bin/ash --data-dir ./raven-data init
+RAVEN_ALLOW_BLOCKED_LINUX_PACKAGE=1 bash scripts/release/build_unsigned.sh
 ```
 
-Verify `SHA256SUMS.txt`. Signing/packages (deb/rpm) are operator-owned — not produced unsigned.
+This override produces a build-review artifact only. It does not bypass the identity hold and must not be distributed as an installable Linux release.
 
-## Notes
+## Exit criteria
 
-- Prefer `raven` argv0 if distribution `ash` conflicts with BusyBox `/bin/ash`.
-- No central message server is configured; see `SERVERLESS_MODEL.md`.
-- Identity seed storage: Secret Service when available, else mode `0600` locked file — see [`IDENTITY_SEED_STORAGE.md`](IDENTITY_SEED_STORAGE.md).
+- Integrate the frozen add-only/no-prompt Secret Service API only after R1 authorization.
+- Prove create/readback, duplicate refusal, locked-provider behavior, migration, crash continuity, and provider content-type normalization on native GNU/Linux.
+- Re-enable installer/systemd/archive flows only after those gates pass.
+
+See [`IDENTITY_SEED_STORAGE.md`](IDENTITY_SEED_STORAGE.md) and `scripts/linux_secret_service_r0_hard_stop.sh` for the current boundary and evidence.

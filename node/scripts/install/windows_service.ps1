@@ -1,10 +1,22 @@
 # Install always-on raven-node for the current Windows user (no MSI / no system ash overwrite).
 param(
     [string]$DataDir = $(Join-Path $env:LOCALAPPDATA "RavenNode"),
-    [string]$BinDir = $(Join-Path $env:LOCALAPPDATA "RavenNode")
+    [string]$BinDir = $(Join-Path $env:LOCALAPPDATA "RavenNode"),
+    [switch]$AllowExperimentalBridgeHarness
 )
 
 $ErrorActionPreference = "Stop"
+
+if (-not $AllowExperimentalBridgeHarness) {
+    throw @"
+Windows product installation is held pending a native two-profile
+PairInit/indexed-message/authenticated-ACK validation. The same-user named-pipe
+transport is implemented, but this script still installs only the raw bridge
+development harness. Nothing was installed. To opt into that harness, rerun
+with -AllowExperimentalBridgeHarness.
+"@
+}
+
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
@@ -31,7 +43,8 @@ $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoi
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description "RAVEN raven-node bridge (serverless)" | Out-Null
 Start-ScheduledTask -TaskName $taskName
 
-Write-Host "installed task $taskName"
+Write-Warning "EXPERIMENTAL BRIDGE HARNESS ONLY: native Windows secure-send E2E is not release-validated"
+Write-Host "installed development task $taskName"
 Write-Host "data-dir=$DataDir"
 Write-Host "bin-dir=$BinDir (raven.exe / ash.exe)"
-Write-Host "Named-pipe IPC design: see WINDOWS_SERVICE.md (UDS is Unix-only)"
+Write-Host "Named-pipe IPC is implemented; this task does not launch it. See WINDOWS_SERVICE.md"

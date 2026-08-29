@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import math
 import socket
 
 import uvicorn
@@ -14,7 +15,6 @@ from starlette.routing import Route
 
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.routes import create_agent_card_routes, create_jsonrpc_routes
-from a2a.server.tasks import InMemoryTaskStore
 from a2a.types import (
     AgentCapabilities,
     AgentCard,
@@ -29,14 +29,17 @@ from .executor import TeamAgentExecutor
 from .llm import build_brain
 from .memory import TeamMemory
 from .raven_identity import RavenIdentity
+from .task_store import BoundedTaskStore
 from .tools import ToolBox
 
 MESH_EXTENSION_URI = 'https://raven.app/extensions/mesh-mailbox/v1'
 CARD_KID_SUFFIX = '-card'
 
 
-def _apply_security(card: AgentCard) -> None:
+def _apply_security(card: AgentCard, enabled: bool) -> None:
     """Declare Bearer as the accepted auth scheme (OpenAPI-aligned)."""
+    if not enabled:
+        return
     scheme = card.security_schemes['bearer']
     scheme.http_auth_security_scheme.scheme = 'Bearer'
     req = card.security_requirements.add()
@@ -57,9 +60,12 @@ def _sign_card(card: AgentCard, identity: RavenIdentity) -> AgentCard:
 
 
 def build_agent_card(config: NodeConfig, identity: RavenIdentity | None = None) -> AgentCard:
+    description = config.role or f'{config.name} agent node'
+    if not config.require_signed_tasks:
+        description = f'⚠ OPEN MODE: accepts unsigned tasks ⚠ — {description}'
     card = AgentCard(
         name=config.name,
-        description=config.role or f'{config.name} agent node',
+        description=description,
         version='1.1.0',
         supported_interfaces=[
             AgentInterface(
@@ -75,12 +81,12 @@ def build_agent_card(config: NodeConfig, identity: RavenIdentity | None = None) 
                 AgentExtension(
                     uri=MESH_EXTENSION_URI,
                     description=(
-                        'Offline DTN mailbox transport: tasks may arrive via '
-                        'libp2p store-and-forward when HTTP is unreachable.'
+                        'EXPERIMENTAL PLAINTEXT DTN mailbox. Explicitly enabled; '
+                        'not Raven E2EE and not a production transport.'
                     ),
                     required=False,
                 )
-            ],
+            ] if config.enable_experimental_mailbox else [],
         ),
         default_input_modes=['text/plain'],
         default_output_modes=['text/plain'],
@@ -94,7 +100,7 @@ def build_agent_card(config: NodeConfig, identity: RavenIdentity | None = None) 
             for s in config.skills
         ],
     )
-    _apply_security(card)
+    _apply_security(card, bool(config.auth_token))
     if identity is not None:
         card = _sign_card(card, identity)
     return card
@@ -125,7 +131,7 @@ def build_extended_card(config: NodeConfig, identity: RavenIdentity) -> AgentCar
             for s in config.skills
         ],
     )
-    _apply_security(ext)
+    _apply_security(ext, bool(config.auth_token))
     return _sign_card(ext, identity)
 
 
@@ -150,6 +156,134 @@ class BearerAuthMiddleware:
         await self.app(scope, receive, send)
 
 
+class _RpcBodyTooLarge(Exception):
+    pass
+
+
+class RpcIngressLimitMiddleware:
+    """Bound JSON-RPC bodies and in-flight work before the A2A SDK parses it.
+
+    Limits are per server process.  The body is buffered only up to the
+    configured cap, then replayed once to the downstream ASGI application.
+    This also gives chunked requests the same bound as Content-Length requests.
+    """
+
+    def __init__(
+        self,
+        app,
+        *,
+        max_body_bytes: int,
+        max_concurrent: int,
+        body_timeout_seconds: float,
+        queue_timeout_seconds: float,
+    ) -> None:
+        if max_body_bytes <= 0 or max_concurrent <= 0:
+            raise ValueError('RPC ingress limits must be positive')
+        if not math.isfinite(body_timeout_seconds) or body_timeout_seconds <= 0:
+            raise ValueError('RPC body timeout must be finite and positive')
+        if not math.isfinite(queue_timeout_seconds) or queue_timeout_seconds <= 0:
+            raise ValueError('RPC queue timeout must be finite and positive')
+        self.app = app
+        self.max_body_bytes = max_body_bytes
+        self.body_timeout_seconds = body_timeout_seconds
+        self.queue_timeout_seconds = queue_timeout_seconds
+        self._slots = asyncio.Semaphore(max_concurrent)
+
+    @staticmethod
+    async def _error(scope, receive, send, status: int, error: str) -> None:
+        response = JSONResponse({'error': error}, status_code=status)
+        await response(scope, receive, send)
+
+    def _declared_length(self, scope) -> int | None:
+        values = [
+            value
+            for name, value in scope.get('headers', [])
+            if name.lower() == b'content-length'
+        ]
+        if not values:
+            return None
+        if len(values) != 1:
+            raise ValueError('multiple content-length headers')
+        raw = values[0]
+        if not raw.isdigit():
+            raise ValueError('invalid content-length header')
+        return int(raw)
+
+    async def _body(self, receive) -> bytes | None:
+        async def collect() -> bytes | None:
+            body = bytearray()
+            while True:
+                message = await receive()
+                kind = message.get('type')
+                if kind == 'http.disconnect':
+                    return None
+                if kind != 'http.request':
+                    raise ValueError('unexpected ASGI request event')
+                chunk = message.get('body', b'')
+                if len(body) + len(chunk) > self.max_body_bytes:
+                    raise _RpcBodyTooLarge
+                body.extend(chunk)
+                if not message.get('more_body', False):
+                    return bytes(body)
+
+        return await asyncio.wait_for(collect(), timeout=self.body_timeout_seconds)
+
+    async def __call__(self, scope, receive, send):
+        is_rpc = (
+            scope.get('type') == 'http'
+            and scope.get('path', '') == '/'
+            and scope.get('method', '').upper() == 'POST'
+        )
+        if not is_rpc:
+            await self.app(scope, receive, send)
+            return
+
+        try:
+            declared = self._declared_length(scope)
+        except ValueError:
+            await self._error(scope, receive, send, 400, 'invalid content length')
+            return
+        if declared is not None and declared > self.max_body_bytes:
+            await self._error(scope, receive, send, 413, 'request body too large')
+            return
+
+        try:
+            await asyncio.wait_for(
+                self._slots.acquire(), timeout=self.queue_timeout_seconds
+            )
+        except asyncio.TimeoutError:
+            await self._error(scope, receive, send, 503, 'RPC capacity exhausted')
+            return
+
+        try:
+            try:
+                body = await self._body(receive)
+            except _RpcBodyTooLarge:
+                await self._error(scope, receive, send, 413, 'request body too large')
+                return
+            except asyncio.TimeoutError:
+                await self._error(scope, receive, send, 408, 'request body timeout')
+                return
+            except ValueError:
+                await self._error(scope, receive, send, 400, 'invalid request body')
+                return
+            if body is None:
+                return
+
+            delivered = False
+
+            async def replay_receive():
+                nonlocal delivered
+                if not delivered:
+                    delivered = True
+                    return {'type': 'http.request', 'body': body, 'more_body': False}
+                return await receive()
+
+            await self.app(scope, replay_receive, send)
+        finally:
+            self._slots.release()
+
+
 async def health(request: Request) -> JSONResponse:
     return JSONResponse({'status': 'ok'})
 
@@ -163,16 +297,20 @@ async def raven_identity(request: Request) -> JSONResponse:
             from .raven_identity import load_revocations
 
             revoked = sorted(load_revocations(cfg.revocations_file))
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            return JSONResponse(
+                {'error': f'revocation policy unavailable: {exc}'}, status_code=503
+            )
     payload = {
         **rav.identity_card(),
         'card_kid': rav.fingerprint + CARD_KID_SUFFIX,
         'policy': {
             'require_signed_tasks': cfg.require_signed_tasks,
+            'open_mode': not cfg.require_signed_tasks,
             'trusted_peers': sorted(cfg.trusted_peers),
             'revoked': revoked,
         },
+        'experimental_plaintext_mailbox': cfg.enable_experimental_mailbox,
     }
     mb = getattr(request.app.state, 'mailbox_info', None)
     if mb:
@@ -183,8 +321,7 @@ async def raven_identity(request: Request) -> JSONResponse:
 def build_app(config: NodeConfig) -> Starlette:
     memory = TeamMemory(config.repo_path, auto_commit=config.auto_commit_memory)
     toolbox = ToolBox(config, memory)
-    cancel_event = asyncio.Event()
-    brain = build_brain(config, toolbox, cancel_event)
+    brain = build_brain(config, toolbox)
     identity = RavenIdentity.load_or_create(config.keys_dir)
     executor = TeamAgentExecutor(
         config,
@@ -192,14 +329,19 @@ def build_app(config: NodeConfig) -> Starlette:
         memory,
         trusted_peers=config.trusted_peers,
         require_signed=config.require_signed_tasks,
-        cancel_event=cancel_event,
+        identity=identity,
     )
     card = build_agent_card(config, identity)
     ext_card = build_extended_card(config, identity)
 
+    task_store = BoundedTaskStore(
+        max_count=config.task_store_max_count,
+        max_bytes=config.task_store_max_bytes,
+        ttl_seconds=config.task_store_ttl_seconds,
+    )
     handler = DefaultRequestHandler(
         agent_executor=executor,
-        task_store=InMemoryTaskStore(),
+        task_store=task_store,
         agent_card=card,
         extended_agent_card=ext_card,
     )
@@ -221,22 +363,30 @@ def build_app(config: NodeConfig) -> Starlette:
     app.state.raven = identity
     app.state.config = config
     app.state.brain = brain
+    app.state.task_store = task_store
+    app.add_middleware(
+        RpcIngressLimitMiddleware,
+        max_body_bytes=config.max_rpc_body_bytes,
+        max_concurrent=config.max_concurrent_rpc,
+        body_timeout_seconds=config.rpc_body_timeout_seconds,
+        queue_timeout_seconds=config.rpc_queue_timeout_seconds,
+    )
     if config.auth_token:
-        app = BearerAuthMiddleware(app, config.auth_token)  # type: ignore[assignment]
+        # Keep the Starlette object (and its state/lifespan) as the returned app;
+        # wrapping it by assignment made ``serve`` crash on ``app.state``.  Add
+        # this last so Bearer rejection stays outside body buffering/work slots.
+        app.add_middleware(BearerAuthMiddleware, token=config.auth_token)
     return app
 
 
 # ------------------------------------------------- background services ----
 def _revocations(cfg: NodeConfig) -> set[str]:
-    """Best-effort hot-reload of the revocation list (empty set on failure)."""
+    """Hot-reload revocations; configured policy failures are fatal/closed."""
     if not cfg.revocations_file:
         return set()
-    try:
-        from .raven_identity import load_revocations
+    from .raven_identity import load_revocations
 
-        return load_revocations(cfg.revocations_file)
-    except Exception:  # noqa: BLE001
-        return set()
+    return load_revocations(cfg.revocations_file)
 
 
 def _start_services(app) -> None:
@@ -248,6 +398,8 @@ def _start_services(app) -> None:
     from . import discovery
 
     cfg: NodeConfig = app.state.config
+    stop_event = threading.Event()
+    app.state.service_stop = stop_event
 
     # --- mDNS (LAN discovery) — own thread: zeroconf is blocking -------
     def _mdns_worker():
@@ -287,10 +439,19 @@ def _start_services(app) -> None:
         binp = None
         seen_file = r.memory.resolve_in_repo('.team/mesh-seen.json')
         try:
-            binp = mesh_mod.find_swarm_bin()
-            if binp:
+            binp = mesh_mod.find_swarm_bin() if cfg.enable_experimental_mailbox else None
+            if binp and cfg.enable_experimental_mailbox:
+                print(
+                    f'! [{cfg.name}] EXPERIMENTAL PLAINTEXT MAILBOX ENABLED; '
+                    'payloads are not Raven E2EE',
+                    flush=True,
+                )
                 store = mesh_mod.serve_store(
-                    binp, r.memory.resolve_in_repo('.team/mesh-store'))
+                    binp,
+                    r.memory.resolve_in_repo('.team/mesh-store'),
+                    cfg.advertised_host or '',
+                )
+                app.state.mailbox_proc = store['proc']
                 app.state.mailbox_info = {
                     'multiaddr': store['multiaddr'],
                     'peer_id': store['peer_id'],
@@ -348,12 +509,25 @@ def _start_services(app) -> None:
                 if tid in seen:
                     continue
                 payload = _json.loads(payload_text)
-                ok, why = verify_delegation(
-                    payload.get('raven', {}), payload.get('text', ''),
-                    trusted_peers=r.peers(), required=True,
-                    revoked=_revocations(cfg),
-                )
-                sender = payload.get('from', '?')
+                sender = str(payload.get('from', ''))
+                outer_to = str(payload.get('to', ''))
+                meta = payload.get('raven', {})
+                if sender != str(meta.get('sender', '')):
+                    ok, why = False, 'outer sender does not match signed sender'
+                elif outer_to != my_addr:
+                    ok, why = False, 'outer recipient mismatch'
+                elif str(payload.get('kind', '')) != 'task':
+                    ok, why = False, 'outer kind mismatch'
+                else:
+                    ok, why = verify_delegation(
+                        meta, payload.get('text', ''),
+                        trusted_peers=r.peers(), required=True,
+                        revoked=_revocations(cfg),
+                        replay=r.replay_cache,
+                        expected_recipient=my_addr,
+                        expected_task_id=tid,
+                        expected_kind='task',
+                    )
                 text = payload.get('text', '')
                 if not ok:
                     r.memory.log_event(cfg.name,
@@ -365,11 +539,24 @@ def _start_services(app) -> None:
                     except Exception as exc:  # noqa: BLE001
                         res = f'{type(exc).__name__}: {exc}'
                     out = r._slot('outbox', sender)
-                    (out / f'{tid}.json').write_text(_json.dumps({
+                    reply = {
                         'id': tid, 'kind': 'answer',
                         'from': my_addr, 'to': sender, 'text': res,
                         'via': 'mesh',
-                    }), encoding='utf-8')
+                    }
+                    from .raven_identity import sign_delegation
+
+                    reply['raven'] = sign_delegation(
+                        app.state.raven,
+                        str(res),
+                        recipient=sender,
+                        task_id=tid,
+                        kind='answer',
+                        ttl_seconds=24 * 60 * 60,
+                    )
+                    (out / f'{tid}.json').write_text(
+                        _json.dumps(reply), encoding='utf-8'
+                    )
                     n += 1
                     r.memory.log_event(cfg.name, f'mesh✓ {tid} ← {sender[:14]}…')
                     try:
@@ -388,8 +575,7 @@ def _start_services(app) -> None:
 
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        while True:
-            time.sleep(interval)
+        while not stop_event.wait(interval):
             try:
                 r.pull()
                 n = loop.run_until_complete(r.process_inbox(app.state.brain.run))
@@ -410,6 +596,12 @@ def _stop_services(app) -> None:
 
     discovery.stop_advertise(getattr(app.state, 'zc', None),
                              getattr(app.state, 'zc_infos', None))
+    stop = getattr(app.state, 'service_stop', None)
+    if stop:
+        stop.set()
+    proc = getattr(app.state, 'mailbox_proc', None)
+    if proc and proc.poll() is None:
+        proc.terminate()
 
 
 def serve(config: NodeConfig) -> None:
@@ -440,6 +632,18 @@ def serve(config: NodeConfig) -> None:
         f'llm: {cfg.llm.provider}/{cfg.llm.model or "-"})',
         flush=True,
     )
+    if not cfg.require_signed_tasks:
+        print(
+            '! ! ! OPEN MODE: UNSIGNED TASKS ARE ACCEPTED. '
+            'Any reachable client may invoke this agent. ! ! !',
+            flush=True,
+        )
+    if cfg.enable_experimental_mailbox:
+        print(
+            '! EXPERIMENTAL PLAINTEXT MAILBOX explicitly enabled; '
+            'do not treat it as confidential or production-ready.',
+            flush=True,
+        )
     print(  # noqa: T201
         f'* [{cfg.name}] raven id {rav.address} ({rav.display_address}) '
         f'fp:{rav.fingerprint} signed-only={cfg.require_signed_tasks} '

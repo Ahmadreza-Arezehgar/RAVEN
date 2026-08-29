@@ -1234,7 +1234,7 @@ mod tests {
         }
         #[cfg(not(unix))]
         {
-            std::fs::write(&path, &seed).unwrap();
+            std::fs::write(&path, seed).unwrap();
         }
 
         let loaded = load_identity(dir).unwrap().expect("migrate+load");
@@ -1285,8 +1285,7 @@ mod tests {
         let id = Identity::generate();
         let mut seed = id.seed_bytes();
         let err = store_seed(dir, &seed)
-            .err()
-            .expect("fresh creation must fail closed on an existing seed file");
+            .expect_err("fresh creation must fail closed on an existing seed file");
         seed.zeroize();
         assert!(matches!(err, IdentityStoreError::Io(_)));
         assert_eq!(
@@ -1305,7 +1304,7 @@ mod tests {
         let original = Identity::generate();
         let seed = original.seed_bytes();
         let path = seed_path(dir);
-        std::fs::write(&path, &seed).unwrap();
+        std::fs::write(&path, seed).unwrap();
 
         let loaded = load_identity(dir).unwrap().expect("migrate+load");
         assert_eq!(loaded.public_key_bytes(), original.public_key_bytes());
@@ -1373,7 +1372,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
         let (id, _) = load_or_create_identity(dir).unwrap();
+        #[cfg(target_os = "macos")]
         let original_pub = id.public_key_bytes();
+        #[cfg(not(target_os = "macos"))]
+        let _ = id;
         let mut binding = std::fs::read(binding_path(dir)).unwrap();
         assert_eq!(binding.len(), IDENTITY_BINDING_LEN);
         binding[44] ^= 0x80;

@@ -1,15 +1,16 @@
-# Windows — always-on raven-node + named-pipe IPC notes
+# Windows — bridge harness (product service still held)
 
 **Do not** replace system shells. Prefer `raven.exe` as the unambiguous CLI; `ash.exe` is an alternate name for the same binary.
 
 ## Install script
 
 ```powershell
-# From repo:
-#   powershell -ExecutionPolicy Bypass -File node/scripts/install/windows_service.ps1
+# Explicit development-only bridge harness:
+powershell -ExecutionPolicy Bypass -File node/scripts/install/windows_service.ps1 `
+  -AllowExperimentalBridgeHarness
 ```
 
-See `windows_service.ps1` for build + Task Scheduler registration.
+The script refuses to register anything without that explicit switch. It is not a product installer: the named-pipe `LanDial` transport now exists, but this helper still launches only the bridge harness and the required native two-profile Windows message/ACK validation is outstanding.
 
 ## Per-user background process (V1)
 
@@ -22,9 +23,11 @@ Start-Process -FilePath "$env:LOCALAPPDATA\RavenNode\raven-node.exe" `
 
 ## Named pipe IPC
 
-- Pipe name: `\\.\pipe\raven-node` (user DACL only — same framing as Unix UDS via `raven-core::ipc`)
-- Unix ash uses UDS; Windows ash falls back to `--send-stdin` spawn until named-pipe client lands in ash
-- Software path: framing + refuse-secret-fields are shared; OS bind is platform-specific
+- Implemented pipe name: `\\.\pipe\raven-node-<profile-hash>`; the hash is derived from the canonical profile path and contains no identity secret.
+- The server uses a protected current-user-only DACL, rejects remote clients, and verifies client user SID + Windows session. The client performs the reciprocal server SID + session check.
+- Framing limits, 10s request/write deadlines, the 45s server `LanDial` budget, and a 50s client response deadline are enforced; authorization errors fail closed.
+- There is no plaintext/demo fallback; secure sends fail closed on Windows.
+- Run `raven-node service ...` in the foreground and `ash ipc-ping` from a second terminal for local validation. Do not call it release-ready until the two-profile message/ACK gate passes on Windows.
 
 ## Uninstall
 

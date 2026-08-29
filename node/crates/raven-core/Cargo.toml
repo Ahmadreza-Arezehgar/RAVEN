@@ -35,8 +35,13 @@ security-framework-sys = "2"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
     "Win32_Security_Cryptography",
     "Win32_Storage_FileSystem",
+    "Win32_System_Pipes",
+    "Win32_System_RemoteDesktop",
+    "Win32_System_Threading",
 ] }
 
 # Secret Service needs libdbus — glibc desktop only (not musl static releases).
@@ -51,6 +56,11 @@ zvariant_derive = { version = "2.10", optional = true }
 [dev-dependencies]
 sha3 = "0.12.0"
 tempfile = { workspace = true }
+
+[[test]]
+name = "adversarial_atsam"
+path = "tests/adversarial_atsam.rs"
+required-features = ["full-braid-lab"]
 
 [features]
 default = []

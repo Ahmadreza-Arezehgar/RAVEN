@@ -2,8 +2,11 @@
 
 **Purpose:** Hand this directory of pointers to an independent protocol/crypto reviewer.  
 **Branch:** `feature/raven-serverless-v1`  
-**Claim:** Implementation + automated proof harness complete for software-automatable §59.  
-**Not claimed:** Full §59/§60 DoD, notarization, live CGNAT, physical BLE radio matrix.
+**Status:** Review-input draft; no completed independent protocol or cryptographic audit is recorded.
+**Not claimed:** Production readiness, full §59/§60 DoD, notarization, live CGNAT, or a physical BLE radio matrix.
+
+The old 17/17 §59 artifact is a historical 2026-08-21 snapshot whose generator
+is no longer present. See [current verification status](FINAL_SERVERLESS_PROOF.md).
 
 ---
 
@@ -11,8 +14,8 @@
 
 | Doc | Role |
 |---|---|
-| [`docs/THREAT_MODEL.md`](THREAT_MODEL.md) | Serverless P2P threat model (Phase A) — 17 adversary classes |
-| [`docs/AUDIT_SERVERLESS_PIVOT_2026-08-12.md`](AUDIT_SERVERLESS_PIVOT_2026-08-12.md) | Pivot audit notes |
+| [`docs/THREAT_MODEL.md`](../docs/THREAT_MODEL.md) | Serverless P2P threat model (Phase A) — 17 adversary classes |
+| [`docs/AUDIT_SERVERLESS_PIVOT_2026-08-12.md`](../docs/AUDIT_SERVERLESS_PIVOT_2026-08-12.md) | Internal pivot notes; not an external audit |
 | [`docs/SERVERLESS_MODEL.md`](SERVERLESS_MODEL.md) | Exact meaning of “serverless” (three planes) |
 
 Reviewer should mark any row where shipped code diverges from a cited mechanism.
@@ -21,12 +24,11 @@ Reviewer should mark any row where shipped code diverges from a cited mechanism.
 
 ## 2. Protocol freeze — file list + hashes
 
-Regenerate:
-
-```bash
-bash scripts/freeze_protocol_hashes.sh
-# → docs/PROTOCOL_FREEZE_HASHES_V1.md
-```
+The committed [`PROTOCOL_FREEZE_HASHES_V1.md`](PROTOCOL_FREEZE_HASHES_V1.md)
+was generated on 2026-08-12 for commit `7acbef7`. Its generator script is not
+present, so it is a historical manifest, not proof that current files remain
+frozen. A reviewer must generate and retain a fresh manifest with independent
+tooling for the exact reviewed commit.
 
 Normative specs live under `protocol/`:
 
@@ -74,10 +76,10 @@ Known gaps called out in the mapping doc (PLACEHOLDER KATs, CryptoKit CT interop
 
 ```bash
 # Python reference
-cd protocol/reference && python -m pytest -q
+(cd ../protocol/reference && python -m pytest -q)
 
 # Rust
-cd node && cargo test -p raven-core
+cargo test -p raven-core
 cargo test -p raven-core --test bridge_v1 --test fuzz_smoke
 
 # Shared vector sync (if tooling present)
@@ -86,14 +88,20 @@ cargo test -p raven-core --test bridge_v1 --test fuzz_smoke
 
 ---
 
-## 5. Automated §59 proof (software)
+## 5. Current software checks
 
 ```bash
-bash scripts/final_serverless_proof.sh
-cat node/proof_artifacts/LATEST/SUMMARY.md
+cargo test --locked -p raven-core -p raven-node -p ash -p raven-swarm
+cargo clippy --locked -p raven-core -p raven-node -p ash -p raven-swarm --all-targets -- -D warnings
+bash scripts/bridge_abc_demo.sh
+bash scripts/internet_dial_smoke.sh
 ```
 
-Expect `AUTOMATED_PROOF_GREEN`. Hardware leftovers listed in each run’s `BLOCKED.md`.
+These are separate scoped checks, not an aggregate proof. The Internet smoke
+proves a fail-closed hold, not successful Internet messaging. The bridge demo
+uses an explicitly unsafe lab payload feature and proves its authenticated
+transport/custody flow rather than production ATSAM or physical radios. See
+[`FINAL_SERVERLESS_PROOF.md`](FINAL_SERVERLESS_PROOF.md) for limitations.
 
 ---
 
@@ -118,8 +126,8 @@ Expect `AUTOMATED_PROOF_GREEN`. Hardware leftovers listed in each run’s `BLOCK
 
 ## 7. Reviewer checklist (suggested)
 
-1. Recompute `PROTOCOL_FREEZE_HASHES_V1.md`; diff against committed copy.
+1. Generate fresh hashes independently for the reviewed commit; compare the dated manifest only as historical context.
 2. Walk threat-model table; spot-check citations against code.
 3. Run Python + Rust vector suites; attach logs.
-4. Read `bridge_abc_demo` + final proof SUMMARY — confirm bridge never sees plaintext.
+4. Run the current bridge/core tests and inspect their exact commit; use archived §59 transcripts only as historical context.
 5. File findings against branch tip SHA (local; may be unpublished).

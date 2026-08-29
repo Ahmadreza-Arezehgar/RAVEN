@@ -239,11 +239,11 @@ pub fn unseal_message(
 fn build_aad(sender: &str, recipient: &str, msg_id: &[u8; 16]) -> [u8; 32] {
     let mut h = Sha256::new();
     h.update(b"raven/rvn1/interim-seal/aad");
-    h.update(&[0]);
+    h.update([0]);
     h.update(sender.as_bytes());
-    h.update(&[0]);
+    h.update([0]);
     h.update(recipient.as_bytes());
-    h.update(&[0]);
+    h.update([0]);
     h.update(msg_id);
     h.finalize().into()
 }

@@ -91,10 +91,18 @@ def rvn_display(address: str) -> str:
 
 
 def load_peers() -> dict:
-    return _load_json(PEERS_FILE, {})
+    if not PEERS_FILE.exists():
+        return {}
+    from team_agents.config import load_trusted_peers
+
+    return load_trusted_peers(PEERS_FILE)
 
 
 def save_peers(peers: dict) -> None:
+    from team_agents.raven_identity import validate_address_public_key
+
+    for address, public_key in peers.items():
+        validate_address_public_key(str(address), str(public_key))
     _save_json(PEERS_FILE, peers)
 
 
@@ -120,7 +128,8 @@ def cmd_init(args) -> None:
     repo.mkdir(parents=True, exist_ok=True)
     (repo / '.gitignore').write_text(
         '.team/keys/\n*.seed\n'
-        '.team/mesh-client/\n.team/mesh-store/\n.team/mesh-seen.json\n',
+        '.team/mesh-client/\n.team/mesh-store/\n.team/mesh-seen.json\n'
+        '.team/replay-cache.sqlite3*\n',
         encoding='utf-8')
     if not (repo / '.git').exists():
         import subprocess as _sp
@@ -131,6 +140,11 @@ def cmd_init(args) -> None:
                  '--allow-empty'], cwd=repo, check=False)
 
     address, pub = ensure_keys(repo)
+    # A configured trust policy must fail closed if it later disappears.  Give
+    # fresh (and pre-policy) wizard homes an explicit, valid empty policy so a
+    # new node can still start cleanly before its first teammate is invited.
+    if not PEERS_FILE.exists():
+        _save_json(PEERS_FILE, {})
 
     # internet capability shapes which brains we offer later
     if args.internet is not None:
@@ -163,6 +177,8 @@ def invite_line(st: dict) -> str:
 
 # ---------------------------------------------------------------- trust --
 def cmd_trust(args) -> None:
+    from team_agents.raven_identity import validate_address_public_key
+
     line = args.invite
     if not line:
         print("paste teammate's INVITE line, then press enter:")
@@ -172,8 +188,10 @@ def cmd_trust(args) -> None:
     if len(parts) != 4 or parts[0] != 'RDAP1':
         sys.exit('invalid invite — expected: RDAP1 <name> <rvn1...> <64-hex pubkey>')
     _, tname, addr, pub = parts
-    if not addr.startswith('rvn1q') or len(pub) != 64:
-        sys.exit('invalid invite fields')
+    try:
+        validate_address_public_key(addr, pub)
+    except ValueError as exc:
+        sys.exit(f'invalid invite identity: {exc}')
 
     peers = load_peers()
     peers[addr] = pub
@@ -187,13 +205,20 @@ def cmd_trust(args) -> None:
     # if a url is known, pull their live identity — captures mesh mailbox info
     if args.url:
         try:
-            import httpx
-
-            idn = httpx.get(args.url.rstrip('/') + '/raven/identity',
-                            timeout=6).json()
-            if idn.get('mailbox'):
+            idn = _probe(
+                args.url,
+                expected_address=addr,
+                expected_public_key=pub,
+                token_file=args.token_file,
+            )
+            if idn is None:
+                raise ValueError('remote identity did not match the invite')
+            if args.experimental_plaintext_mailbox and idn.get('mailbox'):
                 mate['mailbox'] = idn['mailbox']
-                print(f"  +mesh captured ({idn['mailbox']['multiaddr'][:34]}…)")
+                print(
+                    '  ! EXPERIMENTAL PLAINTEXT mailbox captured '
+                    f"({idn['mailbox']['multiaddr'][:34]}…)"
+                )
         except Exception:  # noqa: BLE001
             print('  (identity fetch failed — mailbox info skipped)')
 
@@ -213,6 +238,21 @@ def cmd_start(args) -> None:
         sys.exit('run `./rdap init` first')
 
     repo = Path(st.get('repo') or BASE / 'team-repo')
+    from team_agents.client import resolve_bearer_token
+    from team_agents.raven_identity import validate_address_public_key
+
+    # One-time migration for wizard homes created before peers.json became a
+    # mandatory hot-reloaded policy file.  Runtime loss after this point is not
+    # recreated by the server and therefore remains fail-closed.
+    if not PEERS_FILE.exists():
+        _save_json(PEERS_FILE, {})
+    local_address, local_public_key = ensure_keys(repo)
+    try:
+        validate_address_public_key(local_address, local_public_key)
+    except ValueError as exc:
+        sys.exit(f'local Raven identity is invalid: {exc}')
+    if st.get('address') and st['address'] != local_address:
+        sys.exit('saved RDAP address does not match the local private key')
     # always wire the live peers file — trust list may grow while running
     peers_now = load_trusted_peers(PEERS_FILE) if PEERS_FILE.exists() else {}
     saved_llm = st.get('llm', {})
@@ -235,10 +275,16 @@ def cmd_start(args) -> None:
         ),
         trusted_peers=peers_now,
         trusted_peers_file=str(PEERS_FILE),
-        require_signed_tasks=bool(peers_now) and not args.open,
+        require_signed_tasks=not args.open,
+        auth_token=resolve_bearer_token(token_file=args.token_file),
+        enable_experimental_mailbox=args.experimental_plaintext_mailbox,
     )
     if args.poll:
         os.environ['RDAP_POLL'] = str(args.poll)
+    if args.open:
+        print('! ! ! OPEN MODE EXPLICITLY ENABLED: unsigned LAN tasks will execute ! ! !')
+    if args.experimental_plaintext_mailbox:
+        print('! EXPERIMENTAL PLAINTEXT MAILBOX ENABLED — no Raven E2EE/confidentiality')
     serve(cfg)
 
 
@@ -331,32 +377,51 @@ def cmd_discover(args) -> None:
 
     st = state()
     peers = load_peers()
+    from team_agents.raven_identity import validate_address_public_key
+
     for n in targets:
         try:
-            idn = httpx.get(n['url'] + '/raven/identity', timeout=6).json()
+            from team_agents.client import resolve_bearer_token
+
+            token = resolve_bearer_token(token_file=args.token_file)
+            headers = {'Authorization': f'Bearer {token}'} if token else None
+            idn = httpx.get(
+                n['url'] + '/raven/identity', timeout=6, headers=headers
+            ).json()
         except Exception as exc:  # noqa: BLE001
             print(f"✗ {n['name']}: identity fetch failed ({exc!r})")
             continue
-        addr, pub = idn['address'], idn['public_key']
+        addr, pub = str(idn.get('address', '')), str(idn.get('public_key', ''))
+        try:
+            validate_address_public_key(addr, pub)
+            if n.get('addr') and n['addr'] != addr:
+                raise ValueError('mDNS address differs from HTTP identity')
+        except ValueError as exc:
+            print(f"✗ {n['name']}: invalid identity binding ({exc})")
+            continue
         peers[addr] = pub
         save_peers(peers)
         mates = st.setdefault('teammates', {})
         mates[n['name']] = {'address': addr, 'public_key': pub,
-                            'url': n['url'], 'mailbox': idn.get('mailbox')}
+                            'url': n['url']}
+        if args.experimental_plaintext_mailbox and idn.get('mailbox'):
+            mates[n['name']]['mailbox'] = idn['mailbox']
         print(f"✔ trusted {n['name']} ({addr[:18]}…) @ {n['url']}   [TOFU]"
-              + ('  +mesh' if idn.get('mailbox') else ''))
+              + ('  !experimental-plaintext-mailbox'
+                 if args.experimental_plaintext_mailbox and idn.get('mailbox') else ''))
     _save_json(STATE_FILE, st)
 
 
 def cmd_mesh_build(args) -> None:
-    """Build the Raven swarm mailbox binary once (needs Rust/cargo)."""
+    """Build the disabled-by-default plaintext mailbox experiment."""
     from team_agents.mesh import build_swarm_bin, find_swarm_bin
 
     existing = find_swarm_bin()
     if existing and not args.force:
         print('✔ already built:', existing)
         return
-    print('* building raven-swarm mailbox (first build takes a few minutes)…')
+    print('! building EXPERIMENTAL PLAINTEXT mailbox; this is not Raven E2EE')
+    print('* first Rust build can take a few minutes…')
     print('✔ built:', build_swarm_bin())
 
 
@@ -379,11 +444,16 @@ def cmd_goal(args) -> None:
 def cmd_say(args) -> None:
     """Group-chat: `@agent task` routes it; `@all` fans out to everyone."""
     import asyncio
+    import team_agents.ui as ui
 
     from team_agents.client import send_task
     from team_agents.chat import TeamChat, parse_mentions
     from team_agents.memory import TeamMemory
-    from team_agents.raven_identity import RavenIdentity, sign_delegation
+    from team_agents.raven_identity import (
+        MAX_DELEGATION_TTL_SECONDS,
+        RavenIdentity,
+        sign_delegation,
+    )
 
     st = state()
     if not st.get('name'):
@@ -412,11 +482,13 @@ def cmd_say(args) -> None:
             sys.exit(f'unknown teammate(s): {", ".join(unknown)}')
         targets = [(n, mates[n]) for n in mentions]
 
-    def _sign(text: str):
+    def _sign(text: str, peer_address: str):
         tid = uuid.uuid4().hex[:12]
         payload = {'id': tid, 'kind': 'task', 'from': idn.address,
-                   'to': '', 'text': text,
-                   'raven': sign_delegation(idn, text)}
+                   'to': peer_address, 'text': text,
+                   'raven': sign_delegation(
+                       idn, text, recipient=peer_address, task_id=tid,
+                       ttl_seconds=MAX_DELEGATION_TTL_SECONDS)}
         return tid, json.dumps(payload, ensure_ascii=False)
 
     binp = None
@@ -428,30 +500,46 @@ def cmd_say(args) -> None:
 
     for tname, target in targets:
         peer_addr = target.get('address', '')
+        peer_pub = target.get('public_key', '')
         url = target.get('url') or args.url
         sent = False
 
         if not args.relay and url:
-            info = _probe(url)
+            info = _probe(
+                url,
+                expected_address=peer_addr,
+                expected_public_key=peer_pub,
+                token_file=args.token_file,
+            )
             if info is not None:
                 mb = info.get('mailbox')
-                if mb and target.get('mailbox') != mb:
+                if args.experimental_plaintext_mailbox and mb \
+                        and target.get('mailbox') != mb:
                     target['mailbox'] = mb
                     _save_json(STATE_FILE, st)
                 try:
-                    result = asyncio.run(send_task(url, args.text,
-                                                   identity=idn, timeout=120))
+                    result = asyncio.run(send_task(
+                        url,
+                        args.text,
+                        identity=idn,
+                        expected_peer_address=peer_addr,
+                        expected_peer_public_key=peer_pub,
+                        token_file=args.token_file,
+                        timeout=120,
+                    ))
                     chat.post(tname, f'✅ done: {result.splitlines()[0][:100]}')
                     ui.ok(f'[direct] {tname}: ' + result.splitlines()[0][:110])
                     sent = True
                 except Exception as exc:  # noqa: BLE001
                     ui.err(f'[direct] {tname}: {exc!r}'[:120])
 
-        if not sent and binp and target.get('mailbox') and peer_addr:
+        if (not sent and args.experimental_plaintext_mailbox and binp
+                and target.get('mailbox') and peer_addr):
+            ui.warn('EXPERIMENTAL PLAINTEXT mailbox in use; task is not confidential')
             try:
                 from team_agents.mesh import make_task_object, mailbox_put
 
-                tid, payload_text = _sign(args.text)
+                tid, payload_text = _sign(args.text, peer_addr)
                 mailbox_put(binp, repo / '.team' / 'mesh-client',
                             target['mailbox']['multiaddr'],
                             target['mailbox']['peer_id'],
@@ -469,8 +557,8 @@ def cmd_say(args) -> None:
                          trusted_peers_file=(str(PEERS_FILE)
                                              if PEERS_FILE.exists() else None),
                          trusted_peers=load_peers())
-            tid, _ = _sign(args.text)
             f = r.send_task(peer_addr, args.text)
+            tid = json.loads(f.read_text(encoding='utf-8'))['id']
             chat.post(tname, f'📮 task {tid} parked in git relay')
             ui.warn(f'[git] task parked for {tname} → collect with ./rdap replies')
 
@@ -512,23 +600,63 @@ def cmd_replies(args) -> None:
 
 
 # ------------------------------------------------------------------ ask --
-def _probe(url: str, seconds: float = 6.0):
-    """Quick reachability + identity check. Returns identity dict or None."""
+def _probe(
+    url: str,
+    seconds: float = 6.0,
+    *,
+    expected_address: str,
+    expected_public_key: str,
+    token_file: str = '',
+):
+    """Reachability check that accepts only the pinned peer identity."""
     import httpx
+    from team_agents.client import resolve_bearer_token
+    from team_agents.raven_identity import (
+        fingerprint_for_public_key,
+        validate_address_public_key,
+    )
 
     base = url.rstrip('/') + '/'
     try:
-        with httpx.Client(timeout=httpx.Timeout(seconds, connect=4.0)) as c:
+        expected_key = validate_address_public_key(
+            expected_address, expected_public_key
+        ).hex()
+        token = resolve_bearer_token(token_file=token_file)
+        headers = {'Authorization': f'Bearer {token}'} if token else None
+        with httpx.Client(
+            timeout=httpx.Timeout(seconds, connect=4.0), headers=headers
+        ) as c:
             c.get(base + 'health').raise_for_status()
-            return c.get(base + 'raven/identity').json()
+            ident = c.get(base + 'raven/identity').json()
+            if str(ident.get('address', '')) != expected_address:
+                return None
+            if str(ident.get('public_key', '')).lower() != expected_key:
+                return None
+            fingerprint = fingerprint_for_public_key(expected_key)
+            if str(ident.get('fingerprint', '')) != fingerprint:
+                return None
+            if str(ident.get('card_kid', '')) != fingerprint + '-card':
+                return None
+            return ident
     except Exception:  # noqa: BLE001
         return None
 
 
 def cmd_ping(args) -> None:
+    st = state()
+    mate = st.get('teammates', {}).get(args.name, {}) if args.name else {}
+    expected_address = args.peer_address or mate.get('address', '')
+    expected_public_key = args.peer_public_key or mate.get('public_key', '')
+    if not expected_address or not expected_public_key:
+        sys.exit('ping requires --name for a trusted teammate or pinned peer identity flags')
     url = args.url
     print(f'→ probing {url} …')
-    info = _probe(url)
+    info = _probe(
+        url,
+        expected_address=expected_address,
+        expected_public_key=expected_public_key,
+        token_file=args.token_file,
+    )
     if not info:
         print('✗ node unreachable. checklist:')
         print('  1. is `./rdap start` running on the other Mac?')
@@ -562,7 +690,8 @@ def cmd_ask(args) -> None:
         if not target:
             sys.exit(f'unknown teammate "{args.name}" — run `./rdap trust` first')
         if not (target.get('url') or args.url) and not args.relay \
-                and not target.get('mailbox'):
+                and not (args.experimental_plaintext_mailbox
+                         and target.get('mailbox')):
             sys.exit(f'no url known for "{args.name}" — re-run `./rdap trust` '
                      'with --url, or use --relay to go offline')
     elif len(mates) == 1:
@@ -581,39 +710,63 @@ def cmd_ask(args) -> None:
         target['url'] = args.url
         _save_json(STATE_FILE, st)
     peer_addr = (target or {}).get('address', '')
+    peer_pub = (target or {}).get('public_key', '')
     repo = Path(st.get('repo') or BASE / 'team-repo')
     idn = RavenIdentity.load_or_create(repo / '.team' / 'keys')
 
     # ---------------- RDAP Transport Manager ladder -----------------------
     # T1 direct A2A · T2/T3 raven-swarm mailbox · T4 git relay
     def _sign_payload() -> tuple[str, str]:
-        from team_agents.raven_identity import sign_delegation
+        from team_agents.raven_identity import (
+            MAX_DELEGATION_TTL_SECONDS,
+            sign_delegation,
+        )
 
         tid = uuid.uuid4().hex[:12]
         payload = {
             'id': tid, 'kind': 'task', 'from': idn.address,
             'to': peer_addr, 'text': args.text,
-            'raven': sign_delegation(idn, args.text),
+            'raven': sign_delegation(
+                idn,
+                args.text,
+                recipient=peer_addr,
+                task_id=tid,
+                ttl_seconds=MAX_DELEGATION_TTL_SECONDS,
+            ),
         }
         return tid, json.dumps(payload, ensure_ascii=False)
 
     if not args.relay and url:
         print(ui.dim(ARROW + f' checking {target_name} at {url} …'))
-        info = _probe(url)
+        info = _probe(
+            url,
+            expected_address=peer_addr,
+            expected_public_key=peer_pub,
+            token_file=args.token_file,
+        )
         if info is not None:
             mb = info.get('mailbox')
-            if mb and target is not None and target.get('mailbox') != mb:
+            if (args.experimental_plaintext_mailbox and mb and target is not None
+                    and target.get('mailbox') != mb):
                 target['mailbox'] = mb          # remember for future fallback
                 _save_json(STATE_FILE, st)
             print(f'✔ {target_name} alive — sending task …')
-            result = asyncio.run(send_task(url, args.text,
-                                           identity=idn, timeout=90))
+            result = asyncio.run(send_task(
+                url,
+                args.text,
+                identity=idn,
+                expected_peer_address=peer_addr,
+                expected_peer_public_key=peer_pub,
+                token_file=args.token_file,
+                timeout=90,
+            ))
             print(result)
             return
         ui.err('[direct] unreachable')
 
     # T3 — raven swarm offline mailbox (task lands in THEIR store)
-    if not args.git_only:
+    if args.experimental_plaintext_mailbox and not args.git_only:
+        ui.warn('EXPERIMENTAL PLAINTEXT mailbox requested; task is not confidential')
         from team_agents.mesh import find_swarm_bin, make_task_object, mailbox_put
 
         binp = find_swarm_bin()
@@ -648,7 +801,6 @@ def cmd_ask(args) -> None:
                  trusted_peers_file=(str(PEERS_FILE)
                                      if PEERS_FILE.exists() else None),
                  trusted_peers=load_peers())
-    tid, payload_text = _sign_payload()
     f = r.send_task(peer_addr, args.text)
     print(f'✔ [T4 git-relay] queued {f.relative_to(repo)}')
     print('   collect answers later with:  ./rdap replies')
@@ -726,7 +878,8 @@ def cmd_status(args) -> None:
         ('raven id', st.get('address', '?')),
         ('goal    ', (goal[:40] + '…') if len(goal) > 44 else (goal or 'not set')),
         ('team    ', ', '.join(mates) if mates else 'nobody yet'),
-        ('mesh    ', 'ready' if find_swarm_bin() else 'not built (./rdap mesh-build)'),
+        ('mailbox ', ('experimental binary present (disabled by default)'
+                      if find_swarm_bin() else 'experimental binary not built')),
         ('repo    ', str(st.get('repo', ''))),
     ], title='RDAP status')
 
@@ -770,6 +923,11 @@ def main() -> None:
     t = sub.add_parser('trust', help="register a teammate's invite")
     t.add_argument('invite', nargs='?', help='RDAP1 … line (or leave empty to paste)')
     t.add_argument('--url', default='', help='their node url if you know it')
+    t.add_argument('--token-file', default='', help='Bearer token file for identity fetch')
+    t.add_argument(
+        '--experimental-plaintext-mailbox', action='store_true',
+        help='capture explicitly enabled non-confidential mailbox coordinates',
+    )
     t.set_defaults(fn=cmd_trust)
 
     s = sub.add_parser('start', help='serve this agent')
@@ -781,7 +939,15 @@ def main() -> None:
     s.add_argument('--allow-shell', action='store_true')
     s.add_argument('--poll', type=int, default=0,
                    help='mesh/git drain interval seconds (default 20)')
-    s.add_argument('--open', action='store_true', help='accept unsigned tasks too')
+    s.add_argument(
+        '--open', action='store_true',
+        help='DANGEROUS: explicitly accept unsigned tasks from reachable clients',
+    )
+    s.add_argument('--token-file', default='', help='read server Bearer token from file')
+    s.add_argument(
+        '--experimental-plaintext-mailbox', action='store_true',
+        help='DANGEROUS/EXPERIMENTAL: enable non-confidential mailbox adapter',
+    )
     s.set_defaults(fn=cmd_start)
 
     m = sub.add_parser('model', help='choose this agent\'s brain (LLM)')
@@ -800,10 +966,19 @@ def main() -> None:
                    help='skip live attempt, queue via git relay directly')
     a.add_argument('--git-only', action='store_true',
                    help='skip mesh mailbox, use git relay as the fallback')
+    a.add_argument('--token-file', default='', help='Bearer token file for direct A2A')
+    a.add_argument(
+        '--experimental-plaintext-mailbox', action='store_true',
+        help='explicitly allow the non-confidential experimental mailbox fallback',
+    )
     a.set_defaults(fn=cmd_ask)
 
     g = sub.add_parser('ping', help='check whether a teammate node is reachable')
     g.add_argument('url', help='http://<ip>:<port>')
+    g.add_argument('--name', default='', help='trusted teammate name')
+    g.add_argument('--peer-address', default='', help='pinned RVN address')
+    g.add_argument('--peer-public-key', default='', help='pinned Ed25519 public key')
+    g.add_argument('--token-file', default='', help='Bearer token file')
     g.set_defaults(fn=cmd_ping)
 
     v = sub.add_parser('invite', help='print your invite line (add --port for url)')
@@ -813,6 +988,11 @@ def main() -> None:
     d = sub.add_parser('discover', help='find nearby agents on this LAN (mDNS)')
     d.add_argument('--timeout', type=float, default=4.0)
     d.add_argument('--trust', default='', help="number from list, or 'all'")
+    d.add_argument('--token-file', default='', help='Bearer token file for identity fetch')
+    d.add_argument(
+        '--experimental-plaintext-mailbox', action='store_true',
+        help='capture explicitly enabled non-confidential mailbox coordinates',
+    )
     d.set_defaults(fn=cmd_discover)
 
     rr = sub.add_parser('replies', help='collect offline answers from git relay')
@@ -826,6 +1006,11 @@ def main() -> None:
     sy.add_argument('text', help='e.g. "@raphael build the login API"')
     sy.add_argument('--url', default='')
     sy.add_argument('--relay', action='store_true')
+    sy.add_argument('--token-file', default='', help='Bearer token file for direct A2A')
+    sy.add_argument(
+        '--experimental-plaintext-mailbox', action='store_true',
+        help='explicitly allow the non-confidential experimental mailbox fallback',
+    )
     sy.set_defaults(fn=cmd_say)
 
     ch = sub.add_parser('chat', help='show the shared team thread')
@@ -839,7 +1024,7 @@ def main() -> None:
     bd.set_defaults(fn=cmd_board)
 
     mb = sub.add_parser('mesh-build',
-                        help='build the Raven swarm mailbox binary (Rust)')
+                        help='build EXPERIMENTAL PLAINTEXT mailbox binary (disabled by default)')
     mb.add_argument('--force', action='store_true')
     mb.set_defaults(fn=cmd_mesh_build)
 

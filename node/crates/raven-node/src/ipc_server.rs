@@ -1,10 +1,9 @@
-//! Unix domain socket IPC server (macOS/Linux).
+//! Same-user local IPC server.
 //!
-//! Auth model (V1): socket path under the caller's data dir, mode `0600`,
-//! removed/rebound on start, plus peer-credential UID check (must match
-//! the raven-node process euid). Same-UID filesystem permissions + SO_PEERCRED
-//! / getpeereid are the gate; requests still refuse secret field names
-//! (`raven_core::ipc`).
+//! Unix uses a mode-0600 UDS plus peer UID credentials. Windows uses a
+//! per-profile named pipe with a protected current-user DACL, rejects remote
+//! clients, and verifies both the client process SID and Windows session after
+//! connect. Requests still refuse secret field names (`raven_core::ipc`).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -12,8 +11,13 @@ use std::sync::Arc;
 use raven_core::bridge::authenticated_object_digest;
 use raven_core::envelope::Envelope;
 use raven_core::forward_queue::{ForwardItem, ForwardQueue, ForwardState};
+#[cfg(unix)]
+use raven_core::ipc::default_socket_path;
+use raven_core::ipc::{decode_request, encode_response, IpcRequest, IpcResponse, IPC_VERSION};
+#[cfg(windows)]
 use raven_core::ipc::{
-    decode_request, default_socket_path, encode_response, IpcRequest, IpcResponse, IPC_VERSION,
+    default_named_pipe_name,
+    windows_pipe::{verify_peer_user_and_session, PipePeer, SameUserSecurityAttributes},
 };
 use tokio::time::Duration;
 
@@ -24,10 +28,16 @@ const LAN_DIAL_TIMEOUT: Duration = Duration::from_secs(45);
 use raven_core::node_policy::{load_policy, save_policy};
 use raven_core::queue::{DeliveryState, OutgoingQueue, QueueItem};
 use raven_core::transport::TransportKind;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+#[cfg(windows)]
+use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
+#[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Mutex;
+#[cfg(windows)]
+use tokio::sync::Semaphore;
 
+#[cfg(unix)]
 pub fn socket_path(data_dir: &Path) -> PathBuf {
     default_socket_path(data_dir)
 }
@@ -93,7 +103,10 @@ fn peer_uid_matches_self(stream: &UnixStream) -> bool {
     }
 }
 
-async fn read_frame(stream: &mut UnixStream) -> Result<Vec<u8>, String> {
+async fn read_frame<S>(stream: &mut S) -> Result<Vec<u8>, String>
+where
+    S: AsyncRead + Unpin,
+{
     let read = async {
         let mut len_buf = [0u8; 4];
         stream
@@ -335,16 +348,13 @@ fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
         .map_err(|e| e.to_string())
 }
 
-async fn serve_one(
-    mut stream: UnixStream,
+async fn serve_one<S>(
+    mut stream: S,
     data_dir: Arc<PathBuf>,
     forward: Arc<Mutex<Option<ForwardQueue>>>,
-) {
-    #[cfg(unix)]
-    if !peer_uid_matches_self(&stream) {
-        eprintln!("raven-node ipc: reject peer (uid mismatch)");
-        return;
-    }
+) where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let frame = match read_frame(&mut stream).await {
         Ok(f) => f,
         Err(_) => return,
@@ -381,6 +391,7 @@ async fn serve_one(
 }
 
 /// Bind UDS with mode 0600 and serve until the process exits.
+#[cfg(unix)]
 pub async fn run_ipc_server(
     data_dir: PathBuf,
     forward_path: Option<PathBuf>,
@@ -407,6 +418,10 @@ pub async fn run_ipc_server(
 
     loop {
         let (stream, _) = listener.accept().await.map_err(|e| e.to_string())?;
+        if !peer_uid_matches_self(&stream) {
+            eprintln!("raven-node ipc: reject peer (uid mismatch)");
+            continue;
+        }
         let dd = data_dir.clone();
         let fq = forward.clone();
         tokio::spawn(async move {
@@ -415,8 +430,78 @@ pub async fn run_ipc_server(
     }
 }
 
+#[cfg(windows)]
+const MAX_WINDOWS_IPC_HANDLERS: usize = 32;
+
+#[cfg(windows)]
+fn create_windows_pipe(name: &str, first: bool) -> Result<NamedPipeServer, String> {
+    let mut security = SameUserSecurityAttributes::new()?;
+    let mut options = ServerOptions::new();
+    options
+        .first_pipe_instance(first)
+        .reject_remote_clients(true)
+        // One extra instance is the acceptor prepared before the connected
+        // instance is handed to its bounded task.
+        .max_instances(MAX_WINDOWS_IPC_HANDLERS + 1)
+        .in_buffer_size((raven_core::MAX_IPC_FRAME + 4) as u32)
+        .out_buffer_size((raven_core::MAX_IPC_FRAME + 4) as u32);
+    // SAFETY: `security` owns a valid SECURITY_ATTRIBUTES and self-relative
+    // descriptor for the duration of this synchronous CreateNamedPipe call.
+    unsafe { options.create_with_security_attributes_raw(name, security.as_mut_void_ptr()) }
+        .map_err(|e| format!("create secure named pipe: {e}"))
+}
+
+/// Bind the deterministic per-profile Windows named pipe and serve until the
+/// process exits. Creation and peer inspection fail closed on any Win32 error.
+#[cfg(windows)]
+pub async fn run_ipc_server(
+    data_dir: PathBuf,
+    forward_path: Option<PathBuf>,
+) -> Result<(), String> {
+    std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
+    let pipe_name = default_named_pipe_name(&data_dir)?;
+    let mut listener = create_windows_pipe(&pipe_name, true)?;
+    eprintln!("raven-node ipc: listening on protected per-profile named pipe");
+
+    let forward = Arc::new(Mutex::new(match forward_path {
+        Some(p) => ForwardQueue::open(&p).ok(),
+        None => None,
+    }));
+    let data_dir = Arc::new(data_dir);
+    let limiter = Arc::new(Semaphore::new(MAX_WINDOWS_IPC_HANDLERS));
+
+    loop {
+        let permit = limiter
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| "IPC connection limiter closed".to_string())?;
+        listener
+            .connect()
+            .await
+            .map_err(|e| format!("named-pipe connect: {e}"))?;
+
+        // Keep a protected instance continuously available. The connected
+        // first instance remains alive while this is created, so another
+        // process cannot race in as the pipe owner.
+        let connected = listener;
+        listener = create_windows_pipe(&pipe_name, false)?;
+        let dd = data_dir.clone();
+        let fq = forward.clone();
+        tokio::spawn(async move {
+            let _permit = permit;
+            if let Err(e) = verify_peer_user_and_session(&connected, PipePeer::Client) {
+                eprintln!("raven-node ipc: reject Windows peer ({e})");
+                return;
+            }
+            serve_one(connected, dd, fq).await;
+        });
+    }
+}
+
 /// Client helper for same-process smoke tests.
 #[allow(dead_code)]
+#[cfg(unix)]
 pub async fn client_ping(sock: &Path) -> Result<IpcResponse, String> {
     let mut stream = UnixStream::connect(sock)
         .await
@@ -426,4 +511,55 @@ pub async fn client_ping(sock: &Path) -> Result<IpcResponse, String> {
     stream.flush().await.map_err(|e| e.to_string())?;
     let frame = read_frame(&mut stream).await?;
     raven_core::decode_response(&frame)
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use raven_core::ipc::windows_pipe::{verify_peer_user_and_session, PipePeer};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::windows::named_pipe::ClientOptions;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn protected_pipe_authorizes_same_user_session_and_roundtrips() {
+        let dir = tempfile::tempdir().unwrap();
+        let name = default_named_pipe_name(dir.path()).unwrap();
+        let mut server = create_windows_pipe(&name, true).unwrap();
+        let mut client = ClientOptions::new().open(&name).unwrap();
+        server.connect().await.unwrap();
+
+        verify_peer_user_and_session(&server, PipePeer::Client).unwrap();
+        verify_peer_user_and_session(&client, PipePeer::Server).unwrap();
+
+        let request = raven_core::encode_request(&IpcRequest::Ping { v: IPC_VERSION }).unwrap();
+        client.write_all(&request).await.unwrap();
+        let frame = read_frame(&mut server).await.unwrap();
+        assert_eq!(
+            raven_core::decode_request(&frame).unwrap(),
+            IpcRequest::Ping { v: IPC_VERSION }
+        );
+
+        let response = raven_core::encode_response(&IpcResponse::Pong { v: IPC_VERSION }).unwrap();
+        server.write_all(&response).await.unwrap();
+        let mut len = [0u8; 4];
+        client.read_exact(&mut len).await.unwrap();
+        let n = u32::from_be_bytes(len) as usize;
+        let mut body = vec![0u8; n];
+        client.read_exact(&mut body).await.unwrap();
+        let mut response_frame = len.to_vec();
+        response_frame.extend_from_slice(&body);
+        assert_eq!(
+            raven_core::decode_response(&response_frame).unwrap(),
+            IpcResponse::Pong { v: IPC_VERSION }
+        );
+    }
+
+    #[tokio::test]
+    async fn first_instance_flag_rejects_a_second_pipe_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let name = default_named_pipe_name(dir.path()).unwrap();
+        let _first = create_windows_pipe(&name, true).unwrap();
+        assert!(create_windows_pipe(&name, true).is_err());
+    }
 }

@@ -3,19 +3,35 @@
 //! LAN + mock BLE are both TCP length-prefix frames (same RavenEnvelopeV1).
 //! BridgeSubsystem never decrypts. Closing `ash` does not stop this process.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use rand::RngCore;
 use raven_core::ble_adapter::validate_opaque_rvn1;
 use raven_core::forward_queue::{ForwardQueue, ForwardState};
+use raven_core::identity::Identity;
 use raven_core::message_router::{InboundEnvelope, MessageRouter, RouterOutcome};
 use raven_core::node_policy::{load_policy, BridgeStatusSnapshot, NodePolicy};
 use raven_core::transport::TransportKind;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex, Semaphore};
+
+const MAX_BRIDGE_CONNECTIONS: usize = 64;
+const BRIDGE_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
+const BRIDGE_FRAME_TIMEOUT: Duration = Duration::from_secs(30);
+const BRIDGE_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+const BRIDGE_CONNECTION_LIFETIME: Duration = Duration::from_secs(120);
+const MAX_BRIDGE_FRAME_BYTES: usize = 1_048_576;
+const PULL_HELLO: &[u8; 4] = b"RVNP";
+const PULL_CHALLENGE: &[u8; 4] = b"RVNC";
+const PULL_RESPONSE: &[u8; 4] = b"RVNS";
+const PULL_RECEIPT: &[u8; 4] = b"RVNR";
+const PULL_AUTH_DOMAIN: &[u8] = b"raven/bridge-pull/v1";
+const PULL_RECEIPT_DOMAIN: &[u8] = b"raven/bridge-receipt/v1";
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -29,10 +45,17 @@ pub fn forward_queue_path(data_dir: &Path) -> PathBuf {
 }
 
 struct BridgeState {
+    identity: Identity,
     policy: NodePolicy,
     queue: ForwardQueue,
-    lan_out: Vec<mpsc::Sender<Vec<u8>>>,
-    ble_out: Vec<mpsc::Sender<Vec<u8>>>,
+    lan_out: Vec<PullSender>,
+    ble_out: Vec<PullSender>,
+    /// Exact authenticated pull session selected for the latest successful
+    /// channel handoff of each in-flight object. This is deliberately
+    /// process-local: after restart the durable InFlight row becomes eligible
+    /// for a fresh pull after backoff and is then rebound before any receipt is
+    /// accepted.
+    attempt_assignments: HashMap<[u8; 32], BridgePullSession>,
 }
 
 impl BridgeState {
@@ -47,28 +70,55 @@ impl BridgeState {
         }
     }
 
-    async fn fanout(&mut self, egress: TransportKind, packed: &[u8]) -> usize {
+    fn egress_senders(&mut self, egress: TransportKind, packed: &[u8]) -> Vec<PullSender> {
         // Mock BLE and future GATT share the same opaque RVN1 bytes.
         if matches!(egress, TransportKind::Ble | TransportKind::MockBle)
             && !validate_opaque_rvn1(packed)
         {
             eprintln!("raven-node: BRIDGE drop non-RVN1 on BLE egress");
-            return 0;
+            return Vec::new();
         }
         let boxes = match egress {
             TransportKind::Lan | TransportKind::Internet => &mut self.lan_out,
             TransportKind::Ble | TransportKind::MockBle => &mut self.ble_out,
         };
-        let mut ok = 0usize;
-        let mut alive = Vec::new();
-        for tx in boxes.drain(..) {
-            if tx.send(packed.to_vec()).await.is_ok() {
-                ok += 1;
-                alive.push(tx);
-            }
+        boxes.retain(|sender| !sender.tx.is_closed());
+        boxes.clone()
+    }
+
+    fn prune_terminal_attempt_assignments(&mut self) {
+        let queue = &self.queue;
+        self.attempt_assignments
+            .retain(|object_digest, _| match queue.get_object(object_digest) {
+                Ok(Some(item)) => !matches!(
+                    item.state,
+                    ForwardState::Forwarded | ForwardState::Expired | ForwardState::Failed
+                ),
+                Ok(None) => false,
+                // A storage read failure is not proof that custody ended.
+                Err(_) => true,
+            });
+    }
+
+    fn acknowledge_custody_receipt(
+        &mut self,
+        session: &BridgePullSession,
+        object_digest: &[u8; 32],
+        signature: &[u8; 64],
+    ) -> CustodyReceiptDisposition {
+        if !session.verify_receipt(object_digest, signature) {
+            return CustodyReceiptDisposition::InvalidSignature;
         }
-        *boxes = alive;
-        ok
+        if self.attempt_assignments.get(object_digest) != Some(session) {
+            return CustodyReceiptDisposition::WrongAttempt;
+        }
+        match self.queue.acknowledge_in_flight(object_digest) {
+            Ok(true) => {
+                self.attempt_assignments.remove(object_digest);
+                CustodyReceiptDisposition::Acknowledged
+            }
+            Ok(false) | Err(_) => CustodyReceiptDisposition::NotInFlight,
+        }
     }
 
     fn status_snapshot(&self) -> BridgeStatusSnapshot {
@@ -81,30 +131,107 @@ impl BridgeState {
     }
 }
 
-async fn flush_pending(state: &Arc<Mutex<BridgeState>>) {
-    let mut st = state.lock().await;
-    if !st.policy.bridge {
-        return;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CustodyReceiptDisposition {
+    Acknowledged,
+    InvalidSignature,
+    WrongAttempt,
+    NotInFlight,
+}
+
+#[derive(Clone)]
+struct PullSender {
+    tx: mpsc::Sender<Vec<u8>>,
+    session: BridgePullSession,
+}
+
+/// One prepared bridge envelope has consumed exactly one replication token, so
+/// this runtime may hand it to at most one next hop. A future spray worker must
+/// split the budget into independently persisted children before multi-fanout.
+fn enqueue_one_replica(senders: Vec<PullSender>, packed: &[u8]) -> Option<BridgePullSession> {
+    for sender in senders {
+        match sender.tx.try_send(packed.to_vec()) {
+            Ok(()) => return Some(sender.session),
+            Err(mpsc::error::TrySendError::Full(_)) | Err(mpsc::error::TrySendError::Closed(_)) => {
+                continue
+            }
+        }
     }
-    let pending = match st.router().recover_pending(&st.queue, now_ms()) {
-        Ok(p) => p,
-        Err(_) => return,
+    None
+}
+
+async fn attempt_forward(
+    state: &Arc<Mutex<BridgeState>>,
+    egress: TransportKind,
+    packed: &[u8],
+    object_digest: &[u8; 32],
+) -> bool {
+    attempt_forward_at(state, egress, packed, object_digest, now_ms()).await
+}
+
+async fn attempt_forward_at(
+    state: &Arc<Mutex<BridgeState>>,
+    egress: TransportKind,
+    packed: &[u8],
+    object_digest: &[u8; 32],
+    attempt_now_ms: u64,
+) -> bool {
+    // Claim, non-blocking channel enqueue, and exact session assignment happen
+    // under one mutex. A fast peer therefore cannot race a receipt ahead of the
+    // assignment, and concurrent flushes cannot bind the same claim twice.
+    let mut st = state.lock().await;
+    st.prune_terminal_attempt_assignments();
+    let senders = st.egress_senders(egress, packed);
+    if senders.is_empty() {
+        return false;
+    }
+    match st
+        .queue
+        .claim_object_for_attempt(object_digest, attempt_now_ms)
+    {
+        Ok(true) => {}
+        Ok(false) | Err(_) => return false,
+    }
+    if let Some(session) = enqueue_one_replica(senders, packed) {
+        st.attempt_assignments.insert(*object_digest, session);
+        // A local channel enqueue is not endpoint delivery. Keep InFlight; it
+        // becomes retry-eligible after backoff and only a verifiable protocol
+        // receipt may eventually mark it Forwarded.
+        true
+    } else {
+        let _ = st
+            .queue
+            .mark_object_state(object_digest, ForwardState::Queued);
+        // No sender was selected, so do not install or remove an assignment.
+        // A previous binding remains auditable until a successful retry
+        // overwrites it or terminal maintenance removes it; the Queued state
+        // itself prevents that stale receipt from passing the InFlight CAS.
+        false
+    }
+}
+
+async fn flush_pending(state: &Arc<Mutex<BridgeState>>) {
+    let pending = {
+        let st = state.lock().await;
+        if !st.policy.bridge {
+            return;
+        }
+        match st.router().recover_pending(&st.queue, now_ms()) {
+            Ok(p) => p,
+            Err(_) => return,
+        }
     };
     for (item, identity) in pending {
-        let ready = match item.egress {
-            TransportKind::Lan | TransportKind::Internet => !st.lan_out.is_empty(),
-            TransportKind::Ble | TransportKind::MockBle => !st.ble_out.is_empty(),
-        };
-        if !ready {
-            continue;
-        }
-        let n = st.fanout(item.egress, &item.packed_envelope).await;
-        if n > 0 {
-            let _ = st
-                .queue
-                .mark_object_state(&identity.object_digest, ForwardState::Forwarded);
+        if attempt_forward(
+            state,
+            item.egress,
+            &item.packed_envelope,
+            &identity.object_digest,
+        )
+        .await
+        {
             eprintln!(
-                "raven-node: BRIDGE flush → {} (opaque)",
+                "raven-node: BRIDGE retry handoff → {} (awaiting receipt)",
                 item.egress.as_str()
             );
         }
@@ -133,47 +260,43 @@ async fn on_frame(
         }
     }
 
-    let mut st = state.lock().await;
-    st.policy = load_policy(data_dir);
-    if !st.policy.bridge {
-        eprintln!("raven-node: bridge policy off — ignore frame");
-        return;
-    }
-    let router = st.router();
-    let outcome = router.handle_inbound(
-        &st.queue,
-        InboundEnvelope {
-            packed,
-            ingress,
-            previous_hop: previous_hop.to_string(),
-            now_ms: now_ms(),
-        },
-        true,
-    );
+    let policy = load_policy(data_dir);
+    let outcome = {
+        let mut st = state.lock().await;
+        st.policy = policy;
+        if !st.policy.bridge {
+            eprintln!("raven-node: bridge policy off — ignore frame");
+            return;
+        }
+        let router = st.router();
+        router.handle_inbound(
+            &st.queue,
+            InboundEnvelope {
+                packed,
+                ingress,
+                previous_hop: previous_hop.to_string(),
+                now_ms: now_ms(),
+            },
+            true,
+        )
+    };
     match outcome {
         RouterOutcome::ForwardNow {
             packed: fwd,
             egress,
             identity,
         } => {
-            let n = st.fanout(egress, &fwd).await;
-            if n > 0 {
-                let _ = st
-                    .queue
-                    .mark_object_state(&identity.object_digest, ForwardState::Forwarded);
+            if attempt_forward(state, egress, &fwd, &identity.object_digest).await {
                 let mid_hex = raven_core::envelope::Envelope::unpack(&fwd)
                     .map(|e| hex::encode(e.message_id))
                     .unwrap_or_default();
                 eprintln!(
-                    "raven-node: BRIDGE forward {}→{} (opaque) mid={}",
+                    "raven-node: BRIDGE forward handoff {}→{} (awaiting receipt) mid={}",
                     ingress.as_str(),
                     egress.as_str(),
                     mid_hex
                 );
             } else {
-                let _ = st
-                    .queue
-                    .mark_object_state(&identity.object_digest, ForwardState::Queued);
                 eprintln!(
                     "raven-node: BRIDGE queued waiting {} (opaque)",
                     egress.as_str()
@@ -208,97 +331,388 @@ async fn accept_loop(
     state: Arc<Mutex<BridgeState>>,
     data_dir: PathBuf,
     ingress: TransportKind,
+    connection_limiter: Arc<Semaphore>,
 ) {
     loop {
         let Ok((stream, addr)) = listener.accept().await else {
             break;
         };
+        let Ok(permit) = connection_limiter.clone().try_acquire_owned() else {
+            eprintln!("raven-node: BRIDGE connection capacity reached");
+            drop(stream);
+            continue;
+        };
         eprintln!("raven-node: BRIDGE accept {}", ingress.as_str());
         let st = state.clone();
         let dir = data_dir.clone();
         tokio::spawn(async move {
-            let (mut reader, mut writer) = stream.into_split();
-            let (out_tx, mut out_rx) = mpsc::channel::<Vec<u8>>(64);
-
-            // Do NOT flush on bare accept: probes (nc -z) and half-open connects
-            // used to drain the Mac outbox and mark messages Forwarded forever.
-            // Wait for pull hello `RVNP`, a stable silent pull (~400ms), or an
-            // inbound framed length prefix. Early disconnect → no flush.
-            let mut pending_len_prefix: Option<[u8; 4]> = None;
-            let is_lan = matches!(ingress, TransportKind::Lan | TransportKind::Internet);
-            if is_lan {
-                let mut magic = [0u8; 4];
-                let classify = tokio::select! {
-                    res = reader.read_exact(&mut magic) => match res {
-                        Ok(_) if &magic == b"RVNP" => "hello",
-                        Ok(_) => "frame",
-                        Err(_) => "drop",
-                    },
-                    _ = tokio::time::sleep(std::time::Duration::from_millis(400)) => "silent",
-                };
-                match classify {
-                    "drop" => {
-                        eprintln!("raven-node: BRIDGE drop probe (no flush)");
-                        return;
-                    }
-                    "frame" => {
-                        pending_len_prefix = Some(magic);
-                    }
-                    "hello" | "silent" => {}
-                    _ => return,
-                }
+            let result = tokio::time::timeout(
+                BRIDGE_CONNECTION_LIFETIME,
+                handle_connection(stream, st, dir, ingress, addr),
+            )
+            .await;
+            if result.is_err() {
+                eprintln!("raven-node: BRIDGE connection lifetime exceeded");
             }
-
-            {
-                let mut s = st.lock().await;
-                match ingress {
-                    TransportKind::Lan | TransportKind::Internet => s.lan_out.push(out_tx),
-                    TransportKind::Ble | TransportKind::MockBle => s.ble_out.push(out_tx),
-                }
-            }
-            if is_lan || matches!(ingress, TransportKind::Ble | TransportKind::MockBle) {
-                flush_pending(&st).await;
-            }
-
-            let write_task = tokio::spawn(async move {
-                while let Some(bytes) = out_rx.recv().await {
-                    let len = (bytes.len() as u32).to_be_bytes();
-                    if writer.write_all(&len).await.is_err() {
-                        break;
-                    }
-                    if writer.write_all(&bytes).await.is_err() {
-                        break;
-                    }
-                    if writer.flush().await.is_err() {
-                        break;
-                    }
-                }
-            });
-
-            loop {
-                let len_buf = if let Some(p) = pending_len_prefix.take() {
-                    p
-                } else {
-                    let mut b = [0u8; 4];
-                    if reader.read_exact(&mut b).await.is_err() {
-                        break;
-                    }
-                    b
-                };
-                let len = u32::from_be_bytes(len_buf) as usize;
-                if len == 0 || len > 1_048_576 {
-                    break;
-                }
-                let mut buf = vec![0u8; len];
-                if reader.read_exact(&mut buf).await.is_err() {
-                    break;
-                }
-
-                on_frame(&st, &dir, buf, ingress, &addr.to_string()).await;
-            }
-            write_task.abort();
+            drop(permit);
         });
     }
+}
+
+async fn read_exact_with_timeout<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    buf: &mut [u8],
+    deadline: Duration,
+) -> Result<(), ()> {
+    match tokio::time::timeout(deadline, reader.read_exact(buf)).await {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(_)) | Err(_) => Err(()),
+    }
+}
+
+async fn write_bridge_frame<W: AsyncWrite + Unpin>(writer: &mut W, bytes: &[u8]) -> Result<(), ()> {
+    if bytes.is_empty() || bytes.len() > MAX_BRIDGE_FRAME_BYTES {
+        return Err(());
+    }
+    let write = async {
+        writer
+            .write_all(&(bytes.len() as u32).to_be_bytes())
+            .await?;
+        writer.write_all(bytes).await?;
+        writer.flush().await
+    };
+    match tokio::time::timeout(BRIDGE_WRITE_TIMEOUT, write).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_)) | Err(_) => Err(()),
+    }
+}
+
+async fn write_all_with_timeout<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    bytes: &[u8],
+) -> Result<(), String> {
+    match tokio::time::timeout(BRIDGE_WRITE_TIMEOUT, writer.write_all(bytes)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(_) => Err("bridge pull write timeout".into()),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct PullContact {
+    #[serde(default)]
+    pub_hex: String,
+    #[serde(default)]
+    pinned: bool,
+}
+
+fn puller_is_trusted(data_dir: &Path, peer_pub: &[u8; 32]) -> bool {
+    let path = data_dir.join("contacts.json");
+    let Ok(raw) = std::fs::read(&path) else {
+        return false;
+    };
+    let Ok(contacts) = serde_json::from_slice::<Vec<PullContact>>(&raw) else {
+        return false;
+    };
+    let expected = hex::encode(peer_pub);
+    contacts
+        .iter()
+        .any(|contact| contact.pinned && contact.pub_hex.trim().eq_ignore_ascii_case(&expected))
+}
+
+fn pull_auth_transcript(
+    client_pub: &[u8; 32],
+    client_nonce: &[u8; 32],
+    server_pub: &[u8; 32],
+    server_nonce: &[u8; 32],
+) -> Vec<u8> {
+    let mut transcript = Vec::with_capacity(PULL_AUTH_DOMAIN.len() + 128);
+    transcript.extend_from_slice(PULL_AUTH_DOMAIN);
+    transcript.extend_from_slice(client_pub);
+    transcript.extend_from_slice(client_nonce);
+    transcript.extend_from_slice(server_pub);
+    transcript.extend_from_slice(server_nonce);
+    transcript
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct BridgePullSession {
+    peer_pub: [u8; 32],
+    transcript: Vec<u8>,
+}
+
+impl BridgePullSession {
+    pub fn signed_receipt(&self, identity: &Identity, object_digest: &[u8; 32]) -> Vec<u8> {
+        let signing = self.receipt_signing_bytes(object_digest);
+        let mut wire = Vec::with_capacity(4 + 32 + 64);
+        wire.extend_from_slice(PULL_RECEIPT);
+        wire.extend_from_slice(object_digest);
+        wire.extend_from_slice(&identity.sign(&signing));
+        wire
+    }
+
+    fn verify_receipt(&self, object_digest: &[u8; 32], signature: &[u8; 64]) -> bool {
+        Identity::verify(
+            &self.peer_pub,
+            &self.receipt_signing_bytes(object_digest),
+            signature,
+        )
+    }
+
+    fn receipt_signing_bytes(&self, object_digest: &[u8; 32]) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(
+            PULL_RECEIPT_DOMAIN.len() + self.transcript.len() + object_digest.len(),
+        );
+        bytes.extend_from_slice(PULL_RECEIPT_DOMAIN);
+        bytes.extend_from_slice(&self.transcript);
+        bytes.extend_from_slice(object_digest);
+        bytes
+    }
+}
+
+async fn authenticate_pull_server<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
+    reader: &mut R,
+    writer: &mut W,
+    state: &Arc<Mutex<BridgeState>>,
+    data_dir: &Path,
+) -> Result<BridgePullSession, String> {
+    let mut hello_body = [0u8; 64];
+    read_exact_with_timeout(reader, &mut hello_body, BRIDGE_FRAME_TIMEOUT)
+        .await
+        .map_err(|_| "truncated bridge pull hello".to_string())?;
+    let mut client_pub = [0u8; 32];
+    client_pub.copy_from_slice(&hello_body[..32]);
+    let mut client_nonce = [0u8; 32];
+    client_nonce.copy_from_slice(&hello_body[32..]);
+    if !puller_is_trusted(data_dir, &client_pub) {
+        return Err("bridge pull peer is not a trusted contact".into());
+    }
+
+    let mut server_nonce = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut server_nonce);
+    let (server_pub, server_signature) = {
+        let st = state.lock().await;
+        let server_pub = st.identity.public_key_bytes();
+        let transcript =
+            pull_auth_transcript(&client_pub, &client_nonce, &server_pub, &server_nonce);
+        (server_pub, st.identity.sign(&transcript))
+    };
+    let mut challenge = Vec::with_capacity(4 + 32 + 32 + 64);
+    challenge.extend_from_slice(PULL_CHALLENGE);
+    challenge.extend_from_slice(&server_pub);
+    challenge.extend_from_slice(&server_nonce);
+    challenge.extend_from_slice(&server_signature);
+    write_all_with_timeout(writer, &challenge).await?;
+
+    let mut response = [0u8; 68];
+    read_exact_with_timeout(reader, &mut response, BRIDGE_FRAME_TIMEOUT)
+        .await
+        .map_err(|_| "truncated bridge pull response".to_string())?;
+    if &response[..4] != PULL_RESPONSE {
+        return Err("invalid bridge pull response".into());
+    }
+    let mut client_signature = [0u8; 64];
+    client_signature.copy_from_slice(&response[4..]);
+    let transcript = pull_auth_transcript(&client_pub, &client_nonce, &server_pub, &server_nonce);
+    if !Identity::verify(&client_pub, &transcript, &client_signature) {
+        return Err("bridge pull client signature invalid".into());
+    }
+    Ok(BridgePullSession {
+        peer_pub: client_pub,
+        transcript,
+    })
+}
+
+async fn authenticate_pull_client_io<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: &mut S,
+    identity: &Identity,
+    expected_server_pub: &[u8; 32],
+) -> Result<BridgePullSession, String> {
+    let client_pub = identity.public_key_bytes();
+    let mut client_nonce = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut client_nonce);
+    let mut hello = Vec::with_capacity(68);
+    hello.extend_from_slice(PULL_HELLO);
+    hello.extend_from_slice(&client_pub);
+    hello.extend_from_slice(&client_nonce);
+    write_all_with_timeout(stream, &hello).await?;
+
+    let mut challenge = [0u8; 132];
+    read_exact_with_timeout(stream, &mut challenge, BRIDGE_FRAME_TIMEOUT)
+        .await
+        .map_err(|_| "truncated bridge pull challenge".to_string())?;
+    if &challenge[..4] != PULL_CHALLENGE {
+        return Err("invalid bridge pull challenge".into());
+    }
+    let mut server_pub = [0u8; 32];
+    server_pub.copy_from_slice(&challenge[4..36]);
+    if &server_pub != expected_server_pub {
+        return Err("bridge pull server identity mismatch".into());
+    }
+    let mut server_nonce = [0u8; 32];
+    server_nonce.copy_from_slice(&challenge[36..68]);
+    let mut server_signature = [0u8; 64];
+    server_signature.copy_from_slice(&challenge[68..]);
+    let transcript = pull_auth_transcript(&client_pub, &client_nonce, &server_pub, &server_nonce);
+    if !Identity::verify(&server_pub, &transcript, &server_signature) {
+        return Err("bridge pull server signature invalid".into());
+    }
+
+    let mut response = Vec::with_capacity(68);
+    response.extend_from_slice(PULL_RESPONSE);
+    response.extend_from_slice(&identity.sign(&transcript));
+    write_all_with_timeout(stream, &response).await?;
+    Ok(BridgePullSession {
+        peer_pub: server_pub,
+        transcript,
+    })
+}
+
+/// Mutually authenticate an explicit bridge pull before the stream is handed
+/// to the normal framed endpoint reader.
+pub async fn authenticate_bridge_pull_client(
+    stream: &mut tokio::net::TcpStream,
+    identity: &Identity,
+    expected_server_pub: &[u8; 32],
+) -> Result<BridgePullSession, String> {
+    authenticate_pull_client_io(stream, identity, expected_server_pub).await
+}
+
+async fn register_pull_sender(
+    state: &Arc<Mutex<BridgeState>>,
+    ingress: TransportKind,
+    out_tx: &mpsc::Sender<Vec<u8>>,
+    session: &BridgePullSession,
+) {
+    let mut st = state.lock().await;
+    let sender = PullSender {
+        tx: out_tx.clone(),
+        session: session.clone(),
+    };
+    match ingress {
+        TransportKind::Lan | TransportKind::Internet => st.lan_out.push(sender),
+        TransportKind::Ble | TransportKind::MockBle => st.ble_out.push(sender),
+    }
+}
+
+async fn handle_connection(
+    stream: tokio::net::TcpStream,
+    state: Arc<Mutex<BridgeState>>,
+    data_dir: PathBuf,
+    ingress: TransportKind,
+    addr: SocketAddr,
+) {
+    let (mut reader, mut writer) = stream.into_split();
+    let mut pending_prefix: Option<[u8; 4]> = None;
+    let mut first = [0u8; 4];
+    if read_exact_with_timeout(&mut reader, &mut first, BRIDGE_IDLE_TIMEOUT)
+        .await
+        .is_err()
+    {
+        eprintln!("raven-node: BRIDGE drop silent/probe connection (no flush)");
+        return;
+    }
+    let pull_session = if &first == PULL_HELLO {
+        match authenticate_pull_server(&mut reader, &mut writer, &state, &data_dir).await {
+            Ok(session) => Some(session),
+            Err(e) => {
+                eprintln!("raven-node: BRIDGE reject pull: {e}");
+                return;
+            }
+        }
+    } else {
+        pending_prefix = Some(first);
+        None
+    };
+
+    let (out_tx, mut out_rx) = mpsc::channel::<Vec<u8>>(64);
+    let write_task = tokio::spawn(async move {
+        while let Some(bytes) = out_rx.recv().await {
+            if write_bridge_frame(&mut writer, &bytes).await.is_err() {
+                break;
+            }
+        }
+    });
+    if let Some(session) = pull_session.as_ref() {
+        register_pull_sender(&state, ingress, &out_tx, session).await;
+        flush_pending(&state).await;
+    }
+
+    loop {
+        let prefix = if let Some(prefix) = pending_prefix.take() {
+            prefix
+        } else {
+            let mut prefix = [0u8; 4];
+            if read_exact_with_timeout(&mut reader, &mut prefix, BRIDGE_IDLE_TIMEOUT)
+                .await
+                .is_err()
+            {
+                break;
+            }
+            prefix
+        };
+        if &prefix == PULL_HELLO {
+            // Authentication has a challenge/response phase that must precede
+            // the writer task. Require a fresh connection for each retry.
+            break;
+        }
+        if &prefix == PULL_RECEIPT {
+            let Some(session) = pull_session.as_ref() else {
+                break;
+            };
+            let mut receipt = [0u8; 96];
+            if read_exact_with_timeout(&mut reader, &mut receipt, BRIDGE_FRAME_TIMEOUT)
+                .await
+                .is_err()
+            {
+                break;
+            }
+            let mut object_digest = [0u8; 32];
+            object_digest.copy_from_slice(&receipt[..32]);
+            let mut signature = [0u8; 64];
+            signature.copy_from_slice(&receipt[32..]);
+            let disposition = {
+                let mut st = state.lock().await;
+                st.acknowledge_custody_receipt(session, &object_digest, &signature)
+            };
+            match disposition {
+                CustodyReceiptDisposition::Acknowledged => {
+                    eprintln!(
+                        "raven-node: BRIDGE verified custody receipt object={}",
+                        hex::encode(&object_digest[..4])
+                    );
+                }
+                CustodyReceiptDisposition::InvalidSignature => {
+                    eprintln!("raven-node: BRIDGE reject invalid custody receipt");
+                    break;
+                }
+                CustodyReceiptDisposition::WrongAttempt => {
+                    eprintln!("raven-node: BRIDGE reject receipt from unassigned pull session");
+                    break;
+                }
+                CustodyReceiptDisposition::NotInFlight => {
+                    eprintln!("raven-node: BRIDGE reject receipt for non-in-flight object");
+                    break;
+                }
+            }
+            continue;
+        }
+        let len = u32::from_be_bytes(prefix) as usize;
+        if len == 0 || len > MAX_BRIDGE_FRAME_BYTES {
+            break;
+        }
+        let mut buf = vec![0u8; len];
+        if read_exact_with_timeout(&mut reader, &mut buf, BRIDGE_FRAME_TIMEOUT)
+            .await
+            .is_err()
+        {
+            break;
+        }
+        // Source ports are deliberately excluded from durable rate-limit keys.
+        on_frame(&state, &data_dir, buf, ingress, &addr.ip().to_string()).await;
+    }
+    write_task.abort();
+    let _ = write_task.await;
 }
 
 /// Run bridge daemon. `timeout_secs=0` means run until killed (ash exit must NOT stop it
@@ -312,14 +726,20 @@ pub async fn run_bridge_daemon(
     write_status: Option<PathBuf>,
     timeout_secs: u64,
 ) -> Result<(), String> {
-    std::fs::create_dir_all(&data_dir).ok();
+    // Identity must be established before SQLite/status/address artifacts are
+    // created. Otherwise a failed first install is permanently misclassified
+    // as an existing profile with a missing identity.
+    let (identity, _) = raven_core::load_or_create_identity(&data_dir)
+        .map_err(|e| format!("bridge identity preflight failed: {e}"))?;
     let policy = load_policy(&data_dir);
     let queue = ForwardQueue::open(&forward_queue_path(&data_dir)).map_err(|e| e.to_string())?;
     let state = Arc::new(Mutex::new(BridgeState {
+        identity,
         policy,
         queue,
         lan_out: Vec::new(),
         ble_out: Vec::new(),
+        attempt_assignments: HashMap::new(),
     }));
 
     let lan = TcpListener::bind(&lan_listen)
@@ -349,17 +769,20 @@ pub async fn run_bridge_daemon(
         }
     }
 
+    let connection_limiter = Arc::new(Semaphore::new(MAX_BRIDGE_CONNECTIONS));
     tokio::spawn(accept_loop(
         lan,
         state.clone(),
         data_dir.clone(),
         TransportKind::Lan,
+        connection_limiter.clone(),
     ));
     tokio::spawn(accept_loop(
         ble,
         state.clone(),
         data_dir.clone(),
         TransportKind::MockBle,
+        connection_limiter,
     ));
 
     let st_pol = state.clone();
@@ -368,16 +791,17 @@ pub async fn run_bridge_daemon(
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-            {
+            let policy = load_policy(&dir_pol);
+            let snap = {
                 let mut st = st_pol.lock().await;
-                st.policy = load_policy(&dir_pol);
-                if let Some(p) = &status_path {
-                    let snap = st.status_snapshot();
-                    let _ =
-                        std::fs::write(p, serde_json::to_string_pretty(&snap).unwrap_or_default());
-                }
+                st.policy = policy;
+                let _ = st.queue.maintain(now_ms());
+                st.prune_terminal_attempt_assignments();
+                st.status_snapshot()
+            };
+            if let Some(p) = &status_path {
+                let _ = std::fs::write(p, serde_json::to_string_pretty(&snap).unwrap_or_default());
             }
-            flush_pending(&st_pol).await;
         }
     });
 
@@ -401,15 +825,25 @@ mod tests {
     use tempfile::tempdir;
 
     #[tokio::test]
-    async fn sealed_ack_is_forwarded_opaquely_and_never_marked_delivered() {
+    async fn sealed_ack_is_forwarded_opaquely_and_kept_retryable_without_receipt() {
         let dir = tempdir().unwrap();
         let queue = ForwardQueue::open(&forward_queue_path(dir.path())).unwrap();
         let (lan_tx, mut lan_rx) = mpsc::channel(1);
+        let pull_identity = Identity::from_seed(&[0x1A; 32]);
+        let pull_session = BridgePullSession {
+            peer_pub: pull_identity.public_key_bytes(),
+            transcript: b"sealed-ack-pull-session".to_vec(),
+        };
         let state = Arc::new(Mutex::new(BridgeState {
+            identity: Identity::from_seed(&[0x19; 32]),
             policy: NodePolicy::default(),
             queue,
-            lan_out: vec![lan_tx],
+            lan_out: vec![PullSender {
+                tx: lan_tx,
+                session: pull_session,
+            }],
             ble_out: Vec::new(),
+            attempt_assignments: HashMap::new(),
         }));
 
         let sender = Identity::generate();
@@ -461,6 +895,435 @@ mod tests {
         assert_eq!(forwarded.message_ciphertext, sealed_ack);
 
         let stored = state.lock().await.queue.get(&message_id).unwrap().unwrap();
-        assert_eq!(stored.state, ForwardState::Forwarded);
+        assert_eq!(stored.state, ForwardState::InFlight);
+    }
+
+    #[tokio::test]
+    async fn one_prepared_envelope_is_never_sprayed_to_multiple_connections() {
+        let (first_tx, mut first_rx) = mpsc::channel(1);
+        let (second_tx, mut second_rx) = mpsc::channel(1);
+        let first_session = BridgePullSession {
+            peer_pub: Identity::from_seed(&[0x41; 32]).public_key_bytes(),
+            transcript: b"first-pull-session".to_vec(),
+        };
+        let second_session = BridgePullSession {
+            peer_pub: Identity::from_seed(&[0x42; 32]).public_key_bytes(),
+            transcript: b"second-pull-session".to_vec(),
+        };
+        let selected = enqueue_one_replica(
+            vec![
+                PullSender {
+                    tx: first_tx,
+                    session: first_session.clone(),
+                },
+                PullSender {
+                    tx: second_tx,
+                    session: second_session,
+                },
+            ],
+            b"one-replica",
+        );
+        assert!(selected.as_ref() == Some(&first_session));
+        assert_eq!(first_rx.recv().await.unwrap(), b"one-replica");
+        assert!(second_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn custody_receipt_is_signer_and_pull_session_bound() {
+        let client = Identity::from_seed(&[0x51; 32]);
+        let server_view = BridgePullSession {
+            peer_pub: client.public_key_bytes(),
+            transcript: b"fresh-session-one".to_vec(),
+        };
+        let client_view = server_view.clone();
+        let digest = [0x52; 32];
+        let wire = client_view.signed_receipt(&client, &digest);
+        let mut signature = [0u8; 64];
+        signature.copy_from_slice(&wire[36..]);
+        assert!(server_view.verify_receipt(&digest, &signature));
+
+        let other_session = BridgePullSession {
+            peer_pub: client.public_key_bytes(),
+            transcript: b"fresh-session-two".to_vec(),
+        };
+        assert!(!other_session.verify_receipt(&digest, &signature));
+        let wrong_signer = BridgePullSession {
+            peer_pub: Identity::from_seed(&[0x53; 32]).public_key_bytes(),
+            transcript: server_view.transcript.clone(),
+        };
+        assert!(!wrong_signer.verify_receipt(&digest, &signature));
+    }
+
+    #[tokio::test]
+    async fn custody_receipt_only_acknowledges_the_exact_selected_attempt_session() {
+        use raven_core::bridge::authenticated_object_digest;
+        use raven_core::forward_queue::ForwardItem;
+
+        let dir = tempdir().unwrap();
+        let first_identity = Identity::from_seed(&[0x54; 32]);
+        let first_session = BridgePullSession {
+            peer_pub: first_identity.public_key_bytes(),
+            transcript: b"trusted-pull-session-a".to_vec(),
+        };
+        let second_identity = Identity::from_seed(&[0x55; 32]);
+        let second_session = BridgePullSession {
+            peer_pub: second_identity.public_key_bytes(),
+            transcript: b"trusted-pull-session-b".to_vec(),
+        };
+        let (first_tx, mut first_rx) = mpsc::channel(1);
+        let (second_tx, mut second_rx) = mpsc::channel(1);
+
+        let now = now_ms();
+        let mut envelope = Envelope {
+            env_type: EnvType::Message as u8,
+            flags: 0,
+            message_id: [0x56; 16],
+            routing_tag: [0x57; 16],
+            dest_device_hint: 0,
+            created_at: now,
+            expires_at: now + 60_000,
+            hop_limit: 3,
+            replication_budget: 1,
+            anti_replay_nonce: [0x58; 12],
+            ratchet_header_ciphertext: Vec::new(),
+            message_ciphertext: vec![0x59; 32],
+            sender_authentication: Vec::new(),
+        };
+        envelope.sign_with(&Identity::from_seed(&[0x5A; 32]));
+        let object_digest = authenticated_object_digest(&envelope);
+        let packed = envelope.pack();
+        let queue = ForwardQueue::open(&forward_queue_path(dir.path())).unwrap();
+        queue
+            .enqueue(&ForwardItem {
+                object_digest,
+                message_id: envelope.message_id,
+                packed_envelope: packed.clone(),
+                ingress: TransportKind::MockBle,
+                egress: TransportKind::Lan,
+                state: ForwardState::Queued,
+                created_at_ms: now,
+                expires_at_ms: envelope.expires_at,
+                previous_hop: "trusted-ingress".into(),
+            })
+            .unwrap();
+        let state = Arc::new(Mutex::new(BridgeState {
+            identity: Identity::from_seed(&[0x5B; 32]),
+            policy: NodePolicy::default(),
+            queue,
+            lan_out: vec![
+                PullSender {
+                    tx: first_tx,
+                    session: first_session.clone(),
+                },
+                PullSender {
+                    tx: second_tx,
+                    session: second_session.clone(),
+                },
+            ],
+            ble_out: Vec::new(),
+            attempt_assignments: HashMap::new(),
+        }));
+
+        assert!(attempt_forward_at(&state, TransportKind::Lan, &packed, &object_digest, now).await);
+        assert_eq!(first_rx.recv().await.unwrap(), packed);
+        assert!(second_rx.try_recv().is_err());
+        {
+            let st = state.lock().await;
+            assert!(st.attempt_assignments.get(&object_digest) == Some(&first_session));
+            assert_eq!(
+                st.queue.get_object(&object_digest).unwrap().unwrap().state,
+                ForwardState::InFlight
+            );
+        }
+
+        // Session B is independently trusted and its receipt is cryptographically
+        // valid for B's transcript, but it was not selected for this handoff.
+        let wrong_wire = second_session.signed_receipt(&second_identity, &object_digest);
+        let mut wrong_signature = [0u8; 64];
+        wrong_signature.copy_from_slice(&wrong_wire[36..]);
+        {
+            let mut st = state.lock().await;
+            assert_eq!(
+                st.acknowledge_custody_receipt(&second_session, &object_digest, &wrong_signature),
+                CustodyReceiptDisposition::WrongAttempt
+            );
+            assert!(st.attempt_assignments.get(&object_digest) == Some(&first_session));
+            assert_eq!(
+                st.queue.get_object(&object_digest).unwrap().unwrap().state,
+                ForwardState::InFlight
+            );
+        }
+
+        // Once retry backoff elapses, selecting B is a legitimate new attempt
+        // and atomically overwrites A's binding.
+        {
+            let mut st = state.lock().await;
+            let retry_sender = st.lan_out[1].clone();
+            st.lan_out = vec![retry_sender];
+        }
+        assert!(
+            attempt_forward_at(
+                &state,
+                TransportKind::Lan,
+                &packed,
+                &object_digest,
+                now + 6_000
+            )
+            .await
+        );
+        assert_eq!(second_rx.recv().await.unwrap(), packed);
+        assert!(
+            state.lock().await.attempt_assignments.get(&object_digest) == Some(&second_session)
+        );
+
+        let stale_wire = first_session.signed_receipt(&first_identity, &object_digest);
+        let mut stale_signature = [0u8; 64];
+        stale_signature.copy_from_slice(&stale_wire[36..]);
+        {
+            let mut st = state.lock().await;
+            assert_eq!(
+                st.acknowledge_custody_receipt(&first_session, &object_digest, &stale_signature),
+                CustodyReceiptDisposition::WrongAttempt
+            );
+            assert!(st.attempt_assignments.get(&object_digest) == Some(&second_session));
+        }
+
+        let correct_wire = second_session.signed_receipt(&second_identity, &object_digest);
+        let mut correct_signature = [0u8; 64];
+        correct_signature.copy_from_slice(&correct_wire[36..]);
+        let mut st = state.lock().await;
+        assert_eq!(
+            st.acknowledge_custody_receipt(&second_session, &object_digest, &correct_signature),
+            CustodyReceiptDisposition::Acknowledged
+        );
+        assert!(!st.attempt_assignments.contains_key(&object_digest));
+        assert_eq!(
+            st.queue.get_object(&object_digest).unwrap().unwrap().state,
+            ForwardState::Forwarded
+        );
+    }
+
+    #[test]
+    fn terminal_queue_cleanup_removes_stale_attempt_assignment() {
+        use raven_core::bridge::authenticated_object_digest;
+        use raven_core::forward_queue::ForwardItem;
+
+        let dir = tempdir().unwrap();
+        let now = now_ms();
+        let mut envelope = Envelope {
+            env_type: EnvType::Message as u8,
+            flags: 0,
+            message_id: [0x5C; 16],
+            routing_tag: [0x5D; 16],
+            dest_device_hint: 0,
+            created_at: now,
+            expires_at: now + 1,
+            hop_limit: 2,
+            replication_budget: 1,
+            anti_replay_nonce: [0x5E; 12],
+            ratchet_header_ciphertext: Vec::new(),
+            message_ciphertext: vec![0x5F; 8],
+            sender_authentication: Vec::new(),
+        };
+        envelope.sign_with(&Identity::from_seed(&[0x60; 32]));
+        let object_digest = authenticated_object_digest(&envelope);
+        let packed = envelope.pack();
+        let queue = ForwardQueue::open(&forward_queue_path(dir.path())).unwrap();
+        queue
+            .enqueue(&ForwardItem {
+                object_digest,
+                message_id: envelope.message_id,
+                packed_envelope: packed,
+                ingress: TransportKind::MockBle,
+                egress: TransportKind::Lan,
+                state: ForwardState::Queued,
+                created_at_ms: now,
+                expires_at_ms: envelope.expires_at,
+                previous_hop: "trusted-ingress".into(),
+            })
+            .unwrap();
+        assert!(queue.claim_object_for_attempt(&object_digest, now).unwrap());
+        queue.expire_stale(now + 2).unwrap();
+        let session = BridgePullSession {
+            peer_pub: Identity::from_seed(&[0x61; 32]).public_key_bytes(),
+            transcript: b"terminal-cleanup-session".to_vec(),
+        };
+        let mut state = BridgeState {
+            identity: Identity::from_seed(&[0x62; 32]),
+            policy: NodePolicy::default(),
+            queue,
+            lan_out: Vec::new(),
+            ble_out: Vec::new(),
+            attempt_assignments: HashMap::from([(object_digest, session)]),
+        };
+
+        state.prune_terminal_attempt_assignments();
+        assert!(!state.attempt_assignments.contains_key(&object_digest));
+    }
+
+    #[tokio::test]
+    async fn mutually_authenticated_pull_accepts_only_trusted_client_and_pinned_server() {
+        let dir = tempdir().unwrap();
+        let server_identity = Identity::from_seed(&[0x61; 32]);
+        let server_pub = server_identity.public_key_bytes();
+        let client_identity = Identity::from_seed(&[0x62; 32]);
+        std::fs::write(
+            dir.path().join("contacts.json"),
+            serde_json::to_vec(&serde_json::json!([{
+                "pub_hex": hex::encode(client_identity.public_key_bytes()),
+                "pinned": true
+            }]))
+            .unwrap(),
+        )
+        .unwrap();
+        let state = Arc::new(Mutex::new(BridgeState {
+            identity: server_identity,
+            policy: NodePolicy::default(),
+            queue: ForwardQueue::open(&forward_queue_path(dir.path())).unwrap(),
+            lan_out: Vec::new(),
+            ble_out: Vec::new(),
+            attempt_assignments: HashMap::new(),
+        }));
+        let (mut client, server) = tokio::io::duplex(1024);
+        let (mut server_reader, mut server_writer) = tokio::io::split(server);
+        let server_state = state.clone();
+        let server_dir = dir.path().to_path_buf();
+        let server_task = tokio::spawn(async move {
+            let mut marker = [0u8; 4];
+            read_exact_with_timeout(&mut server_reader, &mut marker, BRIDGE_FRAME_TIMEOUT)
+                .await
+                .map_err(|_| "missing pull marker".to_string())?;
+            if &marker != PULL_HELLO {
+                return Err("wrong pull marker".into());
+            }
+            authenticate_pull_server(
+                &mut server_reader,
+                &mut server_writer,
+                &server_state,
+                &server_dir,
+            )
+            .await
+        });
+        authenticate_pull_client_io(&mut client, &client_identity, &server_pub)
+            .await
+            .unwrap();
+        server_task.await.unwrap().unwrap();
+    }
+
+    #[test]
+    fn pull_authorization_requires_an_explicitly_pinned_contact() {
+        let dir = tempdir().unwrap();
+        let trusted = Identity::from_seed(&[0x63; 32]);
+        let other = Identity::from_seed(&[0x64; 32]);
+        let contacts = dir.path().join("contacts.json");
+
+        std::fs::write(
+            &contacts,
+            serde_json::to_vec(&serde_json::json!([{
+                "pub_hex": hex::encode(trusted.public_key_bytes()),
+                "pinned": false
+            }]))
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(!puller_is_trusted(dir.path(), &trusted.public_key_bytes()));
+
+        std::fs::write(
+            &contacts,
+            serde_json::to_vec(&serde_json::json!([{
+                "pub_hex": hex::encode(trusted.public_key_bytes()),
+                "pinned": true
+            }]))
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(puller_is_trusted(dir.path(), &trusted.public_key_bytes()));
+        assert!(!puller_is_trusted(dir.path(), &other.public_key_bytes()));
+    }
+
+    #[tokio::test]
+    async fn bare_rvnp_cannot_register_or_drain_queued_custody() {
+        let dir = tempdir().unwrap();
+        let queue = ForwardQueue::open(&forward_queue_path(dir.path())).unwrap();
+        let sender = Identity::from_seed(&[0x71; 32]);
+        let now = now_ms();
+        let mut envelope = Envelope {
+            env_type: EnvType::Message as u8,
+            flags: 0,
+            message_id: [0x72; 16],
+            routing_tag: [0x73; 16],
+            dest_device_hint: 0,
+            created_at: now,
+            expires_at: now + 60_000,
+            hop_limit: 3,
+            replication_budget: 2,
+            anti_replay_nonce: [0x74; 12],
+            ratchet_header_ciphertext: Vec::new(),
+            message_ciphertext: vec![0x75; 32],
+            sender_authentication: Vec::new(),
+        };
+        envelope.sign_with(&sender);
+        let state = Arc::new(Mutex::new(BridgeState {
+            identity: Identity::from_seed(&[0x76; 32]),
+            policy: NodePolicy::default(),
+            queue,
+            lan_out: Vec::new(),
+            ble_out: Vec::new(),
+            attempt_assignments: HashMap::new(),
+        }));
+        on_frame(
+            &state,
+            dir.path(),
+            envelope.pack(),
+            TransportKind::MockBle,
+            "192.0.2.1",
+        )
+        .await;
+        assert_eq!(state.lock().await.queue.count_pending().unwrap(), 1);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (client, accepted) =
+            tokio::join!(tokio::net::TcpStream::connect(address), listener.accept());
+        let mut client = client.unwrap();
+        let (server, peer_addr) = accepted.unwrap();
+        let server_state = state.clone();
+        let server_dir = dir.path().to_path_buf();
+        let handler = tokio::spawn(async move {
+            handle_connection(
+                server,
+                server_state,
+                server_dir,
+                TransportKind::Lan,
+                peer_addr,
+            )
+            .await
+        });
+        client.write_all(PULL_HELLO).await.unwrap();
+        client.shutdown().await.unwrap();
+        handler.await.unwrap();
+
+        let st = state.lock().await;
+        assert!(st.lan_out.is_empty());
+        let stored = st.queue.get(&[0x72; 16]).unwrap().unwrap();
+        assert_eq!(stored.state, ForwardState::Queued);
+    }
+
+    #[tokio::test]
+    async fn identity_preflight_failure_never_creates_forward_queue() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("unexpected-existing-state"), b"poison").unwrap();
+        let result = run_bridge_daemon(
+            dir.path().to_path_buf(),
+            "127.0.0.1:0".into(),
+            "127.0.0.1:0".into(),
+            None,
+            None,
+            None,
+            1,
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(!forward_queue_path(dir.path()).exists());
     }
 }

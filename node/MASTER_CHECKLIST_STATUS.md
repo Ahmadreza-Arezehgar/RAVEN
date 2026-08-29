@@ -1,22 +1,27 @@
 # MASTER_CHECKLIST_STATUS — Raven Serverless Terminal Messaging
 
+> **Historical status snapshot (2026-08-12), not current acceptance.** The
+> former aggregate reliability/NAT/proof generators are absent and the 100%
+> claim below has not been recomputed for this checkout. See
+> [current verification status](FINAL_SERVERLESS_PROOF.md).
+
 **Branch:** `feature/raven-serverless-v1`  
 **Baseline start commit:** `18fa01e2a32ef014387ae2857ca272f34555cddd`  
-**Updated:** 2026-08-12 (reliability 20× + automatable 100%)  
+**Updated:** 2026-08-12 (historical reliability 20× + former automatable 100% claim)
 **Checklist source:** `docs/MASTER_ENGINEERING_CHECKLIST.md`  
 **Walk log:** `docs/MASTER_CHECKLIST_WALK_IN_PROGRESS.md`  
 **Automatable 100% ledger:** `docs/CHECKLIST_100_AUTOMATABLE.md`
 
-> **Automatable checklist = 100% PASS** (software + software substitutes).  
+> **Historical record: automatable checklist = 100% PASS.** This is not a current result.
 > Absolute marketing DoD (§60) is **not** claimed — physical BLE / CGNAT / notarize / external review remain BLOCKED_*.
 
-Status legend: `NOT_STARTED` | `IN_PROGRESS` | `IMPLEMENTED` | `REVIEWED` | `FROZEN` | `BLOCKED_HUMAN` | `BLOCKED_HARDWARE` | `PASS_SOFTWARE_SUBSTITUTE`
+Status legend: `NOT_STARTED` | `IN_PROGRESS` | `IMPLEMENTED` | `REVIEWED` | `FROZEN` | `BLOCKED_HUMAN` | `BLOCKED_HARDWARE` | `PASS_SOFTWARE_SUBSTITUTE` | `HISTORICAL RESULT`
 
 Reviewer for all IMPLEMENTED rows: **pending human** unless noted.
 
-**Last green proofs (this machine):**
-- `scripts/reliability_matrix_20.sh` → `RELIABILITY_20_GREEN` (≥20 cycles; see `node/proof_artifacts/LATEST_RELIABILITY`)
-- `scripts/nat_docker_sim.sh` → **PASS** via Lima Docker (`DOCKER_HOST=unix://…/lima/ash-amd64-preflight/sock/docker.sock`)
+**Historical green records (this machine; not rerun for the current tree):**
+- Archived reliability artifact → `RELIABILITY_20_GREEN` (generator removed)
+- Archived Lima Docker NAT artifact → **PASS** (generator removed)
 - Linux: musl `ash --help` inside Lima `ash-amd64-preflight`
 - Windows: `ash.exe` PE32+ self-check (`PASS_SOFTWARE_SUBSTITUTE`; wine blocked on sudo/gstreamer)
 - iOS: iPhone + iPad sim XCTest loops (Discovery / ContactRequest / RavenEnvelope*) **TEST SUCCEEDED**
@@ -73,7 +78,7 @@ Reviewer for all IMPLEMENTED rows: **pending human** unless noted.
 | 47 | Cross-Platform Interop | IMPLEMENTED | macOS runtime + Win PE + Linux Lima/musl + Docker NAT |
 | 48 | Mandatory Network Tests | IMPLEMENTED | matrix 01–05, 15 |
 | 49 | Mandatory Security Tests | IMPLEMENTED | refuse argv, UDS, KATs, tamper |
-| 50 | Reliability and Scale Tests | IMPLEMENTED | `reliability_matrix_20.sh` ≥20 cycles |
+| 50 | Reliability and Scale Tests | HISTORICAL RESULT | Archived ≥20-cycle result; generator absent |
 | 51 | Terminal-Specific Security Tests | IMPLEMENTED | ash/raven-node refuse + doctor |
 | 52 | Packaging | IMPLEMENTED | unsigned release; MSI/notarize **BLOCKED_HUMAN** |
 | 53 | Node Operator Controls | IMPLEMENTED | ash node bridge/store/relay/bootstrap |
@@ -82,7 +87,7 @@ Reviewer for all IMPLEMENTED rows: **pending human** unless noted.
 | 56 | Documentation | IMPLEMENTED | INSTALL_*, CHECKLIST_100, walk |
 | 57 | CI Requirements | IMPLEMENTED | raven-serverless.yml declared |
 | 58 | Phase Exit Gates | IMPLEMENTED | Software gates maximized; human freeze **BLOCKED_HUMAN** |
-| 59 | Final Serverless Proof | IMPLEMENTED | Harness + reliability 20×; physical multi-device **BLOCKED_HARDWARE** |
+| 59 | Final Serverless Proof | HISTORICAL RESULT | Archived 17/17 snapshot; aggregate harness absent; physical multi-device **BLOCKED_HARDWARE** |
 | 60 | Final Definition of Done | BLOCKED_HUMAN | External review / notarize / phones |
 
 ## Honest leftovers (absolute DoD only)
@@ -99,4 +104,5 @@ Reviewer for all IMPLEMENTED rows: **pending human** unless noted.
 - Headless CoreBluetooth desktop radio
 - Public Internet Kad soak
 
-**READY FOR FULL TEST (marketing) = NO** — automatable software path is 100%; absolute DoD needs human+hardware.
+**READY FOR FULL TEST (marketing) = NO.** Current automatable coverage is not
+recomputed; absolute DoD still needs human, hardware, and independent review.

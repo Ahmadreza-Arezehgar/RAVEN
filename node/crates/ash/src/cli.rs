@@ -9,7 +9,6 @@ mod trace_delivery;
 
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
-#[cfg(unix)]
 use std::process::Command;
 
 use clap::{Parser, Subcommand};
@@ -27,8 +26,11 @@ use raven_core::fingerprint::device_fingerprint_v1;
 use raven_core::forward_queue::ForwardQueue;
 use raven_core::identity::Identity;
 #[cfg(unix)]
+use raven_core::ipc::default_socket_path;
+#[cfg(any(unix, windows))]
+use raven_core::ipc::IpcResponse;
+#[cfg(unix)]
 use raven_core::ipc::{decode_response, encode_request, IpcRequest, IPC_VERSION};
-use raven_core::ipc::{default_socket_path, IpcResponse};
 use raven_core::messaging_path::{
     assert_no_silent_fastapi, resolve_terminal_messaging_path, MessagingPath,
 };
@@ -96,7 +98,6 @@ fn c() -> Colors {
             green: "\x1b[1m",
             yellow: "\x1b[2m",
             red: "\x1b[1m",
-            white_on_purple: "\x1b[7m",
         }
     } else {
         Colors {
@@ -108,7 +109,6 @@ fn c() -> Colors {
             green: "",
             yellow: "",
             red: "",
-            white_on_purple: "",
         }
     }
 }
@@ -122,7 +122,6 @@ struct Colors {
     green: &'static str,
     yellow: &'static str,
     red: &'static str,
-    white_on_purple: &'static str,
 }
 
 fn default_ash_data_dir() -> PathBuf {
@@ -191,19 +190,16 @@ pub const LOGO_64_URL: &str = "https://raven-messager.com/raven_logo_64.png";
                     ash init                 # create identity\n\
                     ash whoami               # share these 3 lines with a friend\n\
                   \n\
-                  TWO-TERMINAL CHAT (direct LAN)\n\
-                    # receiver:\n\
-                    raven-node run --data-dir ~/.raven --listen 127.0.0.1:0 \\\n\
-                      --write-addr /tmp/a.addr --write-pub /tmp/a.pub \\\n\
-                      --exit-after-recv 1 --peer-pub-hex <sender pub_hex>\n\
-                    # sender:\n\
-                    echo hi | raven-node run --data-dir ~/.raven-b \\\n\
-                      --listen 127.0.0.1:0 --peer \"$(cat /tmp/a.addr)\" \\\n\
-                      --peer-pub-hex <receiver pub_hex> --send-stdin \\\n\
-                      --body-mode unsafe-interim --exit-after-ack\n\
+                  AUTHENTICATED CHAT (pinned contact)\n\
+                    ash contact add --address <rvn1...> --pub-hex <64 hex> \\\n\
+                      --petname Friend --tag friend --lan-dial <host:port> \\\n\
+                      --verify-fp <fingerprint verified out-of-band>\n\
+                    echo hi | ash send --contact @friend\n\
+                    # Sends fail closed if authenticated session setup is unavailable.\n\
                   \n\
-                  VERIFY EVERYTHING\n\
-                    bash scripts/final_serverless_proof.sh   # → AUTOMATED_PROOF_GREEN\n\
+                  VERIFY A SOURCE CHECKOUT\n\
+                    cargo test --locked -p raven-core -p raven-node -p ash -p raven-swarm\n\
+                    # See FINAL_SERVERLESS_PROOF.md for scope and remaining gates.\n\
                   \n\
                   Never prints private keys. https://raven-messager.com/"
 )]
@@ -700,7 +696,10 @@ fn try_load_identity(data_dir: &Path) -> Result<Option<Identity>, String> {
 
 fn print_public_identity(id: &Identity) {
     kv("address", &id.address());
-    kv("fingerprint", &device_fingerprint_v1(&id.public_key_bytes()));
+    kv(
+        "fingerprint",
+        &device_fingerprint_v1(&id.public_key_bytes()),
+    );
     kv("pub_hex", &hex::encode(id.public_key_bytes()));
     println!(
         "{0}invite{1}        {2}raven:{3}:{4}{5}",
@@ -725,7 +724,9 @@ fn print_welcome(data_dir: &Path) {
     println!("  \u{2502}                                                  \u{2502}");
     println!("  \u{2502}  Messaging Beyond Connectivity                  \u{2502}");
     println!("  \u{2502}                                                  \u{2502}");
-    println!("  \u{2502}  \u{25c6} serverless \u{00b7} P2P \u{00b7} private                   \u{2502}");
+    println!(
+        "  \u{2502}  \u{25c6} serverless \u{00b7} P2P \u{00b7} private                   \u{2502}"
+    );
     println!("  \u{2502}                                                  \u{2502}");
     println!("  \u{2502}  \"The Raven bears witness as the Phoenix        \u{2502}");
     println!("  \u{2502}   rises from the ASH\"                          \u{2502}");
@@ -733,22 +734,38 @@ fn print_welcome(data_dir: &Path) {
     println!("  \u{2570}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{256f}");
 
     println!();
-    println!("{d}   https://raven-messager.com{r}", d=d, r=r);
-    println!("{d}   profile: {path}{r}", d=d, path=data_dir.display(), r=r);
+    println!("{d}   https://raven-messager.com{r}", d = d, r = r);
+    println!(
+        "{d}   profile: {path}{r}",
+        d = d,
+        path = data_dir.display(),
+        r = r
+    );
     println!();
 
     match try_load_identity(data_dir) {
         Ok(Some(id)) => {
-            println!("{b}\u{25cf} identity ready{r}", b=b, r=r);
+            println!("{b}\u{25cf} identity ready{r}", b = b, r = r);
             kv("address", &id.address());
-            kv("fingerprint", &device_fingerprint_v1(&id.public_key_bytes()));
+            kv(
+                "fingerprint",
+                &device_fingerprint_v1(&id.public_key_bytes()),
+            );
             kv("pub_hex", &hex::encode(id.public_key_bytes()));
             println!();
-            println!("{d}Tip: menu 8 = Tutorial \u{00b7} menu 4 = Listen{r}", d=d, r=r);
+            println!(
+                "{d}Tip: menu 8 = Tutorial \u{00b7} menu 4 = Listen{r}",
+                d = d,
+                r = r
+            );
             println!();
         }
         Ok(None) => {
-            println!("{b}First run \u{2014} no identity yet.{r} Create one below.\n", b=b, r=r);
+            println!(
+                "{b}First run \u{2014} no identity yet.{r} Create one below.\n",
+                b = b,
+                r = r
+            );
         }
         Err(e) => {
             println!("identity unavailable: {}", sanitize_terminal_text(&e));
@@ -764,7 +781,10 @@ fn offer_first_run_identity(data_dir: &Path) -> bool {
     }
     let c = c();
     let (green, reset, red, dim) = (c.green, c.reset, c.red, c.dim);
-    print!("{}?{} Create your Raven identity now? [{}Y/n{}] ", c.yellow, reset, green, reset);
+    print!(
+        "{}?{} Create your Raven identity now? [{}Y/n{}] ",
+        c.yellow, reset, green, reset
+    );
     let _ = io::stdout().flush();
     let ans = read_line();
     if !(ans.is_empty() || ans.eq_ignore_ascii_case("y") || ans.eq_ignore_ascii_case("yes")) {
@@ -785,7 +805,10 @@ fn offer_first_run_identity(data_dir: &Path) -> bool {
 fn section(label: &str) {
     let c = c();
     let (purple, bold, reset) = (c.purple, c.bold, c.reset);
-    println!("\n{purple}◆{reset} {bold}{}{reset}", label.to_ascii_uppercase());
+    println!(
+        "\n{purple}◆{reset} {bold}{}{reset}",
+        label.to_ascii_uppercase()
+    );
 }
 
 fn item(num: &str, title: &str, hint: &str) {
@@ -1031,9 +1054,6 @@ fn looks_like_bare_pub_hex(s: &str) -> Option<String> {
 /// Default Raven LAN listen port (Mac listens / iPhone Serverless LAN).
 const DEFAULT_LAN_PORT: u16 = 7420;
 
-/// Env overrides for peer LAN dial (checked in order). Matches RAVEN_* convention.
-const ENV_PEER_LAN_DIAL: &[&str] = &["RAVEN_PEER", "ASH_LAN_DIAL"];
-
 fn looks_like_lan_dial(s: &str) -> bool {
     let t = s.trim();
     if t.is_empty() || t.contains(' ') {
@@ -1050,58 +1070,6 @@ fn looks_like_lan_dial(s: &str) -> bool {
         return port.parse::<u16>().ok().is_some_and(|p| p != 0);
     }
     false
-}
-
-fn update_contact_lan_dial(data_dir: &Path, pub_hex: &str, dial: &str) -> Result<(), String> {
-    let dial = dial.trim();
-    if !looks_like_lan_dial(dial) {
-        return Err("lan_dial must look like host:port (e.g. 192.168.1.20:7420)".into());
-    }
-    let want = pub_hex.trim().to_lowercase();
-    let mut contacts = load_contacts(data_dir)?;
-    let mut found = false;
-    for c in contacts.iter_mut() {
-        if c.pub_hex.eq_ignore_ascii_case(&want) {
-            c.lan_dial = dial.to_string();
-            found = true;
-            break;
-        }
-    }
-    if !found {
-        return Err("contact not found for lan_dial update".into());
-    }
-    save_contacts(data_dir, &contacts)
-}
-
-/// How Send / Chat reaches a contact on LAN without an interactive host:port prompt.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ResolvedLanPeer {
-    /// Dial this `host:port` (saved, env, or discovered).
-    Dial(String),
-}
-
-fn env_peer_lan_dial() -> Option<String> {
-    for key in ENV_PEER_LAN_DIAL {
-        if let Ok(v) = std::env::var(key) {
-            let t = v.trim();
-            if looks_like_lan_dial(t) {
-                return Some(t.to_string());
-            }
-        }
-    }
-    None
-}
-
-fn ipc_daemon_up(data_dir: &Path) -> bool {
-    let sock = default_socket_path(data_dir);
-    if !sock.exists() {
-        return false;
-    }
-    matches!(ipc_ping_blocking(&sock), Ok(IpcResponse::Pong { .. }))
-}
-
-fn ensure_mac_lan_service(data_dir: &Path) -> bool {
-    ext::ensure_mac_lan_daemon(data_dir)
 }
 
 /// Best-effort primary LAN IPv4 for tips (macOS `ipconfig getifaddr en0`, else none).
@@ -1130,7 +1098,11 @@ fn local_lan_ipv4_tip() -> Option<String> {
 fn cmd_listen(data_dir: &Path) {
     let c = c();
     let id = require_identity(data_dir);
-    let contacts = load_contacts(data_dir).unwrap_or_default();
+    let contacts: Vec<Contact> = load_contacts(data_dir)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|contact| contact.pinned)
+        .collect();
 
     let contact = match contacts.len() {
         0 => {
@@ -1147,7 +1119,9 @@ fn cmd_listen(data_dir: &Path) {
             for (i, ct) in contacts.iter().enumerate() {
                 let fp = device_fingerprint_v1(&{
                     let mut k = [0u8; 32];
-                    if let Ok(b) = hex::decode(&ct.pub_hex) { k.copy_from_slice(&b[..32.min(b.len())]); }
+                    if let Ok(b) = hex::decode(&ct.pub_hex) {
+                        k.copy_from_slice(&b[..32.min(b.len())]);
+                    }
                     k
                 });
                 println!("  {0} {1}  fp={2}", i + 1, ct.primary_label(), fp);
@@ -1168,19 +1142,16 @@ fn cmd_listen(data_dir: &Path) {
 
     println!();
     println!("{0}═══ LISTENING ═══{1}", c.purple, c.reset);
-    println!(
-        "{0}Tell your friend to send to:{1}",
-        c.dim,
-        c.reset
-    );
+    println!("{0}Tell your friend to send to:{1}", c.dim, c.reset);
     println!("   {0}{ip}:{DEFAULT_LAN_PORT}{1}", c.cyan, c.reset);
+    println!("{0}…and use YOUR pub_hex when asked:{1}", c.dim, c.reset);
+    println!("   {}", hex::encode(id.public_key_bytes()));
     println!(
-        "{0}…and use YOUR pub_hex when asked:{1}",
+        "{0}Waiting for {1} …{2}",
         c.dim,
+        contact.primary_label(),
         c.reset
     );
-    println!("   {}", hex::encode(id.public_key_bytes()));
-    println!("{0}Waiting for {1} …{2}", c.dim, contact.primary_label(), c.reset);
     println!();
 
     let node = ext::raven_node_bin_public();
@@ -1291,23 +1262,6 @@ fn print_lan_unresolved_hint(contact_label: &str) {
     println!(
         "{dim}Also:{reset} `raven-node run --listen 0.0.0.0:{DEFAULT_LAN_PORT}` (Mac listens; phone dials)."
     );
-}
-
-/// Pure resolution used by tests: saved dial → env → Mac-listens local queue.
-/// `ipc_up` is informational for callers; empty dial always prefers local queue (daemon may auto-start).
-fn resolve_lan_peer_parts(
-    saved_lan_dial: &str,
-    env_dial: Option<&str>,
-    _ipc_up: bool,
-) -> Option<ResolvedLanPeer> {
-    let saved = saved_lan_dial.trim();
-    if looks_like_lan_dial(saved) {
-        return Some(ResolvedLanPeer::Dial(saved.to_string()));
-    }
-    if let Some(e) = env_dial.map(str::trim).filter(|t| looks_like_lan_dial(t)) {
-        return Some(ResolvedLanPeer::Dial(e.to_string()));
-    }
-    None
 }
 
 fn contact_fingerprint(c: &Contact) -> String {
@@ -1940,11 +1894,6 @@ fn resolve_tag_contacts<'a>(contacts: &'a [Contact], tag: &str) -> Vec<&'a Conta
         .collect()
 }
 
-/// Back-compat alias used by interactive send.
-fn resolve_alias_contacts<'a>(contacts: &'a [Contact], alias: &str) -> Vec<&'a Contact> {
-    resolve_tag_contacts(contacts, alias)
-}
-
 fn add_contact(
     data_dir: &Path,
     address: &str,
@@ -2127,7 +2076,10 @@ fn cmd_contact_list(data_dir: &Path) {
             "  {0}rvn1… address  = durable identity (from QR / whoami){1}",
             c.dim, c.reset
         );
-        println!("  {0}@alias         = public Soft Unique tag{1}", c.dim, c.reset);
+        println!(
+            "  {0}@alias         = public Soft Unique tag{1}",
+            c.dim, c.reset
+        );
         println!(
             "  {0}petname        = your private label (e.g. \"Poline\"){1}",
             c.dim, c.reset
@@ -2166,7 +2118,12 @@ fn cmd_contact_list(data_dir: &Path) {
         let dial = if ct.lan_dial.is_empty() {
             String::new()
         } else {
-            format!("  {0}→ {1}{2}", c.dim, sanitize_terminal_text(&ct.lan_dial), c.reset)
+            format!(
+                "  {0}→ {1}{2}",
+                c.dim,
+                sanitize_terminal_text(&ct.lan_dial),
+                c.reset
+            )
         };
 
         println!(
@@ -2177,7 +2134,7 @@ fn cmd_contact_list(data_dir: &Path) {
             tag = tag,
             tw = w_tag
         );
-        println!("     {d}fp {fp}{r}{dial_extra}", d = c.dim, r = c.reset, fp = fp, dial_extra = "");
+        println!("     {d}fp {fp}{r}", d = c.dim, r = c.reset, fp = fp);
     }
 }
 
@@ -2274,17 +2231,31 @@ fn cmd_contact_add_interactive(data_dir: &Path) {
         if parts.len() >= 2 && parts[0].starts_with("rvn1") && parts[1].len() == 64 {
             let addr = parts[0].to_string();
             let pub_hex = parts[1].to_string();
-            println!("{0}\u{2713} invite parsed \u{2014} {1}{2}", C_GREEN, addr, C_RESET);
+            println!(
+                "{0}\u{2713} invite parsed \u{2014} {1}{2}",
+                C_GREEN, addr, C_RESET
+            );
             print!("petname (e.g. \"Alice\"): ");
             let _ = io::stdout().flush();
             let petname = read_line();
-            let petname = if petname.is_empty() { "friend".to_string() } else { petname };
+            let petname = if petname.is_empty() {
+                "friend".to_string()
+            } else {
+                petname
+            };
             let mut key = [0u8; 32];
             if let Ok(decoded) = hex::decode(&pub_hex) {
-                if decoded.len() == 32 { key.copy_from_slice(&decoded); }
+                if decoded.len() == 32 {
+                    key.copy_from_slice(&decoded);
+                }
             }
             let fp = device_fingerprint_v1(&key);
-            println!("{dim}fingerprint{r} {fp}", dim=C_DIM, r=C_RESET, fp=fp);
+            println!(
+                "{dim}fingerprint{r} {fp}",
+                dim = C_DIM,
+                r = C_RESET,
+                fp = fp
+            );
             print!("[V]erify & pin / [C]ontinue unpinned / [A]bort: ");
             let _ = io::stdout().flush();
             let choice = read_line();
@@ -2294,15 +2265,20 @@ fn cmd_contact_add_interactive(data_dir: &Path) {
                 public_tag: String::new(),
                 alias: String::new(),
                 address: addr,
-                pub_hex: pub_hex,
+                pub_hex,
                 pinned,
                 lan_dial: String::new(),
-            }.migrate();
+            }
+            .migrate();
             save_contacts(data_dir, std::slice::from_ref(&ct)).ok();
             if pinned {
-                println!("{green}\u{2713} contact saved & pinned{r}", green=C_GREEN, r=C_RESET);
+                println!(
+                    "{green}\u{2713} contact saved & pinned{r}",
+                    green = C_GREEN,
+                    r = C_RESET
+                );
             } else {
-                println!("{dim}contact saved (unpinned){r}", dim=C_DIM, r=C_RESET);
+                println!("{dim}contact saved (unpinned){r}", dim = C_DIM, r = C_RESET);
             }
             return;
         }
@@ -2672,7 +2648,10 @@ fn cmd_prekey_fetch(data_dir: &Path, pub_hex: &str, file: Option<&Path>) {
 fn print_messaging_path_diag() {
     let path = resolve_terminal_messaging_path();
     let _ = assert_no_silent_fastapi(path);
-    kv("messaging", &format!("{} ({})", path.as_diag_label(), path.human()));
+    kv(
+        "messaging",
+        &format!("{} ({})", path.as_diag_label(), path.human()),
+    );
     kv(
         "path_rule",
         &format!(
@@ -2796,10 +2775,7 @@ fn cmd_status(data_dir: &Path) -> Result<(), String> {
     kv("store", ok(snap.store));
     kv("relay", ok(snap.relay));
     kv("endpoint", ok(snap.endpoint));
-    kv(
-        "policy",
-        if snap.auto_policy { "AUTO" } else { "manual" },
-    );
+    kv("policy", if snap.auto_policy { "AUTO" } else { "manual" });
     kv("transports", &snap.transports.join(", "));
     kv("caps", &snap.capabilities.join(", "));
     kv(
@@ -2851,20 +2827,17 @@ fn set_node_flag(data_dir: &Path, which: &str, on: bool) {
     let _ = NodePolicy::default();
 }
 
-/// Guided Send / Chat. Two lanes:
-///   * pinned contact with saved lan_dial → direct send, no extra prompts
-///   * advanced → ask host:port + pub_hex once (lab interim transport)
+/// Guided Send / Chat. Both lanes use the authenticated PairInit/indexed-session
+/// path. Failure never falls back to demo/public-key-derived crypto.
 fn cmd_send_interactive(data_dir: &Path) {
     let c = c();
-    match try_load_identity(data_dir) {
-        Ok(Some(_)) => {}
+    let id = match try_load_identity(data_dir) {
+        Ok(Some(id)) => id,
         Ok(None) => {
             println!("{0}No identity yet.{1}", c.bold, c.reset);
             println!(
                 "{0}Run {1}ash init{0} first (or restart the menu and accept the offer).{2}",
-                c.dim,
-                c.bold,
-                c.reset
+                c.dim, c.bold, c.reset
             );
             return;
         }
@@ -2872,17 +2845,29 @@ fn cmd_send_interactive(data_dir: &Path) {
             eprintln!("identity store unavailable: {}", sanitize_terminal_text(&e));
             return;
         }
-    }
-    let _id = require_identity(data_dir);
-    let contacts = load_contacts(data_dir).unwrap_or_default();
+    };
+    let contacts: Vec<Contact> = load_contacts(data_dir)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|contact| contact.pinned)
+        .collect();
 
     if contacts.is_empty() {
         screen_header("Send");
-        println!("{0}no pinned contacts — add one to get started{1}", c.dim, c.reset);
+        println!(
+            "{0}no pinned contacts — add one to get started{1}",
+            c.dim, c.reset
+        );
         println!();
-        println!("  {0}1.{1} Add someone first: menu {0}5 Contacts{2}", c.bold, c.reset, c.reset);
+        println!(
+            "  {0}1.{1} Add someone first: menu {0}5 Contacts{2}",
+            c.bold, c.reset, c.reset
+        );
         println!("     (rvn1… address + pub_hex from their `ash whoami`, or @alias)");
-        println!("  {0}2.{1} Advanced: direct peer host:port (LAN demo / power users)", c.bold, c.reset);
+        println!(
+            "  {0}2.{1} Advanced: direct peer host:port (LAN demo / power users)",
+            c.bold, c.reset
+        );
         println!();
         print!("Add a contact now? [Y/n/advanced]: ");
         let _ = io::stdout().flush();
@@ -2893,20 +2878,24 @@ fn cmd_send_interactive(data_dir: &Path) {
             return;
         }
         if a != "advanced" && a != "a" && a != "n" && a != "no" {
-            println!("{0}cancelled — use menu 5 to add a contact.{1}", c.dim, c.reset);
+            println!(
+                "{0}cancelled — use menu 5 to add a contact.{1}",
+                c.dim, c.reset
+            );
             return;
         }
         if a == "n" || a == "no" {
             println!(
                 "{0}Add a contact first (menu 5), then try Send / Chat again.{1}",
-                c.dim,
-                c.reset
+                c.dim, c.reset
             );
             return;
         }
         let (peer, pub_hex, text) = direct_peer_prompts();
-        if let Some((peer, pub_hex, text)) = peer.zip(pub_hex).zip(text).map(|((p, k), t)| (p, k, t)) {
-            direct_interim_send(data_dir, &peer, &pub_hex, &text);
+        if let Some((peer, pub_hex, text)) =
+            peer.zip(pub_hex).zip(text).map(|((p, k), t)| (p, k, t))
+        {
+            interactive_authenticated_send(data_dir, &id, &peer, &pub_hex, &text, "", "");
         }
         return;
     }
@@ -2915,8 +2904,7 @@ fn cmd_send_interactive(data_dir: &Path) {
     screen_header("Send");
     println!(
         "{0}Pick a contact by number or @tag. Direct host:port is advanced only.{1}",
-        c.dim,
-        c.reset
+        c.dim, c.reset
     );
     for (i, ct) in contacts.iter().enumerate() {
         let sub = ct
@@ -2926,7 +2914,12 @@ fn cmd_send_interactive(data_dir: &Path) {
         let dial = if ct.lan_dial.is_empty() {
             format!("  {0}(no LAN dial yet){1}", c.dim, c.reset)
         } else {
-            format!("  {0}→ {1}{2}", c.dim, sanitize_terminal_text(&ct.lan_dial), c.reset)
+            format!(
+                "  {0}→ {1}{2}",
+                c.dim,
+                sanitize_terminal_text(&ct.lan_dial),
+                c.reset
+            )
         };
         println!(
             "  {n}  {label}{sub}{dial}{pinned}",
@@ -2942,8 +2935,10 @@ fn cmd_send_interactive(data_dir: &Path) {
 
     if trimmed.eq_ignore_ascii_case("advanced") || looks_like_lan_dial(trimmed) {
         let (peer, pub_hex, text) = direct_peer_prompts();
-        if let Some((peer, pub_hex, text)) = peer.zip(pub_hex).zip(text).map(|((p, k), t)| (p, k, t)) {
-            direct_interim_send(data_dir, &peer, &pub_hex, &text);
+        if let Some((peer, pub_hex, text)) =
+            peer.zip(pub_hex).zip(text).map(|((p, k), t)| (p, k, t))
+        {
+            interactive_authenticated_send(data_dir, &id, &peer, &pub_hex, &text, "", "");
         }
         return;
     }
@@ -2956,10 +2951,15 @@ fn cmd_send_interactive(data_dir: &Path) {
             .iter()
             .find(|x| x.public_tag.eq_ignore_ascii_case(tag) || x.alias.eq_ignore_ascii_case(tag))
     } else {
-        contacts.iter().find(|x| x.petname.eq_ignore_ascii_case(trimmed))
+        contacts
+            .iter()
+            .find(|x| x.petname.eq_ignore_ascii_case(trimmed))
     };
     let Some(ct) = picked else {
-        println!("{0}unknown choice — pick a number, @tag, or type advanced.{1}", c.dim, c.reset);
+        println!(
+            "{0}unknown choice — pick a number, @tag, or type advanced.{1}",
+            c.dim, c.reset
+        );
         return;
     };
 
@@ -2969,8 +2969,7 @@ fn cmd_send_interactive(data_dir: &Path) {
             println!(
                 "{0}no LAN dial saved and stdin is not a terminal \u{2014} \
                  re-add this contact with --lan-dial host:port{1}",
-                c.yellow,
-                c.reset
+                c.yellow, c.reset
             );
             return;
         }
@@ -2978,13 +2977,15 @@ fn cmd_send_interactive(data_dir: &Path) {
         let hp = loop {
             tries += 1;
             if tries > 3 {
-                println!("{0}too many invalid entries \u{2014} cancelled.{1}", c.dim, c.reset);
+                println!(
+                    "{0}too many invalid entries \u{2014} cancelled.{1}",
+                    c.dim, c.reset
+                );
                 return;
             }
             print!(
                 "{0}?{1} Type the IP:PORT shown on their Listen screen (e.g. 192.168.1.20:7420): ",
-                c.yellow,
-                c.reset
+                c.yellow, c.reset
             );
             let _ = io::stdout().flush();
             let hp = read_line();
@@ -3019,7 +3020,15 @@ fn cmd_send_interactive(data_dir: &Path) {
         eprintln!("empty message");
         return;
     }
-    direct_interim_send(data_dir, &peer, &ct.pub_hex.clone(), &text);
+    interactive_authenticated_send(
+        data_dir,
+        &id,
+        &peer,
+        &ct.pub_hex,
+        &text,
+        &ct.primary_label(),
+        &normalize_tag(&ct.public_tag),
+    );
 }
 
 fn direct_peer_prompts() -> (Option<String>, Option<String>, Option<String>) {
@@ -3028,14 +3037,16 @@ fn direct_peer_prompts() -> (Option<String>, Option<String>, Option<String>) {
         println!(
             "{0}direct peer needs interactive input \u{2014} \
              use a contact with --lan-dial, or run inside a terminal.{1}",
-            c.yellow,
-            c.reset
+            c.yellow, c.reset
         );
         return (None, None, None);
     }
     println!();
     println!("{0}Advanced — direct peer{1}", c.bold, c.reset);
-    println!("{0}Use when you already know the peer's LAN listen address + public key.{1}", c.dim, c.reset);
+    println!(
+        "{0}Use when you already know the peer's LAN listen address + public key.{1}",
+        c.dim, c.reset
+    );
     print!("peer host:port: ");
     let _ = io::stdout().flush();
     let peer = read_line();
@@ -3048,95 +3059,35 @@ fn direct_peer_prompts() -> (Option<String>, Option<String>, Option<String>) {
     if peer.trim().is_empty() {
         return (None, None, None);
     }
-    (Some(peer.trim().to_string()), Some(pub_hex.trim().to_string()), Some(text))
+    (
+        Some(peer.trim().to_string()),
+        Some(pub_hex.trim().to_string()),
+        Some(text),
+    )
 }
 
-/// Proven lab transport lane: spawn raven-node with an interim-sealed envelope
-/// over direct TCP. Release builds without the lab feature make the daemon
-/// refuse here (ATSAM_SESSION_REQUIRED) \\u{2014} production stays fail-closed.
-fn direct_interim_send(data_dir: &Path, peer: &str, pub_hex: &str, text: &str) {
-    let c = c();
-    let node = ext::raven_node_bin_public();
-    let mut child = match Command::new(node)
-        .arg("run")
-        .args(["--data-dir", &data_dir.display().to_string()])
-        .args(["--listen", "127.0.0.1:0"])
-        .args(["--peer", peer.trim()])
-        .args(["--peer-pub-hex", pub_hex.trim()])
-        .args(["--send-stdin"])
-        .args(["--body-mode", "unsafe-interim"])
-        .args(["--exit-after-ack"])
-        .args(["--timeout-secs", "45"])
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-    {
-        Ok(ch) => ch,
-        Err(e) => {
-            let (red, reset) = (c.red, c.reset);
-            eprintln!("{red}could not start raven-node: {e}{reset}");
-            return;
-        }
-    };
-    if let Some(mut stdin) = child.stdin.take() {
-        use std::io::Write as _;
-        let _ = stdin.write_all(text.as_bytes());
-        let _ = stdin.write_all(b"\\n");
+fn interactive_authenticated_send(
+    data_dir: &Path,
+    id: &Identity,
+    peer: &str,
+    peer_pub_hex: &str,
+    text: &str,
+    petname: &str,
+    tag: &str,
+) {
+    if let Err(error) = ext::run_send_secure(
+        data_dir,
+        id,
+        peer,
+        peer_pub_hex,
+        "127.0.0.1:0",
+        text,
+        petname,
+        tag,
+    ) {
+        eprintln!("send refused: {error}");
+        eprintln!("message not sent; Raven did not downgrade to unauthenticated or demo crypto");
     }
-    match child.wait() {
-        Ok(s) if s.success() => {}
-        Ok(s) => {
-            let (yellow, reset) = (c.yellow, c.reset);
-            eprintln!("{yellow}send exited ({s}){reset}");
-        }
-        Err(e) => {
-            let (red, reset) = (c.red, c.reset);
-            eprintln!("{red}send failed: {e}{reset}");
-        }
-    }
-}
-
-fn resolve_or_reuse_lan_dial(data_dir: &Path, c: &Contact) -> Option<ResolvedLanPeer> {
-    let s = style();
-    let bold = s.bold;
-    let dim = s.dim;
-    let reset = s.reset;
-
-    let env = env_peer_lan_dial();
-    let had_saved = looks_like_lan_dial(&c.lan_dial);
-    let ipc_up = ipc_daemon_up(data_dir);
-    let resolved = resolve_lan_peer_parts(&c.lan_dial, env.as_deref(), ipc_up);
-    if resolved.is_none() && !ipc_up {
-        println!("{dim}Starting raven-node service so IPC LanDial can run…{reset}");
-        let _ = ensure_mac_lan_service(data_dir);
-    }
-
-    match &resolved {
-        Some(ResolvedLanPeer::Dial(dial)) => {
-            if had_saved && c.lan_dial.trim() == dial.as_str() {
-                println!(
-                    "{dim}LAN dial{reset} {bold}{}{reset} {dim}(saved · {}){reset}",
-                    sanitize_terminal_text(dial),
-                    c.primary_label()
-                );
-            } else {
-                println!(
-                    "{dim}LAN dial{reset} {bold}{}{reset} {dim}(auto · {}){reset}",
-                    sanitize_terminal_text(dial),
-                    c.primary_label()
-                );
-                if let Err(e) = update_contact_lan_dial(data_dir, &c.pub_hex, dial) {
-                    eprintln!("{dim}could not save dial: {e}{reset}");
-                } else {
-                    println!("{dim}Saved lan_dial on contact for next Send.{reset}");
-                }
-            }
-        }
-        None => {
-            print_lan_unresolved_hint(&c.primary_label());
-            return None;
-        }
-    }
-    resolved
 }
 
 fn resolve_send_target(
@@ -3148,10 +3099,13 @@ fn resolve_send_target(
 ) -> Result<(String, String, String), String> {
     if !contact.trim().is_empty() {
         let contacts = load_contacts(data_dir)?;
-        let hits = resolve_tag_contacts(&contacts, contact);
+        let hits: Vec<&Contact> = resolve_tag_contacts(&contacts, contact)
+            .into_iter()
+            .filter(|candidate| candidate.pinned)
+            .collect();
         if hits.is_empty() {
             return Err(format!(
-                "no contact for {} — ash contact add … --tag … --lan-dial host:port",
+                "no pinned contact for {} — verify its fingerprint and re-add with --verify-fp",
                 sanitize_terminal_text(contact)
             ));
         }
@@ -3280,9 +3234,9 @@ fn line_menu_loop(data_dir: &Path) {
     loop {
         print_menu();
         let mut choice = String::new();
-        match io::stdin().read_line(&mut choice) {
-            Ok(0) => break, // stdin closed — stop instead of spinning
-            _ => {}
+        // stdin closed — stop instead of spinning
+        if let Ok(0) = io::stdin().read_line(&mut choice) {
+            break;
         }
         let choice = choice.trim().to_string();
         if !run_menu_choice(data_dir, &choice) {
@@ -3325,7 +3279,7 @@ fn screen_header(title: &str) {
     let c = c();
     let label = format!(" ── {} ", title);
     let fill_len = 56usize.saturating_sub(label.chars().count());
-    let fill: String = std::iter::repeat('─').take(fill_len).collect();
+    let fill = "─".repeat(fill_len);
     println!("\n{}{}{}{}", c.dim, label, fill, c.reset);
 }
 
@@ -3349,7 +3303,6 @@ fn ok(v: bool) -> &'static str {
     }
 }
 
-
 fn clear_screen() {
     print!("\u{1b}[2J\u{1b}[H");
     let _ = io::stdout().flush();
@@ -3357,13 +3310,19 @@ fn clear_screen() {
 
 fn wait_back() -> bool {
     // Returns false = quit app. True = go back to menu.
-    println!("\n  {d}[Esc] back{r}", d=c().dim, r=c().reset);
+    println!("\n  {d}[Esc] back{r}", d = c().dim, r = c().reset);
     let _ = io::stdout().flush();
     stty(&["raw", "-echo"]);
     loop {
         match read_key_raw() {
-            MenuKey::Escape | MenuKey::Enter => { stty(&["sane"]); return true; }
-            MenuKey::Quit => { stty(&["sane"]); return false; }
+            MenuKey::Escape | MenuKey::Enter => {
+                stty(&["sane"]);
+                return true;
+            }
+            MenuKey::Quit => {
+                stty(&["sane"]);
+                return false;
+            }
             _ => {}
         }
     }
@@ -3418,8 +3377,7 @@ fn read_key_raw_inner() -> MenuKey {
 fn render_arrow_menu(sel: usize, first: bool) {
     let items = MENU_ITEMS;
     let cc = c();
-    let (purple, bold, dim, reset, marker) =
-        (cc.purple, cc.bold, cc.dim, cc.reset, "\u{25b8}");
+    let (purple, dim, reset, marker) = (cc.purple, cc.dim, cc.reset, "\u{25b8}");
 
     let mut lines: Vec<String> = Vec::new();
     let section = |v: &mut Vec<String>, label: &str| {
@@ -3465,11 +3423,7 @@ fn render_arrow_menu(sel: usize, first: bool) {
         d = dim,
         r = reset
     ));
-    lines.push(format!(
-        "raven {c}❯ ",
-        
-        c = cc.cyan
-    ));
+    lines.push(format!("raven {c}❯ ", c = cc.cyan));
 
     let n = lines.len();
     // Clear-to-end-of-line on every row so highlights never leave residue,
@@ -3490,7 +3444,6 @@ fn render_arrow_menu(sel: usize, first: bool) {
 
 /// Guided walkthrough for newcomers. Every step prints what it does and why,
 /// then runs the safe ones inline. No private material is ever displayed.
-
 pub fn run() {
     let path = resolve_terminal_messaging_path();
     if let Err(e) = assert_no_silent_fastapi(path) {
@@ -3504,11 +3457,32 @@ pub fn run() {
         None => interactive(&data_dir),
         Some(Commands::Banner) => print_welcome(&data_dir),
         Some(Commands::Listen) => cmd_listen(&data_dir),
+        Some(Commands::Node { cmd }) => match cmd {
+            NodeCommands::Bridge { state } => {
+                set_node_flag(&data_dir, "bridge", matches!(state, OnOff::On))
+            }
+            NodeCommands::Store { state } => {
+                set_node_flag(&data_dir, "store", matches!(state, OnOff::On))
+            }
+            NodeCommands::Relay { state } => {
+                set_node_flag(&data_dir, "relay", matches!(state, OnOff::On))
+            }
+            NodeCommands::AddBootstrap { multiaddr, manual } => {
+                ext::cmd_bootstrap_add(&data_dir, &multiaddr, manual)
+            }
+            NodeCommands::DisableRavenDefaults => ext::cmd_bootstrap_disable_raven(&data_dir),
+            NodeCommands::ShowBootstrap => ext::cmd_bootstrap_show(&data_dir),
+            NodeCommands::InitBootstrap { no_raven_defaults } => {
+                ext::cmd_bootstrap_init(&data_dir, no_raven_defaults)
+            }
+        },
         Some(Commands::Init) => {
             let id = ensure_identity(&data_dir);
             println!("address={}", id.address());
-            println!("fingerprint={}",
-                device_fingerprint_v1(&id.public_key_bytes()));
+            println!(
+                "fingerprint={}",
+                device_fingerprint_v1(&id.public_key_bytes())
+            );
             println!("pub_hex={}", hex::encode(id.public_key_bytes()));
             if let Err(e) = raven_core::ensure_local_prekey(&data_dir, &id) {
                 eprintln!("prekey: {e}");
@@ -3516,12 +3490,64 @@ pub fn run() {
             }
         }
         Some(Commands::Whoami) => {
-            match try_load_identity(&data_dir) {
-                Ok(Some(id)) => print_public_identity(&id),
-                Ok(None) => println!("no identity — run init"),
-                Err(e) => eprintln!("identity store: {}", sanitize_terminal_text(&e)),
+            let id = match try_load_identity(&data_dir) {
+                Ok(Some(id)) => id,
+                Ok(None) => {
+                    eprintln!("identity missing — run: ash --data-dir <dir> init");
+                    std::process::exit(1);
+                }
+                Err(e) => {
+                    eprintln!("identity store unavailable: {}", sanitize_terminal_text(&e));
+                    std::process::exit(1);
+                }
+            };
+            print_public_identity(&id);
+        }
+        Some(Commands::Send {
+            peer,
+            peer_pub_hex,
+            listen,
+            contact,
+            stdin_text,
+            chat,
+        }) => {
+            let _ = stdin_text;
+            if std::env::args().any(|a| a == "--text") {
+                ext::refuse_argv_plaintext();
+            }
+            let id = require_identity(&data_dir);
+            let (peer, peer_pub_hex, listen) =
+                match resolve_send_target(&data_dir, &contact, &peer, &peer_pub_hex, &listen) {
+                    Ok(target) => target,
+                    Err(e) => {
+                        eprintln!("{e}");
+                        std::process::exit(1);
+                    }
+                };
+            if chat {
+                let contacts = contacts_or_die(&data_dir);
+                let contact = contacts
+                    .iter()
+                    .find(|c| c.pub_hex.eq_ignore_ascii_case(&peer_pub_hex));
+                let petname = contact.map(Contact::primary_label).unwrap_or_default();
+                let tag = contact
+                    .map(|c| normalize_tag(&c.public_tag))
+                    .unwrap_or_default();
+                ext::cmd_chat_session(&data_dir, &id, &petname, &tag, &peer_pub_hex, &peer);
+            } else {
+                if io::stdin().is_terminal() {
+                    print!("message (stdin, never argv): ");
+                    let _ = io::stdout().flush();
+                }
+                let body = read_line();
+                if body.is_empty() {
+                    eprintln!("empty message");
+                    std::process::exit(1);
+                }
+                run_send(&data_dir, &peer, &peer_pub_hex, &listen, &body);
             }
         }
+        Some(Commands::Inbox) => cmd_endpoint_inbox(&data_dir),
         Some(Commands::Status) => {
             if let Err(e) = cmd_status(&data_dir) {
                 eprintln!("{e}");
@@ -3530,8 +3556,174 @@ pub fn run() {
         }
         Some(Commands::Doctor) => cmd_doctor(&data_dir),
         Some(Commands::IpcPing) => cmd_ipc_ping(&data_dir),
-        Some(Commands::Inbox) => cmd_endpoint_inbox(&data_dir),
-        _ => {} // other subcommands handled by their own dispatch
+        Some(Commands::Contact { cmd }) => match cmd {
+            ContactCommands::Add {
+                address,
+                pub_hex,
+                petname,
+                tag,
+                alias,
+                verify_fp,
+                prekey_file,
+                lan_dial,
+            } => {
+                let tag = if !tag.is_empty() { tag } else { alias };
+                if let Err(e) = add_contact(
+                    &data_dir,
+                    &address,
+                    &pub_hex,
+                    &petname,
+                    &tag,
+                    verify_fp.as_deref(),
+                    &lan_dial,
+                ) {
+                    eprintln!("rejected: {e}");
+                    std::process::exit(1);
+                }
+                if prekey_file.is_some() || data_dir.join("prekey_store.json").exists() {
+                    if let Err(e) =
+                        ext::contact_add_fetch_prekey(&data_dir, &pub_hex, prekey_file.as_deref())
+                    {
+                        eprintln!("{C_DIM}prekey note:{C_RESET} {e}");
+                    }
+                }
+            }
+            ContactCommands::List => cmd_contact_list(&data_dir),
+            ContactCommands::Verify {
+                tag,
+                alias,
+                petname,
+                address,
+            } => cmd_contact_verify(
+                &data_dir,
+                tag.as_deref(),
+                alias.as_deref(),
+                petname.as_deref(),
+                address.as_deref(),
+            ),
+            ContactCommands::Resolve { tag } => cmd_contact_resolve(&data_dir, &tag),
+            ContactCommands::Request {
+                target,
+                message,
+                pick,
+            } => cmd_contact_request(&data_dir, &target, &message, pick),
+            ContactCommands::Pending => cmd_contact_pending(&data_dir),
+            ContactCommands::Ingest { file } => cmd_contact_ingest(&data_dir, &file),
+            ContactCommands::Accept {
+                request_id,
+                petname,
+            } => cmd_contact_accept(&data_dir, &request_id, &petname),
+            ContactCommands::Decline { request_id } => cmd_contact_decline(&data_dir, &request_id),
+            ContactCommands::Block { request_id } => cmd_contact_block(&data_dir, &request_id),
+        },
+        Some(Commands::Find {
+            query,
+            local,
+            exact_id,
+            exact_alias,
+            all,
+        }) => cmd_find(&data_dir, &query, local, exact_id, exact_alias, all),
+        Some(Commands::Nearby) => cmd_nearby(&data_dir),
+        Some(Commands::Alias { cmd }) => match cmd {
+            AliasCommands::Publish {
+                alias,
+                sequence,
+                expires_at,
+            } => {
+                let id = require_identity(&data_dir);
+                let expires_at = expires_at.unwrap_or_else(|| now_ms() + 30 * 24 * 3600 * 1000);
+                let record = AliasRecord {
+                    alias,
+                    identity_address: String::new(),
+                    sequence,
+                    expires_at,
+                    signature: [0u8; 64],
+                    ed25519_pub: [0u8; 32],
+                }
+                .sign(&id)
+                .unwrap_or_else(|e| {
+                    eprintln!("sign failed: {e}");
+                    std::process::exit(1);
+                });
+                let mut store = load_alias_store(&data_dir, now_ms());
+                if let Err(e) = store.put(record.clone(), now_ms()) {
+                    eprintln!("rejected: {e}");
+                    std::process::exit(1);
+                }
+                if let Err(e) = save_alias_claim(&data_dir, &record) {
+                    eprintln!("persist failed: {e}");
+                    std::process::exit(1);
+                }
+                println!(
+                    "{C_GREEN}alias published{C_RESET} @{} → {}",
+                    record.alias,
+                    sanitize_terminal_text(&record.identity_address)
+                );
+            }
+        },
+        Some(Commands::Prekey { cmd }) => match cmd {
+            PrekeyCommands::Publish { device_id, out } => {
+                cmd_prekey_publish(&data_dir, &device_id, out.as_deref())
+            }
+            PrekeyCommands::Fetch { pub_hex, file } => {
+                cmd_prekey_fetch(&data_dir, &pub_hex, file.as_deref())
+            }
+        },
+        Some(Commands::Device { cmd }) => {
+            let id = require_identity(&data_dir);
+            match cmd {
+                DeviceCommands::SyncExport { device_id, out } => {
+                    ext::cmd_device_sync_export(&data_dir, &id, &device_id, &out)
+                }
+                DeviceCommands::SyncImport { file } => {
+                    ext::cmd_device_sync_import(&data_dir, &id, &file)
+                }
+                DeviceCommands::Revoke { device_id, epoch } => {
+                    ext::cmd_device_revoke(&data_dir, &id, &device_id, epoch)
+                }
+            }
+        }
+        Some(Commands::Mailbox { cmd }) => match cmd {
+            MailboxCommands::Put {
+                k_route_hex,
+                epoch,
+                slot,
+                envelope_hex,
+            } => ext::cmd_mailbox_put(&data_dir, &k_route_hex, epoch, slot, &envelope_hex),
+            MailboxCommands::Get {
+                k_route_hex,
+                epoch,
+                slot,
+            } => ext::cmd_mailbox_get(&data_dir, &k_route_hex, epoch, slot),
+        },
+        Some(Commands::Lab { cmd }) => {
+            let id = require_identity(&data_dir);
+            match cmd {
+                LabCommands::ExportCert => {
+                    if let Err(e) = pair_init_lab::export_lab_device_cert(&data_dir, &id) {
+                        eprintln!("{e}");
+                        std::process::exit(1);
+                    }
+                }
+                LabCommands::ImportPeerCert { peer_pub_hex, file } => {
+                    if let Err(e) =
+                        pair_init_lab::import_peer_device_cert(&data_dir, &peer_pub_hex, &file)
+                    {
+                        eprintln!("{e}");
+                        std::process::exit(1);
+                    }
+                }
+                LabCommands::ImportPeerPrekey { peer_pub_hex, file } => {
+                    cmd_prekey_fetch(&data_dir, &peer_pub_hex, Some(&file));
+                }
+                LabCommands::Status => {
+                    print_production_gate_matrix();
+                    println!(
+                        "{C_DIM}hint{C_RESET}: export RAVEN_LAB_TEST_A=1 && rebuild debug ash"
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -3539,14 +3731,26 @@ fn cmd_tutorial(data_dir: &Path) {
     let c = c();
     let _ = offer_first_run_identity(data_dir);
 
-    println!("\n{0}\u{2550}\u{2550}\u{2550} RAVEN TUTORIAL \u{2550}\u{2550}\u{2550}{1}", c.purple, c.reset);
-    println!("{0}Raven is serverless: you and your contacts ARE the network.{1}", c.dim, c.reset);
-    println!("{0}No phone number, no central account, messages relayed by peers.{1}\n", c.dim, c.reset);
+    println!(
+        "\n{0}\u{2550}\u{2550}\u{2550} RAVEN TUTORIAL \u{2550}\u{2550}\u{2550}{1}",
+        c.purple, c.reset
+    );
+    println!(
+        "{0}Raven is serverless: you and your contacts ARE the network.{1}",
+        c.dim, c.reset
+    );
+    println!(
+        "{0}No phone number, no central account, messages relayed by peers.{1}\n",
+        c.dim, c.reset
+    );
 
     println!("{0}[1/4] Identity{1}", c.bold, c.reset);
     match try_load_identity(data_dir) {
         Ok(Some(id)) => {
-            println!("  {0}\u{2714}{1} created. Your public bits:", c.green, c.reset);
+            println!(
+                "  {0}\u{2714}{1} created. Your public bits:",
+                c.green, c.reset
+            );
             print_public_identity(&id);
             println!(
                 "  {0}Share address+fingerprint with friends over any channel;\n  they pin it, you pin theirs \u{2014} that mutual pin IS the trust.{1}\n",
@@ -3554,7 +3758,10 @@ fn cmd_tutorial(data_dir: &Path) {
             );
         }
         Ok(None) => {
-            println!("  {0}skipped (declined). Re-enter via menu 8 anytime.{1}\n", c.dim, c.reset);
+            println!(
+                "  {0}skipped (declined). Re-enter via menu 8 anytime.{1}\n",
+                c.dim, c.reset
+            );
             return;
         }
         Err(e) => {
@@ -3600,30 +3807,37 @@ fn cmd_tutorial(data_dir: &Path) {
     );
 }
 
-
 fn arrow_menu_loop(data_dir: &Path) {
     let mut sel: usize = 0;
 
     loop {
         clear_screen();
-        print_welcome_minimal(data_dir);
+        print_welcome_minimal();
         render_arrow_menu(sel, true);
 
         let key = read_key_raw();
 
         match key {
             MenuKey::Up => {
-                if sel > 0 { sel -= 1; render_arrow_menu(sel, false); }
+                if sel > 0 {
+                    sel -= 1;
+                    render_arrow_menu(sel, false);
+                }
             }
             MenuKey::Down => {
-                if sel + 1 < MENU_ITEMS.len() { sel += 1; render_arrow_menu(sel, false); }
+                if sel + 1 < MENU_ITEMS.len() {
+                    sel += 1;
+                    render_arrow_menu(sel, false);
+                }
             }
             MenuKey::Enter => {
                 clear_screen();
                 let choice = MENU_ITEMS[sel].0.to_string();
                 run_menu_choice(data_dir, &choice);
 
-                if !wait_back() { break; }
+                if !wait_back() {
+                    break;
+                }
             }
             MenuKey::Digit(d) => {
                 sel = d.saturating_sub(1);
@@ -3631,7 +3845,9 @@ fn arrow_menu_loop(data_dir: &Path) {
                 let choice = MENU_ITEMS[sel].0.to_string();
                 run_menu_choice(data_dir, &choice);
 
-                if !wait_back() { break; }
+                if !wait_back() {
+                    break;
+                }
             }
             MenuKey::Escape => {}
             MenuKey::Quit => {
@@ -3649,13 +3865,37 @@ fn arrow_menu_loop(data_dir: &Path) {
 }
 
 /// Minimal header shown on every screen refresh (not the full banner).
-fn print_welcome_minimal(data_dir: &Path) {
+fn print_welcome_minimal() {
     let c = c();
     let (b, d, r) = (c.bold, c.dim, c.reset);
     println!("{b}R A V E N{r}  {d}\u{00b7}  serverless \u{00b7} P2P{r}");
     println!();
 }
 
+#[cfg(not(any(unix, windows)))]
+fn cmd_ipc_ping(_data_dir: &Path) {
+    eprintln!("secure local IPC unavailable on this platform");
+    std::process::exit(1);
+}
+
+#[cfg(windows)]
+fn cmd_ipc_ping(data_dir: &Path) {
+    match pair_init_lab::windows_ipc_ping(data_dir) {
+        Ok(IpcResponse::Pong { v }) => {
+            println!("{C_GREEN}ipc pong{C_RESET} v={v} transport=named-pipe");
+        }
+        Ok(other) => {
+            eprintln!("unexpected response: {other:?}");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("ipc ping failed: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+#[cfg(unix)]
 fn cmd_ipc_ping(data_dir: &Path) {
     let sock = default_socket_path(data_dir);
     if !sock.exists() {
@@ -3678,32 +3918,25 @@ fn cmd_ipc_ping(data_dir: &Path) {
     }
 }
 
+#[cfg(unix)]
 fn ipc_ping_blocking(sock: &Path) -> Result<IpcResponse, String> {
-    #[cfg(unix)]
-    {
-        use std::io::{Read, Write};
-        use std::os::unix::net::UnixStream;
-        let mut stream = UnixStream::connect(sock).map_err(|e| e.to_string())?;
-        let req = encode_request(&IpcRequest::Ping { v: IPC_VERSION })?;
-        stream.write_all(&req).map_err(|e| e.to_string())?;
-        let mut len_buf = [0u8; 4];
-        stream.read_exact(&mut len_buf).map_err(|e| e.to_string())?;
-        let n = u32::from_be_bytes(len_buf) as usize;
-        if n == 0 || n > raven_core::MAX_IPC_FRAME {
-            return Err("IPC_FRAME".into());
-        }
-        let mut body = vec![0u8; n];
-        stream.read_exact(&mut body).map_err(|e| e.to_string())?;
-        let mut frame = Vec::with_capacity(4 + n);
-        frame.extend_from_slice(&len_buf);
-        frame.extend_from_slice(&body);
-        decode_response(&frame)
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream;
+    let mut stream = UnixStream::connect(sock).map_err(|e| e.to_string())?;
+    let req = encode_request(&IpcRequest::Ping { v: IPC_VERSION })?;
+    stream.write_all(&req).map_err(|e| e.to_string())?;
+    let mut len_buf = [0u8; 4];
+    stream.read_exact(&mut len_buf).map_err(|e| e.to_string())?;
+    let n = u32::from_be_bytes(len_buf) as usize;
+    if n == 0 || n > raven_core::MAX_IPC_FRAME {
+        return Err("IPC_FRAME".into());
     }
-    #[cfg(not(unix))]
-    {
-        let _ = sock;
-        Err("IPC UDS not available on this OS".into())
-    }
+    let mut body = vec![0u8; n];
+    stream.read_exact(&mut body).map_err(|e| e.to_string())?;
+    let mut frame = Vec::with_capacity(4 + n);
+    frame.extend_from_slice(&len_buf);
+    frame.extend_from_slice(&body);
+    decode_response(&frame)
 }
 
 fn cmd_doctor(data_dir: &Path) {
@@ -3730,25 +3963,54 @@ fn cmd_doctor(data_dir: &Path) {
         );
     }
 
-    let sock = default_socket_path(data_dir);
-    println!(
-        "  ipc_sock={} exists={}",
-        sanitize_terminal_text(&sock.display().to_string()),
-        sock.exists()
-    );
-    if sock.exists() {
-        match ipc_ping_blocking(&sock) {
-            Ok(IpcResponse::Pong { v }) => {
-                println!("  daemon_state: {C_GREEN}up{C_RESET} (ipc_ping ok v={v})");
+    #[cfg(unix)]
+    {
+        let sock = default_socket_path(data_dir);
+        println!(
+            "  ipc_sock={} exists={}",
+            sanitize_terminal_text(&sock.display().to_string()),
+            sock.exists()
+        );
+        if sock.exists() {
+            match ipc_ping_blocking(&sock) {
+                Ok(IpcResponse::Pong { v }) => {
+                    println!("  daemon_state: {C_GREEN}up{C_RESET} (ipc_ping ok v={v})");
+                }
+                Ok(_) => println!("  daemon_state: unexpected ipc response"),
+                Err(e) => {
+                    let clean = sanitize_terminal_text(&e);
+                    println!("  daemon_state: {C_DIM}down/fail ({clean}){C_RESET}");
+                }
             }
-            Ok(_) => println!("  daemon_state: unexpected ipc response"),
-            Err(e) => {
-                let clean = sanitize_terminal_text(&e);
-                println!("  daemon_state: {C_DIM}down/fail ({clean}){C_RESET}");
-            }
+        } else {
+            println!("  daemon_state: no socket (start raven-node ipc)");
         }
-    } else {
-        println!("  daemon_state: no socket (start raven-node ipc)");
+    }
+    #[cfg(windows)]
+    {
+        match raven_core::ipc::default_named_pipe_name(data_dir) {
+            Ok(name) => {
+                println!("  ipc_pipe={}", sanitize_terminal_text(&name));
+                match pair_init_lab::windows_ipc_ping(data_dir) {
+                    Ok(IpcResponse::Pong { v }) => {
+                        println!("  daemon_state: {C_GREEN}up{C_RESET} (ipc_ping ok v={v})");
+                    }
+                    Ok(_) => println!("  daemon_state: unexpected ipc response"),
+                    Err(e) => println!(
+                        "  daemon_state: {C_DIM}down/fail ({}){C_RESET}",
+                        sanitize_terminal_text(&e)
+                    ),
+                }
+            }
+            Err(e) => println!(
+                "  ipc_transport: named-pipe unavailable ({})",
+                sanitize_terminal_text(&e)
+            ),
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        println!("  ipc_transport: unavailable on this platform");
     }
 
     // Identity store (backend label only — never seed bytes).
@@ -3889,8 +4151,8 @@ mod tests {
         // color_enabled() is cached per-process (OnceLock), so we can only
         // assert consistency with the current environment, not both branches.
         let colors = c();
-        let colored_expected =
-            std::env::var_os("NO_COLOR").is_none() && std::env::var_os("TERM").as_deref() != Some(std::ffi::OsStr::new("dumb"));
+        let colored_expected = std::env::var_os("NO_COLOR").is_none()
+            && std::env::var_os("TERM").as_deref() != Some(std::ffi::OsStr::new("dumb"));
         if colored_expected {
             // Black & white design: accent fields collapse to bold/dim.
             assert_eq!(colors.cyan, colors.bold);
@@ -3962,33 +4224,34 @@ pub_hex     d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a
     }
 
     #[test]
-    fn resolve_reuses_saved_lan_dial_without_prompt() {
-        let got = resolve_lan_peer_parts("192.168.1.20:7420", None, false);
-        assert_eq!(got, Some(ResolvedLanPeer::Dial("192.168.1.20:7420".into())));
-        // Saved wins over env — no stdin involved.
-        let got = resolve_lan_peer_parts("10.0.0.2:7420", Some("10.0.0.9:7420"), true);
-        assert_eq!(got, Some(ResolvedLanPeer::Dial("10.0.0.2:7420".into())));
-    }
-
-    #[test]
-    fn resolve_empty_dial_uses_env_then_errors_without_local_queue() {
-        let got = resolve_lan_peer_parts("", Some("192.168.1.50:7420"), false);
-        assert_eq!(got, Some(ResolvedLanPeer::Dial("192.168.1.50:7420".into())));
-        assert_eq!(resolve_lan_peer_parts("", None, true), None);
-        assert_eq!(resolve_lan_peer_parts("", None, false), None);
-        assert_eq!(resolve_lan_peer_parts("not-a-dial", None, false), None);
-        assert_eq!(
-            resolve_lan_peer_parts("", Some("rvn1notadial"), false),
-            None
-        );
-    }
-
-    #[test]
     fn corrupt_contacts_json_errors_instead_of_empty_book() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("contacts.json"), "{not-json").unwrap();
         let err = load_contacts(dir.path()).unwrap_err();
         assert!(err.contains("corrupt"), "{err}");
+    }
+
+    #[test]
+    fn contact_send_resolution_requires_an_explicit_pin() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut contact = Contact {
+            petname: "Friend".into(),
+            public_tag: "friend".into(),
+            alias: "friend".into(),
+            address: "rvn1-test-only".into(),
+            pub_hex: "11".repeat(32),
+            pinned: false,
+            lan_dial: "127.0.0.1:7420".into(),
+        };
+        save_contacts(dir.path(), std::slice::from_ref(&contact)).unwrap();
+        let error = resolve_send_target(dir.path(), "friend", "", "", "127.0.0.1:0").unwrap_err();
+        assert!(error.contains("no pinned contact"), "{error}");
+
+        contact.pinned = true;
+        save_contacts(dir.path(), std::slice::from_ref(&contact)).unwrap();
+        let resolved = resolve_send_target(dir.path(), "friend", "", "", "127.0.0.1:0").unwrap();
+        assert_eq!(resolved.0, "127.0.0.1:7420");
+        assert_eq!(resolved.1, "11".repeat(32));
     }
 
     #[test]

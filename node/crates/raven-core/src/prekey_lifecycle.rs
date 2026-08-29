@@ -2436,19 +2436,17 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)]
     #[test]
     fn lock_file_is_owner_only_on_unix() {
         let fixture = Fixture::new();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(fixture.data_dir.path().join(PREKEY_LIFECYCLE_LOCK_FILE))
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777;
-            assert_eq!(mode, 0o600);
-        }
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(fixture.data_dir.path().join(PREKEY_LIFECYCLE_LOCK_FILE))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
     }
 
     #[test]

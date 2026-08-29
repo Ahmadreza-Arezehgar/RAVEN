@@ -69,7 +69,13 @@ onboarding = read("RAVEN/Features/Onboarding/OnboardingView.swift")
 for legacy in ("Local + Friends Feed", "friends' posts", "friends’ posts"):
     if legacy in onboarding:
         failures.append(f"onboarding advertises social product: {legacy}")
-if "without turning them into a public feed" not in onboarding:
+if not any(
+    marker in onboarding
+    for marker in (
+        "without turning them into a public feed",
+        "never a public feed",
+    )
+):
     failures.append("onboarding messaging-only boundary marker missing")
 
 # External URL admission must accept identity/contact cards only. Legacy enum

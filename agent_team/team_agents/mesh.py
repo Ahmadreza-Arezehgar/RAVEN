@@ -1,9 +1,13 @@
-"""RDAP mesh carrier — rides the real Raven swarm offline mailbox.
+"""EXPERIMENTAL PLAINTEXT RDAP carrier over the Raven mailbox harness.
 
 Transport tiers served here:
   T3  libp2p mailbox PUT  — task lands in the *recipient's* store; they drain
                             it whenever they come online (no git, no internet
                             reachability beyond the libp2p path).
+
+This adapter is deliberately disabled unless the operator opts in.  Its task
+JSON is signed but not encrypted; using an RVN1 field named
+``message_ciphertext`` does not make the JSON confidential.
 
 Wire formats are byte-exact with RAVEN:
   envelope : raven_protocol.envelope.Envelope/pack  (RVN1, opaque body)
@@ -88,7 +92,7 @@ def store_tag(peer_address: str) -> bytes:
 
 
 def envelope_for(body: bytes, peer_address: str, ttl_hours: float = 24) -> bytes:
-    """RVN1 envelope whose opaque ciphertext carries our signed task JSON."""
+    """RVN1 envelope whose ciphertext field carries *plaintext* signed JSON."""
     from raven_protocol.envelope import Envelope, pack
 
     now = int(time.time() * 1000)
@@ -212,14 +216,14 @@ def serve_store(bin_path: Path, data_dir: Path,
     try:
         _wait(proc)
     except RuntimeError:
-        # stale/corrupt state — wipe and start clean (mailbox is transient)
-        import shutil as _sh
-
-        for f in data_dir.iterdir():
-            if f.name != 'store.log':
-                f.unlink() if f.is_file() else _sh.rmtree(f)
-        proc = _spawn()
-        _wait(proc)
+        if proc.poll() is None:
+            proc.kill()
+        # Mailbox rows may be the only copy of an offline task.  A generic
+        # startup failure must never turn into an implicit state reset.
+        raise RuntimeError(
+            f'mailbox startup failed; state preserved at {data_dir}; '
+            f'inspect {log_file}'
+        ) from None
 
     ma = addr_file.read_text().strip()
     # store binds wildcard but may report 127.0.0.1/0.0.0.0 — publish the
@@ -258,11 +262,36 @@ def mailbox_put(bin_path: Path, client_dir: Path, store_multiaddr: str,
 def mailbox_get_all(bin_path: Path, client_dir: Path, store_multiaddr: str,
                     store_peer_id: str, tag_hex: str) -> list[bytes]:
     client_dir.mkdir(parents=True, exist_ok=True)
-    out = _run(bin_path, ['get', '--peer', store_multiaddr,
-                          '--peer-id', store_peer_id,
-                          '--store-tag-hex', tag_hex], client_dir)
-    objs = []
-    for line in out.splitlines():
-        if line.startswith('object_hex='):
-            objs.append(bytes.fromhex(line.split('=', 1)[1].strip()))
-    return objs
+    objects: list[bytes] = []
+    after = ''
+    seen_cursors: set[str] = set()
+    for _page in range(4096):
+        args = [
+            'get', '--peer', store_multiaddr,
+            '--peer-id', store_peer_id,
+            '--store-tag-hex', tag_hex,
+        ]
+        if after:
+            args.extend(['--after-hex', after])
+        out = _run(bin_path, args, client_dir)
+        next_cursor = None
+        for line in out.splitlines():
+            if line.startswith('object_hex='):
+                objects.append(bytes.fromhex(line.split('=', 1)[1].strip()))
+            elif line.startswith('next_cursor='):
+                next_cursor = line.split('=', 1)[1].strip()
+        if next_cursor is None:
+            raise RuntimeError('mailbox page omitted its continuation cursor')
+        if next_cursor == 'end':
+            return objects
+        if len(next_cursor) != 64:
+            raise RuntimeError(f'invalid mailbox cursor: {next_cursor!r}')
+        try:
+            bytes.fromhex(next_cursor)
+        except ValueError as exc:
+            raise RuntimeError('mailbox returned a non-hex cursor') from exc
+        if next_cursor in seen_cursors:
+            raise RuntimeError('mailbox cursor cycle detected')
+        seen_cursors.add(next_cursor)
+        after = next_cursor
+    raise RuntimeError('mailbox pagination exceeded the safety page limit')

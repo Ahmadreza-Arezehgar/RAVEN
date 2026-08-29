@@ -8,7 +8,7 @@ LABEL="com.raven.raven-node"
 PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
 
 mkdir -p "$BIN_DIR" "$DATA_DIR" "$HOME/Library/LaunchAgents"
-cargo build -p raven-node -p ash --release --manifest-path "$ROOT/Cargo.toml"
+cargo build --locked -p raven-node -p ash --release --manifest-path "$ROOT/Cargo.toml"
 install -m 755 "$ROOT/target/release/raven-node" "$BIN_DIR/raven-node"
 install -m 755 "$ROOT/target/release/ash" "$BIN_DIR/raven"
 # Optional ash launcher only if safe (not overwriting /bin/ash)

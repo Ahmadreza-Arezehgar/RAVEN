@@ -4,8 +4,12 @@
 # Opaque RavenEnvelopeV1 preserved; B never decrypts; ACK only from C.
 # Safe: ephemeral dirs only. No secrets. No GitHub.
 set -euo pipefail
+# Ephemeral Debug/lab profiles must be readable by both raven-node and ash
+# without triggering a macOS Keychain per-binary ACL prompt.
+export RAVEN_IDENTITY_BACKEND=locked-file
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="$ROOT/target/debug"
+SMOKE_TARGET_DIR="${RAVEN_BRIDGE_SMOKE_TARGET_DIR:-$ROOT/target/bridge-smoke}"
+BIN="$SMOKE_TARGET_DIR/debug"
 NODE="$BIN/raven-node"
 ASH="$BIN/ash"
 WORKDIR="${TMPDIR:-/tmp}/raven-bridge-abc-$$"
@@ -18,10 +22,9 @@ cleanup() {
 trap cleanup EXIT
 
 source "${HOME}/.cargo/env" 2>/dev/null || true
-if [[ ! -x "$NODE" ]]; then
-  echo "Building…"
-  (cd "$ROOT" && cargo build -p raven-node -p ash --features raven-node/unsafe-demo-crypto -q)
-fi
+echo "Building exact isolated bridge-smoke feature set…"
+(cd "$ROOT" && CARGO_TARGET_DIR="$SMOKE_TARGET_DIR" \
+  cargo build --locked -p raven-node -p ash --features raven-node/unsafe-demo-crypto -q)
 
 echo "=== Bridge A-B-C workdir=$WORKDIR ==="
 "$NODE" init --data-dir "$WORKDIR/a" | tee "$WORKDIR/a.out"
@@ -30,6 +33,12 @@ echo "=== Bridge A-B-C workdir=$WORKDIR ==="
 A_PUB=$(grep '^pub_hex=' "$WORKDIR/a.out" | cut -d= -f2)
 B_PUB=$(grep '^pub_hex=' "$WORKDIR/b.out" | cut -d= -f2)
 C_PUB=$(grep '^pub_hex=' "$WORKDIR/c.out" | cut -d= -f2)
+A_ADDR=$(grep '^address=' "$WORKDIR/a.out" | cut -d= -f2)
+C_ADDR=$(grep '^address=' "$WORKDIR/c.out" | cut -d= -f2)
+printf '[{"address":"%s","pub_hex":"%s","petname":"A","pinned":true},{"address":"%s","pub_hex":"%s","petname":"C","pinned":true}]\n' \
+  "$A_ADDR" "$A_PUB" "$C_ADDR" "$C_PUB" \
+  >"$WORKDIR/b/contacts.json"
+chmod 600 "$WORKDIR/b/contacts.json"
 echo "A pub (public only) ok"
 echo "B pub (public only) ok"
 echo "C pub (public only) ok"
@@ -65,6 +74,7 @@ run_happy() {
     --data-dir "$WORKDIR/c" \
     --listen "127.0.0.1:0" \
     --peer "$B_BLE" \
+    --bridge-pull --bridge-pub-hex "$B_PUB" \
     --peer-pub-hex "$A_PUB" \
     --origin-pub-hex "$A_PUB" \
     --exit-after-recv 1 \
@@ -78,6 +88,7 @@ run_happy() {
     --data-dir "$WORKDIR/a" \
     --listen "127.0.0.1:0" \
     --peer "$B_LAN" \
+    --bridge-pull --bridge-pub-hex "$B_PUB" \
     --peer-pub-hex "$B_PUB" \
     --seal-to-pub-hex "$C_PUB" \
     --ack-pub-hex "$C_PUB" \
@@ -131,6 +142,7 @@ printf '%s\n' "store-carry-msg" | "$NODE" run \
   --data-dir "$WORKDIR/a" \
   --listen "127.0.0.1:0" \
   --peer "$B_LAN" \
+  --bridge-pull --bridge-pub-hex "$B_PUB" \
   --peer-pub-hex "$B_PUB" \
   --seal-to-pub-hex "$C_PUB" \
   --ack-pub-hex "$C_PUB" \
@@ -145,6 +157,7 @@ sleep 0.8
   --data-dir "$WORKDIR/c" \
   --listen "127.0.0.1:0" \
   --peer "$B_BLE" \
+  --bridge-pull --bridge-pub-hex "$B_PUB" \
   --peer-pub-hex "$A_PUB" \
   --origin-pub-hex "$A_PUB" \
   --exit-after-recv 1 \
@@ -184,6 +197,7 @@ B_BLE=$(cat "$WORKDIR/b.ble")
   --data-dir "$WORKDIR/a" \
   --listen "127.0.0.1:0" \
   --peer "$B_LAN" \
+  --bridge-pull --bridge-pub-hex "$B_PUB" \
   --peer-pub-hex "$C_PUB" \
   --origin-pub-hex "$C_PUB" \
   --exit-after-recv 1 \
@@ -195,6 +209,7 @@ printf '%s\n' "reverse-c-to-a" | "$NODE" run \
   --data-dir "$WORKDIR/c" \
   --listen "127.0.0.1:0" \
   --peer "$B_BLE" \
+  --bridge-pull --bridge-pub-hex "$B_PUB" \
   --peer-pub-hex "$B_PUB" \
   --seal-to-pub-hex "$A_PUB" \
   --ack-pub-hex "$A_PUB" \
@@ -215,6 +230,7 @@ echo "reverse path OK (software mock_ble)"
 echo "=== ash status still safe ==="
 "$ASH" --data-dir "$WORKDIR/b" status | tee "$WORKDIR/ash_status2.txt"
 grep -q 'forward_q' "$WORKDIR/ash_status2.txt"
+grep -qE 'forward_q[[:space:]]+0 pending' "$WORKDIR/ash_status2.txt"
 ! grep -qiE 'seed|private.key|plaintext' "$WORKDIR/ash_status2.txt"
 
 echo "=== ALL BRIDGE A-B-C CHECKS PASSED ==="

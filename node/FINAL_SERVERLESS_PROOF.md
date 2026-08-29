@@ -1,44 +1,55 @@
-# Final Serverless Proof (§59) — automated harness
+# Serverless verification status
 
-## What this is
+**Current status (2026-08-29): no aggregate production-proof harness is present in this tree.**
 
-`scripts/final_serverless_proof.sh` exercises every **software-automatable** step of the Master Checklist §59 Final Serverless Proof on a developer machine:
+The former `scripts/final_serverless_proof.sh` is not included in the current
+checkout. The committed [`proof_artifacts/LATEST`](proof_artifacts/LATEST)
+snapshot records a 17/17 run from 2026-08-21, but that is historical evidence
+for an older tree. It cannot be rerun here and must not be presented as a
+current `AUTOMATED_PROOF_GREEN`, production-readiness result, or external audit.
 
-| §59 intent | How the harness covers it |
-|---|---|
-| Fresh install / identity | Ephemeral data-dirs + `ash init` / `whoami` |
-| Contact add + verify | `ash contact add --verify-fp` + `contact verify` |
-| Offline recipient | Bridge store-carry while mobile offline, then join |
-| Encrypted locally / queue | Sealed send; bridge logs must not contain plaintext |
-| No central API | `doctor` messaging_path + grep refuse FastAPI |
-| Store-forward | Bridge B queues until C appears |
-| Close Terminal; node continues | `raven-node service` + `ash ipc-ping` after ash exit |
-| ACK / Delivered | Direct + bridged ACK logs |
-| Bridge A↔B↔C both ways | `bridge_abc_demo.sh` (happy + reverse + store-carry) |
-| No duplicates | `cargo test -p raven-core --test bridge_v1` |
-| Shut Raven bootstrap; manual peers | `disable-raven-defaults` + `bootstrap_manual_peer_smoke` + swarm |
-| Same message identity | mid logged across A/B/C in bridge demo |
+No independent external protocol or cryptographic audit is recorded as
+completed. The [external review packet](EXTERNAL_REVIEW_PACKET.md) is input for
+a future reviewer, not an audit report.
 
-## Run
+## Current executable checks
+
+Run these from `node/` against the exact commit being reviewed:
 
 ```bash
-bash scripts/final_serverless_proof.sh
-# artifacts → node/proof_artifacts/<run-id>/
-cat node/proof_artifacts/LATEST/SUMMARY.md
+cargo test --locked -p raven-core -p raven-node -p ash -p raven-swarm
+cargo clippy --locked -p raven-core -p raven-node -p ash -p raven-swarm --all-targets -- -D warnings
+bash scripts/bridge_abc_demo.sh
+bash scripts/internet_dial_smoke.sh
 ```
 
-Re-run until `SUMMARY.md` says `AUTOMATED_PROOF_GREEN`.
+The bridge demo verifies mutually authenticated local pull, opaque custody,
+store-carry, signed custody receipts, and reverse delivery. It intentionally
+compiles the `unsafe-demo-crypto` lab payload mode, so it is transport evidence,
+not production ATSAM or physical-radio evidence.
 
-## Claim language (honest)
+The Internet smoke is a **negative security gate**: success means the legacy
+raw Internet sender refused unauthenticated origination. It does not prove
+Internet delivery.
 
-When green:
+When the GNU Windows target is installed, this compile-only check is also
+available:
 
-> **IMPLEMENTATION + PROOF HARNESS COMPLETE** for automatable §59 software steps.
+```bash
+cargo check -p ash --target x86_64-pc-windows-gnu --offline
+```
 
-Still **not** marketing READY / full §59 DoD. See each run’s `BLOCKED.md`.
+Passing these commands proves only their named scopes. They do not replace
+physical multi-device tests, public CGNAT/DCUtR tests, platform signing, or an
+independent security review. There is currently no supported one-command
+replacement for the removed §59 harness.
 
-## Related
+## Historical artifacts
 
-- Physical 3-device BLE: `docs/PHYSICAL_BLE_THREE_DEVICE.md`
-- NAT substitutes: `docs/NAT_SOFTWARE_SIM.md` + `scripts/nat_docker_sim.sh`
-- External review handoff: `docs/EXTERNAL_REVIEW_PACKET.md`
+- [`proof_artifacts/README.md`](proof_artifacts/README.md) explains the archived
+  run layout.
+- [`MASTER_CHECKLIST_STATUS.md`](MASTER_CHECKLIST_STATUS.md) and
+  [`MASTER_CHECKLIST_WALK_IN_PROGRESS.md`](MASTER_CHECKLIST_WALK_IN_PROGRESS.md)
+  are dated engineering snapshots, not current acceptance reports.
+- Hardware and human gates remain listed in
+  [`MASTER_ENGINEERING_CHECKLIST.md`](MASTER_ENGINEERING_CHECKLIST.md).

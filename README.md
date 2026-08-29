@@ -1,18 +1,26 @@
-# 🐦‍⬛ RAVEN — Messaging Beyond Connectivity
+# 🐦‍⬛ RAVEN — Serverless Terminal Messaging
 
-**RAVEN** is a privacy-first mesh messenger for **iOS and macOS**. Encrypted chat, group conversations, live audio rooms, and a decentralised social feed — all running over a hybrid transport that stays online when the network's there, and keeps working when it isn't.
+**RAVEN** is an open-source, terminal-first messaging network. The primary product lives in [`node/`](node/) and is being built for macOS, Linux, and Windows: peers exchange one opaque Raven envelope over direct LAN, store-carry-forward bridges, relays, and Internet transports without requiring a Raven-operated message server.
+
+The security boundary is deliberately fail-closed: a transport is not called production-ready until authenticated session establishment, encrypted payload handling, retry, and verified delivery acknowledgement are wired end to end.
+
+| Area | Current role | Status |
+|---|---|---|
+| [`node/`](node/) | `raven`/`ash` terminal, `raven-node`, protocol core and swarm | **Primary product; active hardening** |
+| [`agent_team/`](agent_team/) | A2A/RDAP agent delegation over Raven-compatible identities and carriers | **Experimental; not for untrusted production traffic** |
+| [`ios-native/`](ios-native/) | Previous iOS/macOS application implementation | **Legacy / secondary** |
+| [`server/`](server/) | Previous FastAPI application backend | **Legacy; not the serverless terminal path** |
+
+Internet relay/NAT traversal, the offline libp2p mailbox, and headless desktop BLE remain experimental until the documented acceptance gates pass. See [`node/SERVERLESS_MODEL.md`](node/SERVERLESS_MODEL.md) and [`node/adr/0002-internet-transport.md`](node/adr/0002-internet-transport.md).
 
 🌐 **Website:** [raven-messager.com](https://raven-messager.com/)
-📱 **App Store:** [Download for iOS](https://apps.apple.com/us/app/raven-messenger/id6758585289)
-🖥️ **Mac:** Signed DMG — see [Releases](https://github.com/Raven-offline-messenger/RAVEN/releases)
-
-> **Why open source?** Transparency is the foundation of trust. The security-critical code is published so anyone can audit it.
+🔐 **Security documentation:** [Raven-offline-messenger/raven-security](https://github.com/Raven-offline-messenger/raven-security)
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
-[![iOS](https://img.shields.io/badge/iOS-17%2B-black.svg)](https://apps.apple.com)
-[![macOS](https://img.shields.io/badge/macOS-14%2B-black.svg)](https://github.com/Raven-offline-messenger/RAVEN/releases)
-[![Version](https://img.shields.io/badge/version-1.7-purple.svg)](https://github.com/Raven-offline-messenger/RAVEN/releases)
-[![Security docs](https://img.shields.io/badge/security-raven--security-9b5bef.svg)](https://github.com/Raven-offline-messenger/raven-security)
+[![Primary UI](https://img.shields.io/badge/primary-terminal-black.svg)](node/)
+[![Status](https://img.shields.io/badge/status-active_hardening-orange.svg)](node/SERVERLESS_MODEL.md)
+
+The application-era material below is retained as legacy architecture history while the repository is reorganised around the terminal node.
 
 ---
 
@@ -114,6 +122,7 @@ The **security-critical core** lives here for public audit. Brand marks and UI a
 | `protocol/reference/` | Python reference codecs + parity tests |
 | `shared-vectors/rvn1/` | Deterministic cross-language test vectors |
 | `node/` (`raven-core`, `raven-node`, `ash`, `raven-swarm`) | Serverless node, terminal, crypto, transport |
+| `agent_team/` (`rdap`, `team_agents`) | Experimental A2A agent delegation and Raven carrier integration |
 | `ios-native/RAVEN/RAVEN/Core/Protocol/` | iOS envelope / PairInit / LAN path |
 | `ios-native/RAVEN/RAVEN/Core/Security/` | Mesh crypto, ATSAM, Noise, sealers |
 | `ios-native/RAVEN/RAVEN/Core/Mesh/` | BLE mesh engine + routing |

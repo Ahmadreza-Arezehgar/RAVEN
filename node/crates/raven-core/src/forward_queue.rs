@@ -3,7 +3,8 @@
 //! Holds packed RavenEnvelopeV1 bytes only — never plaintext / ratchet keys.
 //! Survives raven-node restart; expires by envelope TTL / row expires_at_ms.
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
+use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
 use thiserror::Error;
 
@@ -75,6 +76,14 @@ pub const MAX_PER_PEER_BYTES_PER_WINDOW: u64 = 256_000;
 /// be able to grow a durable table without limit.
 pub const MAX_RELAY_SEEN_OBJECTS: usize = 4_096;
 pub const RELAY_SEEN_TTL_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
+/// Terminal rows are useful for diagnostics/dedup for a bounded interval, but
+/// must not grow the bridge database forever.
+pub const TERMINAL_ROW_RETENTION_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
+pub const MAX_TERMINAL_FORWARD_ROWS: usize = 4_096;
+/// Failed/unacknowledged handoffs are retried only after a new explicit pull.
+/// Exponential backoff additionally prevents reconnect loops from spraying.
+pub const FORWARD_RETRY_BASE_MS: u64 = 5_000;
+pub const FORWARD_RETRY_MAX_MS: u64 = 5 * 60 * 1_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PeerRateDecision {
@@ -156,7 +165,9 @@ impl ForwardQueue {
                state INTEGER NOT NULL,
                created_at_ms INTEGER NOT NULL,
                expires_at_ms INTEGER NOT NULL,
-               previous_hop TEXT NOT NULL DEFAULT ''
+               previous_hop TEXT NOT NULL DEFAULT '',
+               attempt_count INTEGER NOT NULL DEFAULT 0,
+               next_attempt_at_ms INTEGER NOT NULL DEFAULT 0
              );
              CREATE INDEX IF NOT EXISTS idx_forward_objects_v2_message_id
                ON forward_objects_v2(message_id);
@@ -176,6 +187,7 @@ impl ForwardQueue {
                PRIMARY KEY (peer_key, window_start_ms)
              );",
         )?;
+        ensure_forward_attempt_columns(&conn)?;
         migrate_legacy_forward_rows(&conn)?;
         Ok(Self {
             conn,
@@ -188,7 +200,25 @@ impl ForwardQueue {
         })
     }
 
+    /// Inspect an existing queue without creating a database, schema, profile
+    /// directory, WAL, or migration state. Intended for `raven-node status`.
+    pub fn inspect_counts(path: &Path) -> Result<(usize, usize), ForwardQueueError> {
+        if !path.is_file() {
+            return Ok((0, 0));
+        }
+        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let pending: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM forward_objects_v2 WHERE state IN (0, 1)",
+            [],
+            |r| r.get(0),
+        )?;
+        let total: i64 =
+            conn.query_row("SELECT COUNT(*) FROM forward_objects_v2", [], |r| r.get(0))?;
+        Ok((pending as usize, total as usize))
+    }
+
     pub fn count_pending_for_peer(&self, previous_hop: &str) -> Result<usize, ForwardQueueError> {
+        let previous_hop = canonical_peer_key(previous_hop);
         let n: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM forward_objects_v2
              WHERE state IN (0, 1) AND previous_hop = ?1",
@@ -205,8 +235,8 @@ impl ForwardQueue {
         now_ms: u64,
         envelope_bytes: usize,
     ) -> Result<PeerRateDecision, ForwardQueueError> {
-        let peer = previous_hop;
-        if self.count_pending_for_peer(peer)? >= self.max_per_peer_pending {
+        let peer = canonical_peer_key(previous_hop);
+        if self.count_pending_for_peer(&peer)? >= self.max_per_peer_pending {
             return Ok(PeerRateDecision::PeerQueueFull);
         }
         let window = self.peer_rate_window_ms.max(1);
@@ -221,7 +251,7 @@ impl ForwardQueue {
             .query_row(
                 "SELECT enqueue_count, byte_count FROM bridge_peer_rate
                  WHERE peer_key = ?1 AND window_start_ms = ?2",
-                params![peer, window_start as i64],
+                params![&peer, window_start as i64],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?;
@@ -237,7 +267,7 @@ impl ForwardQueue {
              ON CONFLICT(peer_key, window_start_ms) DO UPDATE SET
                enqueue_count = enqueue_count + 1,
                byte_count = byte_count + excluded.byte_count",
-            params![peer, window_start as i64, envelope_bytes as i64],
+            params![&peer, window_start as i64, envelope_bytes as i64],
         )?;
         Ok(PeerRateDecision::Allow)
     }
@@ -265,6 +295,7 @@ impl ForwardQueue {
         if item.packed_envelope.len() > self.max_bytes {
             return Err(ForwardQueueError::TooLarge(item.packed_envelope.len()));
         }
+        self.prune_terminal_rows(item.created_at_ms)?;
         let pending = self.count_pending()?;
         let env = Envelope::unpack(&item.packed_envelope).ok_or(ForwardQueueError::BadId)?;
         if env.message_id != item.message_id {
@@ -291,6 +322,7 @@ impl ForwardQueue {
         // SQLite INTEGER is signed; clamp so u64::MAX does not store as -1.
         let expires_i64 = item.expires_at_ms.min(i64::MAX as u64) as i64;
         let created_i64 = item.created_at_ms.min(i64::MAX as u64) as i64;
+        let previous_hop = canonical_peer_key(&item.previous_hop);
         self.conn.execute(
             "INSERT OR REPLACE INTO forward_objects_v2
              (object_digest, message_id, packed, ingress, egress, state, created_at_ms, expires_at_ms, previous_hop)
@@ -304,7 +336,7 @@ impl ForwardQueue {
                 item.state as u8,
                 created_i64,
                 expires_i64,
-                item.previous_hop,
+                previous_hop,
             ],
         )?;
         Ok(())
@@ -316,22 +348,99 @@ impl ForwardQueue {
         state: ForwardState,
     ) -> Result<(), ForwardQueueError> {
         self.conn.execute(
-            "UPDATE forward_objects_v2 SET state = ?1 WHERE object_digest = ?2",
+            "UPDATE forward_objects_v2
+             SET state = ?1,
+                 next_attempt_at_ms = CASE WHEN ?1 = 0 THEN 0 ELSE next_attempt_at_ms END
+             WHERE object_digest = ?2",
             params![state as u8, object_digest.as_slice()],
         )?;
         Ok(())
     }
 
+    /// Atomically reserve one eligible queued object for a single carrier
+    /// handoff. `InFlight` remains retryable after exponential backoff; only a
+    /// verifiable higher-layer receipt may transition it to `Forwarded`.
+    pub fn claim_object_for_attempt(
+        &self,
+        object_digest: &[u8; 32],
+        now_ms: u64,
+    ) -> Result<bool, ForwardQueueError> {
+        let row: Option<(u8, u32, u64, u64)> = self
+            .conn
+            .query_row(
+                "SELECT state, attempt_count, next_attempt_at_ms, expires_at_ms
+                 FROM forward_objects_v2 WHERE object_digest = ?1",
+                params![object_digest.as_slice()],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get::<_, i64>(2)?.max(0) as u64,
+                        r.get::<_, i64>(3)?.max(0) as u64,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((state, attempts, next_attempt_at, expires_at)) = row else {
+            return Ok(false);
+        };
+        let eligible = state == ForwardState::Queued as u8
+            || (state == ForwardState::InFlight as u8 && now_ms >= next_attempt_at);
+        if !eligible || now_ms > expires_at {
+            return Ok(false);
+        }
+        let shift = attempts.min(6);
+        let delay = FORWARD_RETRY_BASE_MS
+            .saturating_mul(1u64 << shift)
+            .min(FORWARD_RETRY_MAX_MS);
+        let next = now_ms.saturating_add(delay).min(i64::MAX as u64);
+        let changed = self.conn.execute(
+            "UPDATE forward_objects_v2
+             SET state = ?1, attempt_count = attempt_count + 1, next_attempt_at_ms = ?2
+             WHERE object_digest = ?3
+               AND (state = 0 OR (state = 1 AND next_attempt_at_ms <= ?4))
+               AND expires_at_ms >= ?4",
+            params![
+                ForwardState::InFlight as u8,
+                next as i64,
+                object_digest.as_slice(),
+                now_ms.min(i64::MAX as u64) as i64,
+            ],
+        )?;
+        Ok(changed == 1)
+    }
+
+    /// Accept a receipt only for an object currently reserved to a carrier.
+    /// The caller is responsible for cryptographically authenticating and
+    /// session-binding that receipt before invoking this CAS transition.
+    pub fn acknowledge_in_flight(
+        &self,
+        object_digest: &[u8; 32],
+    ) -> Result<bool, ForwardQueueError> {
+        let changed = self.conn.execute(
+            "UPDATE forward_objects_v2 SET state = ?1
+             WHERE object_digest = ?2 AND state = ?3",
+            params![
+                ForwardState::Forwarded as u8,
+                object_digest.as_slice(),
+                ForwardState::InFlight as u8,
+            ],
+        )?;
+        Ok(changed == 1)
+    }
+
     /// Pending (Queued/InFlight) that are not expired.
     pub fn pending_ready(&self, now_ms: u64) -> Result<Vec<ForwardItem>, ForwardQueueError> {
         self.expire_stale(now_ms)?;
+        let now_i64 = now_ms.min(i64::MAX as u64) as i64;
         let mut stmt = self.conn.prepare(
             "SELECT object_digest, message_id, packed, ingress, egress, state, created_at_ms, expires_at_ms, previous_hop
              FROM forward_objects_v2
-             WHERE state IN (0, 1) AND expires_at_ms >= ?1
+             WHERE (state = 0 OR (state = 1 AND next_attempt_at_ms <= ?1))
+               AND expires_at_ms >= ?1
              ORDER BY created_at_ms ASC",
         )?;
-        let rows = stmt.query_map(params![now_ms as i64], row_to_v2_item)?;
+        let rows = stmt.query_map(params![now_i64], row_to_v2_item)?;
         let mut out = Vec::new();
         for row in rows {
             out.push(row?);
@@ -340,12 +449,44 @@ impl ForwardQueue {
     }
 
     pub fn expire_stale(&self, now_ms: u64) -> Result<usize, ForwardQueueError> {
+        let now_i64 = now_ms.min(i64::MAX as u64) as i64;
         let n = self.conn.execute(
             "UPDATE forward_objects_v2 SET state = ?1
              WHERE state IN (0, 1) AND expires_at_ms < ?2",
-            params![ForwardState::Expired as u8, now_ms as i64],
+            params![ForwardState::Expired as u8, now_i64],
         )?;
         Ok(n)
+    }
+
+    /// Expire live custody and bound diagnostic terminal history by both age
+    /// and a hard row cap.
+    pub fn maintain(&self, now_ms: u64) -> Result<(), ForwardQueueError> {
+        self.expire_stale(now_ms)?;
+        self.prune_terminal_rows(now_ms)?;
+        self.prune_seen_objects(now_ms)?;
+        Ok(())
+    }
+
+    pub fn prune_terminal_rows(&self, now_ms: u64) -> Result<usize, ForwardQueueError> {
+        let cutoff = now_ms
+            .saturating_sub(TERMINAL_ROW_RETENTION_MS)
+            .min(i64::MAX as u64) as i64;
+        let by_age = self.conn.execute(
+            "DELETE FROM forward_objects_v2
+             WHERE state IN (2, 3, 4) AND created_at_ms < ?1",
+            params![cutoff],
+        )?;
+        let by_cap = self.conn.execute(
+            "DELETE FROM forward_objects_v2
+             WHERE object_digest IN (
+               SELECT object_digest FROM forward_objects_v2
+               WHERE state IN (2, 3, 4)
+               ORDER BY created_at_ms DESC, object_digest DESC
+               LIMIT -1 OFFSET ?1
+             )",
+            params![MAX_TERMINAL_FORWARD_ROWS as i64],
+        )?;
+        Ok(by_age + by_cap)
     }
 
     pub fn get(&self, message_id: &[u8; 16]) -> Result<Option<ForwardItem>, ForwardQueueError> {
@@ -398,6 +539,7 @@ impl ForwardQueue {
         previous_hop: &str,
     ) -> Result<(), ForwardQueueError> {
         self.prune_seen_objects(now_ms)?;
+        let previous_hop = canonical_peer_key(previous_hop);
         self.conn.execute(
             "INSERT OR IGNORE INTO bridge_seen_objects_v2
              (object_digest, seen_at_ms, ingress, previous_hop)
@@ -431,6 +573,42 @@ impl ForwardQueue {
         )?;
         Ok(())
     }
+}
+
+/// TCP source ports are ephemeral and must never create a fresh abuse bucket.
+/// Preserve non-IP peer identifiers used by authenticated/non-TCP adapters.
+fn canonical_peer_key(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if let Ok(addr) = trimmed.parse::<SocketAddr>() {
+        return addr.ip().to_string();
+    }
+    if let Ok(ip) = trimmed.parse::<IpAddr>() {
+        return ip.to_string();
+    }
+    trimmed.to_string()
+}
+
+fn ensure_forward_attempt_columns(conn: &Connection) -> Result<(), ForwardQueueError> {
+    let mut stmt = conn.prepare("PRAGMA table_info(forward_objects_v2)")?;
+    let columns = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(stmt);
+    if !columns.iter().any(|name| name == "attempt_count") {
+        conn.execute(
+            "ALTER TABLE forward_objects_v2
+             ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    if !columns.iter().any(|name| name == "next_attempt_at_ms") {
+        conn.execute(
+            "ALTER TABLE forward_objects_v2
+             ADD COLUMN next_attempt_at_ms INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    Ok(())
 }
 
 /// One-time, idempotent migration from the original message-id-keyed queue.
@@ -699,6 +877,85 @@ mod tests {
             q2.check_peer_rate("full", now, 10).unwrap(),
             PeerRateDecision::PeerQueueFull
         );
+    }
+
+    #[test]
+    fn tcp_source_ports_share_one_rate_bucket() {
+        let dir = tempdir().unwrap();
+        let q = ForwardQueue::open_with_peer_limits(
+            &dir.path().join("fwd.sqlite"),
+            512,
+            MAX_ENVELOPE_BYTES,
+            64,
+            1,
+            1_000_000,
+            60_000,
+        )
+        .unwrap();
+        let now = 1_700_000_000_000u64;
+        assert_eq!(
+            q.check_peer_rate("192.0.2.10:41000", now, 10).unwrap(),
+            PeerRateDecision::Allow
+        );
+        assert_eq!(
+            q.check_peer_rate("192.0.2.10:52000", now + 1, 10).unwrap(),
+            PeerRateDecision::RateLimited
+        );
+        assert_eq!(canonical_peer_key("[2001:db8::1]:1234"), "2001:db8::1");
+    }
+
+    #[test]
+    fn in_flight_retry_requires_backoff_and_new_claim() {
+        let dir = tempdir().unwrap();
+        let q = ForwardQueue::open(&dir.path().join("fwd.sqlite")).unwrap();
+        let now = 1_700_000_000_000u64;
+        let mid = [0x31; 16];
+        let mut row = item(mid, packed(mid));
+        row.created_at_ms = now;
+        row.expires_at_ms = now + 60_000;
+        let digest = row.object_digest;
+        q.enqueue(&row).unwrap();
+
+        assert!(q.claim_object_for_attempt(&digest, now).unwrap());
+        assert_eq!(
+            q.get_object(&digest).unwrap().unwrap().state,
+            ForwardState::InFlight
+        );
+        assert!(!q.claim_object_for_attempt(&digest, now + 1).unwrap());
+        assert!(q.pending_ready(now + 1).unwrap().is_empty());
+        assert!(q
+            .claim_object_for_attempt(&digest, now + FORWARD_RETRY_BASE_MS)
+            .unwrap());
+        assert!(q.acknowledge_in_flight(&digest).unwrap());
+        assert!(!q.acknowledge_in_flight(&digest).unwrap());
+        assert_eq!(
+            q.get_object(&digest).unwrap().unwrap().state,
+            ForwardState::Forwarded
+        );
+    }
+
+    #[test]
+    fn terminal_rows_are_pruned_by_retention() {
+        let dir = tempdir().unwrap();
+        let q = ForwardQueue::open(&dir.path().join("fwd.sqlite")).unwrap();
+        let mid = [0x32; 16];
+        let row = item(mid, packed(mid));
+        let digest = row.object_digest;
+        q.enqueue(&row).unwrap();
+        q.mark_object_state(&digest, ForwardState::Failed).unwrap();
+        q.prune_terminal_rows(TERMINAL_ROW_RETENTION_MS + 2)
+            .unwrap();
+        assert!(q.get_object(&digest).unwrap().is_none());
+    }
+
+    #[test]
+    fn read_only_counts_do_not_create_missing_queue_or_parent() {
+        let dir = tempdir().unwrap();
+        let parent = dir.path().join("fresh-profile");
+        let db = parent.join("forward_queue.sqlite");
+        assert_eq!(ForwardQueue::inspect_counts(&db).unwrap(), (0, 0));
+        assert!(!parent.exists());
+        assert!(!db.exists());
     }
 
     #[test]

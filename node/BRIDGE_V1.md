@@ -17,6 +17,32 @@ Conceptual credit: MIT DTN store-carry-forward, Spray-and-Wait replication budge
 | **B** | LAN + BLE (mock) | **Bridge** — opaque forward + store-carry |
 | **C** | Internet OFF, BLE ON (mock) | Recipient — decrypts, emits **only** Delivered ACK |
 
+## Pull authentication and custody receipts
+
+The current TCP/mock-BLE carrier registers an egress path only after an
+explicit `RVNP` pull and mutual Ed25519 challenge/response. The bridge accepts
+the puller's public key only when the matching `contacts.json` entry is
+explicitly pinned; merely saving an unverified contact grants no carrier
+access. The pulling client pins the bridge key with `--bridge-pub-hex`. Fresh
+nonces bind both keys to the pull transcript.
+
+An envelope handed to a pull connection remains `InFlight`. Channel enqueue is
+not delivery. The next hop returns a domain-separated signed custody receipt
+bound to the pull transcript and object digest only after its endpoint handler
+reports an accepted outcome. Rejected, unsupported, or expired frames produce
+no receipt. The unsafe lab endpoint additionally persists the exact encrypted
+frame before acceptance; ACK acceptance follows its durable delivery-state
+update. The bridge accepts a receipt only from the exact peer/session selected
+for that attempt; a legitimate retry replaces that binding. These bindings are
+process-local, so after restart an unreceipted durable row must pass retry
+backoff and be handed to a fresh authenticated pull before a receipt can
+advance it.
+
+This receipt proves only authenticated next-hop custody, not recipient delivery
+and not end-to-end ATSAM session establishment. The TCP/mock-BLE carrier remains
+an experimental transport; message confidentiality/authenticity comes from the
+opaque Raven envelope carried over it.
+
 ## Automated tests (no phones)
 
 ```bash
@@ -25,7 +51,7 @@ cargo build -p raven-core -p raven-node -p ash
 cargo test -p raven-core --test bridge_v1          # cases 1–9
 ./scripts/two_node_demo.sh
 ./scripts/lan_path_smoke.sh
-./scripts/bridge_abc_demo.sh                       # A–B–C + store-carry + ash status
+./scripts/bridge_abc_demo.sh                       # self-builds isolated unsafe lab binaries
 ```
 
 ### Cases covered by `bridge_v1`
@@ -51,7 +77,9 @@ cargo test -p raven-core --test bridge_v1          # cases 1–9
 | Per-peer enqueues / 60s | 30 |
 | Per-peer bytes / 60s | 256 KiB |
 
-`previous_hop` is an opaque peer key (never BLE MAC / IP as Raven identity).
+`previous_hop` is an abuse-accounting key, not a Raven identity. TCP sources are
+canonicalized to their IP address (ephemeral ports are discarded); other
+authenticated or non-TCP adapters may supply an opaque peer identifier.
 
 ## BLE adapters
 
@@ -112,6 +140,6 @@ Interactive menu → **4 Status** shows the same Bridge / transports / forward_q
 ## Safety
 
 - Never print seeds / private keys / plaintext
-- Logs: aggregate state and bounded error classes only; do not write peer addresses, message identifiers, plaintext, ciphertext, keys, or absolute developer paths
+- Never log seeds, private keys, plaintext, or ciphertext. Current diagnostic logs do include listen addresses plus message/object identifier prefixes for smoke correlation; treat those values as metadata and apply normal log retention/access controls.
 - Capability ads: `ble` / `internet` / `relay` / `store` / `bridge` — never “I know Bob”
 - No GitHub push of demo data dirs

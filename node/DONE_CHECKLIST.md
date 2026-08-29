@@ -1,5 +1,10 @@
 # DONE_CHECKLIST (software slice — honest)
 
+> **Historical snapshot, not a current done/production checklist.** Statuses
+> below were recorded for the 2026-08 serverless slice. The former aggregate
+> proof script is absent, so its 17/17 result is archived evidence only. See
+> [current verification status](FINAL_SERVERLESS_PROOF.md).
+
 Companion to `docs/MASTER_CHECKLIST_STATUS.md`. This is **not** Final DoD §60.
 
 ## P0 Cross-device reliability
@@ -18,7 +23,7 @@ Companion to `docs/MASTER_CHECKLIST_STATUS.md`. This is **not** Final DoD §60.
 | ATSAM beyond 0x7F | ✅ subset | `atsam_root` + `atsam_kdf` + `atsam_aead` + shared vectors |
 | ML-KEM full stack | ❌ gap | iOS primary; Rust known-root/X25519 |
 | KATs shared | ✅ | `shared-vectors/rvn1/atsam/*` |
-| External review packet | ✅ ready | `docs/EXTERNAL_REVIEW_PACKET.md` |
+| External review packet | packet prepared | Input exists; independent review not completed |
 
 ## P2 Networking / services
 
@@ -53,15 +58,18 @@ Companion to `docs/MASTER_CHECKLIST_STATUS.md`. This is **not** Final DoD §60.
 |------|--------|----------|
 | Serverless without FastAPI | ✅ | §59 harness + demos |
 | Rate/TTL/hop/dedup/restart | ✅ | bridge_v1 + demos |
-| §59 automated proof | ✅ GREEN | `AUTOMATED_PROOF_GREEN` |
+| §59 automated proof | historical only | Archived 2026-08-21 `AUTOMATED_PROOF_GREEN`; not rerunnable now |
 
-## Suites last green (this machine)
+## Historical “last green” record
 
-- `scripts/final_serverless_proof.sh` (17/17)
+- Former §59 harness (17/17 archived artifact; script removed)
 - `cargo test -p raven-core` / `ash` / bridge_v1 / fuzz_smoke
 - bridge_abc, two_node, lan, internet, swarm, mailbox, manual bootstrap
+
+Do not infer that the listed suites are green for the current commit without
+rerunning the commands in [`FINAL_SERVERLESS_PROOF.md`](FINAL_SERVERLESS_PROOF.md).
 
 ## READY FOR YOUR FULL TEST?
 
 **NO** (marketing READY) — hardware + external review remain.  
-**IMPLEMENTATION + PROOF HARNESS COMPLETE** — yes for automatable software.
+**Current implementation/proof completeness is not asserted by this historical file.**

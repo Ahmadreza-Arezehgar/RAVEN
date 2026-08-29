@@ -27,7 +27,9 @@ def _team_goal(memory) -> str:
 
 
 class Brain(Protocol):
-    async def run(self, task_text: str) -> str: ...
+    async def run(
+        self, task_text: str, *, cancel_event: asyncio.Event | None = None
+    ) -> str: ...
 
 
 SYSTEM_PROMPT = """You are "{name}", one agent inside a small distributed team of AI agents.
@@ -35,7 +37,10 @@ Your role: {role}
 
 The shared project lives in a git repo on this machine; teammates work on the SAME repo
 on OTHER machines and sync through git. You coordinate through the `.team/` directory:
-- read/write files with your tools (paths are relative to the repo root)
+- inspect non-sensitive project files with read-only tools (paths are relative to
+  the repo root); keys, credentials, env files, Git internals, private runtime
+  state, and symlink/reparse aliases are outside your authority
+- modify project files only when the operator-enabled `write_file` tool is present
 - keep the task board (board_set_task) up to date as you progress
 - log important events (log_event) so others can follow what you did
 - store durable discoveries with remember_fact
@@ -45,6 +50,7 @@ Rules:
 1. First inspect state: board_read, read_facts, list_files — avoid redoing teammates' work.
 2. Do the task with the minimum set of steps.
 3. Always finish by calling `final_answer` exactly once with a concise report.
+4. Never use an operator-enabled shell to bypass `read_file` sensitive-path denials.
 """
 
 
@@ -82,7 +88,10 @@ class OpenAIBrain:
         r.raise_for_status()
         return r.json()['choices'][0]['message']
 
-    async def run(self, task_text: str) -> str:
+    async def run(
+        self, task_text: str, *, cancel_event: asyncio.Event | None = None
+    ) -> str:
+        task_cancel = cancel_event or self.cancel_event
         goal = _team_goal(self.toolbox.memory) if self.toolbox else ''
         system_content = SYSTEM_PROMPT.format(
             name=self.config.name, role=self.config.role
@@ -101,7 +110,7 @@ class OpenAIBrain:
         ]
         async with httpx.AsyncClient() as client:
             for step in range(self.llm.max_steps):
-                if self.cancel_event.is_set():
+                if task_cancel.is_set():
                     return 'CANCELLED'
                 msg = await self._chat(client, messages)
                 tool_calls = msg.get('tool_calls') or []
@@ -148,7 +157,11 @@ class EchoBrain:
         self.config = config
         self.memory = memory
 
-    async def run(self, task_text: str) -> str:
+    async def run(
+        self, task_text: str, *, cancel_event: asyncio.Event | None = None
+    ) -> str:
+        if cancel_event is not None and cancel_event.is_set():
+            return 'CANCELLED'
         goal = _team_goal(self.memory)
         if goal:
             task_text = f'[Team mission: {goal}]\n\n{task_text}'

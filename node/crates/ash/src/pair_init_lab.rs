@@ -4,9 +4,11 @@
 //! Lab import files are optional leftovers; the live path uses RLB1 on the socket.
 
 use std::collections::HashMap;
+#[cfg(unix)]
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
+#[cfg(any(unix, windows))]
 use std::time::Duration;
 
 use raven_core::device_cert::{ensure_local_device_certificate, DeviceCertificate, DeviceRegistry};
@@ -16,7 +18,16 @@ use raven_core::identity::Identity;
 use raven_core::indexed_session_store::{
     AuthorizedEndpointDevice, EndpointOutboundKind, IndexedSessionRecordKey, IndexedSessionStore,
 };
-use raven_core::ipc::{default_socket_path, IpcRequest, IpcResponse, IPC_VERSION};
+#[cfg(unix)]
+use raven_core::ipc::default_socket_path;
+#[cfg(any(unix, windows))]
+use raven_core::ipc::IpcResponse;
+#[cfg(windows)]
+use raven_core::ipc::{
+    default_named_pipe_name,
+    windows_pipe::{verify_peer_user_and_session, PipePeer},
+};
+use raven_core::ipc::{IpcRequest, IPC_VERSION};
 use raven_core::lan_dispatch::{
     cache_peer_bundle, create_initiator_pair_init, find_confirmed_peer_session, parse_peer_offer,
     wrap_pair_init,
@@ -98,10 +109,6 @@ fn ipc_lan_dial(
     frames: &[Vec<u8>],
 ) -> Result<Vec<Vec<u8>>, String> {
     use base64::Engine;
-    let sock = default_socket_path(data_dir);
-    if !sock.exists() {
-        return Err("IPC socket missing — start raven-node service first".into());
-    }
     if lan_dial.trim().is_empty()
         || lan_dial.eq_ignore_ascii_case("local-listen")
         || lan_dial.eq_ignore_ascii_case("local")
@@ -123,6 +130,10 @@ fn ipc_lan_dial(
         use raven_core::ipc::{decode_response, encode_request};
         use std::io::Read;
         use std::os::unix::net::UnixStream;
+        let sock = default_socket_path(data_dir);
+        if !sock.exists() {
+            return Err("IPC socket missing — start raven-node service first".into());
+        }
         let mut stream = UnixStream::connect(&sock).map_err(|e| format!("ipc connect: {e}"))?;
         let _ = stream.set_read_timeout(Some(Duration::from_secs(50)));
         let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
@@ -145,27 +156,119 @@ fn ipc_lan_dial(
         let mut resp_frame = Vec::with_capacity(4 + n);
         resp_frame.extend_from_slice(&len_buf);
         resp_frame.extend_from_slice(&body);
-        match decode_response(&resp_frame).map_err(|e| format!("ipc decode: {e}"))? {
-            IpcResponse::LanDialResult { frames_b64, .. } => frames_b64
-                .iter()
-                .map(|s| {
-                    base64::engine::general_purpose::STANDARD
-                        .decode(s.trim())
-                        .or_else(|_| {
-                            base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(s.trim())
-                        })
-                        .map_err(|e| e.to_string())
-                })
-                .collect(),
-            IpcResponse::Error { code, message, .. } => Err(format!("ipc {code}: {message}")),
-            other => Err(format!("unexpected ipc: {other:?}")),
-        }
+        let response = decode_response(&resp_frame).map_err(|e| format!("ipc decode: {e}"))?;
+        decode_lan_dial_response(response)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        let response = windows_ipc_request(data_dir, &req, Duration::from_secs(50))?;
+        decode_lan_dial_response(response)
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (data_dir, lan_dial, expected_pub_hex, frames, req);
-        Err("IPC UDS unavailable".into())
+        Err("secure local IPC unavailable on this platform".into())
     }
+}
+
+#[cfg(any(unix, windows))]
+fn decode_lan_dial_response(response: IpcResponse) -> Result<Vec<Vec<u8>>, String> {
+    use base64::Engine;
+
+    match response {
+        IpcResponse::LanDialResult { frames_b64, .. } => frames_b64
+            .iter()
+            .map(|s| {
+                base64::engine::general_purpose::STANDARD
+                    .decode(s.trim())
+                    .or_else(|_| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(s.trim()))
+                    .map_err(|e| e.to_string())
+            })
+            .collect(),
+        IpcResponse::Error { code, message, .. } => Err(format!("ipc {code}: {message}")),
+        other => Err(format!("unexpected ipc: {other:?}")),
+    }
+}
+
+#[cfg(windows)]
+fn windows_ipc_request(
+    data_dir: &Path,
+    req: &IpcRequest,
+    response_timeout: Duration,
+) -> Result<IpcResponse, String> {
+    use raven_core::ipc::{decode_response, encode_request};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::windows::named_pipe::ClientOptions;
+
+    const ERROR_PIPE_BUSY: i32 = 231;
+    let pipe_name = default_named_pipe_name(data_dir)?;
+    let frame = encode_request(req).map_err(|e| format!("ipc encode: {e}"))?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("ipc runtime: {e}"))?;
+    runtime.block_on(async move {
+        let open_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        let mut stream = loop {
+            match ClientOptions::new().open(&pipe_name) {
+                Ok(stream) => break stream,
+                Err(e)
+                    if e.raw_os_error() == Some(ERROR_PIPE_BUSY)
+                        && tokio::time::Instant::now() < open_deadline =>
+                {
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+                Err(e) => {
+                    return Err(format!(
+                        "ipc named-pipe connect: {e} — start raven-node service first"
+                    ));
+                }
+            }
+        };
+        verify_peer_user_and_session(&stream, PipePeer::Server)
+            .map_err(|e| format!("ipc server authorization: {e}"))?;
+
+        tokio::time::timeout(Duration::from_secs(10), async {
+            stream
+                .write_all(&frame)
+                .await
+                .map_err(|e| format!("ipc write: {e}"))?;
+            stream.flush().await.map_err(|e| format!("ipc flush: {e}"))
+        })
+        .await
+        .map_err(|_| "ipc write timeout".to_string())??;
+
+        let response_frame = tokio::time::timeout(response_timeout, async {
+            let mut len_buf = [0u8; 4];
+            stream
+                .read_exact(&mut len_buf)
+                .await
+                .map_err(|e| format!("ipc read len: {e}"))?;
+            let n = u32::from_be_bytes(len_buf) as usize;
+            if n == 0 || n > raven_core::MAX_IPC_FRAME {
+                return Err("IPC_FRAME".to_string());
+            }
+            let mut response_frame = vec![0u8; 4 + n];
+            response_frame[..4].copy_from_slice(&len_buf);
+            stream
+                .read_exact(&mut response_frame[4..])
+                .await
+                .map_err(|e| format!("ipc read body: {e}"))?;
+            Ok::<Vec<u8>, String>(response_frame)
+        })
+        .await
+        .map_err(|_| "ipc read timeout".to_string())??;
+        decode_response(&response_frame).map_err(|e| format!("ipc decode: {e}"))
+    })
+}
+
+#[cfg(windows)]
+pub(super) fn windows_ipc_ping(data_dir: &Path) -> Result<IpcResponse, String> {
+    windows_ipc_request(
+        data_dir,
+        &IpcRequest::Ping { v: IPC_VERSION },
+        Duration::from_secs(10),
+    )
 }
 
 fn first_pair_response(frames: &[Vec<u8>]) -> Option<raven_core::PairResponse> {
