@@ -7,6 +7,7 @@ import json
 import os
 import uuid
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 import httpx
 import jwt
@@ -32,19 +33,63 @@ class CardVerificationError(RuntimeError):
     """Agent card/reply is missing or does not match the pinned peer."""
 
 
+class UnsafeBearerTransportError(ValueError):
+    """A Bearer credential would leave over an unauthenticated network path."""
+
+
 def resolve_bearer_token(token: str = '', token_file: str | Path = '') -> str:
-    """Resolve transport auth without requiring a secret in process argv."""
+    """Resolve an outbound peer credential, never an inbound server secret."""
     if token:
         return token
     path = str(token_file or os.environ.get('RDAP_BEARER_TOKEN_FILE', ''))
     if path:
         return read_secret_file(path)
-    env_token = os.environ.get('RDAP_BEARER_TOKEN', '') or os.environ.get(
-        'TEAM_AUTH_TOKEN', ''
+    return os.environ.get('RDAP_BEARER_TOKEN', '')
+
+
+def _canonical_endpoint(url: str) -> tuple[str, str, int, str]:
+    """Return a comparison key for an HTTP(S) endpoint or raise."""
+    raw = str(url)
+    if not raw or raw != raw.strip():
+        raise ValueError('endpoint URL must be non-empty with no outer whitespace')
+    decoded = unquote(raw)
+    if '\\' in decoded or any(
+        char.isspace() or ord(char) < 32 or ord(char) == 127 for char in decoded
+    ):
+        raise ValueError('endpoint URL contains unsafe whitespace/control characters')
+    try:
+        parsed = urlsplit(raw)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError(f'malformed endpoint URL: {exc}') from exc
+    scheme = parsed.scheme.lower()
+    if scheme not in {'http', 'https'}:
+        raise ValueError('endpoint URL scheme must be http or https')
+    if not parsed.netloc or not hostname:
+        raise ValueError('endpoint URL must include a hostname')
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError('endpoint URL credentials are not allowed')
+    if '%' in parsed.netloc:
+        raise ValueError('percent-encoding is not allowed in the endpoint authority')
+    if parsed.query or parsed.fragment:
+        raise ValueError('endpoint URL query strings/fragments are not allowed')
+    segments = unquote(parsed.path).split('/')
+    if any(segment in {'.', '..'} for segment in segments):
+        raise ValueError('endpoint URL path traversal is not allowed')
+    effective_port = port if port is not None else (443 if scheme == 'https' else 80)
+    return scheme, hostname.lower(), effective_port, parsed.path.rstrip('/')
+
+
+def require_secure_bearer_transport(url: str, token: str) -> None:
+    """Forbid every outbound Bearer credential over plaintext HTTP."""
+    scheme, _hostname, _port, _path = _canonical_endpoint(url)
+    if not token or scheme == 'https':
+        return
+    raise UnsafeBearerTransportError(
+        'refusing outbound Bearer credential over HTTP, including loopback; '
+        'use HTTPS or run the signed Raven flow without Bearer'
     )
-    if env_token:
-        return env_token
-    return ''
 
 
 def verify_card_signature(
@@ -52,6 +97,7 @@ def verify_card_signature(
     *,
     expected_address: str,
     expected_public_key: str,
+    expected_url: str = '',
     algorithms: list[str] | None = None,
 ) -> str:
     """Verify a card only against an already-pinned Raven identity."""
@@ -80,7 +126,37 @@ def verify_card_signature(
         algorithms=algorithms or ['EdDSA'],
     )
     verifier(card)
+    if expected_url:
+        expected_endpoint = _canonical_endpoint(expected_url)
+        signed_endpoints = {
+            _canonical_endpoint(str(interface.url))
+            for interface in card.supported_interfaces
+        }
+        if expected_endpoint not in signed_endpoints:
+            raise CardVerificationError(
+                'signed Agent Card does not advertise the contacted endpoint'
+            )
     return fingerprint
+
+
+def verify_agent_card_document(
+    document: dict,
+    *,
+    expected_address: str,
+    expected_public_key: str,
+    expected_url: str,
+):
+    """Parse and verify an Agent Card JSON document against an existing pin."""
+    from a2a.client.card_resolver import parse_agent_card
+
+    card = parse_agent_card(document)
+    verify_card_signature(
+        card,
+        expected_address=expected_address,
+        expected_public_key=expected_public_key,
+        expected_url=expected_url,
+    )
+    return card
 
 
 def _scalar(value) -> object:
@@ -167,18 +243,34 @@ async def send_task(
         raise ValueError('a sender Raven identity is required')
     validate_address_public_key(expected_peer_address, expected_peer_public_key)
     token = resolve_bearer_token(bearer_token, token_file)
+    require_secure_bearer_transport(url, token)
     headers = {'Authorization': f'Bearer {token}'} if token else None
     base_url = url.rstrip('/') + '/'
+    # Fetch the public card without credentials.  Only after its signature and
+    # advertised endpoint match the existing Raven pin may a Bearer token be
+    # attached to RPC traffic.
     async with httpx.AsyncClient(
-        timeout=httpx.Timeout(timeout, connect=10.0), headers=headers
-    ) as http:
-        card = await A2ACardResolver(httpx_client=http, base_url=base_url).get_agent_card()
+        timeout=httpx.Timeout(timeout, connect=10.0),
+        trust_env=False,
+    ) as public_http:
+        card = await A2ACardResolver(
+            httpx_client=public_http, base_url=base_url
+        ).get_agent_card()
         fp = verify_card_signature(
             card,
             expected_address=expected_peer_address,
             expected_public_key=expected_peer_public_key,
+            expected_url=url,
         )
-        print(f'* card signature verified (kid fingerprint: {fp[:16]}…)', flush=True)
+    for interface in card.supported_interfaces:
+        require_secure_bearer_transport(str(interface.url), token)
+    print(f'* card signature verified (kid fingerprint: {fp[:16]}…)', flush=True)
+
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(timeout, connect=10.0),
+        headers=headers,
+        trust_env=False,
+    ) as http:
         # share OUR long-timeout client with the SDK transport — local LLMs
         # can take minutes on first load
         factory = ClientFactory(ClientConfig(streaming=False, polling=False,

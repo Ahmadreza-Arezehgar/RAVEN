@@ -203,7 +203,244 @@ def unit_tests() -> None:
 
         check('signed tasks required by default', NodeConfig().require_signed_tasks is True)
 
+        import team_agents.memory as memory_mod
         from team_agents.memory import FileLockTimeout, TeamGitError, TeamMemory
+
+        # The live activity projection must stay bounded even when synced Git
+        # state is malicious. It also must not follow an event/writer link or
+        # expose arbitrary JSON fields and terminal control sequences.
+        recent_repo = tmp / 'recent-events-repo'
+        recent_repo.mkdir()
+        recent_memory = TeamMemory(recent_repo, auto_commit=False)
+        recent_memory.ensure_layout()
+        recent_base = recent_memory.team_dir / 'deltas'
+        alpha_events = recent_base / 'alpha'
+        beta_events = recent_base / 'beta'
+        alpha_events.mkdir(parents=True)
+        beta_events.mkdir()
+
+        def write_event(
+            directory: Path,
+            filename: str,
+            writer: str,
+            timestamp: float,
+            text: str,
+            **extra,
+        ) -> Path:
+            path = directory / filename
+            path.write_text(
+                json.dumps({
+                    'w': writer,
+                    'at': timestamp,
+                    'kind': 'event',
+                    'text': text,
+                    **extra,
+                }, ensure_ascii=False),
+                encoding='utf-8',
+            )
+            return path
+
+        write_event(alpha_events, 'event-001.json', 'alpha', 1, 'oldest')
+        write_event(
+            alpha_events,
+            'event-003.json',
+            'alpha',
+            3,
+            '\x1b[31mnewest\n\u202e' + ('x' * 500),
+            private='must not be projected',
+        )
+        write_event(beta_events, 'event-002.json', 'beta', 2, 'middle')
+
+        newest = recent_memory.recent_events(limit=2)
+        check(
+            'recent events preserve newest-first and limit semantics',
+            [event['at'] for event in newest] == [3.0, 2.0]
+            and recent_memory.recent_events(limit=0) == []
+            and recent_memory.recent_events(limit=-5) == [],
+            repr(newest),
+        )
+        projected = newest[0] if newest else {}
+        check(
+            'recent events expose only bounded terminal-safe fields',
+            set(projected) == {'w', 'at', 'kind', 'text'}
+            and len(projected.get('text', ''))
+            <= memory_mod.MAX_RECENT_EVENT_TEXT_CHARS
+            and all(
+                __import__('unicodedata').category(character)
+                not in {'Cc', 'Cf', 'Cs'}
+                for character in projected.get('text', '')
+            ),
+            repr(projected),
+        )
+
+        write_event(
+            alpha_events,
+            'event-oversized.json',
+            'alpha',
+            999,
+            'oversized-secret',
+            padding='z' * (memory_mod.MAX_RECENT_EVENT_FILE_BYTES + 1),
+        )
+        (alpha_events / 'event-deeply-nested.json').write_text(
+            ('[' * 1100) + '0' + (']' * 1100),
+            encoding='utf-8',
+        )
+        outside_event = tmp / 'outside-event.json'
+        outside_event.write_text(json.dumps({
+            'w': 'alpha',
+            'at': 1000,
+            'kind': 'event',
+            'text': 'linked-secret',
+        }), encoding='utf-8')
+
+        linked_file_supported = True
+        try:
+            (alpha_events / 'event-linked.json').symlink_to(outside_event)
+        except (NotImplementedError, OSError):
+            linked_file_supported = False
+
+        hardlink_supported = True
+        try:
+            os.link(outside_event, alpha_events / 'event-hardlinked.json')
+        except (NotImplementedError, OSError):
+            hardlink_supported = False
+
+        outside_writer = tmp / 'outside-writer'
+        outside_writer.mkdir()
+        write_event(
+            outside_writer,
+            'event-secret.json',
+            'linked-writer',
+            1001,
+            'writer-link-secret',
+        )
+        linked_writer_supported = True
+        try:
+            (recent_base / 'linked-writer').symlink_to(
+                outside_writer,
+                target_is_directory=True,
+            )
+        except (NotImplementedError, OSError):
+            linked_writer_supported = False
+
+        link_checked = recent_memory.recent_events(limit=100)
+        link_texts = {event['text'] for event in link_checked}
+        check(
+            'recent events reject malformed, oversized, linked and hardlinked input',
+            'oversized-secret' not in link_texts
+            and (not linked_file_supported or 'linked-secret' not in link_texts)
+            and (not hardlink_supported or 'linked-secret' not in link_texts)
+            and (
+                not linked_writer_supported
+                or 'writer-link-secret' not in link_texts
+            ),
+            repr(link_checked),
+        )
+
+        # Exercise every independent scan budget with small patched ceilings;
+        # the counting iterator raises if recent_events asks the filesystem for
+        # even one entry beyond its declared global/per-directory bounds.
+        from unittest import mock
+
+        bounded_repo = tmp / 'bounded-events-repo'
+        bounded_repo.mkdir()
+        bounded_memory = TeamMemory(bounded_repo, auto_commit=False)
+        bounded_memory.ensure_layout()
+        bounded_base = bounded_memory.team_dir / 'deltas'
+        for writer_number in range(6):
+            writer_name = f'writer-{writer_number}'
+            writer_dir = bounded_base / writer_name
+            writer_dir.mkdir(parents=True)
+            for event_number in range(8):
+                write_event(
+                    writer_dir,
+                    f'event-{event_number:03d}.json',
+                    writer_name,
+                    writer_number * 100 + event_number,
+                    'y' * 80,
+                )
+
+        real_scandir = os.scandir
+        real_stable_read = memory_mod._read_stable_regular_file
+        scanned_total = 0
+        scanned_by_path: dict[str, int] = {}
+        scan_calls: list[str] = []
+        stable_read_calls = 0
+        stable_read_bytes = 0
+
+        class CountingScandir:
+            def __init__(self, path) -> None:
+                self.path = os.path.normcase(os.path.abspath(os.fspath(path)))
+                self.inner = real_scandir(path)
+                scan_calls.append(self.path)
+
+            def __enter__(self):
+                self.inner.__enter__()
+                return self
+
+            def __exit__(self, *args):
+                return self.inner.__exit__(*args)
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                nonlocal scanned_total
+                entry = next(self.inner)
+                scanned_total += 1
+                scanned_by_path[self.path] = scanned_by_path.get(self.path, 0) + 1
+                if scanned_total > 10:
+                    raise AssertionError('recent event global scan exceeded bound')
+                if (
+                    self.path != os.path.normcase(os.path.abspath(bounded_base))
+                    and scanned_by_path[self.path] > 3
+                ):
+                    raise AssertionError('recent event writer scan exceeded bound')
+                return entry
+
+        def counted_stable_read(*args, **kwargs):
+            nonlocal stable_read_calls, stable_read_bytes
+            stable_read_calls += 1
+            payload, consumed = real_stable_read(*args, **kwargs)
+            stable_read_bytes += consumed
+            if stable_read_calls > 5 or stable_read_bytes > 400:
+                raise AssertionError('recent event file/read budget exceeded')
+            return payload, consumed
+
+        with (
+            mock.patch.multiple(
+                memory_mod,
+                MAX_RECENT_EVENT_WRITERS=2,
+                MAX_RECENT_EVENT_DIRECTORY_ENTRIES=10,
+                MAX_RECENT_EVENT_ENTRIES_PER_WRITER=3,
+                MAX_RECENT_EVENT_FILES=5,
+                MAX_RECENT_EVENT_FILE_BYTES=256,
+                MAX_RECENT_EVENT_TOTAL_BYTES=400,
+                MAX_RECENT_EVENTS_LIMIT=3,
+            ),
+            mock.patch.object(memory_mod.os, 'scandir', CountingScandir),
+            mock.patch.object(
+                memory_mod,
+                '_read_stable_regular_file',
+                counted_stable_read,
+            ),
+        ):
+            bounded_events = bounded_memory.recent_events(limit=10_000)
+
+        bounded_base_key = os.path.normcase(os.path.abspath(bounded_base))
+        writer_scan_calls = [path for path in scan_calls if path != bounded_base_key]
+        check(
+            'recent event scan enforces writer/entry/file/byte/output ceilings',
+            scanned_total <= 10
+            and len(writer_scan_calls) <= 2
+            and all(scanned_by_path[path] <= 3 for path in writer_scan_calls)
+            and stable_read_calls <= 5
+            and stable_read_bytes <= 400
+            and len(bounded_events) <= 3,
+            f'entries={scanned_total} writers={len(writer_scan_calls)} '
+            f'files={stable_read_calls} bytes={stable_read_bytes} '
+            f'output={len(bounded_events)}',
+        )
 
         # Automatic memory sync must never sweep unrelated staged, unstaged or
         # private runtime files into the commit it pushes.
@@ -916,6 +1153,81 @@ print('import-without-fcntl-ok')
         auth_card = build_agent_card(auth_cfg, auth_app.state.raven)
         check('Bearer advertised only when configured', bool(auth_card.security_schemes))
 
+        async def exercise_bearer_middleware() -> dict[str, int]:
+            transport = httpx.ASGITransport(app=auth_app)
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url='http://asgi.test',
+            ) as client:
+                public_card = await client.get('/.well-known/agent-card.json')
+                missing = await client.get('/health')
+                wrong = await client.get(
+                    '/health',
+                    headers={'Authorization': 'Bearer wrong'},
+                )
+                accepted = await client.get(
+                    '/health',
+                    headers={'Authorization': 'Bearer secret'},
+                )
+                activity = await client.get(
+                    '/raven/activity',
+                    headers={'Authorization': 'Bearer secret'},
+                )
+            return {
+                'card': public_card.status_code,
+                'missing': missing.status_code,
+                'wrong': wrong.status_code,
+                'accepted': accepted.status_code,
+                'activity': activity.status_code,
+            }
+
+        bearer_statuses = asyncio.run(exercise_bearer_middleware())
+        check(
+            'Bearer middleware is enforced independently with ASGI transport',
+            bearer_statuses == {
+                'card': 200,
+                'missing': 401,
+                'wrong': 401,
+                'accepted': 200,
+                'activity': 200,
+            },
+            repr(bearer_statuses),
+        )
+
+        unauth_activity_app = build_app(
+            NodeConfig(repo_path=tmp / 'activity-without-auth')
+        )
+
+        async def exercise_disabled_activity() -> int:
+            transport = httpx.ASGITransport(app=unauth_activity_app)
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url='http://asgi.test',
+            ) as client:
+                response = await client.get('/raven/activity')
+                return response.status_code
+
+        check(
+            'remote activity fails closed without configured Bearer auth',
+            asyncio.run(exercise_disabled_activity()) == 403,
+        )
+
+        from team_agents.client import (
+            UnsafeBearerTransportError,
+            require_secure_bearer_transport,
+        )
+
+        try:
+            require_secure_bearer_transport('http://127.0.0.1:9999', 'secret')
+            plaintext_bearer_rejected = False
+        except UnsafeBearerTransportError:
+            plaintext_bearer_rejected = True
+        require_secure_bearer_transport('https://agent.example', 'secret')
+        check(
+            'outbound Bearer requires HTTPS even for loopback',
+            plaintext_bearer_rejected,
+        )
+
         # The SDK's stock in-memory task store is unbounded. Verify our
         # replacement's copy semantics, global count/byte bound, terminal-first
         # eviction, active-task protection and deterministic idle TTL.
@@ -1604,17 +1916,14 @@ print('import-without-fcntl-ok')
 
 
 # ---------------------------------------------------------- network --------
-def wait_health(
-    url: str, proc: subprocess.Popen, token: str = '', timeout: float = 25.0
-) -> None:
+def wait_health(url: str, proc: subprocess.Popen, timeout: float = 25.0) -> None:
     deadline = time.time() + timeout
     while time.time() < deadline:
         if proc.poll() is not None:
             out, _ = proc.communicate()
             raise RuntimeError(f'node died early: rc={proc.returncode}\n{out[-1500:]}')
         try:
-            headers = {'Authorization': f'Bearer {token}'} if token else None
-            if httpx.get(url + '/health', timeout=2, headers=headers).status_code == 200:
+            if httpx.get(url + '/health', timeout=2).status_code == 200:
                 return
         except Exception:  # noqa: BLE001
             time.sleep(0.4)
@@ -1635,10 +1944,6 @@ def network_tests(pybin: str) -> None:
     peers_b = home / 'b' / 'peers.json'
     peers_b.write_text(json.dumps({alice.address: {'address': alice.address,
                                                    'pubkey': alice.public_hex}}))
-    token = 'rdap-selftest-bearer-secret'
-    token_file = home / 'bearer.token'
-    token_file.write_text(token)
-    token_file.chmod(0o600)
     env = {
         **__import__('os').environ,
         'TEAM_LLM_PROVIDER': 'echo',
@@ -1654,8 +1959,7 @@ def network_tests(pybin: str) -> None:
         return subprocess.Popen(
             [pybin, '-m', 'team_agents', 'serve', '--name', name,
              '--port', str(port), '--host', '127.0.0.1',
-             '--token-file', str(token_file), '--repo', str(home / repo),
-             '--peers', str(peers)],
+             '--repo', str(home / repo), '--peers', str(peers)],
             env={**e, 'PYTHONPATH': str(PKG_ROOT)},
             cwd=str(PKG_ROOT),
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -1669,11 +1973,8 @@ def network_tests(pybin: str) -> None:
     pb = spawn('node-b', port, 'b', peers_b)
     url = f'http://127.0.0.1:{port}'
     try:
-        wait_health(url, pb, token)
-        print('· Bearer-protected node healthy')
-
-        check('Bearer rejects unauthenticated health',
-              httpx.get(url + '/health', timeout=5).status_code == 401)
+        wait_health(url, pb)
+        print('· signed Raven node healthy (no plaintext Bearer)')
 
         card = httpx.get(url + '/.well-known/agent-card.json',
                          timeout=5).json()
@@ -1682,15 +1983,12 @@ def network_tests(pybin: str) -> None:
         check('streaming advertised', caps.get('streaming') is True)
         ext_uris = [e.get('uri') for e in caps.get('extensions', [])]
         check('experimental mailbox not advertised by default', not ext_uris, str(ext_uris))
-        check('security scheme declared',
-              card.get('securitySchemes', {}).get('bearer', {})
-              .get('httpAuthSecurityScheme', {})
-              .get('scheme') == 'Bearer')
+        check(
+            'plaintext signed node does not advertise Bearer',
+            not card.get('securitySchemes'),
+        )
 
-        ident = httpx.get(
-            url + '/raven/identity', timeout=5,
-            headers={'Authorization': f'Bearer {token}'},
-        ).json()
+        ident = httpx.get(url + '/raven/identity', timeout=5).json()
         check('identity endpoint exposes card_kid',
               ident.get('card_kid') == ident.get('fingerprint') + '-card')
 
@@ -1706,6 +2004,7 @@ def network_tests(pybin: str) -> None:
                     resolved,
                     expected_address=bob.address,
                     expected_public_key=bob.public_hex,
+                    expected_url=url,
                 )
                 check('client verified card JWS against pinned identity', bool(fp))
             out = await send_task(
@@ -1714,7 +2013,6 @@ def network_tests(pybin: str) -> None:
                 identity=alice,
                 expected_peer_address=bob.address,
                 expected_peer_public_key=bob.public_hex,
-                token_file=token_file,
             )
             check(
                 'signed task and signed reply executed end-to-end',
@@ -1722,27 +2020,13 @@ def network_tests(pybin: str) -> None:
                 out.splitlines()[0],
             )
 
-            try:
-                await send_task(
-                    url,
-                    'wrong token',
-                    identity=alice,
-                    expected_peer_address=bob.address,
-                    expected_peer_public_key=bob.public_hex,
-                    bearer_token='wrong',
-                )
-                check('official client propagates Bearer auth', False)
-            except Exception:  # noqa: BLE001
-                check('official client propagates Bearer auth', True)
-
             # A real unsigned JSON-RPC request must fail on a fresh/default node.
             import a2a.client.client as a2a_client_mod
             from a2a.client import ClientConfig, ClientFactory
             from a2a.types import Role
             from team_agents.client import _response_text
 
-            headers = {'Authorization': f'Bearer {token}'}
-            async with httpx.AsyncClient(timeout=30, headers=headers) as http:
+            async with httpx.AsyncClient(timeout=30) as http:
                 resolved = await A2ACardResolver(
                     httpx_client=http, base_url=url + '/'
                 ).get_agent_card()

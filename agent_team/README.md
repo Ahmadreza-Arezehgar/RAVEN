@@ -55,7 +55,17 @@ content-aware data-loss prevention: keep secrets outside the delegated project
 tree. Trusting a peer is not a project-write or shell grant unless the receiving
 operator also enables `--allow-shell`.
 
-Keep tokens out of argv. Prefer `--token-file`, `TEAM_AUTH_TOKEN_FILE`, or `RDAP_BEARER_TOKEN_FILE` with a user-private file.
+Keep tokens out of argv and use mode `0600` on POSIX. Inbound server secrets are
+`TEAM_AUTH_TOKEN[_FILE]`; outbound peer credentials are separately
+`RDAP_BEARER_TOKEN[_FILE]` or a command's `--token-file`. RDAP never falls back
+from an outbound credential to the local server secret. A Bearer credential is
+sent only over HTTPS; plaintext HTTP is rejected even for loopback because a
+different local process can take over a stopped node's port and replay its
+public signed card.
+Direct Raven peer traffic ignores process-wide HTTP proxy variables so a local
+Bearer cannot be redirected through a proxy. Commands that fan out to multiple
+peer identities refuse a single configured Bearer; invoke the command once per
+teammate with that destination's token file.
 
 ## Current carriers
 
@@ -77,21 +87,38 @@ RDAP currently creates its own key under `.team/keys` and does not submit or rec
 
 ## Run and verify
 
-Python 3.10 or newer is required.
+Python 3.10 or newer is required. For the simplest two-device LAN smoke, rely
+on Raven signatures and do not configure Bearer yet. On **each** device, choose
+the intended port, save its five-field invite, then leave the node running:
 
 ```bash
 cd agent_team
 ./rdap init
-./rdap invite
-./rdap trust 'RDAP1 <name> <rvn1-address> <ed25519-public-key>'
-./rdap start --token-file /path/to/private-token-file
+./rdap invite --port 9001
+./rdap start --port 9001
 ```
 
-From a trusted peer:
+Exchange the two invite lines through an authenticated channel. In another
+terminal, Alice trusts Bob's complete invite and Bob trusts Alice's. A supplied
+URL is saved only after the live signed Agent Card and Raven identity match the
+invite pin:
 
 ```bash
-./rdap ask 'perform this task' --name <name> --token-file /path/to/private-token-file
+# on Alice
+./rdap trust 'RDAP1 bob <bob-rvn1> <bob-ed25519> http://<bob-lan-ip>:9001'
+
+# on Bob
+./rdap trust 'RDAP1 alice <alice-rvn1> <alice-ed25519> http://<alice-lan-ip>:9001'
+
+# either direction now works
+./rdap ask 'perform this task' --name bob
 ```
+
+A four-field invite without a URL remains valid for offline pin setup, but it
+does not create a direct endpoint. Bearer-protected peers require a securely
+obtained **destination server's** token during `trust` and `ask`; use HTTPS
+for every authenticated endpoint. `discover` is public TOFU only and will never
+send a Bearer token to an untrusted mDNS endpoint.
 
 Run the authentication and real localhost A2A flow:
 

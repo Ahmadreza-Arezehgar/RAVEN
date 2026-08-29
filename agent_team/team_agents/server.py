@@ -136,7 +136,7 @@ def build_extended_card(config: NodeConfig, identity: RavenIdentity) -> AgentCar
 
 
 class BearerAuthMiddleware:
-    """ASGI middleware: Agent Card stays public; RPC requires Bearer token."""
+    """Keep the Agent Card public; protect every other HTTP route."""
 
     def __init__(self, app, token: str) -> None:
         self.app = app
@@ -318,6 +318,41 @@ async def raven_identity(request: Request) -> JSONResponse:
     return JSONResponse(payload)
 
 
+async def raven_activity(request: Request) -> JSONResponse:
+    """Return bounded recent events only on explicitly authenticated nodes."""
+    cfg: NodeConfig = request.app.state.config
+    if not cfg.auth_token:
+        # Event text can contain a prefix of an accepted task.  Signed-task mode
+        # authenticates A2A writes; it does not authenticate an unrelated GET.
+        # Keep monitoring disabled unless the operator configured transport auth.
+        return JSONResponse(
+            {'error': 'remote activity requires configured Bearer authentication'},
+            status_code=403,
+            headers={'Cache-Control': 'no-store'},
+        )
+    mem = request.app.state.memory
+    try:
+        limit = max(1, min(int(request.query_params.get('limit', 30)), 200))
+    except ValueError:
+        limit = 30
+    try:
+        # Filesystem projection is strictly bounded by TeamMemory, but it must
+        # still run off the ASGI event loop so a slow disk cannot stall RPC work.
+        events = await asyncio.wait_for(
+            asyncio.to_thread(mem.recent_events, limit), timeout=3.0
+        )
+    except TimeoutError:
+        return JSONResponse(
+            {'error': 'activity snapshot timed out'},
+            status_code=503,
+            headers={'Cache-Control': 'no-store'},
+        )
+    return JSONResponse(
+        {'events': events},
+        headers={'Cache-Control': 'no-store', 'Vary': 'Authorization'},
+    )
+
+
 def build_app(config: NodeConfig) -> Starlette:
     memory = TeamMemory(config.repo_path, auto_commit=config.auto_commit_memory)
     toolbox = ToolBox(config, memory)
@@ -350,6 +385,7 @@ def build_app(config: NodeConfig) -> Starlette:
         *create_jsonrpc_routes(handler, rpc_url='/'),
         Route('/health', health, methods=['GET']),
         Route('/raven/identity', raven_identity, methods=['GET']),
+        Route('/raven/activity', raven_activity, methods=['GET']),
     ]
     from contextlib import asynccontextmanager
 
@@ -364,6 +400,7 @@ def build_app(config: NodeConfig) -> Starlette:
     app.state.config = config
     app.state.brain = brain
     app.state.task_store = task_store
+    app.state.memory = memory
     app.add_middleware(
         RpcIngressLimitMiddleware,
         max_body_bytes=config.max_rpc_body_bytes,
@@ -623,31 +660,57 @@ def serve(config: NodeConfig) -> None:
     if sock is None:
         raise RuntimeError(f'no free port in {start}..{start + 19}')
 
-    app = build_app(config)
-    rav: RavenIdentity = app.state.raven
-    cfg: NodeConfig = app.state.config
-    print(  # noqa: T201
-        f'* [{cfg.name}] serving A2A on {cfg.host}:{cfg.port} '
-        f'(public url: {cfg.resolved_public_url()}, repo: {cfg.repo_path}, '
-        f'llm: {cfg.llm.provider}/{cfg.llm.model or "-"})',
-        flush=True,
-    )
-    if not cfg.require_signed_tasks:
-        print(
-            '! ! ! OPEN MODE: UNSIGNED TASKS ARE ACCEPTED. '
-            'Any reachable client may invoke this agent. ! ! !',
+    try:
+        app = build_app(config)
+        rav: RavenIdentity = app.state.raven
+        cfg: NodeConfig = app.state.config
+        print(  # noqa: T201
+            f'* [{cfg.name}] serving A2A on {cfg.host}:{cfg.port} '
+            f'(public url: {cfg.resolved_public_url()}, repo: {cfg.repo_path}, '
+            f'llm: {cfg.llm.provider}/{cfg.llm.model or "-"})',
             flush=True,
         )
-    if cfg.enable_experimental_mailbox:
-        print(
-            '! EXPERIMENTAL PLAINTEXT MAILBOX explicitly enabled; '
-            'do not treat it as confidential or production-ready.',
+        if not cfg.require_signed_tasks:
+            print(
+                '! ! ! OPEN MODE: UNSIGNED TASKS ARE ACCEPTED. '
+                'Any reachable client may invoke this agent. ! ! !',
+                flush=True,
+            )
+        if cfg.enable_experimental_mailbox:
+            print(
+                '! EXPERIMENTAL PLAINTEXT MAILBOX explicitly enabled; '
+                'do not treat it as confidential or production-ready.',
+                flush=True,
+            )
+        print(  # noqa: T201
+            f'* [{cfg.name}] raven id {rav.address} ({rav.display_address}) '
+            f'fp:{rav.fingerprint} signed-only={cfg.require_signed_tasks} '
+            f'peers={len(cfg.trusted_peers)}',
             flush=True,
         )
-    print(  # noqa: T201
-        f'* [{cfg.name}] raven id {rav.address} ({rav.display_address}) '
-        f'fp:{rav.fingerprint} signed-only={cfg.require_signed_tasks} '
-        f'peers={len(cfg.trusted_peers)}',
-        flush=True,
-    )
-    uvicorn.run(app, host=cfg.host, port=cfg.port, log_level='warning', fd=sock.fileno())
+
+        # Pass the already-bound socket object through Uvicorn's public Server
+        # API.  ``uvicorn.run(..., fd=...)`` reconstructs it with
+        # ``socket.fromfd``, which is POSIX-only.  Supplying ``sockets`` keeps
+        # the bind-before-run TOCTOU protection and lets Uvicorn use its native
+        # Windows socket-sharing path when necessary.  Pin a single worker:
+        # this in-process app/state cannot safely be multiplied by an ambient
+        # WEB_CONCURRENCY setting.
+        server = uvicorn.Server(
+            uvicorn.Config(
+                app,
+                host=cfg.host,
+                port=cfg.port,
+                log_level='warning',
+                workers=1,
+                backlog=128,
+            )
+        )
+        try:
+            server.run(sockets=[sock])
+        except KeyboardInterrupt:  # match the convenience uvicorn.run wrapper
+            pass
+    finally:
+        # Uvicorn normally takes ownership once startup succeeds; close is
+        # idempotent and also covers app/config/startup failures before that.
+        sock.close()
