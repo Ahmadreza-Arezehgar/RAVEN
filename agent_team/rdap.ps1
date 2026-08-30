@@ -2,6 +2,46 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 Set-Location -LiteralPath $PSScriptRoot
 
+$script:RdapNativeExitCode = 1
+
+function Invoke-RdapNative {
+    param(
+        [Parameter(Mandatory = $true)]
+        [String]$Executable,
+        [Parameter(Mandatory = $true)]
+        [String[]]$Arguments,
+        [Switch]$Quiet
+    )
+
+    $previousPreference = $ErrorActionPreference
+    $exitCode = 1
+    try {
+        # Windows PowerShell 5.1 can promote native stderr to a terminating
+        # NativeCommandError when the script-wide preference is Stop.  Native
+        # success/failure is defined by its process exit code instead.
+        $ErrorActionPreference = 'Continue'
+        $LASTEXITCODE = -1
+        if ($Quiet) {
+            & $Executable @Arguments 2>$null
+        }
+        else {
+            & $Executable @Arguments
+        }
+        $exitCode = [Int]$LASTEXITCODE
+    }
+    catch {
+        $exitCode = 1
+    }
+    finally {
+        $ErrorActionPreference = $previousPreference
+        $script:RdapNativeExitCode = $exitCode
+    }
+}
+
+$versionProbe = @(
+    '-c',
+    'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)'
+)
 $pythonCommand = $null
 $pythonPrefixArguments = @()
 $pythonCandidates = @(
@@ -12,13 +52,8 @@ foreach ($candidate in $pythonCandidates) {
     if ([String]::IsNullOrWhiteSpace($candidatePath)) {
         continue
     }
-    try {
-        & $candidatePath -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>$null
-    }
-    catch {
-        continue
-    }
-    if ($LASTEXITCODE -eq 0) {
+    Invoke-RdapNative -Executable $candidatePath -Arguments $versionProbe -Quiet
+    if ($script:RdapNativeExitCode -eq 0) {
         # Get-Command can return every python.exe on PATH.  Keep one verified
         # executable path; invoking the array's .Source property joins all
         # candidates into one invalid command string on Windows PowerShell.
@@ -36,13 +71,9 @@ if ($null -eq $pythonCommand) {
         if ([String]::IsNullOrWhiteSpace($candidatePath)) {
             continue
         }
-        try {
-            & $candidatePath -3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>$null
-        }
-        catch {
-            continue
-        }
-        if ($LASTEXITCODE -eq 0) {
+        $launcherProbe = @('-3') + $versionProbe
+        Invoke-RdapNative -Executable $candidatePath -Arguments $launcherProbe -Quiet
+        if ($script:RdapNativeExitCode -eq 0) {
             $pythonCommand = $candidatePath
             $pythonPrefixArguments = @('-3')
             break
@@ -64,8 +95,8 @@ if (Test-Path -LiteralPath $venvPath) {
     }
     $venvUsable = Test-Path -LiteralPath $venvPython -PathType Leaf
     if ($venvUsable) {
-        & $venvPython -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>$null
-        $venvUsable = ($LASTEXITCODE -eq 0)
+        Invoke-RdapNative -Executable $venvPython -Arguments $versionProbe -Quiet
+        $venvUsable = ($script:RdapNativeExitCode -eq 0)
     }
     if (-not $venvUsable) {
         $stamp = [DateTime]::UtcNow.ToString('yyyyMMddHHmmss')
@@ -80,8 +111,9 @@ if (Test-Path -LiteralPath $venvPath) {
 
 if (-not (Test-Path -LiteralPath $venvPath)) {
     Write-Host '* creating virtualenv...'
-    & $pythonCommand @pythonPrefixArguments -m venv $venvPath
-    if ($LASTEXITCODE -ne 0) {
+    $venvArguments = @($pythonPrefixArguments) + @('-m', 'venv', $venvPath)
+    Invoke-RdapNative -Executable $pythonCommand -Arguments $venvArguments
+    if ($script:RdapNativeExitCode -ne 0) {
         throw 'Python failed to create the RDAP virtualenv.'
     }
 }
@@ -99,16 +131,23 @@ if (Test-Path -LiteralPath $markerPath) {
     $installedHash = (Get-Content -LiteralPath $markerPath -Raw).Trim()
 }
 
-& $venvPython -c 'import a2a, uvicorn, starlette, cryptography, httpx, zeroconf' 2>$null
-$importsOk = ($LASTEXITCODE -eq 0)
+$importsOk = $false
+$importProbe = @(
+    '-c',
+    'import a2a, uvicorn, starlette, cryptography, httpx, zeroconf'
+)
+Invoke-RdapNative -Executable $venvPython -Arguments $importProbe -Quiet
+$importsOk = ($script:RdapNativeExitCode -eq 0)
 if ($lockHash -ne $installedHash -or -not $importsOk) {
     Write-Host '* installing verified dependencies...'
-    & $venvPython -m pip install --require-hashes -r $lockPath
-    if ($LASTEXITCODE -ne 0) {
+    $pipArguments = @('-m', 'pip', 'install', '--require-hashes', '-r', $lockPath)
+    Invoke-RdapNative -Executable $venvPython -Arguments $pipArguments
+    if ($script:RdapNativeExitCode -ne 0) {
         throw 'Hash-verified RDAP dependency installation failed.'
     }
     [IO.File]::WriteAllText($markerPath, "$lockHash`n")
 }
 
-& $venvPython (Join-Path $PSScriptRoot 'rdap.py') @args
-exit $LASTEXITCODE
+$rdapArguments = @((Join-Path $PSScriptRoot 'rdap.py')) + @($args)
+Invoke-RdapNative -Executable $venvPython -Arguments $rdapArguments
+exit $script:RdapNativeExitCode
