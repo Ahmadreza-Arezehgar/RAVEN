@@ -402,15 +402,23 @@ class GitRelay:
         for entry in candidates:
             path = Path(entry.path)
             try:
-                metadata = entry.stat(follow_symlinks=False)
-                if entry.is_symlink() or not stat.S_ISREG(metadata.st_mode):
+                # DirEntry.stat() leaves identity and link-count fields at
+                # zero on Windows; use a full lstat before descriptor pinning.
+                metadata = os.lstat(entry.path)
+                if (
+                    entry.is_symlink()
+                    or getattr(metadata, 'st_reparse_tag', 0)
+                    or not stat.S_ISREG(metadata.st_mode)
+                ):
                     raise ValueError('relay entry must be a regular file')
                 if metadata.st_nlink != 1:
                     raise ValueError('relay entry must not have multiple hard links')
                 if metadata.st_size > MAX_RELAY_ENVELOPE_BYTES:
                     raise ValueError('relay envelope exceeds the compiled byte limit')
-                flags = os.O_RDONLY | getattr(os, 'O_CLOEXEC', 0)
+                flags = os.O_RDONLY | getattr(os, 'O_BINARY', 0)
+                flags |= getattr(os, 'O_CLOEXEC', 0)
                 flags |= getattr(os, 'O_NOFOLLOW', 0)
+                flags |= getattr(os, 'O_NONBLOCK', 0)
                 descriptor = os.open(path, flags)
                 try:
                     opened = os.fstat(descriptor)

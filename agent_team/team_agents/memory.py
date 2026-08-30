@@ -1032,7 +1032,9 @@ class TeamMemory:
                     if not re.fullmatch(r'[A-Za-z0-9_.-]{1,40}', writer_name):
                         continue
                     try:
-                        writer_metadata = writer_entry.stat(follow_symlinks=False)
+                        # Windows DirEntry.stat() has zero identity/link-count
+                        # fields; lstat supplies metadata comparable to fstat.
+                        writer_metadata = os.lstat(writer_entry.path)
                         current_base = os.lstat(base)
                     except OSError:
                         continue
@@ -1071,9 +1073,7 @@ class TeamMemory:
                                 files += 1
 
                                 try:
-                                    event_metadata = event_entry.stat(
-                                        follow_symlinks=False
-                                    )
+                                    event_metadata = os.lstat(event_entry.path)
                                     current_writer = os.lstat(writer_path)
                                 except OSError:
                                     continue

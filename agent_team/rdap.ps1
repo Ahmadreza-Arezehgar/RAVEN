@@ -2,14 +2,56 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 Set-Location -LiteralPath $PSScriptRoot
 
-$pythonCommand = Get-Command python -CommandType Application -ErrorAction SilentlyContinue
-if ($null -eq $pythonCommand) {
-    throw 'Python 3.10 or newer is required and must be available as python.exe.'
+$pythonCommand = $null
+$pythonPrefixArguments = @()
+$pythonCandidates = @(
+    Get-Command python.exe -CommandType Application -All -ErrorAction SilentlyContinue
+)
+foreach ($candidate in $pythonCandidates) {
+    $candidatePath = $candidate.Path
+    if ([String]::IsNullOrWhiteSpace($candidatePath)) {
+        continue
+    }
+    try {
+        & $candidatePath -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>$null
+    }
+    catch {
+        continue
+    }
+    if ($LASTEXITCODE -eq 0) {
+        # Get-Command can return every python.exe on PATH.  Keep one verified
+        # executable path; invoking the array's .Source property joins all
+        # candidates into one invalid command string on Windows PowerShell.
+        $pythonCommand = $candidatePath
+        break
+    }
 }
 
-& $pythonCommand.Source -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)'
-if ($LASTEXITCODE -ne 0) {
-    throw 'Python 3.10 or newer is required.'
+if ($null -eq $pythonCommand) {
+    $launcherCandidates = @(
+        Get-Command py.exe -CommandType Application -All -ErrorAction SilentlyContinue
+    )
+    foreach ($candidate in $launcherCandidates) {
+        $candidatePath = $candidate.Path
+        if ([String]::IsNullOrWhiteSpace($candidatePath)) {
+            continue
+        }
+        try {
+            & $candidatePath -3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>$null
+        }
+        catch {
+            continue
+        }
+        if ($LASTEXITCODE -eq 0) {
+            $pythonCommand = $candidatePath
+            $pythonPrefixArguments = @('-3')
+            break
+        }
+    }
+}
+
+if ($null -eq $pythonCommand) {
+    throw 'Python 3.10 or newer is required via python.exe or py.exe.'
 }
 
 $venvPath = Join-Path $PSScriptRoot '.venv'
@@ -38,7 +80,7 @@ if (Test-Path -LiteralPath $venvPath) {
 
 if (-not (Test-Path -LiteralPath $venvPath)) {
     Write-Host '* creating virtualenv...'
-    & $pythonCommand.Source -m venv $venvPath
+    & $pythonCommand @pythonPrefixArguments -m venv $venvPath
     if ($LASTEXITCODE -ne 0) {
         throw 'Python failed to create the RDAP virtualenv.'
     }

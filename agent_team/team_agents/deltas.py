@@ -144,8 +144,14 @@ class DeltaStore:
             try:
                 if not writer_entry.is_dir(follow_symlinks=False):
                     continue
-                writer_metadata = writer_entry.stat(follow_symlinks=False)
-                if not stat.S_ISDIR(writer_metadata.st_mode):
+                # DirEntry.stat() deliberately reports st_dev/st_ino/st_nlink
+                # as zero on Windows.  A real lstat is required for the
+                # identity and hardlink checks below.
+                writer_metadata = os.lstat(writer_entry.path)
+                if (
+                    getattr(writer_metadata, 'st_reparse_tag', 0)
+                    or not stat.S_ISDIR(writer_metadata.st_mode)
+                ):
                     continue
                 remaining_entries = max(
                     0, MAX_DELTA_DIRECTORY_ENTRIES - entries_seen
@@ -177,17 +183,20 @@ class DeltaStore:
                 ):
                     return []
                 try:
-                    metadata = file_entry.stat(follow_symlinks=False)
+                    metadata = os.lstat(file_entry.path)
                     if (
                         not stat.S_ISREG(metadata.st_mode)
+                        or getattr(metadata, 'st_reparse_tag', 0)
                         or metadata.st_nlink != 1
                         or metadata.st_size > MAX_DELTA_FILE_BYTES
                     ):
                         continue
                     if metadata.st_size > MAX_DELTA_TOTAL_BYTES - bytes_read:
                         return []
-                    flags = os.O_RDONLY | getattr(os, 'O_CLOEXEC', 0)
+                    flags = os.O_RDONLY | getattr(os, 'O_BINARY', 0)
+                    flags |= getattr(os, 'O_CLOEXEC', 0)
                     flags |= getattr(os, 'O_NOFOLLOW', 0)
+                    flags |= getattr(os, 'O_NONBLOCK', 0)
                     descriptor = os.open(file_entry.path, flags)
                     try:
                         opened = os.fstat(descriptor)
