@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# §59 Final Serverless Proof — automatable software harness.
+# §59 developer aggregate — software regression harness.
 #
-# Records every step that can run without Apple Developer certs, hired auditors,
-# or physical phones the operator must drive. Hardware leftovers are listed in
-# the SUMMARY (BLOCKED_HARDWARE) — this script does NOT claim full §59 DoD.
+# Aggregates the named debug/integration checks below. It does not claim to
+# cover every automatable release step or full §59 DoD. Hardware/human
+# leftovers are listed in the generated BLOCKED.md.
 #
 # Artifacts (no secrets): node/proof_artifacts/<run-id>/
 # Usage: bash scripts/final_serverless_proof.sh
@@ -12,7 +12,15 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 NODE_ROOT="$REPO/node"
+GIT_SHA="$(git -C "$REPO" rev-parse --verify HEAD)"
+SOURCE_TREE_STATE="clean"
+if [[ -n "$(git -C "$REPO" status --porcelain --untracked-files=normal --ignore-submodules=none)" ]]; then
+  SOURCE_TREE_STATE="dirty"
+fi
 source "${HOME}/.cargo/env" 2>/dev/null || true
+# This is an isolated Debug/lab harness. Keep all generated identities inside
+# its mktemp profile and avoid macOS Keychain per-binary ACL prompts/hangs.
+export RAVEN_IDENTITY_BACKEND=locked-file
 
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 ART="$NODE_ROOT/proof_artifacts/$RUN_ID"
@@ -70,6 +78,8 @@ trap cleanup EXIT
 log "=== Raven §59 Final Serverless Proof (automated) ==="
 log "run_id=$RUN_ID"
 log "repo=$REPO"
+log "git_sha=$GIT_SHA"
+log "source_tree_state=$SOURCE_TREE_STATE"
 log "artifacts=$ART"
 log "host=$(uname -srm)"
 log "date_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -78,7 +88,7 @@ log "date_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 step_begin "00_build"
 (
   cd "$NODE_ROOT"
-  cargo build -p raven-node -p ash -p raven-swarm --features raven-node/unsafe-demo-crypto -q
+  cargo build --locked -p raven-node -p ash -p raven-swarm --features raven-node/unsafe-demo-crypto -q
 ) >"$STEP_LOG" 2>&1 && step_ok || step_fail "cargo build"
 BIN="$NODE_ROOT/target/debug"
 NODE="$BIN/raven-node"
@@ -86,7 +96,7 @@ ASH="$BIN/ash"
 SWARM="$BIN/raven-swarm"
 [[ -x "$NODE" && -x "$ASH" && -x "$SWARM" ]] || { log "binaries missing"; exit 1; }
 
-WORKDIR="${TMPDIR:-/tmp}/raven-s59-$RUN_ID"
+WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/raven-s59.XXXXXX")"
 mkdir -p "$WORKDIR"/{terminal,mobile,bridge,store}
 
 # ---------------------------------------------------------------------------
@@ -320,7 +330,7 @@ step_begin "10_duplicate_suppression"
 (
   set -e
   # Re-run bridge_v1 integration tests (dedup cases) + cargo filter
-  (cd "$NODE_ROOT" && cargo test -p raven-core --test bridge_v1 -- --nocapture) \
+  (cd "$NODE_ROOT" && cargo test --locked -p raven-core --test bridge_v1 -- --nocapture) \
     | tee "$ART/logs/bridge_v1_dedup.log"
   grep -qiE 'ok|passed|test result: ok' "$ART/logs/bridge_v1_dedup.log"
 ) >"$STEP_LOG" 2>&1 && step_ok || step_fail "dedup"
@@ -387,12 +397,22 @@ step_begin "16_hardware_human_gaps_documented"
 ## BLOCKED_HARDWARE
 - Physical 3-phone BLE mesh with real radios
 - Real CGNAT / multi-NAT / DCUtR hole-punch on public Internet
-- Headless desktop CoreBluetooth GATT radio (see feature `corebluetooth` stub)
-- Fresh Linux/Windows install on a clean machine (release tarball prep exists; operator must install)
+- Physical protected-store send/decrypt/authenticated-ACK continuity on each claimed OS
+
+## BLOCKED_PLATFORM_RELEASE_GATES
+- Linux Release fresh identity/install remains fail-closed pending approval of the
+  prompt-free protected Secret Service backend; locked-file is Debug/CI only.
+- Windows release still requires a native clean two-profile PairInit, indexed
+  message, decrypt, and authenticated-ACK run with DPAPI continuity.
+- macOS requires a signed physical-Mac test proving the separate `raven` and
+  `raven-node` executables share one Keychain identity without ACL prompts,
+  hangs, or identity split.
+- Headless desktop CoreBluetooth GATT remains an implementation/hardware gate
+  (the current `corebluetooth` path is a stub, not a physical BLE proof).
 
 ## BLOCKED_HUMAN
-- Apple notarization / Developer ID signing
-- Windows Authenticode / MSI store signing
+- Apple Developer ID signing/notarization, only after the Keychain handoff gate
+- Windows Authenticode/MSI signing, only after the native two-profile gate
 - Hired external protocol/crypto auditors (packet ready: docs/EXTERNAL_REVIEW_PACKET.md)
 - Live credential rotation decisions from secret scan
 
@@ -407,6 +427,8 @@ EOF
   echo
   echo "- **run_id:** \`$RUN_ID\`"
   echo "- **utc:** $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  echo "- **git_sha:** \`$GIT_SHA\`"
+  echo "- **source_tree_state:** \`$SOURCE_TREE_STATE\`"
   echo "- **pass:** $PASS"
   echo "- **fail:** $FAIL"
   echo "- **skip:** $SKIP"
@@ -414,7 +436,7 @@ EOF
   echo
   echo "## Claim"
   echo
-  echo '**IMPLEMENTATION + PROOF HARNESS COMPLETE** for automatable §59 software steps.'
+  echo '**Developer aggregate checks passed** for the recorded source state and host.'
   echo
   echo 'This is **not** marketing READY / full §59 DoD. Hardware and human gates remain.'
   echo

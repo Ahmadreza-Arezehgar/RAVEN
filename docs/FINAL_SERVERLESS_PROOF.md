@@ -1,12 +1,15 @@
-# Final Serverless Proof (§59) — automated harness
+# §59 developer aggregate — automated regression harness
 
 ## What this is
 
-`scripts/final_serverless_proof.sh` exercises every **software-automatable** step of the Master Checklist §59 Final Serverless Proof on a developer machine:
+`scripts/final_serverless_proof.sh` aggregates the software checks listed below
+on a developer machine. Some steps intentionally use debug-only
+`unsafe-demo-crypto`, mock transports, or loopback peers, so the harness must
+not be described as production ATSAM or end-to-end release proof:
 
 | §59 intent | How the harness covers it |
 |---|---|
-| Fresh install / identity | Ephemeral data-dirs + `ash init` / `whoami` |
+| Fresh profile / identity | Ephemeral data-dirs + `ash init` / `whoami` (not an OS installer test) |
 | Contact add + verify | `ash contact add --verify-fp` + `contact verify` |
 | Offline recipient | Bridge store-carry while mobile offline, then join |
 | Encrypted locally / queue | Sealed send; bridge logs must not contain plaintext |
@@ -27,15 +30,22 @@ bash scripts/final_serverless_proof.sh
 cat node/proof_artifacts/LATEST/SUMMARY.md
 ```
 
-Re-run until `SUMMARY.md` says `AUTOMATED_PROOF_GREEN`.
+`AUTOMATED_PROOF_GREEN` means only that every named harness step passed for the
+recorded Git commit, source-tree state (`clean` or `dirty`), and host. A dirty
+run is not reproducible from the commit alone. Always inspect the generated
+per-step logs and `BLOCKED.md`; do not copy a prior local `LATEST` result to a
+newer commit.
 
 ## Claim language (honest)
 
-When green:
+When green, the accurate claim is:
 
-> **IMPLEMENTATION + PROOF HARNESS COMPLETE** for automatable §59 software steps.
+> **Developer aggregate checks passed** for the source state and host recorded
+> in this run.
 
-Still **not** marketing READY / full §59 DoD. See each run’s `BLOCKED.md`.
+This is still **not** marketing READY / full §59 DoD, production ATSAM proof,
+physical multi-device evidence, or an external audit. See each run's
+`BLOCKED.md`.
 
 ## Related
 

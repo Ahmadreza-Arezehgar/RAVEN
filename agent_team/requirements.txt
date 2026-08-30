@@ -1,3 +1,5 @@
+# Human-maintained input constraints. Runtime/CI installs must use the
+# generated, hash-verified requirements.lock.txt instead.
 a2a-sdk[http-server]>=1.1.2,<2
 cryptography>=44
 httpx>=0.28

@@ -1,0 +1,21 @@
+RAVEN THIRD-PARTY LICENSES AND NOTICES
+======================================
+
+This file is generated from the Cargo.lock dependency graph by cargo-about.
+It is a conservative, target-filtered workspace superset: it can include a
+dependency of an unpublished lab workspace member even when that dependency is
+not linked into these default-feature binaries. Raven's own license is
+distributed separately as LICENSE.
+
+{{#each licenses}}
+-------------------------------------------------------------------------------
+License: {{name}}
+SPDX identifier: {{id}}
+Used by:
+{{#each used_by}}
+- {{crate.name}} {{crate.version}}
+{{/each}}
+
+{{{text}}}
+
+{{/each}}

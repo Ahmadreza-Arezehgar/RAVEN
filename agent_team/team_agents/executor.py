@@ -65,7 +65,7 @@ class TeamAgentExecutor(AgentExecutor):
         self.require_signed = require_signed
         self.identity = identity
         self.replay = ReplayCache(path=config.replay_cache_path)
-        self._cancel_events: dict[str, asyncio.Event] = {}
+        self._cancel_events: dict[tuple[str, str], asyncio.Event] = {}
 
     def current_peers(self) -> dict[str, str]:
         """Hot-reload trust list so new teammates work without restart."""
@@ -101,19 +101,33 @@ class TeamAgentExecutor(AgentExecutor):
         # A configured trust/revocation-policy failure is also an auth failure and
         # must follow the same mutation-free rejection path.
         try:
-            text = context.get_user_input().strip()
+            wire_text = context.get_user_input()
+            if not isinstance(wire_text, str):
+                raise TypeError('A2A user input must be text')
             meta = extract_raven_meta(context)
-            ok, reason = verify_delegation(
-                meta,
-                text,
-                trusted_peers=self.current_peers(),
-                required=self.require_signed,
-                revoked=self.current_revocations(),
-                replay=self.replay,
-                expected_recipient=self.identity.address if self.identity else '',
-                expected_task_id=signed_task_id,
-                expected_kind='task',
-            )
+
+            def authorize() -> tuple[bool, str]:
+                transport_owner = str(context.call_context.user.user_name)
+                # Reject a forwarded envelope before signature verification
+                # records it in the once-only replay cache. Otherwise another
+                # trusted peer that sees Alice's signed body could consume the
+                # signature under Bob's HTTP principal and deny Alice's request.
+                if meta and transport_owner != str(meta.get('sender', '')):
+                    return False, 'transport/delegation sender mismatch'
+                ok, reason = verify_delegation(
+                    meta,
+                    wire_text,
+                    trusted_peers=self.current_peers(),
+                    required=self.require_signed,
+                    revoked=self.current_revocations(),
+                    replay=self.replay,
+                    expected_recipient=self.identity.address if self.identity else '',
+                    expected_task_id=signed_task_id,
+                    expected_kind='task',
+                )
+                return ok, reason
+
+            ok, reason = await asyncio.to_thread(authorize)
         except Exception:  # noqa: BLE001
             # Do not reflect policy internals or attacker-controlled input.  More
             # importantly, this request path must not write TeamMemory/Git or a
@@ -139,6 +153,10 @@ class TeamAgentExecutor(AgentExecutor):
             )
             return
 
+        # Whitespace is part of the signed wire payload. Normalize only after
+        # successful verification so client and server hash identical bytes.
+        text = wire_text.strip()
+
         if task is None:
             task = Task(
                 id=task_id,
@@ -148,17 +166,24 @@ class TeamAgentExecutor(AgentExecutor):
             await event_queue.enqueue_event(task)
 
         cancel_event = asyncio.Event()
-        self._cancel_events[task_id] = cancel_event
+        owner = str(context.call_context.user.user_name)
+        self._cancel_events[(owner, task_id)] = cancel_event
         if signed_task_id:
-            self._cancel_events[signed_task_id] = cancel_event
+            self._cancel_events[(owner, signed_task_id)] = cancel_event
 
         try:
             await updater.submit()
             await updater.start_work()
-            self.memory.log_event(self.config.name, f'incoming task: {text[:120]}')
+            await asyncio.to_thread(
+                self.memory.log_event,
+                self.config.name,
+                f'incoming task: {text[:120]}',
+            )
             if meta:
-                self.memory.log_event(
-                    self.config.name, f'delegation verified: {meta["sender"]}'
+                await asyncio.to_thread(
+                    self.memory.log_event,
+                    self.config.name,
+                    f'delegation verified: {meta["sender"]}',
                 )
 
             await updater.update_status(
@@ -182,11 +207,17 @@ class TeamAgentExecutor(AgentExecutor):
                 [Part(text=answer)], name='result', metadata=reply_metadata
             )
             await updater.complete()
-            self.memory.log_event(self.config.name, f'task done: {task_id[:8]}')
+            await asyncio.to_thread(
+                self.memory.log_event,
+                self.config.name,
+                f'task done: {task_id[:8]}',
+            )
         except Exception as exc:  # noqa: BLE001
             logger.exception('agent task failed')
-            self.memory.log_event(
-                self.config.name, f'task FAILED ({task_id[:8]}): {exc}'
+            await asyncio.to_thread(
+                self.memory.log_event,
+                self.config.name,
+                f'task FAILED ({task_id[:8]}): {exc}',
             )
             await updater.failed(
                 message=updater.new_agent_message(
@@ -194,25 +225,39 @@ class TeamAgentExecutor(AgentExecutor):
                 )
             )
         finally:
-            self._cancel_events.pop(task_id, None)
+            self._cancel_events.pop((owner, task_id), None)
             if signed_task_id:
-                self._cancel_events.pop(signed_task_id, None)
+                self._cancel_events.pop((owner, signed_task_id), None)
             # Only authenticated work is allowed to move shared state across
             # machines.  Rejections return before entering this try/finally.
             try:
-                self.memory.sync()
+                await asyncio.to_thread(self.memory.sync)
             except Exception:  # noqa: BLE001
                 pass
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         task = context.current_task
+        caller = str(context.call_context.user.user_name)
+        if (
+            not caller
+            or (
+                self.require_signed
+                and not context.call_context.user.is_authenticated
+            )
+        ):
+            raise PermissionError('Raven cancellation authorization failed')
         candidates = [
             str(context.task_id or ''),
             str(task.id if task else ''),
             str(getattr(getattr(context, 'message', None), 'message_id', '') or ''),
         ]
         for candidate in candidates:
-            event = self._cancel_events.get(candidate)
+            event = self._cancel_events.get((caller, candidate))
             if event is not None:
                 event.set()
-                return
+                break
+        if task is None:
+            raise ValueError('cannot cancel a missing task')
+        # a2a-sdk cancels/closes its producer queue before invoking this hook.
+        # RavenRequestHandler persists and returns the terminal canceled Task
+        # after the SDK has drained, avoiding a racy event enqueue here.

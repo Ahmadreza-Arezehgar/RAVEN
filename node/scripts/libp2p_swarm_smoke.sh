@@ -5,7 +5,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="$ROOT/target/debug"
 SWARM="$BIN/raven-swarm"
-WORKDIR="${TMPDIR:-/tmp}/raven-libp2p-$$"
+WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/raven-libp2p.XXXXXX")"
 mkdir -p "$WORKDIR/a" "$WORKDIR/b"
 cleanup() {
   [[ -n "${SPID:-}" ]] && kill "$SPID" 2>/dev/null || true
@@ -13,7 +13,7 @@ cleanup() {
 }
 trap cleanup EXIT
 source "${HOME}/.cargo/env" 2>/dev/null || true
-[[ -x "$SWARM" ]] || (cd "$ROOT" && cargo build -p raven-swarm -q)
+[[ -x "$SWARM" ]] || (cd "$ROOT" && cargo build --locked -p raven-swarm -q)
 
 # §30 manual-peer-only bootstrap config on dialer (no Raven-owned required)
 "$SWARM" bootstrap-init \

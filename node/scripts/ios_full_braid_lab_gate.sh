@@ -88,8 +88,10 @@ echo "IPHONEOS_DEPLOYMENT_TARGET=$IOS_DEPLOYMENT_TARGET" >&2
 build_rust_target() {
   local target="$1"
   local log
+  local rc
   log="$(mktemp)"
   echo "--- cargo build --target $target (ios min $IOS_DEPLOYMENT_TARGET) ---" >&2
+  set +e
   (
     cd "$NODE"
     export IPHONEOS_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET"
@@ -110,13 +112,20 @@ build_rust_target() {
     CARGO_TARGET_DIR="$CARGO_TARGET_DIR" \
       cargo build -p raven-fb-ffi --target "$target" >"$log" 2>&1
   )
+  rc=$?
+  set -e
+  cat "$log" >&2
+  if [[ "$rc" -ne 0 ]]; then
+    echo "Rust FFI build failed for $target (exit $rc)" >&2
+    rm -f "$log"
+    return "$rc"
+  fi
   if rg -n "built for newer iOS|was built for newer" "$log"; then
     echo "Rust archive targets newer iOS than app ($IOS_DEPLOYMENT_TARGET):" >&2
     cat "$log" >&2
     rm -f "$log"
     exit 1
   fi
-  cat "$log" >&2
   rm -f "$log"
 }
 

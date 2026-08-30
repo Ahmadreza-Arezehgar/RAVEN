@@ -76,6 +76,15 @@ cargo test -p raven-core --test bridge_v1          # cases 1–9
 | Per-peer pending | 64 |
 | Per-peer enqueues / 60s | 30 |
 | Per-peer bytes / 60s | 256 KiB |
+| Active relay replay records | 4,096 (fail closed at capacity) |
+| Maximum remaining signed lifetime at bridge admission | 7 days |
+
+The replay horizon and admission lifetime are one invariant: an otherwise
+valid envelope is accepted only when `expires_at - admission_time <= 7 days`.
+The exact seven-day boundary is accepted; anything one millisecond longer is
+refused. Active replay rows are never evicted to admit a fresh digest. They
+expire only when the signed object can no longer be forwarded, so a live object
+cannot become “unseen” while its authenticated expiry remains in force.
 
 `previous_hop` is an abuse-accounting key, not a Raven identity. TCP sources are
 canonicalized to their IP address (ephemeral ports are discarded); other
@@ -123,9 +132,32 @@ DATA=$(mktemp -d)
 ./target/debug/ash --data-dir "$DATA" banner
 ```
 
-Interactive menu → **4 Status** shows the same Bridge / transports / forward_q lines.
+Interactive menu → **3 Status** shows the same Bridge / transports / forward_q
+lines. Status is read-only and never creates identity or queue state.
 
 ## Run bridge daemon (B)
+
+The normal combined service exposes secure endpoint LAN (`7420`) and the
+authenticated bridge carrier (`7422`) on distinct sockets. It writes the
+actual bridge address to `<data-dir>/service-bridge.addr`; a copy is also
+written to the path passed to `--write-bridge-addr`:
+
+```bash
+./target/debug/raven-node service \
+  --data-dir "$DATA_B" \
+  --lan-listen 0.0.0.0:7420 \
+  --bridge-listen 0.0.0.0:7422 \
+  --write-bridge-addr /tmp/b.bridge \
+  --ble-listen 127.0.0.1:7421
+```
+
+Binding the bridge publicly does not grant queue drain/pull access: a pull must
+still complete mutual Ed25519 authentication and match a pinned contact. Conversely,
+`ash send` does not yet discover or select this carrier automatically. A
+production A→B→C route must not be claimed from `ash send` until that route
+selection and a physical multi-device gate are wired.
+
+For the isolated bridge harness only:
 
 ```bash
 ./target/debug/raven-node bridge \

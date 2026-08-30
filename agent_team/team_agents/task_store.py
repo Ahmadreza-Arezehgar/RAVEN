@@ -107,7 +107,8 @@ class BoundedTaskStore(TaskStore):
         expired = [
             key
             for key, entry in self._entries.items()
-            if now - entry.updated_at >= self.ttl_seconds
+            if self._terminal(entry.task)
+            and now - entry.updated_at >= self.ttl_seconds
         ]
         for key in expired:
             self._remove_locked(key)

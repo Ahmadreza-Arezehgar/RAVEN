@@ -1,19 +1,41 @@
 //! Reliability: dedup, queue restart, malformed frames, OOO message_ids.
 
-use raven_core::envelope::Envelope;
+use raven_core::envelope::{EnvType, Envelope};
+use raven_core::identity::Identity;
 use raven_core::queue::{DeliveryState, OutgoingQueue, QueueItem};
 use tempfile::tempdir;
+
+fn packed_test_envelope(signer: &Identity, message_id: [u8; 16]) -> Vec<u8> {
+    let mut env = Envelope {
+        env_type: EnvType::Message as u8,
+        flags: 0,
+        message_id,
+        routing_tag: [0x52; 16],
+        dest_device_hint: 0,
+        created_at: 1,
+        expires_at: u64::MAX,
+        hop_limit: 8,
+        replication_budget: 3,
+        anti_replay_nonce: [0x91; 12],
+        ratchet_header_ciphertext: vec![],
+        message_ciphertext: b"restart-fixture".to_vec(),
+        sender_authentication: vec![],
+    };
+    env.sign_with(signer);
+    env.pack()
+}
 
 #[test]
 fn restart_mid_queue_then_ack() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("q.sqlite");
     let mid = [3u8; 16];
+    let signer = Identity::from_seed(&[0x31; 32]);
     {
         let q = OutgoingQueue::open(&path).unwrap();
         q.enqueue(&QueueItem {
             message_id: mid,
-            packed_envelope: vec![0x52, 0x56, 0x4E, 0x31],
+            packed_envelope: packed_test_envelope(&signer, mid),
             peer_addr: "rvn1examplepeer000000000000000000000".into(),
             state: DeliveryState::Queued,
             created_at_ms: 10,

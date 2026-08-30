@@ -13,6 +13,7 @@ import os
 import re
 import stat
 import subprocess
+import tempfile
 import threading
 import time
 import unicodedata
@@ -346,6 +347,49 @@ def _exclusive_file_lock(
             finally:
                 local_lock.release()
 
+
+@contextmanager
+def exclusive_file_lock(
+    path: str | Path,
+    *,
+    timeout: float = GIT_LOCK_TIMEOUT_SECONDS,
+    poll_interval: float = LOCK_POLL_SECONDS,
+):
+    """Public bounded cross-thread/process lock for adjacent RDAP state."""
+    with _exclusive_file_lock(
+        path,
+        timeout=timeout,
+        poll_interval=poll_interval,
+    ):
+        yield
+
+
+def _atomic_write_shared_text(path: Path, text: str) -> None:
+    """Atomically replace one non-secret shared projection/claim file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=str(path.parent),
+        prefix=f'.{path.name}.',
+        suffix='.tmp',
+    )
+    temporary = Path(temporary_name)
+    try:
+        if os.name != 'nt':
+            os.fchmod(descriptor, 0o644)
+        with os.fdopen(descriptor, 'w', encoding='utf-8') as handle:
+            descriptor = -1
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
 BOARD_HEADER = """# Team Board
 
 | id | title | owner | status | notes |
@@ -376,41 +420,50 @@ class TeamMemory:
 
     # ------------------------------------------------------------ layout --
     def ensure_layout(self) -> None:
-        if os.path.lexists(self.team_dir):
-            metadata = os.lstat(self.team_dir)
+        self._ensure_team_directory()
+        for directory in (self.team_dir / 'outputs', self.locks_dir):
+            directory.mkdir(exist_ok=True)
+            metadata = os.lstat(directory)
             if _is_link_or_reparse(metadata) or not stat.S_ISDIR(metadata.st_mode):
                 raise FileLockError(
-                    f'team state directory must be a real directory: '
-                    f'{self.team_dir}'
+                    f'team layout path must be a real directory: {directory}'
                 )
-        self.team_dir.mkdir(parents=True, exist_ok=True)
-        for directory in (self.team_dir / 'outputs', self.locks_dir):
-            if os.path.lexists(directory):
-                metadata = os.lstat(directory)
-                if _is_link_or_reparse(metadata) or not stat.S_ISDIR(
-                    metadata.st_mode
-                ):
-                    raise FileLockError(
-                        f'team layout path must be a real directory: {directory}'
-                    )
-            else:
-                directory.mkdir()
         for path, header in (
             (self.board_md, BOARD_HEADER),
             (self.journal_md, JOURNAL_HEADER),
             (self.facts_md, FACTS_HEADER),
         ):
-            if os.path.lexists(path):
-                metadata = os.lstat(path)
-                if _is_link_or_reparse(metadata) or not stat.S_ISREG(
-                    metadata.st_mode
-                ):
-                    raise FileLockError(
-                        f'team layout path must be a regular file: {path}'
-                    )
-            else:
-                path.write_text(header, encoding='utf-8')
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            flags |= getattr(os, 'O_CLOEXEC', 0) | getattr(os, 'O_NOFOLLOW', 0)
+            descriptor = -1
+            try:
+                descriptor = os.open(path, flags, 0o644)
+                with os.fdopen(descriptor, 'w', encoding='utf-8') as handle:
+                    descriptor = -1
+                    handle.write(header)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+            except FileExistsError:
+                pass
+            finally:
+                if descriptor >= 0:
+                    os.close(descriptor)
+            metadata = os.lstat(path)
+            if _is_link_or_reparse(metadata) or not stat.S_ISREG(metadata.st_mode):
+                raise FileLockError(
+                    f'team layout path must be a regular file: {path}'
+                )
         self._validate_operational_team_paths()
+
+    def _ensure_team_directory(self) -> None:
+        """Create only the lock parent, without shared projection files."""
+        self.team_dir.mkdir(parents=True, exist_ok=True)
+        metadata = os.lstat(self.team_dir)
+        if _is_link_or_reparse(metadata) or not stat.S_ISDIR(metadata.st_mode):
+            raise FileLockError(
+                f'team state directory must be a real directory: '
+                f'{self.team_dir}'
+            )
 
     def resolve_in_repo(self, relpath: str) -> Path:
         p = (self.repo_path / relpath).resolve()
@@ -471,6 +524,19 @@ class TeamMemory:
 
     def _has_remote(self) -> bool:
         return bool(self._git_checked('remote').strip())
+
+    def require_shared_upstream(self) -> tuple[str, str]:
+        """Require a real Git repository with one explicit tracking upstream."""
+        if not self._is_git_repo():
+            raise TeamGitError(
+                'Git relay requires a shared Git repository; this path is not one'
+            )
+        if not self._has_remote():
+            raise TeamGitError(
+                'Git relay requires a shared remote/upstream; local-only commits '
+                'cannot reach another device'
+            )
+        return self._configured_upstream()
 
     def _disabled_hooks_path(self) -> str:
         path = self.repo_path / DISABLED_HOOKS_PATH
@@ -787,7 +853,9 @@ class TeamMemory:
     @contextmanager
     def _git_lock(self, timeout: float = GIT_LOCK_TIMEOUT_SECONDS):
         """Serialize mutating git sections or fail closed after ``timeout``."""
-        self.ensure_layout()
+        # A first pull must not create untracked BOARD/facts/journal files that
+        # the incoming shared history is about to materialize.
+        self._ensure_team_directory()
         with _exclusive_file_lock(self.team_dir / '.gitlock', timeout=timeout):
             self._validate_operational_team_paths()
             yield
@@ -1061,26 +1129,28 @@ class TeamMemory:
         notes: str = '',
     ) -> dict:
         self.ensure_layout()
-        existing = {r['id'] for r in self._parse_board_rows()}
-        if task_id is None:
-            n = len(existing) + 1
-            # random suffix → concurrent writers can never allocate the same id
-            task_id = f't-{n}-{uuid.uuid4().hex[:4]}'
-        row = {
-            'id': task_id,
-            'title': title,
-            'owner': owner,
-            'status': status,
-            'notes': notes,
-        }
-        self._delta(owner or 'system').write('task', row)
-        # regenerate the human-readable projection
-        self.board_md.write_text(self.read_board(), encoding='utf-8')
-        if self.auto_commit:
-            self.commit_team(
-                f'chore(board): {task_id} → {row["status"]} '
-                f'by {owner or "system"}'
-            )
+        # Use the same cross-process lock as Git sync so a projection cannot be
+        # generated from an older delta snapshot or race an incoming checkout.
+        with self._git_lock():
+            existing = {r['id'] for r in self._parse_board_rows()}
+            if task_id is None:
+                n = len(existing) + 1
+                # random suffix → concurrent writers can never allocate the same id
+                task_id = f't-{n}-{uuid.uuid4().hex[:4]}'
+            row = {
+                'id': task_id,
+                'title': title,
+                'owner': owner,
+                'status': status,
+                'notes': notes,
+            }
+            self._delta(owner or 'system').write('task', row)
+            _atomic_write_shared_text(self.board_md, self.read_board())
+            if self.auto_commit and self._is_git_repo():
+                self._commit_team_unlocked(
+                    f'chore(board): {task_id} → {row["status"]} '
+                    f'by {owner or "system"}'
+                )
         return row
 
     def _parse_board_rows(self) -> list[dict]:
@@ -1130,24 +1200,27 @@ class TeamMemory:
     def claim_file(self, path: str, owner: str) -> str:
         self.ensure_layout()
         lock = self.locks_dir / self._lock_name(path)
-        if lock.exists():
-            current = lock.read_text(encoding='utf-8').split('\n', 1)[0].strip()
-            if current == owner:
-                return f'ok (already yours): {path}'
-            return f'BUSY: {path} claimed by {current}'
-        lock.write_text(f'{owner}\nclaimed_at: {_ts()}\n', encoding='utf-8')
-        if self.auto_commit:
-            self.commit_team(f'chore(locks): {owner} claims {path}')
+        with self._git_lock():
+            if lock.exists():
+                current = lock.read_text(encoding='utf-8').split('\n', 1)[0].strip()
+                if current == owner:
+                    return f'ok (already yours): {path}'
+                return f'BUSY: {path} claimed by {current}'
+            _atomic_write_shared_text(lock, f'{owner}\nclaimed_at: {_ts()}\n')
+            if self.auto_commit and self._is_git_repo():
+                self._commit_team_unlocked(f'chore(locks): {owner} claims {path}')
         return f'ok: claimed {path}'
 
     def release_file(self, path: str, owner: str) -> str:
+        self.ensure_layout()
         lock = self.locks_dir / self._lock_name(path)
-        if not lock.exists():
-            return f'not locked: {path}'
-        current = lock.read_text(encoding='utf-8').split('\n', 1)[0].strip()
-        if current != owner:
-            return f'DENIED: {path} belongs to {current}'
-        lock.unlink()
-        if self.auto_commit:
-            self.commit_team(f'chore(locks): {owner} releases {path}')
+        with self._git_lock():
+            if not lock.exists():
+                return f'not locked: {path}'
+            current = lock.read_text(encoding='utf-8').split('\n', 1)[0].strip()
+            if current != owner:
+                return f'DENIED: {path} belongs to {current}'
+            lock.unlink()
+            if self.auto_commit and self._is_git_repo():
+                self._commit_team_unlocked(f'chore(locks): {owner} releases {path}')
         return f'ok: released {path}'

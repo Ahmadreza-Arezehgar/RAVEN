@@ -44,7 +44,7 @@ def _apply_common(cfg: NodeConfig, args: argparse.Namespace) -> NodeConfig:
 def cmd_serve(args: argparse.Namespace) -> None:
     from .server import serve
 
-    from .config import LLMConfig, Skill
+    from .config import LLMConfig, Skill, resolve_custom_llm_api_key
 
     cfg = NodeConfig.from_env()
     cfg.name = args.name or cfg.name
@@ -63,10 +63,23 @@ def cmd_serve(args: argparse.Namespace) -> None:
     for spec in args.skill or []:
         sid, name, desc = (spec.split(':', 2) + ['', ''])[:3]
         cfg.skills.append(Skill(id=sid, name=name or sid, description=desc))
+    provider_overridden = bool(str(args.provider).strip())
+    selected_provider = str(
+        args.provider or cfg.llm.provider
+    ).strip().lower()
     cfg.llm = LLMConfig(
-        provider=args.provider,
-        model=args.model or '',
-        base_url=args.base_url or LLMConfig.base_url,
+        provider=selected_provider,
+        model=(
+            args.model
+            or ('' if provider_overridden else cfg.llm.model)
+        ),
+        base_url=(
+            args.base_url
+            or ('' if provider_overridden else cfg.llm.base_url)
+        ),
+        _api_key=(
+            resolve_custom_llm_api_key() if selected_provider == 'custom' else ''
+        ),
     )
     _apply_common(cfg, args)
     serve(cfg)
@@ -112,7 +125,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     s.add_argument('--allow-shell', action='store_true')
     s.add_argument('--skill', action='append', default=[], help='id:name:description')
-    s.add_argument('--provider', default='echo', help='openai | echo')
+    s.add_argument(
+        '--provider', default='',
+        help='echo | openai | groq | openrouter | ollama | custom',
+    )
     s.add_argument('--model', default='')
     s.add_argument('--base-url', default='')
     _add_common(s)

@@ -41,7 +41,7 @@ Bridge / relay / store **never decrypt**. Endpoint ATSAM / Noise / interim seal 
 | Component | Role |
 |-----------|------|
 | `raven-core` | Identity, address, envelope, seal/ATSAM KATs, MessageRouter, forward queue |
-| `raven-node` | Always-on daemon for the Unix secure-LAN slice; legacy raw InternetTransport remains fail-closed |
+| `raven-node` | Always-on daemon: secure Noise/RLB1 LAN endpoint on `:7420`, same-user IPC, and a separate authenticated bridge-pull listener on configurable `:7422`; legacy raw InternetTransport remains fail-closed |
 | `ash` / `raven` | Terminal UI + policy IPC client — closing ash must not stop the node |
 | iOS (flag ON) | Parallel path: LAN + BLE RVN1 + ChatWire Delivered; MeshEnvelope default when flag OFF |
 
@@ -58,6 +58,12 @@ Bridge / relay / store **never decrypt**. Endpoint ATSAM / Noise / interim seal 
 
 ## Honest limitations (software)
 
+- `ash send` currently dials the contact's secure LAN endpoint directly. The
+  service publishes its separate bridge address in
+  `<data-dir>/service-bridge.addr`, and explicit authenticated bridge-pull
+  clients work, but automatic production A→B→C route selection/discovery is
+  **not wired into `ash send`**. The A–B–C harness remains transport evidence,
+  not a claim that the terminal command automatically finds a bridge.
 - Full rust-libp2p DHT + DCUtR on real CGNAT: **experimental/held** — bounded client composition exists, but no production endpoint coordinator or relay server is wired; multi-NAT hardware proof is still BLOCKED.
 - ML-KEM hybrid pairing in Rust: **known-root + X25519 subset**; full PQ stack remains iOS-primary until ported.
 - Real GATT in headless `raven-node`: mock_ble for CI; iOS BLEMeshEngine for hardware.

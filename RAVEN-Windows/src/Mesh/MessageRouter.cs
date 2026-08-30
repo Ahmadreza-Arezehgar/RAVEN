@@ -471,7 +471,7 @@ public sealed class MessageRouter
         // trusted key for this userId.
         foreach (var d in trustedDevs)
         {
-            if (d.PublicKey != null && d.PublicKey.AsSpan().SequenceEqual(signerPub))
+            if (d.Ed25519PublicKey.AsSpan().SequenceEqual(signerPub))
                 return true;
         }
         _log.LogWarning(

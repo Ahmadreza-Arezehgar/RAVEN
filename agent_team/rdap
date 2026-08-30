@@ -20,16 +20,26 @@ if [ -z "$PY" ]; then
 fi
 
 # recreate the venv if it was built by an outdated interpreter
-if [ ! -d .venv ] || ! .venv/bin/python -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
+if [ -L .venv ] || { [ -e .venv ] && [ ! -d .venv ]; }; then
+  echo "ERROR: refusing unsafe .venv path; it must be absent or a real directory."
+  exit 1
+fi
+if [ -d .venv ] && ! .venv/bin/python -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
+  backup=".venv.rdap-backup.$(date +%Y%m%d%H%M%S).$$"
+  echo "* preserving incompatible virtualenv as $backup"
+  mv .venv "$backup"
+fi
+if [ ! -d .venv ]; then
   echo "* creating virtualenv with $PY…"
-  rm -rf .venv
   "$PY" -m venv .venv
 fi
 
-if ! .venv/bin/python -c "import a2a, uvicorn, starlette, cryptography, httpx, zeroconf" 2>/dev/null; then
-  echo "* installing dependencies (first run)…"
-  .venv/bin/pip install --upgrade pip -q
-  .venv/bin/pip install -r requirements.txt
+lock_hash="$(.venv/bin/python -c 'import hashlib; print(hashlib.sha256(open("requirements.lock.txt", "rb").read()).hexdigest())')"
+installed_hash="$(.venv/bin/python -c 'from pathlib import Path; print(Path(".venv/.rdap-requirements.sha256").read_text().strip() if Path(".venv/.rdap-requirements.sha256").is_file() else "")')"
+if [ "$lock_hash" != "$installed_hash" ] || ! .venv/bin/python -c "import a2a, uvicorn, starlette, cryptography, httpx, zeroconf" 2>/dev/null; then
+  echo "* installing verified dependencies…"
+  .venv/bin/python -m pip install --require-hashes -r requirements.lock.txt
+  .venv/bin/python -c 'from pathlib import Path; import hashlib; Path(".venv/.rdap-requirements.sha256").write_text(hashlib.sha256(Path("requirements.lock.txt").read_bytes()).hexdigest() + "\n")'
 fi
 
 exec .venv/bin/python rdap.py "$@"

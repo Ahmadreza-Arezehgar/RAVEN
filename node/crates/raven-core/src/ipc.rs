@@ -11,7 +11,7 @@ pub const IPC_VERSION: u16 = 1;
 pub const MAX_IPC_FRAME: usize = 256 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "op", rename_all = "snake_case")]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum IpcRequest {
     Ping {
         v: u16,
@@ -85,10 +85,15 @@ pub fn decode_request(frame: &[u8]) -> Result<IpcRequest, String> {
         return Err("short frame".into());
     }
     let n = u32::from_be_bytes([frame[0], frame[1], frame[2], frame[3]]) as usize;
-    if n > MAX_IPC_FRAME || frame.len() < 4 + n {
+    if n > MAX_IPC_FRAME || frame.len() != 4 + n {
         return Err("bad length".into());
     }
-    let req: IpcRequest = serde_json::from_slice(&frame[4..4 + n]).map_err(|e| e.to_string())?;
+    let value: serde_json::Value =
+        serde_json::from_slice(&frame[4..]).map_err(|e| e.to_string())?;
+    if contains_forbidden_secret_field(&value) {
+        return Err("forbidden field".into());
+    }
+    let req: IpcRequest = serde_json::from_value(value).map_err(|e| e.to_string())?;
     match &req {
         IpcRequest::Ping { v }
         | IpcRequest::Status { v }
@@ -100,14 +105,36 @@ pub fn decode_request(frame: &[u8]) -> Result<IpcRequest, String> {
             }
         }
     }
-    // Refuse accidental secret field names in JSON (defense in depth).
-    let raw = std::str::from_utf8(&frame[4..4 + n]).unwrap_or("");
-    for bad in ["seed", "private_key", "plaintext", "recovery"] {
-        if raw.to_ascii_lowercase().contains(bad) {
-            return Err("forbidden field".into());
-        }
-    }
     Ok(req)
+}
+
+/// Refuse secret-bearing JSON *field names* without rejecting harmless values
+/// such as a peer called `seedling` or sealed/base64 bytes containing those
+/// character sequences. Normalization prevents punctuation/case variants from
+/// bypassing the defense-in-depth check.
+fn contains_forbidden_secret_field(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Object(fields) => fields.iter().any(|(key, child)| {
+            let normalized: String = key
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric())
+                .map(|c| c.to_ascii_lowercase())
+                .collect();
+            matches!(
+                normalized.as_str(),
+                "seed"
+                    | "privkey"
+                    | "privatekey"
+                    | "secretkey"
+                    | "plaintext"
+                    | "recovery"
+                    | "recoveryphrase"
+                    | "mnemonic"
+            ) || contains_forbidden_secret_field(child)
+        }),
+        serde_json::Value::Array(items) => items.iter().any(contains_forbidden_secret_field),
+        _ => false,
+    }
 }
 
 pub fn encode_response(resp: &IpcResponse) -> Result<Vec<u8>, String> {
@@ -126,7 +153,7 @@ pub fn decode_response(frame: &[u8]) -> Result<IpcResponse, String> {
         return Err("short frame".into());
     }
     let n = u32::from_be_bytes([frame[0], frame[1], frame[2], frame[3]]) as usize;
-    if n > MAX_IPC_FRAME || frame.len() < 4 + n {
+    if n > MAX_IPC_FRAME || frame.len() != 4 + n {
         return Err("bad length".into());
     }
     serde_json::from_slice(&frame[4..4 + n]).map_err(|e| e.to_string())
@@ -425,6 +452,13 @@ pub mod windows_pipe {
 mod tests {
     use super::*;
 
+    fn frame_json(body: &[u8]) -> Vec<u8> {
+        let mut frame = Vec::with_capacity(4 + body.len());
+        frame.extend_from_slice(&(body.len() as u32).to_be_bytes());
+        frame.extend_from_slice(body);
+        frame
+    }
+
     #[test]
     fn roundtrip_ping() {
         let req = IpcRequest::Ping { v: IPC_VERSION };
@@ -438,10 +472,44 @@ mod tests {
     #[test]
     fn rejects_secret_token_in_json() {
         let body = br#"{"op":"ping","v":1,"seed":"nope"}"#;
-        let mut frame = Vec::new();
-        frame.extend_from_slice(&(body.len() as u32).to_be_bytes());
-        frame.extend_from_slice(body);
-        assert!(decode_request(&frame).is_err());
+        assert_eq!(
+            decode_request(&frame_json(body)).unwrap_err(),
+            "forbidden field"
+        );
+    }
+
+    #[test]
+    fn rejects_normalized_or_nested_secret_field_names() {
+        for body in [
+            br#"{"op":"ping","v":1,"Private-Key":"nope"}"#.as_slice(),
+            br#"{"op":"ping","v":1,"extension":{"recovery_phrase":"nope"}}"#.as_slice(),
+        ] {
+            assert_eq!(
+                decode_request(&frame_json(body)).unwrap_err(),
+                "forbidden field"
+            );
+        }
+    }
+
+    #[test]
+    fn permits_secret_words_inside_non_secret_values() {
+        let req = IpcRequest::EnqueueSealed {
+            v: IPC_VERSION,
+            envelope_b64: "c2VlZA==".into(),
+            peer_hint: Some("seedling-recovery-route".into()),
+        };
+        assert_eq!(decode_request(&encode_request(&req).unwrap()).unwrap(), req);
+    }
+
+    #[test]
+    fn rejects_trailing_bytes_after_declared_frame() {
+        let mut frame = encode_request(&IpcRequest::Ping { v: IPC_VERSION }).unwrap();
+        frame.push(b' ');
+        assert_eq!(decode_request(&frame).unwrap_err(), "bad length");
+
+        let mut response = encode_response(&IpcResponse::Pong { v: IPC_VERSION }).unwrap();
+        response.push(b' ');
+        assert_eq!(decode_response(&response).unwrap_err(), "bad length");
     }
 
     #[test]

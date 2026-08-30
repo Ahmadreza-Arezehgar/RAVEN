@@ -155,8 +155,10 @@ dump_symbols() {
         || die "nm failed on $BIN"
       ;;
     llvm-nm)
-      llvm-nm --defined-only "$BIN" >"$SYM_OUT" 2>/dev/null \
-        || llvm-nm "$BIN" >"$SYM_OUT" 2>/dev/null \
+      # POSIX output is stable across ELF/Mach-O/COFF:
+      #   symbol type value size
+      llvm-nm --defined-only --extern-only --format=posix "$BIN" >"$SYM_OUT" 2>/dev/null \
+        || llvm-nm --defined-only --format=posix "$BIN" >"$SYM_OUT" 2>/dev/null \
         || die "llvm-nm failed on $BIN"
       ;;
     dumpbin)
@@ -175,8 +177,11 @@ count_sym() {
   local n=0
   set +e
   case "$SYMBOL_TOOL" in
-    nm|llvm-nm)
+    nm)
       n="$(grep -E "[[:space:]][Tt][[:space:]]+_?${sym}$" "$SYM_OUT" | wc -l | tr -d ' ')"
+      ;;
+    llvm-nm)
+      n="$(grep -E "^_?${sym}[[:space:]]+[Tt]([[:space:]]|$)" "$SYM_OUT" | wc -l | tr -d ' ')"
       ;;
     dumpbin)
       # MSVC dumpbin lists External | sqlite3_open_v2

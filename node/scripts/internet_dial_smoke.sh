@@ -3,10 +3,11 @@
 # The binary must refuse message origination until the authenticated indexed
 # endpoint actor and sealed ACK lifecycle are wired to this carrier.
 set -euo pipefail
+export RAVEN_IDENTITY_BACKEND=locked-file
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="$ROOT/target/debug"
 NODE="$BIN/raven-node"
-WORKDIR="${TMPDIR:-/tmp}/raven-inet-$$"
+WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/raven-inet.XXXXXX")"
 mkdir -p "$WORKDIR/a" "$WORKDIR/b"
 cleanup() {
   if [[ -n "${BPID:-}" ]]; then
@@ -17,7 +18,7 @@ cleanup() {
 }
 trap cleanup EXIT
 source "${HOME}/.cargo/env" 2>/dev/null || true
-[[ -x "$NODE" ]] || (cd "$ROOT" && cargo build -p raven-node -q)
+[[ -x "$NODE" ]] || (cd "$ROOT" && cargo build --locked -p raven-node -q)
 
 "$NODE" init --data-dir "$WORKDIR/a" | tee "$WORKDIR/a.out"
 "$NODE" init --data-dir "$WORKDIR/b" | tee "$WORKDIR/b.out"

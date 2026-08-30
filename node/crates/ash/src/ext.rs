@@ -1,7 +1,7 @@
 //! Extended ash commands: bootstrap, device sync, chat, secure send, mailbox.
 //! Kept separate from main.rs to keep the interactive shell readable.
 
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use rand::RngCore;
@@ -22,9 +22,11 @@ use raven_core::device_sync::{
 use raven_core::envelope::Envelope;
 use raven_core::fingerprint::device_fingerprint_v1;
 use raven_core::identity::Identity;
+use raven_core::ipc::IpcResponse;
 #[cfg(unix)]
 use raven_core::ipc::{decode_response, encode_request};
-use raven_core::ipc::{default_socket_path, IpcRequest, IpcResponse, IPC_VERSION};
+#[cfg(unix)]
+use raven_core::ipc::{default_socket_path, IpcRequest, IPC_VERSION};
 use raven_core::messaging_path::{assert_no_silent_fastapi, resolve_terminal_messaging_path};
 use raven_core::paths::PRIMARY_DEVICE_ID;
 use raven_core::prekey_bundle::{PrekeyBundle, PrekeyBundleJson, PrekeyStore};
@@ -33,11 +35,9 @@ use raven_core::sanitize::sanitize_terminal_text;
 use raven_core::store_object::{
     mailbox_tag, mailbox_tags_with_overlap, store_tag_from_mailbox, StoreMailbox, StoreObject,
 };
-use std::process::Command;
+use std::process::{Child, Command, Stdio};
 use std::time::Duration;
-use zeroize::Zeroize;
-#[cfg(all(test, unix))]
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 const DEFAULT_LAN_PORT: u16 = 7420;
 #[cfg(all(test, unix))]
@@ -87,11 +87,12 @@ fn parse_pub_hex(s: &str) -> Result<[u8; 32], String> {
     Ok(a)
 }
 
-pub fn raven_node_bin_public() -> PathBuf {
-    raven_node_bin()
-}
-
 fn raven_node_bin() -> PathBuf {
+    if let Some(path) = std::env::var_os("RAVEN_NODE_BIN") {
+        if !path.is_empty() {
+            return PathBuf::from(path);
+        }
+    }
     std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.join("raven-node")))
@@ -122,55 +123,229 @@ fn local_lan_ipv4_hint() -> Option<String> {
     None
 }
 
-/// Start / revive Mac LAN + IPC daemon so local-listen enqueue works.
-pub fn ensure_mac_lan_daemon(data_dir: &Path) -> bool {
-    let sock = default_socket_path(data_dir);
-    if sock.exists() {
-        if matches!(
-            ipc_request_blocking(&sock, &IpcRequest::Ping { v: IPC_VERSION }),
-            Ok(IpcResponse::Pong { .. })
-        ) {
-            return true;
-        }
-        // Stale UDS after crash → remove so a fresh service can bind.
-        let _ = std::fs::remove_file(&sock);
+/// Result of ensuring the per-profile secure raven-node service is available.
+///
+/// A newly started child is returned to `ash listen`, which keeps it in the
+/// foreground and propagates a later daemon failure. Callers that only need a
+/// send path may drop the handle; dropping `Child` does not terminate it.
+pub enum ServiceLaunch {
+    Reused,
+    Started(Child),
+}
+
+const SERVICE_INSTANCE_LOCK_FILE: &str = "raven-node.instance.lock";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadyServiceOwner {
+    SpawnedChild,
+    OtherProcess,
+    Unknown,
+}
+
+fn service_owner_pid(data_dir: &Path) -> Option<u32> {
+    use std::io::Read;
+
+    let file = std::fs::File::open(data_dir.join(SERVICE_INSTANCE_LOCK_FILE)).ok()?;
+    let mut value = String::new();
+    file.take(32).read_to_string(&mut value).ok()?;
+    value.trim().parse::<u32>().ok().filter(|pid| *pid != 0)
+}
+
+fn classify_ready_service_owner(data_dir: &Path, spawned_pid: u32) -> ReadyServiceOwner {
+    match service_owner_pid(data_dir) {
+        Some(owner_pid) if owner_pid == spawned_pid => ReadyServiceOwner::SpawnedChild,
+        Some(_) => ReadyServiceOwner::OtherProcess,
+        None => ReadyServiceOwner::Unknown,
     }
+}
+
+fn bridge_listen_for_lan(lan_listen: &str) -> Result<String, String> {
+    let mut address = lan_listen.parse::<std::net::SocketAddr>().map_err(|_| {
+        format!(
+            "RAVEN_SERVICE_LAN_LISTEN must be an explicit IP socket address, not {lan_listen:?}"
+        )
+    })?;
+    let bridge_port = address.port().checked_add(2).ok_or_else(|| {
+        format!("cannot derive bridge port from LAN address {lan_listen:?}: port overflow")
+    })?;
+    address.set_port(bridge_port);
+    Ok(address.to_string())
+}
+
+fn service_status(data_dir: &Path) -> Option<IpcResponse> {
+    #[cfg(unix)]
+    {
+        let sock = default_socket_path(data_dir);
+        if !sock.exists() {
+            return None;
+        }
+        ipc_request_blocking_with_timeout(
+            &sock,
+            &IpcRequest::Status { v: IPC_VERSION },
+            Duration::from_millis(300),
+        )
+        .ok()
+    }
+    #[cfg(windows)]
+    {
+        super::pair_init_lab::windows_ipc_status(data_dir).ok()
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = data_dir;
+        None
+    }
+}
+
+fn bridge_endpoint_is_live(address: std::net::SocketAddr) -> bool {
+    let probe_address = if address.ip().is_unspecified() {
+        match address {
+            std::net::SocketAddr::V4(mut address) => {
+                address.set_ip(std::net::Ipv4Addr::LOCALHOST);
+                std::net::SocketAddr::V4(address)
+            }
+            std::net::SocketAddr::V6(mut address) => {
+                address.set_ip(std::net::Ipv6Addr::LOCALHOST);
+                std::net::SocketAddr::V6(address)
+            }
+        }
+    } else {
+        address
+    };
+    std::net::TcpStream::connect_timeout(&probe_address, Duration::from_millis(200)).is_ok()
+}
+
+fn service_is_ready(data_dir: &Path) -> bool {
+    let capabilities_ready = matches!(
+        service_status(data_dir),
+        Some(IpcResponse::Status { capabilities, .. })
+            if capabilities.iter().any(|capability| capability == "lan_direct")
+                && capabilities.iter().any(|capability| capability == "bridge")
+    );
+    let bridge_ready = std::fs::read_to_string(data_dir.join("service-bridge.addr"))
+        .ok()
+        .and_then(|value| value.parse::<std::net::SocketAddr>().ok())
+        .filter(|address| address.port() != 0)
+        .is_some_and(bridge_endpoint_is_live);
+    capabilities_ready && bridge_ready
+}
+
+/// Start or reuse the secure LAN-direct + IPC service used by `ash send`.
+/// The readiness probe is UDS on Unix and the protected per-profile named pipe
+/// on Windows; a filesystem socket probe must never be used on Windows.
+pub fn ensure_raven_node_service(
+    data_dir: &Path,
+    foreground_logs: bool,
+) -> Result<ServiceLaunch, String> {
+    if service_is_ready(data_dir) {
+        return Ok(ServiceLaunch::Reused);
+    }
+
+    // An IPC-responsive service owns this profile. Give an in-progress start
+    // time to publish LAN + bridge readiness, but never unlink its socket or
+    // launch a competing daemon.
+    if service_status(data_dir).is_some() {
+        for _ in 0..100 {
+            if service_is_ready(data_dir) {
+                return Ok(ServiceLaunch::Reused);
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        return Err(
+            "an existing raven-node IPC service is responsive but its secure LAN/bridge listeners are not ready; restart that exact profile service"
+                .into(),
+        );
+    }
+
+    // Never unlink the IPC endpoint from the client. A slow live daemon can
+    // transiently miss the probe; only the replacement daemon may remove a
+    // proven-stale endpoint, after it holds the per-profile instance lock.
     let node = raven_node_bin();
-    // Outbound-IPC-only deployments (or same-host tests) may need a different
-    // or ephemeral LAN bind than the default receive port.
-    let listen = std::env::var("RAVEN_SERVICE_LAN_LISTEN")
+    let lan_listen = std::env::var("RAVEN_SERVICE_LAN_LISTEN")
         .unwrap_or_else(|_| format!("0.0.0.0:{DEFAULT_LAN_PORT}"));
-    let data = data_dir.to_str().unwrap_or(".");
-    if let Err(e) = Command::new(&node)
+    let bridge_listen = match std::env::var("RAVEN_SERVICE_BRIDGE_LISTEN") {
+        Ok(value) => {
+            value.parse::<std::net::SocketAddr>().map_err(|_| {
+                format!(
+                    "RAVEN_SERVICE_BRIDGE_LISTEN must be an explicit IP socket address, not {value:?}"
+                )
+            })?;
+            value
+        }
+        Err(_) => bridge_listen_for_lan(&lan_listen)?,
+    };
+    let data = data_dir
+        .to_str()
+        .ok_or_else(|| "data directory is not valid UTF-8".to_string())?;
+    let mut command = Command::new(&node);
+    command
         .args([
             "service",
             "--data-dir",
             data,
             "--lan-listen",
-            &listen,
+            &lan_listen,
+            "--bridge-listen",
+            &bridge_listen,
             "--ble-listen",
             "127.0.0.1:0",
         ])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stdin(Stdio::null());
+    if foreground_logs {
+        command.stdout(Stdio::inherit()).stderr(Stdio::inherit());
+    } else {
+        command.stdout(Stdio::null()).stderr(Stdio::null());
+    }
+
+    let mut child = command
         .spawn()
-    {
-        eprintln!("{C_DIM}could not auto-start raven-node service ({e}){C_RESET}");
-        return false;
-    }
-    for _ in 0..50 {
-        if sock.exists()
-            && matches!(
-                ipc_request_blocking(&sock, &IpcRequest::Ping { v: IPC_VERSION }),
-                Ok(IpcResponse::Pong { .. })
-            )
-        {
-            return true;
+        .map_err(|e| format!("start {}: {e}", node.display()))?;
+    let child_pid = child.id();
+    let mut exited_status = None;
+    for _ in 0..100 {
+        // Observe this exact child before consulting global readiness. With two
+        // simultaneous launchers, the losing child exits on the instance lock
+        // while the winning process may already be ready.
+        if exited_status.is_none() {
+            match child.try_wait() {
+                Ok(Some(status)) => exited_status = Some(status),
+                Ok(None) => {}
+                Err(error) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("raven-node readiness check: {error}"));
+                }
+            }
         }
-        std::thread::sleep(Duration::from_millis(40));
+
+        if service_is_ready(data_dir) {
+            match classify_ready_service_owner(data_dir, child_pid) {
+                ReadyServiceOwner::SpawnedChild if exited_status.is_none() => {
+                    return Ok(ServiceLaunch::Started(child));
+                }
+                ReadyServiceOwner::OtherProcess => {
+                    if exited_status.is_none() {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                    }
+                    return Ok(ServiceLaunch::Reused);
+                }
+                // A ready endpoint with no owner publication is not enough to
+                // attribute the service to this child. Keep probing rather
+                // than handing a losing/dead Child to `ash listen`.
+                ReadyServiceOwner::SpawnedChild | ReadyServiceOwner::Unknown => {}
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
     }
-    false
+    if let Some(status) = exited_status {
+        return Err(format!(
+            "raven-node service exited before readiness ({status})"
+        ));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    Err("raven-node service did not become IPC-ready within 5 seconds".into())
 }
 
 // ── Bootstrap UX ──────────────────────────────────────────────────────────
@@ -289,6 +464,76 @@ fn save_local_contacts(data_dir: &Path, rows: &[LocalContactRow]) -> Result<(), 
     raven_core::atomic_write_private(&data_dir.join("contacts.json"), raw.as_bytes())
 }
 
+fn validate_imported_contacts(imported: Vec<SyncContact>) -> Result<Vec<SyncContact>, String> {
+    imported
+        .into_iter()
+        .enumerate()
+        .map(|(index, mut contact)| {
+            let public_key = parse_pub_hex(&contact.pub_hex)
+                .map_err(|error| format!("contact {}: {error}", index + 1))?;
+            let expected_address = encode_address(&public_key);
+            let supplied_address = raven_core::address::from_display(&contact.address);
+            if supplied_address != expected_address {
+                return Err(format!(
+                    "contact {}: address/pub mismatch (public key derives {expected_address})",
+                    index + 1
+                ));
+            }
+            // Persist one canonical representation so later comparisons cannot
+            // be bypassed with case or display-format variants.
+            contact.pub_hex = hex::encode(public_key);
+            contact.address = expected_address;
+            Ok(contact)
+        })
+        .collect()
+}
+
+fn merge_imported_contacts(
+    local: &mut Vec<LocalContactRow>,
+    imported: Vec<SyncContact>,
+) -> Result<usize, String> {
+    // Validate the complete authenticated batch before mutating the in-memory
+    // contact book. One malformed row rejects the whole import; no partial
+    // state is ever persisted.
+    let imported = validate_imported_contacts(imported)?;
+    let mut added = 0usize;
+    for sc in imported {
+        if local
+            .iter()
+            .any(|c| c.pub_hex.eq_ignore_ascii_case(&sc.pub_hex))
+        {
+            continue;
+        }
+        // Pin conflict: refuse overwrite of pinned different key for same tag.
+        let tag = if sc.public_tag.is_empty() {
+            sc.alias.clone()
+        } else {
+            sc.public_tag.clone()
+        };
+        if !tag.is_empty()
+            && local.iter().any(|c| {
+                c.pinned
+                    && c.public_tag.eq_ignore_ascii_case(&tag)
+                    && !c.pub_hex.eq_ignore_ascii_case(&sc.pub_hex)
+            })
+        {
+            eprintln!("{C_PURPLE}skip{C_RESET} @{tag} — pinned local key differs");
+            continue;
+        }
+        local.push(LocalContactRow {
+            petname: sc.petname,
+            public_tag: tag,
+            alias: sc.alias,
+            address: sc.address,
+            pub_hex: sc.pub_hex,
+            pinned: sc.pinned,
+            lan_dial: String::new(),
+        });
+        added += 1;
+    }
+    Ok(added)
+}
+
 pub fn cmd_device_sync_export(data_dir: &Path, id: &Identity, device_id: &str, out: &Path) {
     let contacts = match load_local_contacts(data_dir) {
         Ok(c) => c,
@@ -388,41 +633,13 @@ pub fn cmd_device_sync_import(data_dir: &Path, id: &Identity, file: &Path) {
             std::process::exit(1);
         }
     };
-    let mut added = 0usize;
-    for sc in imported {
-        if local
-            .iter()
-            .any(|c| c.pub_hex.eq_ignore_ascii_case(&sc.pub_hex))
-        {
-            continue;
+    let added = match merge_imported_contacts(&mut local, imported) {
+        Ok(added) => added,
+        Err(error) => {
+            eprintln!("import failed: {error}");
+            std::process::exit(1);
         }
-        // Pin conflict: refuse overwrite of pinned different key for same tag.
-        let tag = if sc.public_tag.is_empty() {
-            sc.alias.clone()
-        } else {
-            sc.public_tag.clone()
-        };
-        if !tag.is_empty()
-            && local.iter().any(|c| {
-                c.pinned
-                    && c.public_tag.eq_ignore_ascii_case(&tag)
-                    && !c.pub_hex.eq_ignore_ascii_case(&sc.pub_hex)
-            })
-        {
-            eprintln!("{C_PURPLE}skip{C_RESET} @{tag} — pinned local key differs");
-            continue;
-        }
-        local.push(LocalContactRow {
-            petname: sc.petname,
-            public_tag: tag,
-            alias: sc.alias,
-            address: sc.address,
-            pub_hex: sc.pub_hex,
-            pinned: sc.pinned,
-            lan_dial: String::new(),
-        });
-        added += 1;
-    }
+    };
     if let Err(e) = save_local_contacts(data_dir, &local) {
         eprintln!("save contacts: {e}");
         std::process::exit(1);
@@ -483,34 +700,30 @@ pub fn refuse_argv_plaintext() {
     std::process::exit(2);
 }
 
-fn ipc_request_blocking(sock: &Path, req: &IpcRequest) -> Result<IpcResponse, String> {
-    #[cfg(unix)]
-    {
-        use std::io::{Read, Write};
-        use std::os::unix::net::UnixStream;
-        let mut stream = UnixStream::connect(sock).map_err(|e| e.to_string())?;
-        let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
-        let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
-        let frame = encode_request(req)?;
-        stream.write_all(&frame).map_err(|e| e.to_string())?;
-        let mut len_buf = [0u8; 4];
-        stream.read_exact(&mut len_buf).map_err(|e| e.to_string())?;
-        let n = u32::from_be_bytes(len_buf) as usize;
-        if n == 0 || n > raven_core::MAX_IPC_FRAME {
-            return Err("IPC_FRAME".into());
-        }
-        let mut body = vec![0u8; n];
-        stream.read_exact(&mut body).map_err(|e| e.to_string())?;
-        let mut frame = Vec::with_capacity(4 + n);
-        frame.extend_from_slice(&len_buf);
-        frame.extend_from_slice(&body);
-        decode_response(&frame)
+#[cfg(unix)]
+fn ipc_request_blocking_with_timeout(
+    sock: &Path,
+    req: &IpcRequest,
+    timeout: Duration,
+) -> Result<IpcResponse, String> {
+    use std::os::unix::net::UnixStream;
+    let mut stream = UnixStream::connect(sock).map_err(|e| e.to_string())?;
+    let _ = stream.set_read_timeout(Some(timeout));
+    let _ = stream.set_write_timeout(Some(timeout));
+    let frame = encode_request(req)?;
+    stream.write_all(&frame).map_err(|e| e.to_string())?;
+    let mut len_buf = [0u8; 4];
+    stream.read_exact(&mut len_buf).map_err(|e| e.to_string())?;
+    let n = u32::from_be_bytes(len_buf) as usize;
+    if n == 0 || n > raven_core::MAX_IPC_FRAME {
+        return Err("IPC_FRAME".into());
     }
-    #[cfg(not(unix))]
-    {
-        let _ = (sock, req);
-        Err("IPC UDS not available on this OS — use Windows named-pipe daemon".into())
-    }
+    let mut body = vec![0u8; n];
+    stream.read_exact(&mut body).map_err(|e| e.to_string())?;
+    let mut frame = Vec::with_capacity(4 + n);
+    frame.extend_from_slice(&len_buf);
+    frame.extend_from_slice(&body);
+    decode_response(&frame)
 }
 
 /// Lab Test A send: PairInit LAN OOB → PairResponse → IndexedSessionStore envelope.
@@ -568,7 +781,9 @@ pub fn run_send_secure(
         return Err(status.into());
     }
 
-    let _ = ensure_mac_lan_daemon(data_dir);
+    // The local daemon is part of the authenticated transport. Never continue
+    // to LanDial after a failed start/readiness probe.
+    let _service = ensure_raven_node_service(data_dir, false)?;
     super::trace_delivery::trace_event(
         "ash/ext.rs:run_send_secure",
         "TRACE_SEND_LAB_PAIR_INIT",
@@ -1449,20 +1664,102 @@ pub fn mailbox_db_path(data_dir: &Path) -> PathBuf {
     data_dir.join("mailbox_store.json")
 }
 
+fn decode_k_route_bytes(mut bytes: Zeroizing<Vec<u8>>) -> Result<Zeroizing<[u8; 32]>, String> {
+    let mut key = Zeroizing::new([0u8; 32]);
+    if bytes.len() == key.len() {
+        key.copy_from_slice(&bytes);
+        return Ok(key);
+    }
+
+    // A single terminal newline is accepted for `printf '%s\n'` and secret
+    // files created by standard tooling. Arbitrary whitespace is not.
+    if bytes.last() == Some(&b'\n') {
+        bytes.pop();
+        if bytes.last() == Some(&b'\r') {
+            bytes.pop();
+        }
+    }
+    if bytes.len() != 64 || !bytes.iter().all(u8::is_ascii_hexdigit) {
+        return Err("K_route must be exactly 32 raw bytes or 64 hex characters".into());
+    }
+    hex::decode_to_slice(bytes.as_slice(), key.as_mut())
+        .map_err(|_| "K_route must be exactly 32 bytes".to_string())?;
+    Ok(key)
+}
+
+#[cfg(unix)]
+fn read_private_k_route_file(path: &Path) -> Result<Zeroizing<Vec<u8>>, String> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+
+    let mut options = std::fs::OpenOptions::new();
+    options
+        .read(true)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+    let file = options
+        .open(path)
+        .map_err(|e| format!("open K_route file {}: {e}", path.display()))?;
+    let metadata = file
+        .metadata()
+        .map_err(|e| format!("inspect K_route file {}: {e}", path.display()))?;
+    if !metadata.file_type().is_file() || metadata.nlink() != 1 {
+        return Err("K_route file must be a regular, non-linked file".into());
+    }
+    // SAFETY: geteuid has no arguments, dereferences no pointers, and has no
+    // preconditions; it only returns the effective UID of this process.
+    let effective_uid = unsafe { libc::geteuid() };
+    if metadata.uid() != effective_uid {
+        return Err("K_route file must be owned by the current user".into());
+    }
+    if metadata.permissions().mode() & 0o777 != 0o600 {
+        return Err("K_route file permissions must be exactly 0600".into());
+    }
+    let mut bytes = Zeroizing::new(Vec::with_capacity(67));
+    file.take(67)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("read K_route file {}: {e}", path.display()))?;
+    if bytes.len() == 67 {
+        return Err("K_route file is too large".into());
+    }
+    Ok(bytes)
+}
+
+#[cfg(not(unix))]
+fn read_private_k_route_file(_path: &Path) -> Result<Zeroizing<Vec<u8>>, String> {
+    Err("K_route file mode cannot be proven on this platform; use --k-route-stdin".into())
+}
+
+/// Read a route key without ever placing it in argv. File inputs fail closed
+/// unless they are owner-only regular files and are opened without symlink
+/// following. The returned allocation zeroizes on drop.
+pub fn read_k_route_key(
+    file: Option<&Path>,
+    from_stdin: bool,
+) -> Result<Zeroizing<[u8; 32]>, String> {
+    let bytes = match (file, from_stdin) {
+        (Some(path), false) => read_private_k_route_file(path)?,
+        (None, true) => {
+            let mut bytes = Zeroizing::new(Vec::with_capacity(67));
+            io::stdin()
+                .take(67)
+                .read_to_end(&mut bytes)
+                .map_err(|e| format!("read K_route from stdin: {e}"))?;
+            if bytes.len() == 67 {
+                return Err("K_route stdin input is too large".into());
+            }
+            bytes
+        }
+        _ => return Err("choose exactly one of --k-route-file or --k-route-stdin".into()),
+    };
+    decode_k_route_bytes(bytes)
+}
+
 pub fn cmd_mailbox_put(
     data_dir: &Path,
-    k_route_hex: &str,
+    k_route: &[u8; 32],
     epoch: u64,
     slot: u64,
     envelope_hex: &str,
 ) {
-    let k = match hex::decode(k_route_hex.trim()) {
-        Ok(v) if !v.is_empty() => v,
-        _ => {
-            eprintln!("k_route_hex required");
-            std::process::exit(1);
-        }
-    };
     let packed = match hex::decode(envelope_hex.trim()) {
         Ok(v) => v,
         Err(e) => {
@@ -1477,7 +1774,7 @@ pub fn cmd_mailbox_put(
             std::process::exit(1);
         }
     };
-    let mtag = mailbox_tag(&k, epoch, slot);
+    let mtag = mailbox_tag(k_route, epoch, slot);
     let store_tag = store_tag_from_mailbox(&mtag);
     let now = now_ms();
     if now < envelope.created_at || now >= envelope.expires_at {
@@ -1516,15 +1813,8 @@ pub fn cmd_mailbox_put(
     );
 }
 
-pub fn cmd_mailbox_get(data_dir: &Path, k_route_hex: &str, epoch: u64, slot: u64) {
-    let k = match hex::decode(k_route_hex.trim()) {
-        Ok(v) if !v.is_empty() => v,
-        _ => {
-            eprintln!("k_route_hex required");
-            std::process::exit(1);
-        }
-    };
-    let tags = mailbox_tags_with_overlap(&k, epoch, slot);
+pub fn cmd_mailbox_get(data_dir: &Path, k_route: &[u8; 32], epoch: u64, slot: u64) {
+    let tags = mailbox_tags_with_overlap(k_route, epoch, slot);
     let mb = match StoreMailbox::load_disk(&mailbox_db_path(data_dir), 64) {
         Ok(value) => value,
         Err(error) => {
@@ -1550,5 +1840,149 @@ pub fn cmd_mailbox_get(data_dir: &Path, k_route_hex: &str, epoch: u64, slot: u64
         println!("{C_DIM}no objects for rotating mailbox tags{C_RESET}");
     } else {
         println!("{C_DIM}retrieved {found} (opaque tags only){C_RESET}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bridge_probe_rejects_stale_endpoint_and_maps_unspecified_to_loopback() {
+        let stale: std::net::SocketAddr = "127.0.0.1:0".parse().expect("stale address");
+        assert!(!bridge_endpoint_is_live(stale));
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("loopback listener");
+        let port = listener.local_addr().expect("listener address").port();
+        let published: std::net::SocketAddr = format!("0.0.0.0:{port}")
+            .parse()
+            .expect("published address");
+        assert!(bridge_endpoint_is_live(published));
+    }
+
+    #[test]
+    fn malformed_sync_contact_is_rejected_before_contact_book_mutation() {
+        let mut local = Vec::new();
+        let malformed = SyncContact {
+            petname: "Mallory".into(),
+            public_tag: "mallory".into(),
+            alias: String::new(),
+            address: "rvn1invalid".into(),
+            pub_hex: "not-a-public-key".into(),
+            pinned: true,
+        };
+        let error = merge_imported_contacts(&mut local, vec![malformed])
+            .expect_err("malformed public key must fail closed");
+        assert!(error.contains("pub_hex"));
+        assert!(local.is_empty(), "invalid row must not enter contacts");
+    }
+
+    #[test]
+    fn sync_contact_requires_address_to_match_public_key() {
+        let key = [0x42; 32];
+        let mut local = Vec::new();
+        let mismatched = SyncContact {
+            petname: "Mallory".into(),
+            public_tag: "mallory".into(),
+            alias: String::new(),
+            address: encode_address(&[0x24; 32]),
+            pub_hex: hex::encode(key),
+            pinned: true,
+        };
+        let error = merge_imported_contacts(&mut local, vec![mismatched])
+            .expect_err("mismatched address must fail closed");
+        assert!(error.contains("address/pub mismatch"));
+        assert!(local.is_empty(), "mismatched row must not enter contacts");
+
+        let valid = SyncContact {
+            petname: "Alice".into(),
+            public_tag: "alice".into(),
+            alias: String::new(),
+            address: encode_address(&key),
+            pub_hex: hex::encode(key),
+            pinned: true,
+        };
+        assert_eq!(
+            merge_imported_contacts(&mut local, vec![valid]).expect("valid contact"),
+            1
+        );
+        assert_eq!(local.len(), 1);
+        assert_eq!(local[0].address, encode_address(&key));
+    }
+
+    #[test]
+    fn auto_started_bridge_port_tracks_nondefault_lan_profiles() {
+        assert_eq!(
+            bridge_listen_for_lan("0.0.0.0:7420").unwrap(),
+            "0.0.0.0:7422"
+        );
+        assert_eq!(
+            bridge_listen_for_lan("127.0.0.1:31001").unwrap(),
+            "127.0.0.1:31003"
+        );
+        assert!(bridge_listen_for_lan("localhost:7420").is_err());
+        assert!(bridge_listen_for_lan("127.0.0.1:65534").is_err());
+    }
+
+    #[test]
+    fn concurrent_service_start_attributes_readiness_to_the_lock_owner() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let lock = dir.path().join(SERVICE_INSTANCE_LOCK_FILE);
+
+        std::fs::write(&lock, b"41001").expect("publish winning service pid");
+        assert_eq!(
+            classify_ready_service_owner(dir.path(), 41001),
+            ReadyServiceOwner::SpawnedChild,
+            "the launcher that won the profile lock must retain its exact child"
+        );
+        assert_eq!(
+            classify_ready_service_owner(dir.path(), 41002),
+            ReadyServiceOwner::OtherProcess,
+            "a simultaneous losing launcher must reuse the winner, not return its losing child"
+        );
+
+        std::fs::write(&lock, b"not-a-pid").expect("publish malformed owner");
+        assert_eq!(
+            classify_ready_service_owner(dir.path(), 41001),
+            ReadyServiceOwner::Unknown,
+            "malformed ownership must never be guessed"
+        );
+    }
+
+    #[test]
+    fn route_key_requires_exactly_32_decoded_bytes() {
+        let raw = decode_k_route_bytes(Zeroizing::new(vec![0xA5; 32])).expect("raw key");
+        assert_eq!(&*raw, &[0xA5; 32]);
+
+        let encoded = format!("{}\n", "3c".repeat(32)).into_bytes();
+        let hex_key = decode_k_route_bytes(Zeroizing::new(encoded)).expect("hex key");
+        assert_eq!(&*hex_key, &[0x3C; 32]);
+
+        assert!(decode_k_route_bytes(Zeroizing::new(vec![0x11; 31])).is_err());
+        assert!(decode_k_route_bytes(Zeroizing::new(vec![b'a'; 66])).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn route_key_file_requires_0600_regular_non_symlink() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let key_file = dir.path().join("route.key");
+        std::fs::write(&key_file, [0x42; 32]).expect("write key");
+        std::fs::set_permissions(&key_file, std::fs::Permissions::from_mode(0o600))
+            .expect("chmod key");
+        let key = read_k_route_key(Some(&key_file), false).expect("secure key file");
+        assert_eq!(&*key, &[0x42; 32]);
+
+        std::fs::set_permissions(&key_file, std::fs::Permissions::from_mode(0o640))
+            .expect("weaken key mode");
+        assert!(read_k_route_key(Some(&key_file), false).is_err());
+
+        std::fs::set_permissions(&key_file, std::fs::Permissions::from_mode(0o600))
+            .expect("restore key mode");
+        let link = dir.path().join("route-link.key");
+        symlink(&key_file, &link).expect("symlink");
+        assert!(read_k_route_key(Some(&link), false).is_err());
     }
 }

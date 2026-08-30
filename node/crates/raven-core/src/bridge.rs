@@ -108,7 +108,7 @@ pub fn decide(packed: &[u8], role: BridgeRole, now_ms: u64, is_duplicate: bool) 
             reason: DropReason::Duplicate,
         };
     }
-    if now_ms > env.expires_at {
+    if now_ms >= env.expires_at {
         return BridgeAction::Drop {
             reason: DropReason::Expired,
         };
@@ -243,6 +243,18 @@ mod tests {
         let packed = env.pack();
         assert_eq!(
             decide(&packed, BridgeRole::Relay, 10, false),
+            BridgeAction::Drop {
+                reason: DropReason::Expired
+            }
+        );
+    }
+
+    #[test]
+    fn exact_expiry_boundary_drops() {
+        let env = sample_env(4, 3, 5);
+        let packed = env.pack();
+        assert_eq!(
+            decide(&packed, BridgeRole::Relay, 5, false),
             BridgeAction::Drop {
                 reason: DropReason::Expired
             }

@@ -26,6 +26,7 @@ encryption.key
 # ============================================
 *.pdf
 *.txt
+!agent_team/requirements.lock.txt
 !README.md
 !FAQ.md
 !DEPLOYMENT.md
@@ -59,6 +60,7 @@ __pycache__/
 *.pyo
 venv/
 .venv/
+agent_team/.venv.rdap-backup.*/
 *.egg-info/
 
 # ============================================
@@ -203,5 +205,6 @@ agent_team/.team/
 # RDAP local wizard state / team repos (contain key seeds)
 agent_team/peers.json
 agent_team/rdap.json
+agent_team/.rdap-state.lock
 agent_team/team-repo/
 node/raven-data/

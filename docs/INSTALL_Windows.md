@@ -11,7 +11,16 @@ cargo build -p raven-core -p raven-node -p ash --release
 .\target\release\ash.exe --data-dir $env:TEMP\raven-data doctor
 ```
 
+The GitHub Windows workflow packages `raven.exe`, `ash.exe`, and
+`raven-node.exe`. It fails closed unless pinned `cargo-about 0.9.1` generates
+`THIRD_PARTY_LICENSES_AND_NOTICES.txt`, and its checksum manifest covers that
+bundle as well as every other packaged file. The unsigned artifact does not
+replace native two-profile transport validation.
+
 Task Scheduler / service helper: `scripts/install/windows_service.ps1`.
+The held helper keeps installer metadata outside the identity profile and runs
+`raven init` before task registration/start; those ordering checks do not clear
+the outstanding native two-profile gate.
 
 ## Unsigned layout from macOS/Linux host
 

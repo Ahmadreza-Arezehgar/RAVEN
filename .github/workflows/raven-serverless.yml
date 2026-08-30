@@ -1,5 +1,4 @@
-# Raven serverless node CI — raven-core / ash / raven-swarm / protocol vectors
-# Local workflow file (§57). Not pushed unless the user requests.
+# Raven serverless node CI — raven-core / ash / raven-swarm / protocol vectors.
 name: Raven Serverless Node
 
 on:
@@ -59,6 +58,9 @@ on:
       - ".github/workflows/raven-serverless.yml"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: raven-serverless-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -67,16 +69,18 @@ jobs:
   messaging-product-boundary:
     name: Messaging-only product boundary
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Refuse public-social product regressions
         run: bash node/scripts/messaging_product_boundary_gate.sh
 
   secret-scan:
     name: Secret pattern scan
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
       - name: Run secret history scan (CI mode)
@@ -85,23 +89,29 @@ jobs:
   rust-linux:
     name: Rust + vectors (Linux)
     runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      # CI uses isolated temporary profiles and has no desktop Secret Service.
+      # The locked-file backend is explicitly debug/CI-only and Release refuses it.
+      RAVEN_IDENTITY_BACKEND: locked-file
     defaults:
       run:
         working-directory: node
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
+          toolchain: 1.98.0
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
         with:
           workspaces: node
       - name: fmt
         run: cargo fmt --all -- --check
       - name: clippy
         run: |
-          cargo clippy -p raven-core -p ash -p raven-node -p raven-swarm --all-targets -- -D warnings
-          cargo clippy -p raven-swarm --all-features --all-targets -- -D warnings
+          cargo clippy --locked -p raven-core -p ash -p raven-node -p raven-swarm --all-targets -- -D warnings
+          cargo clippy --locked -p raven-swarm --all-features --all-targets -- -D warnings
       - name: RustSec active dependency audit
         run: |
           set -euo pipefail
@@ -109,21 +119,21 @@ jobs:
           python3 -m unittest scripts/test_audit_active_dependencies.py
           python3 scripts/audit_active_dependencies.py
       - name: test raven-core + ash
-        run: cargo test -p raven-core -p ash -p raven-node
+        run: cargo test --locked -p raven-core -p ash -p raven-node
       - name: LAN handshake KAT (shared vectors, no live network)
-        run: cargo test -p raven-core --lib lan_
+        run: cargo test --locked -p raven-core --lib lan_
       - name: LAN direct two-node smoke
         run: ./scripts/lan_direct_two_node.sh
       - name: bridge + fuzz smoke
-        run: cargo test -p raven-core --test bridge_v1 --test fuzz_smoke
+        run: cargo test --locked -p raven-core --test bridge_v1 --test fuzz_smoke
       - name: 10,000-message queue reliability gate
-        run: cargo test -p raven-core --test reliability_10k -- --ignored
+        run: cargo test --locked -p raven-core --test reliability_10k -- --ignored
       - name: Deterministic 1,000-node adversarial DTN simulation
         run: |
-          cargo test -p raven-core --test network_sim_1000
-          cargo test --release -p raven-core --test network_sim_1000
+          cargo test --locked -p raven-core --test network_sim_1000
+          cargo test --locked --release -p raven-core --test network_sim_1000
       - name: build swarm
-        run: cargo build -p raven-swarm -p raven-node
+        run: cargo build --locked -p raven-swarm -p raven-node
       - name: experimental mailbox/NAT tests (still production-disabled)
         run: |
           set -euo pipefail
@@ -144,11 +154,11 @@ jobs:
             fi
             rm -f "$log"
           }
-          cargo test -p raven-swarm --all-features --all-targets
-          cargo build --release -p raven-swarm \
+          cargo test --locked -p raven-swarm --all-features --all-targets
+          cargo build --locked --release -p raven-swarm \
             --features experimental-offline-mailbox \
             --bin raven-swarm-mailbox-experimental
-          cargo build --release -p raven-swarm \
+          cargo build --locked --release -p raven-swarm \
             --features experimental-nat-connectivity \
             --bin raven-swarm-connectivity-experimental
           expect_failure_with_message \
@@ -161,10 +171,10 @@ jobs:
       - name: release crypto feature gate
         run: |
           set -euo pipefail
-          cargo build --release -p raven-core -p raven-node -p ash
+          cargo build --locked --release -p raven-core -p raven-node -p ash
           for package in raven-core raven-node ash; do
             log="$(mktemp)"
-            if cargo build --release -p "$package" --features unsafe-demo-crypto >"$log" 2>&1; then
+            if cargo build --locked --release -p "$package" --features unsafe-demo-crypto >"$log" 2>&1; then
               echo "unsafe-demo-crypto unexpectedly linked into $package release" >&2
               rm -f "$log"
               exit 1
@@ -196,11 +206,11 @@ jobs:
           python3 generate_rvn1.py
           git diff --exit-code -- ../../shared-vectors/rvn1
           test -z "$(git ls-files --others --exclude-standard -- ../../shared-vectors/rvn1)"
-      - name: SBOM (cargo tree + cyclonedx if available)
+      - name: SBOM (cargo tree --locked + cyclonedx if available)
         run: |
           set -euo pipefail
           mkdir -p target/sbom
-          cargo tree -p raven-core -p ash -p raven-node -p raven-swarm --prefix depth \
+          cargo tree --locked -p raven-core -p ash -p raven-node -p raven-swarm --prefix depth \
             > target/sbom/raven-cargo-tree.txt
           if cargo install --list 2>/dev/null | grep -q '^cargo-cyclonedx '; then
             cargo cyclonedx -p raven-core --format json --output-cdx target/sbom/raven-core.cdx.json || true
@@ -212,7 +222,7 @@ jobs:
           test -s target/sbom/raven-cargo-tree.txt
           ls -la target/sbom/
       - name: Upload SBOM artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: raven-sbom-linux
           path: node/target/sbom/
@@ -221,6 +231,7 @@ jobs:
   mlkem768-incremental-portable:
     name: ML-KEM-768 incremental (portable)
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: node
@@ -229,10 +240,12 @@ jobs:
       LIBCRUX_DISABLE_SIMD128: "1"
       LIBCRUX_DISABLE_SIMD256: "1"
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.98.0
       - name: Test portable incremental ML-KEM-768
-        run: cargo test -p raven-core --features mlkem768-incremental-lab --lib mlkem768_incremental
+        run: cargo test --locked -p raven-core --features mlkem768-incremental-lab --lib mlkem768_incremental
       - name: Dump portable Encaps1 state
         env:
           RAVEN_DUMP_ENCAPS1_STATE: "1"
@@ -240,12 +253,12 @@ jobs:
         run: |
           set -euo pipefail
           rm -f "$RAVEN_DUMP_ENCAPS1_STATE_PATH"
-          cargo test -p raven-core --features mlkem768-incremental-lab \
+          cargo test --locked -p raven-core --features mlkem768-incremental-lab \
             --lib mlkem768_incremental::feature_smoke::dump_mlkem768_incremental_encaps1_state \
             -- --exact --ignored
           test -s "$RAVEN_DUMP_ENCAPS1_STATE_PATH"
       - name: Upload portable Encaps1 state
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: mlkem768-encaps1-portable
           path: node/target/libcrux-portable/mlkem768-encaps1-state.hex
@@ -265,12 +278,12 @@ jobs:
           python3 -m pip install -q -r protocol/reference/requirements.txt
           python3 -m pytest protocol/reference/tests/test_mlkem768_incremental_check.py -q
       - name: Build incremental ML-KEM-768 FFI (debug)
-        run: cargo build -p raven-mlkem768-incremental-ffi
+        run: cargo build --locked -p raven-mlkem768-incremental-ffi
       - name: Release incremental ML-KEM-768 feature gate
         run: |
           set -euo pipefail
           log="$(mktemp)"
-          if cargo build --release -p raven-core \
+          if cargo build --locked --release -p raven-core \
             --features mlkem768-incremental-lab >"$log" 2>&1; then
             echo "mlkem768-incremental-lab unexpectedly built in release mode" >&2
             rm -f "$log"
@@ -288,6 +301,7 @@ jobs:
   full-braid-lab:
     name: Full Braid Slice 2 lab
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     defaults:
       run:
         working-directory: node
@@ -296,22 +310,29 @@ jobs:
       LIBCRUX_DISABLE_SIMD128: "1"
       LIBCRUX_DISABLE_SIMD256: "1"
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Install protobuf compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends protobuf-compiler
+          protoc --version
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
+          toolchain: 1.98.0
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
         with:
           workspaces: node
           prefix-key: full-braid-lab
       - name: Test Full Braid (Rust)
         run: |
-          cargo test -p raven-core --features full-braid-lab --lib hybrid_ratchet_v2_full_braid
-          cargo test -p raven-fb-ffi --lib
+          cargo test --locked -p raven-core --features full-braid-lab --lib hybrid_ratchet_v2_full_braid
+          cargo test --locked -p raven-core --features full-braid-lab --test adversarial_atsam
+          cargo test --locked -p raven-fb-ffi --lib
       - name: Clippy Full Braid
         run: |
-          cargo clippy -p raven-core --features full-braid-lab --all-targets -- -D warnings
-          cargo clippy -p raven-fb-ffi --all-targets -- -D warnings
+          cargo clippy --locked -p raven-core --features full-braid-lab --all-targets -- -D warnings
+          cargo clippy --locked -p raven-fb-ffi --all-targets -- -D warnings
       - name: rustfmt Full Braid
         run: |
           rustfmt --check crates/raven-core/src/hybrid_ratchet_v2_full_braid/*.rs
@@ -322,12 +343,12 @@ jobs:
           python3 -m pip install -q -r protocol/reference/requirements.txt
           python3 -m pytest protocol/reference/tests/test_full_braid.py -q
       - name: Build Full Braid FFI (debug)
-        run: cargo build -p raven-fb-ffi
+        run: cargo build --locked -p raven-fb-ffi
       - name: Release Full Braid feature gate
         run: |
           set -euo pipefail
           core_log="$(mktemp)"
-          if cargo build --release -p raven-core \
+          if cargo build --locked --release -p raven-core \
             --features full-braid-lab >"$core_log" 2>&1; then
             echo "full-braid-lab unexpectedly built in release mode" >&2
             rm -f "$core_log"
@@ -344,7 +365,7 @@ jobs:
           rm -f "$core_log"
 
           ffi_log="$(mktemp)"
-          if cargo build --release -p raven-fb-ffi --no-default-features >"$ffi_log" 2>&1; then
+          if cargo build --locked --release -p raven-fb-ffi --no-default-features >"$ffi_log" 2>&1; then
             echo "raven-fb-ffi unexpectedly built in release mode" >&2
             rm -f "$ffi_log"
             exit 1
@@ -392,17 +413,25 @@ jobs:
   full-braid-lab-ios:
     name: Full Braid Slice 2 lab (iOS)
     runs-on: macos-14
+    timeout-minutes: 120
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/node/target/full-braid-ios-lab
       LIBCRUX_DISABLE_SIMD128: "1"
       LIBCRUX_DISABLE_SIMD256: "1"
       IPHONEOS_DEPLOYMENT_TARGET: "17.0"
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Install protobuf compiler
+        run: |
+          if ! command -v protoc >/dev/null 2>&1; then
+            brew install protobuf
+          fi
+          protoc --version
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
+          toolchain: 1.98.0
           targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
         with:
           workspaces: node
           prefix-key: full-braid-lab-ios
@@ -419,11 +448,12 @@ jobs:
   full-braid-task0a-provenance:
     name: Full Braid Task 0A provenance (0A.1)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: node
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
       - name: Hermetic SQLCipher regen/verify selftest
@@ -435,20 +465,23 @@ jobs:
   full-braid-task0a-linux:
     name: Full Braid Task 0A Linux (0A.2/0A.4/0A.5)
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     defaults:
       run:
         working-directory: node
     env:
       CARGO_TARGET_DIR: target/full-braid-task0a
       RAVEN_EXPECT_SQLCIPHER_4_17_0: "1"
+      RAVEN_IDENTITY_BACKEND: locked-file
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
+          toolchain: 1.98.0
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
         with:
           workspaces: node
           prefix-key: full-braid-task0a-linux
@@ -461,17 +494,19 @@ jobs:
   full-braid-task0a-macos:
     name: Full Braid Task 0A macOS + iOS (0A.2–0A.4)
     runs-on: macos-14
+    timeout-minutes: 120
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/node/target/full-braid-task0a-macos
       RAVEN_EXPECT_SQLCIPHER_4_17_0: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
+          toolchain: 1.98.0
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
         with:
           workspaces: node
           prefix-key: full-braid-task0a-macos
@@ -484,6 +519,7 @@ jobs:
   full-braid-task0a-windows:
     name: Full Braid Task 0A Windows MSVC (0A.2/0A.4)
     runs-on: windows-latest
+    timeout-minutes: 90
     defaults:
       run:
         working-directory: node
@@ -492,9 +528,11 @@ jobs:
       CARGO_TARGET_DIR: target/full-braid-task0a-windows
       RAVEN_EXPECT_SQLCIPHER_4_17_0: "1"
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.98.0
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
         with:
           workspaces: node
           prefix-key: full-braid-task0a-windows
@@ -505,6 +543,7 @@ jobs:
   mlkem768-incremental-avx2:
     name: ML-KEM-768 incremental (AVX2)
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     needs: mlkem768-incremental-portable
     defaults:
       run:
@@ -512,8 +551,10 @@ jobs:
     env:
       CARGO_TARGET_DIR: target/libcrux-avx2
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.98.0
       - name: Confirm AVX2 available
         run: |
           set -euo pipefail
@@ -526,11 +567,11 @@ jobs:
         env:
           RAVEN_REQUIRE_AVX2: "1"
         run: |
-          cargo test -p raven-core --features mlkem768-incremental-lab \
+          cargo test --locked -p raven-core --features mlkem768-incremental-lab \
             --lib mlkem768_incremental::feature_smoke::require_avx2_when_gated \
             -- --exact --nocapture
       - name: Test AVX2 incremental ML-KEM-768
-        run: cargo test -p raven-core --features mlkem768-incremental-lab --lib mlkem768_incremental
+        run: cargo test --locked -p raven-core --features mlkem768-incremental-lab --lib mlkem768_incremental
       - name: Dump AVX2 Encaps1 state
         env:
           RAVEN_DUMP_ENCAPS1_STATE: "1"
@@ -538,12 +579,12 @@ jobs:
         run: |
           set -euo pipefail
           rm -f "$RAVEN_DUMP_ENCAPS1_STATE_PATH"
-          cargo test -p raven-core --features mlkem768-incremental-lab \
+          cargo test --locked -p raven-core --features mlkem768-incremental-lab \
             --lib mlkem768_incremental::feature_smoke::dump_mlkem768_incremental_encaps1_state \
             -- --exact --ignored
           test -s "$RAVEN_DUMP_ENCAPS1_STATE_PATH"
       - name: Download portable Encaps1 state
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: mlkem768-encaps1-portable
           path: node/target/libcrux-portable
@@ -556,6 +597,7 @@ jobs:
   mlkem768-incremental-neon:
     name: ML-KEM-768 incremental (NEON)
     runs-on: macos-14
+    timeout-minutes: 45
     needs: mlkem768-incremental-portable
     defaults:
       run:
@@ -563,12 +605,14 @@ jobs:
     env:
       CARGO_TARGET_DIR: target/libcrux-neon
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.98.0
       - name: Confirm arm64 runner
         run: test "$(uname -m)" = arm64
       - name: Test NEON incremental ML-KEM-768
-        run: cargo test -p raven-core --features mlkem768-incremental-lab --lib mlkem768_incremental
+        run: cargo test --locked -p raven-core --features mlkem768-incremental-lab --lib mlkem768_incremental
       - name: Dump NEON Encaps1 state
         env:
           RAVEN_DUMP_ENCAPS1_STATE: "1"
@@ -576,12 +620,12 @@ jobs:
         run: |
           set -euo pipefail
           rm -f "$RAVEN_DUMP_ENCAPS1_STATE_PATH"
-          cargo test -p raven-core --features mlkem768-incremental-lab \
+          cargo test --locked -p raven-core --features mlkem768-incremental-lab \
             --lib mlkem768_incremental::feature_smoke::dump_mlkem768_incremental_encaps1_state \
             -- --exact --ignored
           test -s "$RAVEN_DUMP_ENCAPS1_STATE_PATH"
       - name: Download portable Encaps1 state
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: mlkem768-encaps1-portable
           path: node/target/libcrux-portable
@@ -594,21 +638,24 @@ jobs:
   rust-macos:
     name: Rust (macOS)
     runs-on: macos-latest
+    timeout-minutes: 90
     defaults:
       run:
         working-directory: node
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.98.0
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
         with:
           workspaces: node
       - name: test raven-core + ash + swarm build
         run: |
-          cargo test -p raven-core -p ash -p raven-node
-          cargo test -p raven-core --lib lan_
-          cargo build -p raven-swarm -p raven-node
-          cargo build --release -p raven-core -p raven-node -p ash
+          cargo test --locked -p raven-core -p ash -p raven-node
+          cargo test --locked -p raven-core --lib lan_
+          cargo build --locked -p raven-swarm -p raven-node
+          cargo build --locked --release -p raven-core -p raven-node -p ash
       - name: libp2p swarm smoke
         run: ./scripts/libp2p_swarm_smoke.sh
       - name: bootstrap manual-peer smoke
@@ -617,20 +664,23 @@ jobs:
   rust-windows:
     name: Rust (Windows)
     runs-on: windows-latest
+    timeout-minutes: 90
     defaults:
       run:
         working-directory: node
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.98.0
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
         with:
           workspaces: node
       - name: test raven-core + ash (no bash smoke scripts)
         run: |
-          cargo test -p raven-core -p ash -p raven-node
-          cargo build -p raven-node -p raven-swarm
-          cargo build --release -p raven-core -p raven-node -p ash
+          cargo test --locked -p raven-core -p ash -p raven-node
+          cargo build --locked -p raven-node -p raven-swarm
+          cargo build --locked --release -p raven-core -p raven-node -p ash
       - name: PowerShell install script syntax check
         shell: pwsh
         run: |
@@ -638,8 +688,10 @@ jobs:
           $p = "scripts/install/windows_service.ps1"
           if (-not (Test-Path $p)) { throw "missing $p" }
           # Parse-only: ensure script is well-formed PowerShell
+          $tokens = $null
+          $errs = $null
           $null = [System.Management.Automation.Language.Parser]::ParseFile(
-            (Resolve-Path $p), [ref]$null, [ref]$errs)
+            (Resolve-Path $p), [ref]$tokens, [ref]$errs)
           if ($errs) { $errs | ForEach-Object { $_ }; throw "parse errors" }
           Write-Host "windows_service.ps1 OK"
       # bash libp2p/bootstrap smokes are Linux/macOS-only on this workflow.
@@ -647,12 +699,13 @@ jobs:
   go-bridge:
     name: Go libp2p bridge security
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: ios-native/RAVEN/Libp2pBridge
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
           go-version-file: ios-native/RAVEN/Libp2pBridge/go.mod
           cache-dependency-path: ios-native/RAVEN/Libp2pBridge/go.sum
@@ -664,11 +717,26 @@ jobs:
   ios-security:
     name: iOS protocol security tests
     runs-on: macos-latest
+    timeout-minutes: 120
     defaults:
       run:
         working-directory: ios-native/RAVEN
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version-file: ios-native/RAVEN/Libp2pBridge/go.mod
+          cache-dependency-path: ios-native/RAVEN/Libp2pBridge/go.sum
+      - name: Build the required libp2p XCFramework
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/go/bin:$PATH"
+          MOBILE_VERSION="v0.0.0-20260611195102-4dd8f1dbf5d2"
+          go install "golang.org/x/mobile/cmd/gomobile@${MOBILE_VERSION}"
+          go install "golang.org/x/mobile/cmd/gobind@${MOBILE_VERSION}"
+          gomobile init
+          bash Libp2pBridge/build-xcframework.sh
+          test -d Libp2pBridge/RavenLibp2p.xcframework
       - name: Select an available iOS simulator
         id: simulator
         run: |

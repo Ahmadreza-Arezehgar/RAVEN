@@ -8,7 +8,7 @@
 use crate::bridge::{prepare_forward, BridgeRole, DropReason, EnvelopeIdentity};
 use crate::envelope::{EnvType, Envelope};
 use crate::forward_queue::{
-    ForwardItem, ForwardQueue, ForwardQueueError, ForwardState, PeerRateDecision,
+    ForwardItem, ForwardQueue, ForwardQueueError, ForwardState, PeerRateDecision, SeenAdmission,
     MAX_ENVELOPE_BYTES,
 };
 use crate::transport::{plan_paths, select_path, PathChoice, PathContext, TransportKind};
@@ -136,14 +136,22 @@ impl MessageRouter {
                 reason: DropReason::UnsupportedType,
             };
         }
-        if inbound.now_ms > env.expires_at {
+        if inbound.now_ms >= env.expires_at {
             return RouterOutcome::Dropped {
                 reason: DropReason::Expired,
             };
         }
+        // Replay state is bounded to RELAY_SEEN_TTL_MS. Refuse an object whose
+        // remaining authenticated lifetime outlives that guard; otherwise it
+        // could become forwardable again while its signed expiry is still live.
+        if env.expires_at.saturating_sub(inbound.now_ms) > crate::forward_queue::RELAY_SEEN_TTL_MS {
+            return RouterOutcome::Dropped {
+                reason: DropReason::Malformed,
+            };
+        }
 
         let identity = EnvelopeIdentity::from_envelope(&env);
-        let dup = match queue.object_was_seen(&identity.object_digest) {
+        let dup = match queue.object_was_seen_at(&identity.object_digest, inbound.now_ms) {
             Ok(d) => d,
             Err(e) => return RouterOutcome::Error(e.to_string()),
         };
@@ -229,21 +237,49 @@ impl MessageRouter {
             expires_at_ms: env.expires_at,
             previous_hop: inbound.previous_hop.clone(),
         };
-        if let Err(e) = queue.enqueue(&item) {
-            return match e {
-                ForwardQueueError::QueueFull(_) => RouterOutcome::Dropped {
-                    reason: DropReason::Malformed,
-                },
-                other => RouterOutcome::Error(other.to_string()),
+
+        // `store=off` is a strict no-custody policy. Keep only bounded replay
+        // metadata and offer the immutable object to an immediately available
+        // carrier; never write a queued/in-flight custody row, even briefly.
+        if !self.store_enabled {
+            match queue.mark_object_seen(
+                &identity.object_digest,
+                inbound.now_ms,
+                inbound.ingress,
+                &inbound.previous_hop,
+            ) {
+                Ok(SeenAdmission::Inserted) => {}
+                Ok(SeenAdmission::AlreadySeen) => {
+                    return RouterOutcome::Dropped {
+                        reason: DropReason::Duplicate,
+                    };
+                }
+                Err(error) => return RouterOutcome::Error(error.to_string()),
+            }
+            return RouterOutcome::ForwardNow {
+                packed,
+                egress,
+                identity,
             };
         }
-        if let Err(e) = queue.mark_object_seen(
-            &identity.object_digest,
-            inbound.now_ms,
-            inbound.ingress,
-            &inbound.previous_hop,
-        ) {
-            return RouterOutcome::Error(e.to_string());
+
+        match queue.enqueue_and_mark_seen(&item) {
+            Ok(SeenAdmission::Inserted) => {}
+            Ok(SeenAdmission::AlreadySeen) => {
+                return RouterOutcome::Dropped {
+                    reason: DropReason::Duplicate,
+                };
+            }
+            Err(e) => {
+                return match e {
+                    ForwardQueueError::QueueFull(_) | ForwardQueueError::PeerQueueFull(_) => {
+                        RouterOutcome::Dropped {
+                            reason: DropReason::RateLimited,
+                        }
+                    }
+                    other => RouterOutcome::Error(other.to_string()),
+                };
+            }
         }
 
         // If store-only path or egress radio "down", leave queued.
@@ -251,7 +287,7 @@ impl MessageRouter {
             TransportKind::Lan | TransportKind::Internet => self.local_has_internet,
             TransportKind::Ble | TransportKind::MockBle => self.local_has_ble,
         };
-        if !egress_ready && self.store_enabled {
+        if !egress_ready {
             return RouterOutcome::QueuedForForward {
                 message_id: env.message_id,
                 egress,
@@ -279,7 +315,7 @@ impl MessageRouter {
                 let _ = queue.mark_object_state(&item.object_digest, ForwardState::Failed);
                 continue;
             };
-            if now_ms > env.expires_at {
+            if now_ms >= env.expires_at {
                 let _ = queue.mark_object_state(&item.object_digest, ForwardState::Expired);
                 continue;
             }
@@ -341,7 +377,7 @@ mod tests {
             local_has_ble: true,
             ..Default::default()
         };
-        let (packed, _) = pack_msg(5, i64::MAX as u64, b"opaque");
+        let (packed, _) = pack_msg(5, crate::forward_queue::RELAY_SEEN_TTL_MS, b"opaque");
         let before = EnvelopeIdentity::from_envelope(&Envelope::unpack(&packed).unwrap());
         match router.handle_inbound(
             &q,
@@ -368,6 +404,112 @@ mod tests {
     }
 
     #[test]
+    fn exact_expiry_boundary_is_never_admitted_or_forwarded() {
+        let dir = tempdir().unwrap();
+        let q = ForwardQueue::open(&dir.path().join("f.sqlite")).unwrap();
+        let router = MessageRouter {
+            bridge_enabled: true,
+            endpoint_enabled: false,
+            local_has_internet: true,
+            local_has_ble: true,
+            ..Default::default()
+        };
+        let (packed, _) = pack_msg(5, 100, b"already-expired-at-boundary");
+        assert!(matches!(
+            router.handle_inbound(
+                &q,
+                InboundEnvelope {
+                    packed,
+                    ingress: TransportKind::MockBle,
+                    previous_hop: "boundary-peer".into(),
+                    now_ms: 100,
+                },
+                true,
+            ),
+            RouterOutcome::Dropped {
+                reason: DropReason::Expired
+            }
+        ));
+        assert_eq!(q.count_all().unwrap(), 0);
+    }
+
+    #[test]
+    fn relay_lifetime_matches_seen_guard_at_exact_seven_day_boundary() {
+        let dir = tempdir().unwrap();
+        let q = ForwardQueue::open(&dir.path().join("f.sqlite")).unwrap();
+        let router = MessageRouter {
+            bridge_enabled: true,
+            store_enabled: false,
+            endpoint_enabled: false,
+            ..Default::default()
+        };
+        let now = 100;
+        let expiry = now + crate::forward_queue::RELAY_SEEN_TTL_MS;
+        let (boundary, _) = pack_msg(5, expiry, b"seven-day-boundary");
+        assert!(matches!(
+            router.handle_inbound(
+                &q,
+                InboundEnvelope {
+                    packed: boundary.clone(),
+                    ingress: TransportKind::Lan,
+                    previous_hop: "first".into(),
+                    now_ms: now,
+                },
+                true,
+            ),
+            RouterOutcome::ForwardNow { .. }
+        ));
+        assert!(matches!(
+            router.handle_inbound(
+                &q,
+                InboundEnvelope {
+                    packed: boundary.clone(),
+                    ingress: TransportKind::Lan,
+                    previous_hop: "replay".into(),
+                    now_ms: expiry - 1,
+                },
+                true,
+            ),
+            RouterOutcome::Dropped {
+                reason: DropReason::Duplicate
+            }
+        ));
+        assert!(matches!(
+            router.handle_inbound(
+                &q,
+                InboundEnvelope {
+                    packed: boundary,
+                    ingress: TransportKind::Lan,
+                    previous_hop: "expired".into(),
+                    now_ms: expiry,
+                },
+                true,
+            ),
+            RouterOutcome::Dropped {
+                reason: DropReason::Expired
+            }
+        ));
+
+        let (too_long, _) = pack_msg(5, expiry + 1, b"too-long");
+        assert!(matches!(
+            router.handle_inbound(
+                &q,
+                InboundEnvelope {
+                    packed: too_long,
+                    ingress: TransportKind::Lan,
+                    previous_hop: "too-long".into(),
+                    now_ms: now,
+                },
+                true,
+            ),
+            RouterOutcome::Dropped {
+                reason: DropReason::Malformed
+            }
+        ));
+        assert_eq!(q.count_all().unwrap(), 0);
+    }
+
+    #[test]
     fn store_when_internet_down() {
         let dir = tempdir().unwrap();
         let q = ForwardQueue::open(&dir.path().join("f.sqlite")).unwrap();
@@ -379,7 +521,7 @@ mod tests {
             local_has_ble: true,
             ..Default::default()
         };
-        let (packed, _) = pack_msg(5, i64::MAX as u64, b"opaque");
+        let (packed, _) = pack_msg(5, crate::forward_queue::RELAY_SEEN_TTL_MS, b"opaque");
         match router.handle_inbound(
             &q,
             InboundEnvelope {
@@ -399,6 +541,136 @@ mod tests {
     }
 
     #[test]
+    fn store_off_never_creates_durable_custody() {
+        let dir = tempdir().unwrap();
+        let q = ForwardQueue::open(&dir.path().join("f.sqlite")).unwrap();
+        let router = MessageRouter {
+            bridge_enabled: true,
+            store_enabled: false,
+            endpoint_enabled: false,
+            local_has_internet: true,
+            local_has_ble: true,
+            ..Default::default()
+        };
+        let (packed, _) = pack_msg(
+            5,
+            crate::forward_queue::RELAY_SEEN_TTL_MS,
+            b"best-effort-only",
+        );
+        assert!(matches!(
+            router.handle_inbound(
+                &q,
+                InboundEnvelope {
+                    packed,
+                    ingress: TransportKind::MockBle,
+                    previous_hop: "no-puller".into(),
+                    now_ms: 10,
+                },
+                true,
+            ),
+            RouterOutcome::ForwardNow { .. }
+        ));
+        assert_eq!(q.count_all().unwrap(), 0);
+        assert_eq!(q.count_pending().unwrap(), 0);
+    }
+
+    #[test]
+    fn full_seen_cache_preserves_active_replay_and_cannot_commit_untracked_custody() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("f.sqlite");
+        let q = ForwardQueue::open(&path).unwrap();
+        let store_off = MessageRouter {
+            bridge_enabled: true,
+            store_enabled: false,
+            endpoint_enabled: false,
+            ..Default::default()
+        };
+        let (active_replay, _) =
+            pack_msg(5, crate::forward_queue::RELAY_SEEN_TTL_MS, b"active-replay");
+        let active_digest =
+            crate::bridge::authenticated_object_digest(&Envelope::unpack(&active_replay).unwrap());
+        assert!(matches!(
+            store_off.handle_inbound(
+                &q,
+                InboundEnvelope {
+                    packed: active_replay.clone(),
+                    ingress: TransportKind::MockBle,
+                    previous_hop: "first-peer".into(),
+                    now_ms: 1,
+                },
+                true,
+            ),
+            RouterOutcome::ForwardNow { .. }
+        ));
+        for i in 0..(crate::forward_queue::MAX_RELAY_SEEN_OBJECTS - 1) {
+            let mut object_digest = [0u8; 32];
+            object_digest[..8].copy_from_slice(&(i as u64).to_be_bytes());
+            object_digest[31] = 0xF0;
+            if object_digest == active_digest {
+                object_digest[30] = 1;
+            }
+            assert_eq!(
+                q.mark_object_seen(
+                    &object_digest,
+                    i as u64 + 1,
+                    TransportKind::Lan,
+                    "cache-fill"
+                )
+                .unwrap(),
+                SeenAdmission::Inserted
+            );
+        }
+        assert!(matches!(
+            store_off.handle_inbound(
+                &q,
+                InboundEnvelope {
+                    packed: active_replay,
+                    ingress: TransportKind::MockBle,
+                    previous_hop: "replay-peer".into(),
+                    now_ms: 10_000,
+                },
+                true,
+            ),
+            RouterOutcome::Dropped {
+                reason: DropReason::Duplicate
+            }
+        ));
+
+        let router = MessageRouter {
+            bridge_enabled: true,
+            store_enabled: true,
+            endpoint_enabled: false,
+            ..Default::default()
+        };
+        let (packed, _) = pack_msg(
+            5,
+            crate::forward_queue::RELAY_SEEN_TTL_MS,
+            b"must-not-be-orphaned",
+        );
+        assert!(matches!(
+            router.handle_inbound(
+                &q,
+                InboundEnvelope {
+                    packed,
+                    ingress: TransportKind::MockBle,
+                    previous_hop: "new-peer".into(),
+                    now_ms: 10_000,
+                },
+                true,
+            ),
+            RouterOutcome::Error(ref error) if error.contains("replay cache full")
+        ));
+        assert_eq!(q.count_all().unwrap(), 0);
+        drop(q);
+
+        let reopened = ForwardQueue::open(&path).unwrap();
+        assert!(router
+            .recover_pending(&reopened, 10_001)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
     fn duplicate_dropped() {
         let dir = tempdir().unwrap();
         let q = ForwardQueue::open(&dir.path().join("f.sqlite")).unwrap();
@@ -407,7 +679,7 @@ mod tests {
             endpoint_enabled: false,
             ..Default::default()
         };
-        let (packed, _) = pack_msg(5, i64::MAX as u64, b"opaque");
+        let (packed, _) = pack_msg(5, crate::forward_queue::RELAY_SEEN_TTL_MS, b"opaque");
         let _ = router.handle_inbound(
             &q,
             InboundEnvelope {
@@ -444,8 +716,10 @@ mod tests {
             endpoint_enabled: false,
             ..Default::default()
         };
-        let (attacker_variant, _) = pack_msg(5, i64::MAX as u64, b"forged-first");
-        let (valid_variant, _) = pack_msg(5, i64::MAX as u64, b"valid-later");
+        let (attacker_variant, _) =
+            pack_msg(5, crate::forward_queue::RELAY_SEEN_TTL_MS, b"forged-first");
+        let (valid_variant, _) =
+            pack_msg(5, crate::forward_queue::RELAY_SEEN_TTL_MS, b"valid-later");
 
         assert!(matches!(
             router.handle_inbound(
@@ -480,7 +754,7 @@ mod tests {
     fn recover_after_enqueue() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("f.sqlite");
-        let (packed, _) = pack_msg(5, i64::MAX as u64, b"opaque");
+        let (packed, _) = pack_msg(5, crate::forward_queue::RELAY_SEEN_TTL_MS, b"opaque");
         let mid = Envelope::unpack(&packed).unwrap().message_id;
         {
             let q = ForwardQueue::open(&path).unwrap();

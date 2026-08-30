@@ -67,7 +67,11 @@ enum FrameReadError {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "raven-node", about = "RAVEN serverless local node")]
+#[command(
+    name = "raven-node",
+    version = env!("CARGO_PKG_VERSION"),
+    about = "RAVEN serverless local node"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Commands,
@@ -191,6 +195,15 @@ enum Commands {
         lan_listen: String,
         #[arg(long, default_value = raven_core::DEFAULT_BLE_LISTEN)]
         ble_listen: String,
+        /// Authenticated bridge/pull listener, separate from secure endpoint LAN.
+        /// This is reachable on the LAN by default but still requires Raven's
+        /// signed bridge-pull authentication before queued objects are released.
+        #[arg(long, default_value = "0.0.0.0:7422")]
+        bridge_listen: String,
+        /// Also publish the actual bridge address to this path. The canonical
+        /// <data-dir>/service-bridge.addr is always written for ash readiness.
+        #[arg(long)]
+        write_bridge_addr: Option<PathBuf>,
         #[arg(long, default_value_t = 0)]
         timeout_secs: u64,
     },
@@ -209,11 +222,49 @@ fn queue_path(data_dir: &Path) -> PathBuf {
     data_dir.join("queue.sqlite")
 }
 
-fn read_bridge_status(data_dir: &Path) -> BridgeStatusSnapshot {
+/// A single `flush --peer` transport must never receive ciphertext queued for
+/// another Raven identity. Validate the whole batch before opening any socket
+/// so a mixed-recipient outbox fails without a partial disclosure.
+fn pending_for_flush_recipient(
+    pending: Vec<QueueItem>,
+    peer_pub: &[u8; 32],
+) -> Result<Vec<QueueItem>, String> {
+    let expected = raven_core::encode_address(peer_pub);
+    if pending.iter().any(|item| item.peer_addr != expected) {
+        return Err(
+            "outbox contains pending objects for another recipient; refusing mixed-recipient flush"
+                .into(),
+        );
+    }
+    Ok(pending)
+}
+
+fn read_bridge_status(data_dir: &Path) -> Result<BridgeStatusSnapshot, String> {
     let policy = load_policy(data_dir);
-    let (pending, total) =
-        ForwardQueue::inspect_counts(&bridge_run::forward_queue_path(data_dir)).unwrap_or((0, 0));
-    BridgeStatusSnapshot::from_policy(&policy, &["lan", "mock_ble"], pending, total)
+    let queue_path = bridge_run::forward_queue_path(data_dir);
+    let (pending, total) = ForwardQueue::inspect_counts(&queue_path).map_err(|error| {
+        format!(
+            "inspect bridge custody queue {}: {error}",
+            queue_path.display()
+        )
+    })?;
+    Ok(BridgeStatusSnapshot::from_policy(
+        &policy,
+        &["lan", "mock_ble"],
+        pending,
+        total,
+    ))
+}
+
+fn remove_live_publication(path: Option<&Path>) {
+    let Some(path) = path else {
+        return;
+    };
+    if let Err(error) = std::fs::remove_file(path) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            eprintln!("remove stale live publication {}: {error}", path.display());
+        }
+    }
 }
 
 fn load_or_err(data_dir: &Path) -> Result<Identity, String> {
@@ -224,6 +275,107 @@ fn init_identity(data_dir: &Path) -> Result<Identity, String> {
     raven_core::load_or_create_identity(data_dir)
         .map(|(id, _)| id)
         .map_err(|e| e.to_string())
+}
+
+/// Held for the full lifetime of an IPC/service daemon so a second process can
+/// never unlink or replace the first process's profile IPC endpoint.
+#[cfg(any(unix, windows))]
+struct ServiceInstanceLock {
+    _file: std::fs::File,
+}
+
+const SERVICE_INSTANCE_LOCK_FILE: &str = "raven-node.instance.lock";
+
+fn publish_service_instance_owner(file: &mut std::fs::File, path: &Path) -> Result<(), String> {
+    use std::io::{Seek, SeekFrom, Write};
+
+    file.seek(SeekFrom::Start(0))
+        .map_err(|error| format!("seek service instance lock {}: {error}", path.display()))?;
+    file.set_len(0)
+        .map_err(|error| format!("truncate service instance lock {}: {error}", path.display()))?;
+    file.write_all(std::process::id().to_string().as_bytes())
+        .map_err(|error| format!("publish service owner in {}: {error}", path.display()))?;
+    file.sync_data()
+        .map_err(|error| format!("sync service owner in {}: {error}", path.display()))?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn acquire_service_instance_lock(data_dir: &Path) -> Result<ServiceInstanceLock, String> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
+    let path = data_dir.join(SERVICE_INSTANCE_LOCK_FILE);
+    let mut options = std::fs::OpenOptions::new();
+    options
+        .read(true)
+        .write(true)
+        .create(true)
+        .mode(0o600)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+    let mut file = options
+        .open(&path)
+        .map_err(|error| format!("open service instance lock {}: {error}", path.display()))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("inspect service instance lock {}: {error}", path.display()))?;
+    if !metadata.file_type().is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.nlink() != 1
+        || metadata.mode() & 0o777 != 0o600
+    {
+        return Err(format!(
+            "service instance lock {} must be a mode-0600 regular, non-symlink file with one link",
+            path.display()
+        ));
+    }
+
+    // SAFETY: `file` owns a valid descriptor for the duration of the call and
+    // remains stored in ServiceInstanceLock while the daemon is running.
+    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if result != 0 {
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::WouldBlock {
+            return Err(format!(
+                "another raven-node service is already running for {}",
+                data_dir.display()
+            ));
+        }
+        return Err(format!("lock service instance {}: {error}", path.display()));
+    }
+    publish_service_instance_owner(&mut file, &path)?;
+    Ok(ServiceInstanceLock { _file: file })
+}
+
+#[cfg(windows)]
+fn acquire_service_instance_lock(data_dir: &Path) -> Result<ServiceInstanceLock, String> {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    // Permit read-only ownership probes from `ash`, while denying every
+    // competing writer/deleter. A second raven-node requests write access and
+    // therefore still fails with ERROR_SHARING_VIOLATION.
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    let path = data_dir.join(SERVICE_INSTANCE_LOCK_FILE);
+    let mut options = std::fs::OpenOptions::new();
+    // The path may remain after a crash, but becomes writable as soon as the
+    // owning process exits, so stale lock files never wedge the profile.
+    options
+        .read(true)
+        .write(true)
+        .create(true)
+        .share_mode(FILE_SHARE_READ);
+    let mut file = options.open(&path).map_err(|error| {
+        if matches!(error.raw_os_error(), Some(32 | 33)) {
+            format!(
+                "another raven-node service is already running for {}",
+                data_dir.display()
+            )
+        } else {
+            format!("open service instance lock {}: {error}", path.display())
+        }
+    })?;
+    publish_service_instance_owner(&mut file, &path)?;
+    Ok(ServiceInstanceLock { _file: file })
 }
 
 async fn write_frame_with_timeout(
@@ -312,6 +464,12 @@ fn parse_pub_hex(s: &str) -> Result<[u8; 32], String> {
     let mut a = [0u8; 32];
     a.copy_from_slice(&v);
     Ok(a)
+}
+
+fn parse_optional_pub_hex(flag: &str, value: Option<&str>) -> Result<Option<[u8; 32]>, String> {
+    value
+        .map(|raw| parse_pub_hex(raw).map_err(|error| format!("{flag}: {error}")))
+        .transpose()
 }
 
 fn build_message_envelope(
@@ -472,7 +630,7 @@ impl NodeState {
 
     fn handle_inbound(&mut self, raw: &[u8]) -> Result<InboundOutcome, String> {
         let env = Envelope::unpack(raw).ok_or_else(|| "malformed envelope".to_string())?;
-        if now_ms() > env.expires_at {
+        if now_ms() >= env.expires_at {
             return Ok(InboundOutcome::Ignored);
         }
 
@@ -689,11 +847,48 @@ mod security_tests {
     fn status_on_fresh_path_is_strictly_read_only() {
         let dir = tempdir().unwrap();
         let profile = dir.path().join("never-created-profile");
-        let snapshot = read_bridge_status(&profile);
+        let snapshot = read_bridge_status(&profile).unwrap();
         assert_eq!(snapshot.forward_queue_pending, 0);
         assert_eq!(snapshot.forward_queue_total, 0);
         assert!(!profile.exists());
         assert!(!bridge_run::forward_queue_path(&profile).exists());
+    }
+
+    #[test]
+    fn status_fails_closed_on_corrupt_custody_database() {
+        let dir = tempdir().unwrap();
+        std::fs::write(bridge_run::forward_queue_path(dir.path()), b"not sqlite").unwrap();
+        let error = read_bridge_status(dir.path()).expect_err("corrupt custody DB must be visible");
+        assert!(error.contains("inspect bridge custody queue"));
+    }
+
+    #[test]
+    fn flush_batch_rejects_mixed_recipients_before_network_io() {
+        let intended = Identity::from_seed(&[0xD1; 32]);
+        let other = Identity::from_seed(&[0xD2; 32]);
+        let intended_address = intended.address();
+        let item = |message_id: [u8; 16], peer_addr: String| QueueItem {
+            message_id,
+            packed_envelope: vec![1, 2, 3],
+            peer_addr,
+            state: DeliveryState::Queued,
+            created_at_ms: 1,
+        };
+        let one = item([0xD3; 16], intended_address.clone());
+        let two = item([0xD4; 16], intended_address);
+        assert_eq!(
+            pending_for_flush_recipient(vec![one.clone(), two], &intended.public_key_bytes())
+                .unwrap()
+                .len(),
+            2
+        );
+
+        let err = pending_for_flush_recipient(
+            vec![one, item([0xD5; 16], other.address())],
+            &intended.public_key_bytes(),
+        )
+        .unwrap_err();
+        assert!(err.contains("mixed-recipient flush"));
     }
 
     #[cfg(not(feature = "unsafe-demo-crypto"))]
@@ -1171,6 +1366,11 @@ async fn main() {
                 eprintln!("{e}");
                 std::process::exit(1);
             });
+            #[cfg(any(unix, windows))]
+            let _instance_lock = acquire_service_instance_lock(&data_dir).unwrap_or_else(|error| {
+                eprintln!("run refused: {error}");
+                std::process::exit(1);
+            });
             if let Some(path) = write_pub {
                 let _ = std::fs::write(path, hex::encode(identity.public_key_bytes()));
             }
@@ -1197,13 +1397,17 @@ async fn main() {
                 eprintln!("queue: {e}");
                 std::process::exit(1);
             });
-            let peer_pub = peer_pub_hex.as_ref().and_then(|s| parse_pub_hex(s).ok());
-            let origin_pub = origin_pub_hex.as_ref().and_then(|s| parse_pub_hex(s).ok());
-            let ack_pub = ack_pub_hex.as_ref().and_then(|s| parse_pub_hex(s).ok());
-            let seal_to = seal_to_pub_hex
-                .as_ref()
-                .and_then(|s| parse_pub_hex(s).ok())
-                .or(peer_pub);
+            let parse_optional_or_exit = |flag: &str, value: Option<&String>| {
+                parse_optional_pub_hex(flag, value.map(String::as_str)).unwrap_or_else(|error| {
+                    eprintln!("{error}");
+                    std::process::exit(2);
+                })
+            };
+            let peer_pub = parse_optional_or_exit("--peer-pub-hex", peer_pub_hex.as_ref());
+            let origin_pub = parse_optional_or_exit("--origin-pub-hex", origin_pub_hex.as_ref());
+            let ack_pub = parse_optional_or_exit("--ack-pub-hex", ack_pub_hex.as_ref());
+            let seal_to =
+                parse_optional_or_exit("--seal-to-pub-hex", seal_to_pub_hex.as_ref()).or(peer_pub);
             let state = Arc::new(Mutex::new(NodeState {
                 data_dir: data_dir.clone(),
                 identity,
@@ -1419,6 +1623,15 @@ async fn main() {
             write_status,
             timeout_secs,
         } => {
+            init_identity(&data_dir).unwrap_or_else(|error| {
+                eprintln!("bridge identity preflight failed: {error}");
+                std::process::exit(1);
+            });
+            #[cfg(any(unix, windows))]
+            let _instance_lock = acquire_service_instance_lock(&data_dir).unwrap_or_else(|error| {
+                eprintln!("bridge refused: {error}");
+                std::process::exit(1);
+            });
             if let Err(e) = bridge_run::run_bridge_daemon(
                 data_dir,
                 lan_listen,
@@ -1435,7 +1648,10 @@ async fn main() {
             }
         }
         Commands::Status { data_dir } => {
-            let snap = read_bridge_status(&data_dir);
+            let snap = read_bridge_status(&data_dir).unwrap_or_else(|error| {
+                eprintln!("status failed: {error}");
+                std::process::exit(1);
+            });
             println!("bridge={}", snap.bridge);
             println!("store={}", snap.store);
             println!("relay={}", snap.relay);
@@ -1458,7 +1674,11 @@ async fn main() {
             });
             let queue = OutgoingQueue::open(&queue_path(&data_dir)).unwrap();
             let peer_pub = parse_pub_hex(&peer_pub_hex).unwrap();
-            let pending = queue.pending().unwrap();
+            let pending = pending_for_flush_recipient(queue.pending().unwrap(), &peer_pub)
+                .unwrap_or_else(|error| {
+                    eprintln!("raven-node: {error}");
+                    std::process::exit(2);
+                });
             eprintln!("raven-node: flushing {} pending", pending.len());
             let addr: SocketAddr = peer.parse().unwrap();
             let state = Arc::new(Mutex::new(NodeState {
@@ -1512,6 +1732,14 @@ async fn main() {
             data_dir,
             forward_db,
         } => {
+            init_identity(&data_dir).unwrap_or_else(|error| {
+                eprintln!("ipc identity preflight failed: {error}");
+                std::process::exit(1);
+            });
+            let _instance_lock = acquire_service_instance_lock(&data_dir).unwrap_or_else(|error| {
+                eprintln!("ipc refused: {error}");
+                std::process::exit(1);
+            });
             let fwd = forward_db.or_else(|| {
                 let p = bridge_run::forward_queue_path(&data_dir);
                 if p.exists() {
@@ -1530,6 +1758,8 @@ async fn main() {
             data_dir,
             lan_listen,
             ble_listen,
+            bridge_listen,
+            write_bridge_addr,
             timeout_secs,
         } => {
             // Identity preflight MUST run before any profile-state creation:
@@ -1540,6 +1770,10 @@ async fn main() {
                 eprintln!("service identity preflight failed: {e}");
                 std::process::exit(1);
             });
+            let _instance_lock = acquire_service_instance_lock(&data_dir).unwrap_or_else(|error| {
+                eprintln!("service refused: {error}");
+                std::process::exit(1);
+            });
             // Pre-create WAL schema so IPC + bridge do not race on first open.
             let fq = bridge_run::forward_queue_path(&data_dir);
             let _warmup = ForwardQueue::open(&fq).map_err(|e| {
@@ -1548,6 +1782,41 @@ async fn main() {
             });
             drop(_warmup);
             let fwd = Some(fq);
+            let bridge_addr_file = data_dir.join("service-bridge.addr");
+            let custom_bridge_addr_file = write_bridge_addr
+                .filter(|requested| requested.as_path() != bridge_addr_file.as_path());
+            if let Some(parent) = bridge_addr_file.parent() {
+                std::fs::create_dir_all(parent).unwrap_or_else(|error| {
+                    eprintln!("service bridge address directory: {error}");
+                    std::process::exit(1);
+                });
+            }
+            match std::fs::symlink_metadata(&bridge_addr_file) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    eprintln!("service bridge address output must not be a symlink");
+                    std::process::exit(1);
+                }
+                Ok(metadata) if !metadata.is_file() => {
+                    eprintln!("service bridge address output must be a regular file");
+                    std::process::exit(1);
+                }
+                Ok(_) => {
+                    std::fs::remove_file(&bridge_addr_file).unwrap_or_else(|error| {
+                        eprintln!("remove stale service bridge address: {error}");
+                        std::process::exit(1);
+                    });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    eprintln!("inspect service bridge address output: {error}");
+                    std::process::exit(1);
+                }
+            }
+            eprintln!("raven-node service: secure endpoint LAN requested {lan_listen}");
+            eprintln!(
+                "raven-node service: authenticated bridge requested {bridge_listen}; publishing actual address to {}",
+                bridge_addr_file.display()
+            );
             let data_ipc = data_dir.clone();
             let mut ipc_task = tokio::spawn(async move {
                 if let Err(e) = ipc_server::run_ipc_server(data_ipc, fwd).await {
@@ -1576,6 +1845,60 @@ async fn main() {
                 ipc_task.abort();
                 std::process::exit(1);
             }
+            let bridge_publish_path = bridge_addr_file.clone();
+            let mut bridge_task = tokio::spawn(async move {
+                bridge_run::run_bridge_daemon(
+                    data_dir,
+                    bridge_listen,
+                    ble_listen,
+                    Some(bridge_publish_path),
+                    None,
+                    None,
+                    timeout_secs,
+                )
+                .await
+            });
+            let mut published_bridge = None;
+            for _ in 0..100 {
+                published_bridge = std::fs::read_to_string(&bridge_addr_file)
+                    .ok()
+                    .and_then(|value| value.parse::<SocketAddr>().ok())
+                    .filter(|address| address.port() != 0);
+                if published_bridge.is_some() || bridge_task.is_finished() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            let Some(published_bridge) = published_bridge else {
+                if bridge_task.is_finished() {
+                    match bridge_task.await {
+                        Ok(Err(error)) => eprintln!("service bridge failed: {error}"),
+                        Ok(Ok(())) => eprintln!("service bridge exited before publication"),
+                        Err(error) => eprintln!("service bridge join: {error}"),
+                    }
+                } else {
+                    bridge_task.abort();
+                    let _ = bridge_task.await;
+                    eprintln!("service bridge did not publish its address within 2 seconds");
+                }
+                ipc_task.abort();
+                lan_task.abort();
+                std::process::exit(1);
+            };
+            if let Some(custom_path) = &custom_bridge_addr_file {
+                if let Err(error) = raven_core::atomic_write_private(
+                    custom_path,
+                    published_bridge.to_string().as_bytes(),
+                ) {
+                    bridge_task.abort();
+                    let _ = bridge_task.await;
+                    ipc_task.abort();
+                    lan_task.abort();
+                    eprintln!("publish requested service bridge address: {error}");
+                    std::process::exit(1);
+                }
+            }
+            eprintln!("raven-node service: authenticated bridge ready {published_bridge}");
             // Mock BLE stays on ble_listen. Do not fanout the production LAN port.
             tokio::select! {
                 r = &mut lan_task => {
@@ -1585,6 +1908,9 @@ async fn main() {
                         Err(e) => eprintln!("lan_direct join: {e}"),
                     }
                     ipc_task.abort();
+                    bridge_task.abort();
+                    let _ = (&mut bridge_task).await;
+                    remove_live_publication(custom_bridge_addr_file.as_deref());
                     std::process::exit(1);
                 }
                 r = &mut ipc_task => {
@@ -1592,22 +1918,25 @@ async fn main() {
                         eprintln!("ipc join: {e}");
                     }
                     lan_task.abort();
+                    bridge_task.abort();
+                    let _ = (&mut bridge_task).await;
+                    remove_live_publication(custom_bridge_addr_file.as_deref());
                     std::process::exit(1);
                 }
-                bridge_result = bridge_run::run_bridge_daemon(
-                    data_dir,
-                    "127.0.0.1:0".into(),
-                    ble_listen,
-                    None,
-                    None,
-                    None,
-                    timeout_secs,
-                ) => {
+                bridge_result = &mut bridge_task => {
                     ipc_task.abort();
                     lan_task.abort();
-                    if let Err(e) = bridge_result {
-                        eprintln!("service bridge failed: {e}");
-                        std::process::exit(1);
+                    remove_live_publication(custom_bridge_addr_file.as_deref());
+                    match bridge_result {
+                        Ok(Ok(())) => {}
+                        Ok(Err(error)) => {
+                            eprintln!("service bridge failed: {error}");
+                            std::process::exit(1);
+                        }
+                        Err(error) => {
+                            eprintln!("service bridge join: {error}");
+                            std::process::exit(1);
+                        }
                     }
                 }
             }

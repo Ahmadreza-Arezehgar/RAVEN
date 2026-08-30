@@ -11,7 +11,7 @@ from typing import Protocol
 
 import httpx
 
-from .config import LLMConfig, NodeConfig
+from .config import LLMConfig, NodeConfig, validate_node_name
 from .memory import TeamMemory
 from .tools import ToolBox
 
@@ -19,9 +19,12 @@ from .tools import ToolBox
 def _team_goal(memory) -> str:
     """Unified mission every task must serve (from .team/GOAL.md)."""
     try:
-        raw = memory.resolve_in_repo('.team/GOAL.md').read_text(encoding='utf-8')
-        return '\n'.join(l for l in raw.splitlines()
-                         if not l.startswith('# ')).strip()
+        # Use the same bounded, no-follow, single-link reader as the chat UI.
+        # A repository-controlled GOAL.md must not turn model-prompt assembly
+        # into an unbounded read or a symlink escape.
+        from .chat import TeamChat
+
+        return TeamChat(memory).get_goal()
     except Exception:  # noqa: BLE001
         return ''
 
@@ -92,7 +95,11 @@ class OpenAIBrain:
         self, task_text: str, *, cancel_event: asyncio.Event | None = None
     ) -> str:
         task_cancel = cancel_event or self.cancel_event
-        goal = _team_goal(self.toolbox.memory) if self.toolbox else ''
+        goal = (
+            await asyncio.to_thread(_team_goal, self.toolbox.memory)
+            if self.toolbox
+            else ''
+        )
         system_content = SYSTEM_PROMPT.format(
             name=self.config.name, role=self.config.role
         )
@@ -138,8 +145,14 @@ class OpenAIBrain:
                             'content': result[:8000],
                         }
                     )
-                    if fn == 'final_answer' and self.toolbox.final_answer is not None:
-                        return self.toolbox.final_answer
+                    if (
+                        fn == 'final_answer'
+                        and result == 'final answer accepted; you may stop now'
+                    ):
+                        # The answer belongs to this exact tool invocation. It is
+                        # never written to the process-wide ToolBox shared by
+                        # concurrent A2A tasks.
+                        return args['answer']
         raise RuntimeError(
             f'max_steps={self.llm.max_steps} reached without a final answer'
         )
@@ -162,25 +175,30 @@ class EchoBrain:
     ) -> str:
         if cancel_event is not None and cancel_event.is_set():
             return 'CANCELLED'
+        return await asyncio.to_thread(self._run_blocking, task_text)
+
+    def _run_blocking(self, task_text: str) -> str:
+        """Filesystem/team-memory echo work, kept off the ASGI event loop."""
+        node_name = validate_node_name(self.config.name)
         goal = _team_goal(self.memory)
         if goal:
             task_text = f'[Team mission: {goal}]\n\n{task_text}'
         slug = re.sub(r'[^a-z0-9]+', '-', task_text.lower()).strip('-')[:40] or 'task'
-        relpath = f'.team/outputs/{self.config.name}/{slug}-{uuid.uuid4().hex[:6]}.md'
+        relpath = f'.team/outputs/{node_name}/{slug}-{uuid.uuid4().hex[:6]}.md'
         content = (
-            f'# Task output\n\n- node: {self.config.name}\n'
+            f'# Task output\n\n- node: {node_name}\n'
             f'- time: {time.strftime("%Y-%m-%d %H:%M:%S")}\n\n'
             f'## Task\n\n{task_text}\n\n'
-            f'## Result\n\n{self.config.role or self.config.name} processed this '
+            f'## Result\n\n{self.config.role or node_name} processed this '
             f'task deterministically (echo mode). No LLM key was configured.\n'
         )
         p = self.memory.resolve_in_repo(relpath)
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding='utf-8')
-        self.memory.log_event(self.config.name, f'echo-completed task → {relpath}')
-        self.memory.set_task(task_text[:80], owner=self.config.name, status='done')
+        self.memory.log_event(node_name, f'echo-completed task → {relpath}')
+        self.memory.set_task(task_text[:80], owner=node_name, status='done')
         return (
-            f'[echo:{self.config.name}] completed task. Output written to {relpath}. '
+            f'[echo:{node_name}] completed task. Output written to {relpath}. '
             f'Task summary: {task_text[:120]}'
         )
 
@@ -190,6 +208,6 @@ def build_brain(
     toolbox: ToolBox,
     cancel_event: asyncio.Event | None = None,
 ) -> Brain:
-    if config.llm.provider == 'openai':
+    if config.llm.provider in {'openai', 'groq', 'openrouter', 'ollama', 'custom'}:
         return OpenAIBrain(config, config.llm, toolbox, cancel_event)
     return EchoBrain(config, toolbox.memory)

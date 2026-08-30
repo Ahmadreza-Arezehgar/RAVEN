@@ -1,6 +1,6 @@
 # 🐦‍⬛ RAVEN — Serverless Terminal Messaging
 
-**RAVEN** is an open-source, terminal-first messaging network. The primary product lives in [`node/`](node/) and is being built for macOS, Linux, and Windows: peers exchange one opaque Raven envelope over direct LAN, store-carry-forward bridges, relays, and Internet transports without requiring a Raven-operated message server.
+**RAVEN** is an open-source, terminal-first messaging network. The primary product lives in [`node/`](node/) and is being built for macOS, Linux, and Windows. Authenticated direct-LAN exchange is implemented; the design carries the same opaque Raven envelope over store-carry-forward bridges, relays, and Internet transports without requiring a Raven-operated message server as each held carrier passes its acceptance gate.
 
 The security boundary is deliberately fail-closed: a transport is not called production-ready until authenticated session establishment, encrypted payload handling, retry, and verified delivery acknowledgement are wired end to end.
 
@@ -38,7 +38,13 @@ The public security documentation, threat model, per-layer claims, and trust roa
 
 ➡️ **[`Raven-offline-messenger/raven-security`](https://github.com/Raven-offline-messenger/raven-security)**
 
-That repository is the right starting point for security researchers, investors, and informed users who want to understand what Raven claims and what Raven explicitly does not claim. The full ATSAM overview is also available as a PDF on the website: <https://raven-messager.com/atsam>.
+That companion repository also retains application-era material. It must not
+be used by itself as evidence for the current terminal/serverless product;
+current implementation boundaries and remaining gates are authoritative in
+[`node/SERVERLESS_MODEL.md`](node/SERVERLESS_MODEL.md) and
+[`node/FINAL_SERVERLESS_PROOF.md`](node/FINAL_SERVERLESS_PROOF.md). The full
+ATSAM overview is also available as a PDF on the website:
+<https://raven-messager.com/atsam>.
 
 ---
 
@@ -169,15 +175,20 @@ The **security-critical core** lives here for public audit. Brand marks and UI a
 
 ```bash
 cd node
-cargo test -p raven-core -p raven-node -p ash -p raven-swarm
-cargo run -p ash -- --help
+cargo test --locked -p raven-core -p raven-node -p ash -p raven-swarm
+cargo run --locked -p ash -- --help
 ```
 
 Platform notes: `node/INSTALL_macOS.md`, `node/INSTALL_Linux.md`, `node/INSTALL_Windows.md`.
 
 ---
 
-## 🎯 Threat model
+## 🎯 Legacy application threat model (historical)
+
+The section below describes the previous application/server architecture. It
+is retained for history and is **not** a security claim for the current
+terminal product. Current boundaries live in `node/SERVERLESS_MODEL.md` and
+`node/FINAL_SERVERLESS_PROOF.md`.
 
 What Raven defends against:
 
@@ -190,7 +201,7 @@ Out of scope: a sophisticated attacker with persistent access to an unlocked dev
 
 ---
 
-## 🛠️ Building from source
+## 🛠️ Building the legacy applications from source
 
 ### iOS
 
@@ -221,7 +232,7 @@ The server is stateless and scales to zero on Cloud Run with `min-instances 0` �
 
 ---
 
-## 📊 How Raven compares
+## 📊 Historical application-era comparison
 
 |  | Raven | Signal | WhatsApp | Briar |
 |---|---|---|---|---|

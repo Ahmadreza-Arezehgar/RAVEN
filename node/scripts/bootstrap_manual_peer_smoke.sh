@@ -2,19 +2,32 @@
 # §30: prove network startup with only a manually supplied peer — no Raven-owned bootstrap.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="$ROOT/target/debug"
+SMOKE_TARGET="$ROOT/target/bootstrap-manual-peer-smoke"
+BIN="$SMOKE_TARGET/debug"
 NODE="$BIN/raven-node"
 SWARM="$BIN/raven-swarm"
-WORKDIR="${TMPDIR:-/tmp}/raven-boot-$$"
+WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/raven-boot.XXXXXX")"
 mkdir -p "$WORKDIR/a" "$WORKDIR/b"
 cleanup() {
-  [[ -n "${BPID:-}" ]] && kill "$BPID" 2>/dev/null || true
+  rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    echo "--- bootstrap smoke failed: sender log ---" >&2
+    [[ -f "$WORKDIR/a.log" ]] && tail -n 120 "$WORKDIR/a.log" >&2 || true
+    echo "--- bootstrap smoke failed: receiver log ---" >&2
+    [[ -f "$WORKDIR/b.log" ]] && tail -n 120 "$WORKDIR/b.log" >&2 || true
+  fi
+  if [[ -n "${BPID:-}" ]]; then
+    kill "$BPID" 2>/dev/null || true
+    wait "$BPID" 2>/dev/null || true
+  fi
   rm -rf "$WORKDIR"
+  return "$rc"
 }
 trap cleanup EXIT
 source "${HOME}/.cargo/env" 2>/dev/null || true
-[[ -x "$NODE" ]] || (cd "$ROOT" && cargo build -p raven-node -p raven-swarm --features raven-node/unsafe-demo-crypto -q)
-[[ -x "$SWARM" ]] || (cd "$ROOT" && cargo build -p raven-swarm -q)
+export RAVEN_IDENTITY_BACKEND=locked-file
+(cd "$ROOT" && CARGO_TARGET_DIR="$SMOKE_TARGET" cargo build --locked \
+  -p raven-node -p raven-swarm --features raven-node/unsafe-demo-crypto -q)
 
 # bootstrap.json: raven defaults disabled/empty; only manual peer
 "$SWARM" bootstrap-init \

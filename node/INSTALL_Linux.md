@@ -19,10 +19,14 @@ The release binaries build, but a fresh `raven init` will fail closed at the pro
 ## Review-only unsigned archive
 
 ```bash
+cargo install --locked --features cli --version 0.9.1 cargo-about
 RAVEN_ALLOW_BLOCKED_LINUX_PACKAGE=1 bash scripts/release/build_unsigned.sh
 ```
 
-This override produces a build-review artifact only. It does not bypass the identity hold and must not be distributed as an installable Linux release.
+This override produces a build-review artifact only. It does not bypass the
+identity hold and must not be distributed as an installable Linux release. The
+builder also fails closed unless it can generate the target dependency bundle
+`THIRD_PARTY_LICENSES_AND_NOTICES.txt` with exactly `cargo-about 0.9.1`.
 
 ## Exit criteria
 

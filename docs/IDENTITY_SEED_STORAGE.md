@@ -9,7 +9,7 @@ The Ed25519 **identity seed** for desktop `raven-node`, `ash`, and `raven-swarm`
 | macOS | **Keychain** (generic password, service `app.raven.node.identity`) | Account = SHA-256 of canonical `data_dir`. Marker file `identity.backend` = `macos-keychain`. |
 | Windows | **DPAPI** file (`CryptProtectData`, `CRYPTPROTECT_UI_FORBIDDEN`) | Blob in `identity.seed` with magic `RVNDPAPI` + version. Bound to the Windows user. |
 | Linux (glibc desktop) | **Secret Service** when session bus / collection unlock succeeds | Same service/account attributes as Keychain. |
-| Linux (musl, headless, no Secret Service) | **Locked file** mode `0600` | **Approved** fallback — see below. |
+| Linux (musl, headless, no approved Secret Service creation path) | **No Release backend** | Fresh identity creation fails closed. Locked-file mode is Debug/lab only. |
 
 `ash doctor` reports `secure_keystore: backend=…` only (no seed bytes).
 
@@ -25,13 +25,18 @@ Migration runs automatically on first `load_identity` / `load_or_create_identity
 
 ## Linux Secret Service unavailable
 
-Headless servers, containers, and **musl static** builds do not link Secret Service (needs libdbus). In those environments Raven uses a **mode `0600` locked file** under `--data-dir`. That is an intentional, checklist-approved local keystore design when Secret Service is unavailable:
+Headless servers, containers, and **musl static** builds do not link Secret
+Service (needs libdbus). Release builds do **not** fall back to a file seed:
+fresh identity creation fails closed until an approved protected backend exists.
 
-- File owner read/write only
-- Not world-readable
-- Still protect the host user account and disk encryption; do not copy `data_dir` to untrusted machines
+`RAVEN_IDENTITY_BACKEND=locked-file` is limited to non-Release, ephemeral
+debug/CI labs. It creates a mode-`0600` seed only for those explicit labs and
+must not be described, packaged, or promoted as a production keystore.
 
-Prefer a graphical session with Secret Service on multi-user Linux desktops when available — new identities try Secret Service first and fall back to the locked file.
+On GNU/Linux, an existing Secret Service identity can be read only after backend
+continuity validation. Creation of a new protected Secret Service identity is
+itself held at the reviewed R1 add-only/no-prompt gate; see
+[`node/INSTALL_Linux.md`](../node/INSTALL_Linux.md).
 
 ## Operator reminders
 

@@ -208,57 +208,61 @@ fn windows_ipc_request(
         .build()
         .map_err(|e| format!("ipc runtime: {e}"))?;
     runtime.block_on(async move {
-        let open_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-        let mut stream = loop {
-            match ClientOptions::new().open(&pipe_name) {
-                Ok(stream) => break stream,
-                Err(e)
-                    if e.raw_os_error() == Some(ERROR_PIPE_BUSY)
-                        && tokio::time::Instant::now() < open_deadline =>
-                {
-                    tokio::time::sleep(Duration::from_millis(25)).await;
+        tokio::time::timeout(response_timeout, async move {
+            let open_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+            let mut stream = loop {
+                match ClientOptions::new().open(&pipe_name) {
+                    Ok(stream) => break stream,
+                    Err(e)
+                        if e.raw_os_error() == Some(ERROR_PIPE_BUSY)
+                            && tokio::time::Instant::now() < open_deadline =>
+                    {
+                        tokio::time::sleep(Duration::from_millis(25)).await;
+                    }
+                    Err(e) => {
+                        return Err(format!(
+                            "ipc named-pipe connect: {e} — start raven-node service first"
+                        ));
+                    }
                 }
-                Err(e) => {
-                    return Err(format!(
-                        "ipc named-pipe connect: {e} — start raven-node service first"
-                    ));
-                }
-            }
-        };
-        verify_peer_user_and_session(&stream, PipePeer::Server)
-            .map_err(|e| format!("ipc server authorization: {e}"))?;
+            };
+            verify_peer_user_and_session(&stream, PipePeer::Server)
+                .map_err(|e| format!("ipc server authorization: {e}"))?;
 
-        tokio::time::timeout(Duration::from_secs(10), async {
-            stream
-                .write_all(&frame)
-                .await
-                .map_err(|e| format!("ipc write: {e}"))?;
-            stream.flush().await.map_err(|e| format!("ipc flush: {e}"))
+            tokio::time::timeout(Duration::from_secs(10), async {
+                stream
+                    .write_all(&frame)
+                    .await
+                    .map_err(|e| format!("ipc write: {e}"))?;
+                stream.flush().await.map_err(|e| format!("ipc flush: {e}"))
+            })
+            .await
+            .map_err(|_| "ipc write timeout".to_string())??;
+
+            let response_frame = tokio::time::timeout(response_timeout, async {
+                let mut len_buf = [0u8; 4];
+                stream
+                    .read_exact(&mut len_buf)
+                    .await
+                    .map_err(|e| format!("ipc read len: {e}"))?;
+                let n = u32::from_be_bytes(len_buf) as usize;
+                if n == 0 || n > raven_core::MAX_IPC_FRAME {
+                    return Err("IPC_FRAME".to_string());
+                }
+                let mut response_frame = vec![0u8; 4 + n];
+                response_frame[..4].copy_from_slice(&len_buf);
+                stream
+                    .read_exact(&mut response_frame[4..])
+                    .await
+                    .map_err(|e| format!("ipc read body: {e}"))?;
+                Ok::<Vec<u8>, String>(response_frame)
+            })
+            .await
+            .map_err(|_| "ipc read timeout".to_string())??;
+            decode_response(&response_frame).map_err(|e| format!("ipc decode: {e}"))
         })
         .await
-        .map_err(|_| "ipc write timeout".to_string())??;
-
-        let response_frame = tokio::time::timeout(response_timeout, async {
-            let mut len_buf = [0u8; 4];
-            stream
-                .read_exact(&mut len_buf)
-                .await
-                .map_err(|e| format!("ipc read len: {e}"))?;
-            let n = u32::from_be_bytes(len_buf) as usize;
-            if n == 0 || n > raven_core::MAX_IPC_FRAME {
-                return Err("IPC_FRAME".to_string());
-            }
-            let mut response_frame = vec![0u8; 4 + n];
-            response_frame[..4].copy_from_slice(&len_buf);
-            stream
-                .read_exact(&mut response_frame[4..])
-                .await
-                .map_err(|e| format!("ipc read body: {e}"))?;
-            Ok::<Vec<u8>, String>(response_frame)
-        })
-        .await
-        .map_err(|_| "ipc read timeout".to_string())??;
-        decode_response(&response_frame).map_err(|e| format!("ipc decode: {e}"))
+        .map_err(|_| "ipc whole-request timeout".to_string())?
     })
 }
 
@@ -268,6 +272,15 @@ pub(super) fn windows_ipc_ping(data_dir: &Path) -> Result<IpcResponse, String> {
         data_dir,
         &IpcRequest::Ping { v: IPC_VERSION },
         Duration::from_secs(10),
+    )
+}
+
+#[cfg(windows)]
+pub(super) fn windows_ipc_status(data_dir: &Path) -> Result<IpcResponse, String> {
+    windows_ipc_request(
+        data_dir,
+        &IpcRequest::Status { v: IPC_VERSION },
+        Duration::from_millis(300),
     )
 }
 

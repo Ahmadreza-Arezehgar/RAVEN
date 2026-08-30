@@ -14,7 +14,7 @@ import jwt
 from jwt import PyJWK
 
 import a2a.client.client as a2a_client_mod
-from a2a.client import A2ACardResolver, ClientConfig, ClientFactory
+from a2a.client import ClientConfig, ClientFactory
 from a2a.types import Role
 from a2a.utils.signing import create_signature_verifier
 
@@ -23,6 +23,7 @@ from .raven_identity import (
     ReplayCache,
     fingerprint_for_public_key,
     sign_delegation,
+    sign_http_request,
     validate_address_public_key,
     verify_delegation,
 )
@@ -35,6 +36,94 @@ class CardVerificationError(RuntimeError):
 
 class UnsafeBearerTransportError(ValueError):
     """A Bearer credential would leave over an unauthenticated network path."""
+
+
+class PublicDocumentTooLarge(ValueError):
+    """A remote card/identity document exceeded the public metadata cap."""
+
+
+MAX_PUBLIC_DOCUMENT_BYTES = 256 * 1024
+
+
+def _declared_public_size(headers: httpx.Headers, limit: int) -> None:
+    raw = headers.get('content-length')
+    if raw is None:
+        return
+    try:
+        declared = int(raw)
+    except ValueError as exc:
+        raise ValueError('remote document has invalid Content-Length') from exc
+    if declared < 0 or declared > limit:
+        raise PublicDocumentTooLarge('remote document exceeds the metadata byte limit')
+
+
+async def get_bounded_json_async(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    max_bytes: int = MAX_PUBLIC_DOCUMENT_BYTES,
+):
+    """Fetch and parse one bounded JSON document without unbounded buffering."""
+    data = bytearray()
+    async with client.stream('GET', url) as response:
+        response.raise_for_status()
+        _declared_public_size(response.headers, max_bytes)
+        async for chunk in response.aiter_bytes():
+            if len(data) + len(chunk) > max_bytes:
+                raise PublicDocumentTooLarge(
+                    'remote document exceeds the metadata byte limit'
+                )
+            data.extend(chunk)
+    return json.loads(data)
+
+
+def get_bounded_json(
+    client: httpx.Client,
+    url: str,
+    *,
+    max_bytes: int = MAX_PUBLIC_DOCUMENT_BYTES,
+):
+    """Synchronous counterpart used by the RDAP trust/ping wizard."""
+    data = bytearray()
+    with client.stream('GET', url) as response:
+        response.raise_for_status()
+        _declared_public_size(response.headers, max_bytes)
+        for chunk in response.iter_bytes():
+            if len(data) + len(chunk) > max_bytes:
+                raise PublicDocumentTooLarge(
+                    'remote document exceeds the metadata byte limit'
+                )
+            data.extend(chunk)
+    return json.loads(data)
+
+
+RAVEN_HTTP_HEADER_PREFIX = 'Raven-Request-'
+
+
+class RavenHttpAuth(httpx.Auth):
+    """Bind every A2A RPC request to one pinned Raven sender/recipient pair."""
+
+    requires_request_body = True
+
+    def __init__(self, identity: RavenIdentity, recipient: str) -> None:
+        self.identity = identity
+        self.recipient = recipient
+
+    def auth_flow(self, request):
+        raw_path = request.url.raw_path
+        target = raw_path.decode('ascii') if isinstance(raw_path, bytes) else str(raw_path)
+        block = sign_http_request(
+            self.identity,
+            recipient=self.recipient,
+            method=request.method,
+            target=target,
+            body=request.content,
+        )
+        for key, value in block.items():
+            request.headers[RAVEN_HTTP_HEADER_PREFIX + key.replace('_', '-').title()] = str(
+                value
+            )
+        yield request
 
 
 def resolve_bearer_token(token: str = '', token_file: str | Path = '') -> str:
@@ -253,15 +342,17 @@ async def send_task(
         timeout=httpx.Timeout(timeout, connect=10.0),
         trust_env=False,
     ) as public_http:
-        card = await A2ACardResolver(
-            httpx_client=public_http, base_url=base_url
-        ).get_agent_card()
-        fp = verify_card_signature(
-            card,
+        card_document = await get_bounded_json_async(
+            public_http,
+            base_url + '.well-known/agent-card.json',
+        )
+        card = verify_agent_card_document(
+            card_document,
             expected_address=expected_peer_address,
             expected_public_key=expected_peer_public_key,
             expected_url=url,
         )
+        fp = fingerprint_for_public_key(expected_peer_public_key)
     for interface in card.supported_interfaces:
         require_secure_bearer_transport(str(interface.url), token)
     print(f'* card signature verified (kid fingerprint: {fp[:16]}…)', flush=True)
@@ -269,6 +360,7 @@ async def send_task(
     async with httpx.AsyncClient(
         timeout=httpx.Timeout(timeout, connect=10.0),
         headers=headers,
+        auth=RavenHttpAuth(identity, expected_peer_address),
         trust_env=False,
     ) as http:
         # share OUR long-timeout client with the SDK transport — local LLMs
@@ -298,7 +390,6 @@ async def send_task(
             seen_signatures: set[str] = set()
             reply_replay = ReplayCache()
             async for response in client.send_message(request):
-                pieces.append(_response_text(response))
                 for answer, reply_meta in _signed_reply_artifacts(response) or ():
                     signature = str(reply_meta.get('signature', ''))
                     if signature in seen_signatures:
@@ -319,6 +410,11 @@ async def send_task(
                     if not ok:
                         raise CardVerificationError(f'agent reply rejected: {why}')
                     verified_reply = True
+                    # Status/message text is transport metadata and is not
+                    # covered by the Raven delegation signature.  In
+                    # particular, plain HTTP is allowed on trusted LANs, so
+                    # never mix that mutable text into the trusted result.
+                    pieces.append(answer)
             if not verified_reply:
                 raise CardVerificationError('agent returned no Raven-signed result artifact')
             return '\n'.join(pieces) or '(empty response)'

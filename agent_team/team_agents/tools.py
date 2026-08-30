@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -81,7 +82,6 @@ class ToolBox:
     def __init__(self, config: NodeConfig, memory: TeamMemory) -> None:
         self.config = config
         self.memory = memory
-        self.final_answer: str | None = None
         memory.ensure_layout()
 
     # ------------------------------------------------------------ schemas --
@@ -295,7 +295,16 @@ class ToolBox:
         if handler is None:
             return f'ERROR unknown tool: {name}'
         try:
-            return await handler(**args)
+            if name == 'final_answer':
+                return await handler(**args)
+
+            def invoke_blocking_tool() -> str:
+                # Tool methods expose an async API to the brain, but their file,
+                # Git and subprocess implementations are synchronous. Run the
+                # complete invocation on a worker loop so none can stall ASGI.
+                return asyncio.run(handler(**args))
+
+            return await asyncio.to_thread(invoke_blocking_tool)
         except Exception as exc:  # surface tool errors to the LLM
             return f'ERROR: {exc!r}'
 
@@ -458,8 +467,10 @@ class ToolBox:
 
     # -------------------------------------------------------------- team ---
     async def tool_board_read(self) -> str:
-        self.memory.ensure_layout()
-        return self.memory.board_md.read_text(encoding='utf-8')
+        # BOARD.md is only a convenience projection; derive the bounded view
+        # from validated delta records so a synced oversized/stale file never
+        # enters the model prompt.
+        return self.memory.read_board()
 
     async def tool_board_set_task(
         self,
@@ -493,7 +504,6 @@ class ToolBox:
         return self.memory.release_file(path, owner=self.config.name)
 
     async def tool_final_answer(self, answer: str) -> str:
-        self.final_answer = answer
-        return 'final answer recorded; you may stop now'
-    'key',
-    'privatekey',
+        if not isinstance(answer, str):
+            raise TypeError('final answer must be a string')
+        return 'final answer accepted; you may stop now'

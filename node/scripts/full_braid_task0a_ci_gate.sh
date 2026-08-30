@@ -115,7 +115,12 @@ expect_release_hold_failure() {
     rm -f "$log"
     exit 1
   fi
-  assert_primary_hold_log "$HOLD_TEXT" "$log"
+  if ! assert_primary_hold_log "$HOLD_TEXT" "$log"; then
+    echo "--- release-hold cargo log (last 160 lines) ---" >&2
+    tail -n 160 "$log" >&2
+    rm -f "$log"
+    return 1
+  fi
   rm -f "$log"
   pass "exact primary hold diagnostic ($HOLD_TEXT)"
 }
@@ -332,10 +337,12 @@ case "$MODE" in
     bash -n "$SCRIPTS/full_braid_sqlcipher_profile_override_negatives.sh"
     bash -n "$SCRIPTS/full_braid_sqlcipher_open_profile_gate.sh"
     bash -n "$SCRIPTS/full_braid_sqlcipher_cross_provider_gate.sh"
+    # Run the Release stop-line before large debug/lab builds consume runner
+    # disk and memory; the hold must fail for its own build.rs diagnostic.
+    run_release_hold
     run_symbol_and_override
     run_rust_lab_suite
     run_clippy_rustfmt
-    run_release_hold
     assert_physical_checklist
     scoped_diff_check
     pass "Task 0A.5 linux mode"
@@ -348,10 +355,10 @@ case "$MODE" in
       || die "project.pbxproj failed plutil lint"
     pass "plist/project plutil lint"
     bash "$SCRIPTS/ios_full_braid_sqlcipher_gate.sh"
+    run_release_hold
     run_symbol_and_override
     run_rust_lab_suite
     run_clippy_rustfmt
-    run_release_hold
     assert_physical_checklist
     bash "$SCRIPTS/full_braid_sqlcipher_cross_provider_gate.sh"
     scoped_diff_check
@@ -361,9 +368,9 @@ case "$MODE" in
     command -v cargo >/dev/null || die "cargo missing"
     # Symbol/import tools are mandatory on Windows (llvm-nm|dumpbin +
     # dumpbin|llvm-readobj); the symbol-owner script fails closed if absent.
+    run_release_hold
     run_symbol_and_override
     run_rust_lab_suite
-    run_release_hold
     assert_physical_checklist
     scoped_diff_check
     pass "Task 0A.5 windows mode"

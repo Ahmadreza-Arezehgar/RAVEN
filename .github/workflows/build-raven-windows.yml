@@ -1,75 +1,235 @@
-# build-raven-windows.yml
+# Build the supported Rust terminal/node binaries for Windows.
 #
-# CI workflow that produces a single-file RAVEN.exe for Windows on every
-# push/manual trigger. The job runs on `windows-latest` because the
-# WinUI 3 toolchain is Windows-only.
-#
-# After a successful run:
-#   1. Open the run in GitHub Actions
-#   2. Scroll to "Artifacts" at the bottom
-#   3. Download "RAVEN-windows-x64" → unzip → run `RAVEN.exe`
-
-name: build-raven-windows
+# The retired WinUI prototype is intentionally not published by this workflow.
+# A successful artifact contains the three real command-line entry points:
+# raven.exe, ash.exe, and raven-node.exe.
+name: Build Raven terminal for Windows
 
 on:
   push:
     paths:
-      - 'RAVEN-Windows/**'
-      - '.github/workflows/build-raven-windows.yml'
+      - "node/**"
+      - ".github/workflows/build-raven-windows.yml"
+  pull_request:
+    paths:
+      - "node/**"
+      - ".github/workflows/build-raven-windows.yml"
   workflow_dispatch:
     inputs:
       arch:
-        description: Target architecture
+        description: Windows architecture to compile
+        required: true
         default: x64
         type: choice
-        options: [x64, arm64]
+        options:
+          - x64
+          - arm64
+
+permissions:
+  contents: read
+
+concurrency:
+  group: raven-terminal-windows-${{ github.workflow }}-${{ github.ref }}-${{ inputs.arch || 'x64' }}
+  cancel-in-progress: true
 
 jobs:
   build:
+    name: Rust terminal (${{ inputs.arch || 'x64' }})
     runs-on: windows-latest
-    strategy:
-      matrix:
-        arch: [x64]
+    timeout-minutes: 90
+    env:
+      RAVEN_ARCH: ${{ inputs.arch || 'x64' }}
+      RUST_TARGET: ${{ inputs.arch == 'arm64' && 'aarch64-pc-windows-msvc' || 'x86_64-pc-windows-msvc' }}
     defaults:
       run:
         shell: pwsh
-        working-directory: RAVEN-Windows
+        working-directory: node
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
-      - name: Setup .NET 8 SDK
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '8.0.x'
-
-      - name: Show SDK info
-        run: dotnet --info
-
-      - name: Run mesh interop tests
-        run: dotnet test tests/RAVEN.Windows.Tests.csproj -c Release --nologo
-
-      - name: Publish single-file RAVEN.exe (${{ matrix.arch }})
+      - name: Parse Windows service installer
         run: |
-          dotnet publish src/RAVEN.Windows.csproj `
-            -c Release `
-            -r win-${{ matrix.arch }} `
-            --self-contained true `
-            -p:PublishSingleFile=true `
-            -p:WindowsAppSDKSelfContained=true `
-            -p:IncludeNativeLibrariesForSelfExtract=true `
-            -p:DebugType=embedded `
-            --nologo
+          $ErrorActionPreference = "Stop"
+          $tokens = $null
+          $parseErrors = $null
+          [Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path "scripts\install\windows_service.ps1"),
+            [ref]$tokens,
+            [ref]$parseErrors) | Out-Null
+          if ($parseErrors.Count -ne 0) {
+            $parseErrors | ForEach-Object { Write-Error $_.Message }
+            throw "windows_service.ps1 failed PowerShell parser validation"
+          }
+          $installerSource = Get-Content -LiteralPath "scripts\install\windows_service.ps1" -Raw
+          foreach ($requiredSource in @(
+            '$profileKey = $DataDir.TrimEnd($profileKeySeparators).ToUpperInvariant()',
+            'GetBytes($profileKey)'
+          )) {
+            if (-not $installerSource.Contains($requiredSource)) {
+              throw "windows_service.ps1 lost case-insensitive profile task-key canonicalization: $requiredSource"
+            }
+          }
+          function Get-TestProfileHash([string]$Path) {
+            $separators = [char[]]@(
+              [IO.Path]::DirectorySeparatorChar,
+              [IO.Path]::AltDirectorySeparatorChar)
+            $key = [IO.Path]::GetFullPath($Path).TrimEnd($separators).ToUpperInvariant()
+            $sha = [Security.Cryptography.SHA256]::Create()
+            try {
+              return -join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($key))[0..5] | ForEach-Object { $_.ToString("x2") })
+            } finally {
+              $sha.Dispose()
+            }
+          }
+          $profile = Join-Path $env:RUNNER_TEMP "RavenProfileCaseProbe"
+          $lowerWithSlash = $profile.ToLowerInvariant() + [IO.Path]::DirectorySeparatorChar
+          if ((Get-TestProfileHash ($profile.ToUpperInvariant())) -ne (Get-TestProfileHash $lowerWithSlash)) {
+            throw "case/trailing-separator aliases produced different scheduled-task keys"
+          }
+          Write-Host "WINDOWS_SERVICE_PROFILE_TASK_KEY_OK"
+          Write-Host "WINDOWS_SERVICE_POWERSHELL_PARSE_OK"
 
-      - name: Show build output
-        run: |
-          $publishDir = "src/bin/Release/net8.0-windows10.0.19041.0/win-${{ matrix.arch }}/publish"
-          Get-ChildItem $publishDir | Format-Table Name, Length
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - name: Install pinned Rust toolchain and requested target
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
-          name: RAVEN-windows-${{ matrix.arch }}
-          path: RAVEN-Windows/src/bin/Release/net8.0-windows10.0.19041.0/win-${{ matrix.arch }}/publish/RAVEN.exe
+          toolchain: 1.98.0
+          targets: ${{ env.RUST_TARGET }}
+
+      - name: Install pinned Python for license generation
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Restore Cargo cache
+        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
+        with:
+          workspaces: node
+          key: windows-${{ env.RUST_TARGET }}
+
+      - name: Install pinned third-party license generator
+        run: |
+          $ErrorActionPreference = "Stop"
+          cargo install --locked --features cli --version 0.9.1 cargo-about
+          if ($LASTEXITCODE -ne 0) { throw "cargo-about installation failed with exit code $LASTEXITCODE" }
+          $aboutVersion = (cargo about --version).Trim()
+          if ($aboutVersion -ne "cargo-about 0.9.1") {
+            throw "unexpected cargo-about version: $aboutVersion"
+          }
+
+      - name: Run native x64 tests
+        if: env.RAVEN_ARCH == 'x64'
+        run: cargo test --locked --target $env:RUST_TARGET -p ash -p raven-node
+
+      - name: Build release terminal binaries
+        run: |
+          $ErrorActionPreference = "Stop"
+          cargo build --locked --release --target $env:RUST_TARGET -p ash -p raven-node
+          if ($LASTEXITCODE -ne 0) { throw "cargo build failed with exit code $LASTEXITCODE" }
+
+      - name: Prove fresh Windows profile initialization excludes installer metadata
+        if: env.RAVEN_ARCH == 'x64'
+        run: |
+          $ErrorActionPreference = "Stop"
+          $smokeRoot = Join-Path $env:RUNNER_TEMP "raven-installer-layout-$([Guid]::NewGuid().ToString('N'))"
+          $dataDir = Join-Path $smokeRoot "data"
+          $installStateDir = Join-Path $smokeRoot "installer-state"
+          $installLock = $null
+          try {
+            New-Item -ItemType Directory -Path $dataDir, $installStateDir | Out-Null
+            $installLockPath = Join-Path $installStateDir ".service-install.lock"
+            $installLock = [IO.File]::Open(
+              $installLockPath,
+              [IO.FileMode]::OpenOrCreate,
+              [IO.FileAccess]::ReadWrite,
+              [IO.FileShare]::None)
+            $backupDir = Join-Path $installStateDir "install-backups\smoke"
+            New-Item -ItemType Directory -Path $backupDir | Out-Null
+
+            if ($null -ne (Get-ChildItem -LiteralPath $dataDir -Force | Select-Object -First 1)) {
+              throw "installer metadata polluted the fresh profile before raven init"
+            }
+            $raven = Join-Path "target" "$env:RUST_TARGET\release\raven.exe"
+            & $raven --data-dir $dataDir init
+            if ($LASTEXITCODE -ne 0) { throw "fresh-profile raven init failed with exit code $LASTEXITCODE" }
+            if (Test-Path -LiteralPath (Join-Path $dataDir ".service-install.lock")) {
+              throw "installer lock was created inside identity data"
+            }
+            if (Test-Path -LiteralPath (Join-Path $dataDir "install-backups")) {
+              throw "installer backups were created inside identity data"
+            }
+            Write-Host "WINDOWS_FRESH_PROFILE_LAYOUT_OK data=$dataDir installer_state=$installStateDir"
+          } finally {
+            if ($installLock) { $installLock.Dispose() }
+            if (Test-Path -LiteralPath $smokeRoot) {
+              Remove-Item -LiteralPath $smokeRoot -Recurse -Force
+            }
+          }
+
+      - name: Assemble checksummed artifact
+        run: |
+          $ErrorActionPreference = "Stop"
+          $source = Join-Path "target" "$env:RUST_TARGET\release"
+          $package = Join-Path "target" "raven-terminal-windows-$env:RAVEN_ARCH"
+          New-Item -ItemType Directory -Path $package | Out-Null
+
+          $binaries = @("raven.exe", "ash.exe", "raven-node.exe")
+          foreach ($binary in $binaries) {
+            $sourceFile = Join-Path $source $binary
+            if (-not (Test-Path -LiteralPath $sourceFile -PathType Leaf)) {
+              throw "required terminal binary is missing: $sourceFile"
+            }
+            Copy-Item -LiteralPath $sourceFile -Destination (Join-Path $package $binary)
+          }
+
+          Copy-Item -LiteralPath "..\LICENSE" -Destination (Join-Path $package "LICENSE")
+          Copy-Item -LiteralPath "INSTALL_Windows.md" -Destination (Join-Path $package "INSTALL_Windows.md")
+          Copy-Item -LiteralPath "scripts\install\WINDOWS_SERVICE.md" -Destination (Join-Path $package "WINDOWS_SERVICE.md")
+
+          $thirdParty = Join-Path $package "THIRD_PARTY_LICENSES_AND_NOTICES.txt"
+          python scripts\release\generate_third_party_licenses.py `
+            --manifest-path Cargo.toml `
+            --target $env:RUST_TARGET `
+            --output $thirdParty
+          if ($LASTEXITCODE -ne 0) { throw "third-party license generation failed with exit code $LASTEXITCODE" }
+          if (-not (Test-Path -LiteralPath $thirdParty -PathType Leaf)) {
+            throw "third-party license bundle is missing: $thirdParty"
+          }
+          if ((Get-Item -LiteralPath $thirdParty).Length -lt 1024) {
+            throw "third-party license bundle is unexpectedly small"
+          }
+
+          $gitSha = (git -C .. rev-parse --verify HEAD).Trim()
+          @(
+            "format=raven-windows-artifact-v1",
+            "git_sha=$gitSha",
+            "architecture=$env:RAVEN_ARCH",
+            "rust_target=$env:RUST_TARGET",
+            "rustc=$(rustc --version)",
+            "cargo=$(cargo --version)",
+            "distribution_status=unsigned-review-only",
+            "physical_two_profile_e2e_validated=false",
+            "third_party_license_generator=cargo-about-0.9.1",
+            "third_party_license_file=THIRD_PARTY_LICENSES_AND_NOTICES.txt",
+            "cargo_features=default"
+          ) | Set-Content -LiteralPath (Join-Path $package "PROVENANCE.txt") -Encoding utf8
+
+          $checksums = foreach ($file in Get-ChildItem -LiteralPath $package -File | Sort-Object Name) {
+            if ($file.Name -eq "SHA256SUMS.txt") { continue }
+            $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $file.FullName).Hash.ToLowerInvariant()
+            "$hash  $($file.Name)"
+          }
+          if (-not ($checksums -match "THIRD_PARTY_LICENSES_AND_NOTICES.txt$")) {
+            throw "third-party license bundle is absent from SHA256SUMS.txt"
+          }
+          $checksums | Set-Content -LiteralPath (Join-Path $package "SHA256SUMS.txt") -Encoding ascii
+
+          Get-ChildItem -LiteralPath $package | Format-Table Name, Length
+
+      - name: Upload terminal artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: raven-terminal-windows-${{ env.RAVEN_ARCH }}
+          path: node/target/raven-terminal-windows-${{ env.RAVEN_ARCH }}/
           if-no-files-found: error
           retention-days: 30

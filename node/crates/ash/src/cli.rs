@@ -177,7 +177,8 @@ pub const LOGO_64_URL: &str = "https://raven-messager.com/raven_logo_64.png";
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "ash",
+    name = env!("CARGO_BIN_NAME"),
+    version = env!("CARGO_PKG_VERSION"),
     about = "RAVEN Node — Messaging Beyond Connectivity",
     long_about = "RAVEN — serverless mesh messaging, from your terminal.\n\
                   \n\
@@ -523,8 +524,8 @@ enum DeviceCommands {
 enum MailboxCommands {
     /// Deposit opaque envelope under rotating mailbox → store_tag index.
     Put {
-        #[arg(long)]
-        k_route_hex: String,
+        #[command(flatten)]
+        k_route: KRouteInput,
         #[arg(long, default_value_t = 1)]
         epoch: u64,
         #[arg(long, default_value_t = 0)]
@@ -534,13 +535,25 @@ enum MailboxCommands {
     },
     /// Retrieve by opaque rotating tags (current + previous epoch).
     Get {
-        #[arg(long)]
-        k_route_hex: String,
+        #[command(flatten)]
+        k_route: KRouteInput,
         #[arg(long, default_value_t = 1)]
         epoch: u64,
         #[arg(long, default_value_t = 0)]
         slot: u64,
     },
+}
+
+#[derive(clap::Args, Debug)]
+#[group(id = "k_route_source", required = true, multiple = false)]
+struct KRouteInput {
+    /// Read the 32-byte route key from a mode-0600 regular, non-symlink file.
+    /// The file may contain 32 raw bytes or exactly 64 hexadecimal characters.
+    #[arg(long, value_name = "PATH")]
+    k_route_file: Option<PathBuf>,
+    /// Read the 32-byte route key from stdin (raw or exactly 64 hex chars).
+    #[arg(long)]
+    k_route_stdin: bool,
 }
 
 #[derive(Subcommand, Debug, Clone, Copy)]
@@ -624,6 +637,21 @@ fn load_contacts(data_dir: &Path) -> Result<Vec<Contact>, String> {
     let list: Vec<Contact> = serde_json::from_str(&raw)
         .map_err(|e| format!("contacts.json corrupt — refusing empty book: {e}"))?;
     Ok(list.into_iter().map(Contact::migrate).collect())
+}
+
+fn validate_contact_binding(contact: &Contact) -> Result<(), String> {
+    let public_key = parse_pub_hex(&contact.pub_hex)?;
+    let address = raven_core::address::from_display(&contact.address);
+    if decode_address(&address).is_none() {
+        return Err("address must be valid rvn1 bech32m".into());
+    }
+    let expected = encode_address(&public_key);
+    if address != expected {
+        return Err(format!(
+            "address/pub mismatch: public key derives {expected}"
+        ));
+    }
+    Ok(())
 }
 
 fn contacts_or_die(data_dir: &Path) -> Vec<Contact> {
@@ -1090,142 +1118,105 @@ fn local_lan_ipv4_tip() -> Option<String> {
     None
 }
 
-/// `ash listen` / menu 4 — receive messages with ONE command.
-///
-/// Wraps `raven-node run` with everything pre-filled from the local profile:
-/// fixed LAN port, pinned-contact public keys (no flags to remember), and a
-/// share-banner showing exactly what the friend should dial.
+/// `ash listen` / menu 4 — start or reuse the authenticated service used by
+/// `ash send`. Both directions therefore use the same Noise XX + RLB1 +
+/// PairInit/indexed-session path; the legacy `raven-node run` receiver is not
+/// a compatible substitute.
 fn cmd_listen(data_dir: &Path) {
     let c = c();
     let id = require_identity(data_dir);
-    let contacts: Vec<Contact> = load_contacts(data_dir)
-        .unwrap_or_default()
+    let loaded_contacts = load_contacts(data_dir).unwrap_or_else(|error| {
+        eprintln!("{error}");
+        std::process::exit(1);
+    });
+    let contacts: Vec<Contact> = loaded_contacts
         .into_iter()
-        .filter(|contact| contact.pinned)
+        .filter(|contact| {
+            if !contact.pinned {
+                return false;
+            }
+            if let Err(error) = validate_contact_binding(contact) {
+                eprintln!(
+                    "{0}Ignoring invalid pinned contact {1}: {error}{2}",
+                    c.yellow,
+                    contact.primary_label(),
+                    c.reset
+                );
+                return false;
+            }
+            true
+        })
         .collect();
 
-    let contact = match contacts.len() {
-        0 => {
-            println!("{0}No pinned contacts yet.{1}", c.yellow, c.reset);
-            println!(
-                "{0}Add one first (menu 5), so I know whose keys to accept.{1}",
-                c.dim, c.reset
-            );
-            return;
-        }
-        1 => &contacts[0],
-        _ => {
-            println!("{}Listen for which contact?{}", c.bold, c.reset);
-            for (i, ct) in contacts.iter().enumerate() {
-                let fp = device_fingerprint_v1(&{
-                    let mut k = [0u8; 32];
-                    if let Ok(b) = hex::decode(&ct.pub_hex) {
-                        k.copy_from_slice(&b[..32.min(b.len())]);
-                    }
-                    k
-                });
-                println!("  {0} {1}  fp={2}", i + 1, ct.primary_label(), fp);
-            }
-            print!("number: ");
-            let _ = io::stdout().flush();
-            let pick: usize = read_line().parse().unwrap_or(0);
-            if pick == 0 || pick > contacts.len() {
-                println!("{0}cancelled.{1}", c.dim, c.reset);
-                return;
-            }
-            &contacts[pick - 1]
-        }
-    };
+    if contacts.is_empty() {
+        println!("{0}No pinned contacts yet.{1}", c.yellow, c.reset);
+        println!(
+            "{0}Add one first (menu 5), so an authenticated session can be established.{1}",
+            c.dim, c.reset
+        );
+        std::process::exit(1);
+    }
 
     // Local IP(s) to share with the friend.
     let ip = local_lan_ipv4_tip().unwrap_or_else(|| "<your-LAN-IP>".into());
+    let listen_port = std::env::var("RAVEN_SERVICE_LAN_LISTEN")
+        .ok()
+        .and_then(|listen| listen.parse::<std::net::SocketAddr>().ok())
+        .map(|address| address.port())
+        .filter(|port| *port != 0)
+        .unwrap_or(DEFAULT_LAN_PORT);
 
     println!();
     println!("{0}═══ LISTENING ═══{1}", c.purple, c.reset);
     println!("{0}Tell your friend to send to:{1}", c.dim, c.reset);
-    println!("   {0}{ip}:{DEFAULT_LAN_PORT}{1}", c.cyan, c.reset);
+    println!("   {0}{ip}:{listen_port}{1}", c.cyan, c.reset);
     println!("{0}…and use YOUR pub_hex when asked:{1}", c.dim, c.reset);
     println!("   {}", hex::encode(id.public_key_bytes()));
     println!(
-        "{0}Waiting for {1} …{2}",
+        "{0}Pinned contacts accepted: {1}{2}",
         c.dim,
-        contact.primary_label(),
+        contacts.len(),
         c.reset
     );
     println!();
 
-    let node = ext::raven_node_bin_public();
-
-    // Spawn first, then wait until the port actually accepts — otherwise the
-    // friend may dial before we're ready ("connection refused").
-    // Pre-flight: make sure the port is actually free before spawning.
-    {
-        use std::net::TcpListener;
-        match TcpListener::bind(("0.0.0.0", DEFAULT_LAN_PORT)) {
-            Ok(l) => drop(l),
-            Err(_) => {
-                println!(
-                    "{0}port {DEFAULT_LAN_PORT} is already taken by another process.\n\
-                     Find it:   lsof -i :{DEFAULT_LAN_PORT}\n\
-                     Stop it:   pkill -f raven-node{1}",
-                    c.red, c.reset
-                );
-                return;
+    match ext::ensure_raven_node_service(data_dir, true) {
+        Ok(ext::ServiceLaunch::Reused) => {
+            println!(
+                "{0}secure raven-node service is already listening and IPC-ready.{1}",
+                c.green, c.reset
+            );
+        }
+        Ok(ext::ServiceLaunch::Started(mut child)) => {
+            println!(
+                "{0}secure raven-node service is IPC-ready. Waiting (Ctrl+C to stop).{1}",
+                c.green, c.reset
+            );
+            match child.wait() {
+                Ok(status) if status.success() => {
+                    println!("{0}raven-node service stopped cleanly.{1}", c.dim, c.reset);
+                }
+                Ok(status) => {
+                    eprintln!("raven-node service exited with {status}");
+                    std::process::exit(1);
+                }
+                Err(error) => {
+                    eprintln!("wait for raven-node service: {error}");
+                    std::process::exit(1);
+                }
             }
         }
-    }
-
-    let mut child = match Command::new(node)
-        .stdin(std::process::Stdio::null())
-        .arg("run")
-        .args(["--data-dir", &data_dir.display().to_string()])
-        .args(["--listen", &format!("0.0.0.0:{DEFAULT_LAN_PORT}")])
-        // Keep receiving every message this session (Ctrl+C stops).
-        .args(["--timeout-secs", "21600"])
-        .args(["--peer-pub-hex", contact.pub_hex.trim()])
-        .args(["--origin-pub-hex", contact.pub_hex.trim()])
-        .spawn()
-    {
-        Ok(ch) => ch,
-        Err(e) => {
-            println!("{0}could not start raven-node: {1}{2}", c.red, e, c.reset);
-            return;
+        Err(error) => {
+            eprintln!(
+                "{0}could not start secure raven-node service: {error}{1}",
+                c.red, c.reset
+            );
+            eprintln!(
+                "{0}Inspect the exact owner of port {listen_port}; Raven will not terminate unrelated processes.{1}",
+                c.dim, c.reset
+            );
+            std::process::exit(1);
         }
-    };
-
-    // Give the daemon a beat to bind; bail out if it died immediately.
-    std::thread::sleep(std::time::Duration::from_millis(1500));
-    if let Some(st) = child.try_wait().ok().flatten() {
-        let _ = child.wait();
-        println!(
-            "{0}listener exited early ({1}) — see message above.{2}",
-            c.yellow, st, c.reset
-        );
-        return;
-    }
-
-    println!();
-    println!("{0}═══ LISTENING ═══{1}", c.purple, c.reset);
-    println!("{0}Tell your friend to send to:{1}", c.dim, c.reset);
-    println!("   {0}{ip}:{DEFAULT_LAN_PORT}{1}", c.cyan, c.reset);
-    println!("{0}…and use YOUR pub_hex when asked:{1}", c.dim, c.reset);
-    println!("   {}", hex::encode(id.public_key_bytes()));
-    println!(
-        "{0}Waiting for {1} … (Ctrl+C to stop){2}",
-        c.dim,
-        contact.primary_label(),
-        c.reset
-    );
-    println!();
-
-    let status = child.wait();
-
-    match status {
-        Ok(s) if s.success() => {
-            println!("{0}✔ message received & ACKed.{1}", c.green, c.reset);
-        }
-        Ok(s) => println!("{0}listener exited ({1}).{2}", c.yellow, s, c.reset),
-        Err(e) => println!("{0}could not start raven-node: {1}{2}", c.red, e, c.reset),
     }
 }
 
@@ -1260,7 +1251,7 @@ fn print_lan_unresolved_hint(contact_label: &str) {
         );
     }
     println!(
-        "{dim}Also:{reset} `raven-node run --listen 0.0.0.0:{DEFAULT_LAN_PORT}` (Mac listens; phone dials)."
+        "{dim}Also:{reset} `raven-node service --lan-listen 0.0.0.0:{DEFAULT_LAN_PORT}` starts the same secure receiver used by `ash send`."
     );
 }
 
@@ -2243,12 +2234,13 @@ fn cmd_contact_add_interactive(data_dir: &Path) {
             } else {
                 petname
             };
-            let mut key = [0u8; 32];
-            if let Ok(decoded) = hex::decode(&pub_hex) {
-                if decoded.len() == 32 {
-                    key.copy_from_slice(&decoded);
+            let key = match parse_pub_hex(&pub_hex) {
+                Ok(key) => key,
+                Err(error) => {
+                    eprintln!("rejected: {error}");
+                    return;
                 }
-            }
+            };
             let fp = device_fingerprint_v1(&key);
             println!(
                 "{dim}fingerprint{r} {fp}",
@@ -2259,26 +2251,24 @@ fn cmd_contact_add_interactive(data_dir: &Path) {
             print!("[V]erify & pin / [C]ontinue unpinned / [A]bort: ");
             let _ = io::stdout().flush();
             let choice = read_line();
-            let pinned = choice.trim().to_ascii_lowercase().starts_with('v');
-            let ct = Contact {
-                petname,
-                public_tag: String::new(),
-                alias: String::new(),
-                address: addr,
-                pub_hex,
-                pinned,
-                lan_dial: String::new(),
-            }
-            .migrate();
-            save_contacts(data_dir, std::slice::from_ref(&ct)).ok();
-            if pinned {
-                println!(
-                    "{green}\u{2713} contact saved & pinned{r}",
-                    green = C_GREEN,
-                    r = C_RESET
-                );
-            } else {
-                println!("{dim}contact saved (unpinned){r}", dim = C_DIM, r = C_RESET);
+            let verify = match choice.trim().to_ascii_lowercase().as_str() {
+                "v" | "verify" | "pin" => Some(fp.as_str()),
+                "c" | "continue" | "" => None,
+                "a" | "abort" | "q" => {
+                    println!("{dim}cancelled.{r}", dim = C_DIM, r = C_RESET);
+                    return;
+                }
+                _ => {
+                    println!(
+                        "{dim}cancelled (expected V, C, or A).{r}",
+                        dim = C_DIM,
+                        r = C_RESET
+                    );
+                    return;
+                }
+            };
+            if let Err(error) = add_contact(data_dir, &addr, &pub_hex, &petname, "", verify, "") {
+                eprintln!("rejected: {error}");
             }
             return;
         }
@@ -2577,61 +2567,32 @@ fn cmd_prekey_publish(data_dir: &Path, device_id: &str, out: Option<&Path>) {
     }
 }
 
-fn cmd_prekey_fetch(data_dir: &Path, pub_hex: &str, file: Option<&Path>) {
-    let ed = match parse_pub_hex(pub_hex) {
-        Ok(a) => a,
-        Err(e) => {
-            eprintln!("{e}");
-            return;
-        }
-    };
+fn cmd_prekey_fetch(data_dir: &Path, pub_hex: &str, file: Option<&Path>) -> Result<(), String> {
+    let ed = parse_pub_hex(pub_hex)?;
     let now = now_ms();
     let bundle = if let Some(path) = file {
-        match std::fs::read_to_string(path) {
-            Ok(raw) => match serde_json::from_str::<PrekeyBundleJson>(&raw) {
-                Ok(j) => match PrekeyBundle::from_json(&j) {
-                    Ok(b) => b,
-                    Err(e) => {
-                        eprintln!("bundle parse: {e}");
-                        return;
-                    }
-                },
-                Err(e) => {
-                    eprintln!("json: {e}");
-                    return;
-                }
-            },
-            Err(e) => {
-                eprintln!("read: {e}");
-                return;
-            }
-        }
+        let raw = std::fs::read_to_string(path).map_err(|e| format!("read: {e}"))?;
+        let json =
+            serde_json::from_str::<PrekeyBundleJson>(&raw).map_err(|e| format!("json: {e}"))?;
+        PrekeyBundle::from_json(&json).map_err(|e| format!("bundle parse: {e}"))?
     } else {
         match PrekeyStore::load_checked(data_dir).and_then(|s| s.fetch(&ed, now)) {
             Ok(Some(b)) => b,
             Ok(None) => {
-                eprintln!("no bundle in local store for that pub (try --file OOB json)");
-                return;
+                return Err("no bundle in local store for that pub (try --file OOB json)".into());
             }
-            Err(e) => {
-                eprintln!("fetch/verify failed: {e}");
-                return;
-            }
+            Err(e) => return Err(format!("fetch/verify failed: {e}")),
         }
     };
-    if let Err(e) = bundle.verify(now) {
-        eprintln!("verify failed: {e}");
-        return;
-    }
+    bundle
+        .verify(now)
+        .map_err(|e| format!("verify failed: {e}"))?;
     if bundle.identity_ed25519_pub != ed {
-        eprintln!("PREKEY_IDENTITY_MISMATCH");
-        return;
+        return Err("PREKEY_IDENTITY_MISMATCH".into());
     }
     // Persist into local untrusted store so PairInit / lab send can fetch.
-    if let Err(e) = raven_core::publish_prekey_bundle_checked(data_dir, &bundle, now) {
-        eprintln!("store publish: {e}");
-        return;
-    }
+    raven_core::publish_prekey_bundle_checked(data_dir, &bundle, now)
+        .map_err(|e| format!("store publish: {e}"))?;
     println!("{C_GREEN}prekey ok{C_RESET} (cached in prekey_store.json)");
     println!(
         "{C_DIM}fingerprint{C_RESET} {}",
@@ -2643,6 +2604,7 @@ fn cmd_prekey_fetch(data_dir: &Path, pub_hex: &str, file: Option<&Path>) {
     );
     println!("{C_DIM}prekey_id{C_RESET}   {}", bundle.signed_prekey_id);
     println!("{C_DIM}expires_ms{C_RESET}  {}", bundle.expires_at_ms);
+    Ok(())
 }
 
 fn print_messaging_path_diag() {
@@ -2759,14 +2721,12 @@ fn cmd_status(data_dir: &Path) -> Result<(), String> {
 
     let policy = load_policy(data_dir);
     let fwd_path = data_dir.join("forward_queue.sqlite");
-    let (pending, total) = if fwd_path.exists() {
-        ForwardQueue::open(&fwd_path)
-            .ok()
-            .map(|q| (q.count_pending().unwrap_or(0), q.count_all().unwrap_or(0)))
-            .unwrap_or((0, 0))
-    } else {
-        (0, 0)
-    };
+    let (pending, total) = ForwardQueue::inspect_counts(&fwd_path).map_err(|error| {
+        format!(
+            "bridge custody queue unavailable {}: {error}",
+            fwd_path.display()
+        )
+    })?;
     let snap = BridgeStatusSnapshot::from_policy(&policy, &["lan", "mock_ble"], pending, total);
 
     println!();
@@ -3117,6 +3077,12 @@ fn resolve_send_target(
             ));
         }
         let c = hits[0];
+        validate_contact_binding(c).map_err(|error| {
+            format!(
+                "contact {} has invalid identity binding: {error}; verify and re-add it",
+                c.primary_label()
+            )
+        })?;
         if !looks_like_lan_dial(&c.lan_dial) {
             return Err(format!(
                 "contact {} has no valid lan_dial — set host:port (not LocalListenQueue)",
@@ -3666,7 +3632,10 @@ pub fn run() {
                 cmd_prekey_publish(&data_dir, &device_id, out.as_deref())
             }
             PrekeyCommands::Fetch { pub_hex, file } => {
-                cmd_prekey_fetch(&data_dir, &pub_hex, file.as_deref())
+                if let Err(error) = cmd_prekey_fetch(&data_dir, &pub_hex, file.as_deref()) {
+                    eprintln!("{error}");
+                    std::process::exit(1);
+                }
             }
         },
         Some(Commands::Device { cmd }) => {
@@ -3685,16 +3654,32 @@ pub fn run() {
         }
         Some(Commands::Mailbox { cmd }) => match cmd {
             MailboxCommands::Put {
-                k_route_hex,
+                k_route,
                 epoch,
                 slot,
                 envelope_hex,
-            } => ext::cmd_mailbox_put(&data_dir, &k_route_hex, epoch, slot, &envelope_hex),
+            } => {
+                let key =
+                    ext::read_k_route_key(k_route.k_route_file.as_deref(), k_route.k_route_stdin)
+                        .unwrap_or_else(|error| {
+                            eprintln!("K_route input: {error}");
+                            std::process::exit(1);
+                        });
+                ext::cmd_mailbox_put(&data_dir, &key, epoch, slot, &envelope_hex)
+            }
             MailboxCommands::Get {
-                k_route_hex,
+                k_route,
                 epoch,
                 slot,
-            } => ext::cmd_mailbox_get(&data_dir, &k_route_hex, epoch, slot),
+            } => {
+                let key =
+                    ext::read_k_route_key(k_route.k_route_file.as_deref(), k_route.k_route_stdin)
+                        .unwrap_or_else(|error| {
+                            eprintln!("K_route input: {error}");
+                            std::process::exit(1);
+                        });
+                ext::cmd_mailbox_get(&data_dir, &key, epoch, slot)
+            }
         },
         Some(Commands::Lab { cmd }) => {
             let id = require_identity(&data_dir);
@@ -3714,7 +3699,10 @@ pub fn run() {
                     }
                 }
                 LabCommands::ImportPeerPrekey { peer_pub_hex, file } => {
-                    cmd_prekey_fetch(&data_dir, &peer_pub_hex, Some(&file));
+                    if let Err(error) = cmd_prekey_fetch(&data_dir, &peer_pub_hex, Some(&file)) {
+                        eprintln!("{error}");
+                        std::process::exit(1);
+                    }
                 }
                 LabCommands::Status => {
                     print_production_gate_matrix();
@@ -4234,12 +4222,13 @@ pub_hex     d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a
     #[test]
     fn contact_send_resolution_requires_an_explicit_pin() {
         let dir = tempfile::tempdir().unwrap();
+        let public_key = [0x11; 32];
         let mut contact = Contact {
             petname: "Friend".into(),
             public_tag: "friend".into(),
             alias: "friend".into(),
-            address: "rvn1-test-only".into(),
-            pub_hex: "11".repeat(32),
+            address: encode_address(&public_key),
+            pub_hex: hex::encode(public_key),
             pinned: false,
             lan_dial: "127.0.0.1:7420".into(),
         };
@@ -4252,6 +4241,12 @@ pub_hex     d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a
         let resolved = resolve_send_target(dir.path(), "friend", "", "", "127.0.0.1:0").unwrap();
         assert_eq!(resolved.0, "127.0.0.1:7420");
         assert_eq!(resolved.1, "11".repeat(32));
+
+        contact.pub_hex = "malformed".into();
+        save_contacts(dir.path(), std::slice::from_ref(&contact)).unwrap();
+        let error = resolve_send_target(dir.path(), "friend", "", "", "127.0.0.1:0")
+            .expect_err("malformed pinned contact must fail closed");
+        assert!(error.contains("invalid identity binding"), "{error}");
     }
 
     #[test]

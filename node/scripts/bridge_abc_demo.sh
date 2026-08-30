@@ -12,7 +12,7 @@ SMOKE_TARGET_DIR="${RAVEN_BRIDGE_SMOKE_TARGET_DIR:-$ROOT/target/bridge-smoke}"
 BIN="$SMOKE_TARGET_DIR/debug"
 NODE="$BIN/raven-node"
 ASH="$BIN/ash"
-WORKDIR="${TMPDIR:-/tmp}/raven-bridge-abc-$$"
+WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/raven-bridge-abc.XXXXXX")"
 mkdir -p "$WORKDIR/a" "$WORKDIR/b" "$WORKDIR/c"
 cleanup() {
   [[ -n "${BPID:-}" ]] && kill "$BPID" 2>/dev/null || true

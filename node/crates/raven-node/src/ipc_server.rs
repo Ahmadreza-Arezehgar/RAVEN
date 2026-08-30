@@ -25,6 +25,7 @@ use crate::lan_direct;
 
 const IPC_IO_TIMEOUT: Duration = Duration::from_secs(10);
 const LAN_DIAL_TIMEOUT: Duration = Duration::from_secs(45);
+const MAX_IPC_CONNECTION_HANDLERS: usize = 32;
 use raven_core::node_policy::{load_policy, save_policy};
 use raven_core::queue::{DeliveryState, OutgoingQueue, QueueItem};
 use raven_core::transport::TransportKind;
@@ -33,9 +34,11 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
 #[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::Mutex;
-#[cfg(windows)]
-use tokio::sync::Semaphore;
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
+
+fn try_acquire_ipc_handler(limiter: &Arc<Semaphore>) -> Option<OwnedSemaphorePermit> {
+    limiter.clone().try_acquire_owned().ok()
+}
 
 #[cfg(unix)]
 pub fn socket_path(data_dir: &Path) -> PathBuf {
@@ -130,38 +133,88 @@ where
         .map_err(|_| "ipc read timeout".to_string())?
 }
 
+fn unix_time_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn build_status_response(
+    v: u16,
+    policy: &raven_core::node_policy::NodePolicy,
+    has_forward_queue: bool,
+    forward_pending: Result<u64, String>,
+    lan_listener_up: bool,
+    bridge_listener_up: bool,
+) -> IpcResponse {
+    let pending = match forward_pending {
+        Ok(pending) => pending,
+        Err(message) => {
+            eprintln!("raven-node ipc: status storage failure: {message}");
+            return IpcResponse::Error {
+                v,
+                code: "STORAGE".into(),
+                message,
+            };
+        }
+    };
+    let mut capabilities = vec!["ipc".into()];
+    if lan_listener_up {
+        capabilities.push("lan_direct".into());
+    }
+    // Policy is intent, not readiness. Advertise bridge only while this
+    // service process owns live bound bridge listeners for the same profile.
+    if policy.bridge && bridge_listener_up {
+        capabilities.push("bridge".into());
+    }
+    if has_forward_queue && policy.store {
+        capabilities.push("store".into());
+    }
+    if has_forward_queue && policy.relay {
+        capabilities.push("relay".into());
+    }
+    IpcResponse::Status {
+        v,
+        bridge: policy.bridge,
+        store: policy.store,
+        relay: policy.relay,
+        forward_pending: pending,
+        capabilities,
+    }
+}
+
 fn handle_req(req: IpcRequest, data_dir: &Path, forward: &Option<ForwardQueue>) -> IpcResponse {
+    handle_req_at(req, data_dir, forward, unix_time_ms())
+}
+
+fn handle_req_at(
+    req: IpcRequest,
+    data_dir: &Path,
+    forward: &Option<ForwardQueue>,
+    request_now_ms: u64,
+) -> IpcResponse {
     match req {
         IpcRequest::Ping { v } => IpcResponse::Pong { v },
         IpcRequest::Status { v } => {
             let policy = load_policy(data_dir);
-            let (pending, caps) = match forward {
-                Some(q) => (q.count_pending().unwrap_or(0) as u64, {
-                    let mut c = vec!["ipc".into()];
-                    if crate::lan_direct::listener_is_up() {
-                        c.push("lan_direct".into());
-                    }
-                    if policy.bridge {
-                        c.push("bridge".into());
-                    }
-                    if policy.store {
-                        c.push("store".into());
-                    }
-                    if policy.relay {
-                        c.push("relay".into());
-                    }
-                    c
-                }),
-                None => (0u64, vec!["ipc".into()]),
+            let (has_forward_queue, pending) = match forward {
+                Some(q) => (
+                    true,
+                    q.count_pending()
+                        .map(|count| count as u64)
+                        .map_err(|error| error.to_string()),
+                ),
+                None => (false, Ok(0)),
             };
-            IpcResponse::Status {
+            build_status_response(
                 v,
-                bridge: policy.bridge,
-                store: policy.store,
-                relay: policy.relay,
-                forward_pending: pending,
-                capabilities: caps,
-            }
+                &policy,
+                has_forward_queue,
+                pending,
+                crate::lan_direct::listener_is_up(),
+                crate::bridge_run::bridge_listener_is_up(data_dir),
+            )
         }
         IpcRequest::SetPolicy {
             v,
@@ -227,13 +280,20 @@ fn handle_req(req: IpcRequest, data_dir: &Path, forward: &Option<ForwardQueue>) 
                     message: "not a RavenEnvelopeV1".into(),
                 };
             };
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or(0);
+            if env.expires_at <= request_now_ms {
+                return IpcResponse::Error {
+                    v,
+                    code: "IPC_EXPIRED".into(),
+                    message: "sealed envelope is expired".into(),
+                };
+            }
+            let now = request_now_ms;
             let peer = peer_hint.unwrap_or_else(|| "ipc".into());
-            // Prefer forward queue when available (always-on bridge); also mirror outbox.
-            if let Some(q) = forward {
+            // Forward custody is authoritative when the always-on bridge is
+            // available. The user outbox is then a best-effort mirror: never
+            // report failure after durable custody was already accepted and
+            // may have been handed to a live carrier.
+            let forward_accepted = if let Some(q) = forward {
                 let item = ForwardItem {
                     object_digest: authenticated_object_digest(&env),
                     message_id: env.message_id,
@@ -242,7 +302,9 @@ fn handle_req(req: IpcRequest, data_dir: &Path, forward: &Option<ForwardQueue>) 
                     egress: TransportKind::Internet,
                     state: ForwardState::Queued,
                     created_at_ms: now,
-                    expires_at_ms: env.expires_at.max(now.saturating_add(60_000)),
+                    // Sender-authenticated expiry is a hard upper bound. The
+                    // local queue must never grant the object a fresh lease.
+                    expires_at_ms: env.expires_at,
                     previous_hop: peer.clone(),
                 };
                 if let Err(e) = q.enqueue(&item) {
@@ -252,9 +314,12 @@ fn handle_req(req: IpcRequest, data_dir: &Path, forward: &Option<ForwardQueue>) 
                         message: e.to_string(),
                     };
                 }
-            }
+                true
+            } else {
+                false
+            };
             let outbox_path = data_dir.join("queue.sqlite");
-            match OutgoingQueue::open(&outbox_path) {
+            let mirror_result = match OutgoingQueue::open(&outbox_path) {
                 Ok(oq) => {
                     let item = QueueItem {
                         message_id: env.message_id,
@@ -263,23 +328,24 @@ fn handle_req(req: IpcRequest, data_dir: &Path, forward: &Option<ForwardQueue>) 
                         state: DeliveryState::Queued,
                         created_at_ms: now,
                     };
-                    if let Err(e) = oq.enqueue(&item) {
-                        return IpcResponse::Error {
-                            v,
-                            code: "OUTBOX".into(),
-                            message: e.to_string(),
-                        };
-                    }
+                    oq.enqueue(&item).map_err(|error| error.to_string())
                 }
-                Err(e) => {
-                    return IpcResponse::Error {
-                        v,
-                        code: "OUTBOX".into(),
-                        message: e.to_string(),
-                    };
+                Err(error) => Err(error.to_string()),
+            };
+            match mirror_result {
+                Ok(()) => IpcResponse::Accepted { v },
+                Err(error) if forward_accepted => {
+                    eprintln!(
+                        "raven-node ipc: optional outbox mirror failed after durable forward custody: {error}"
+                    );
+                    IpcResponse::Accepted { v }
                 }
+                Err(error) => IpcResponse::Error {
+                    v,
+                    code: "OUTBOX".into(),
+                    message: error,
+                },
             }
-            IpcResponse::Accepted { v }
         }
         IpcRequest::LanDial { v, .. } => IpcResponse::Error {
             v,
@@ -392,29 +458,81 @@ async fn serve_one<S>(
 
 /// Bind UDS with mode 0600 and serve until the process exits.
 #[cfg(unix)]
+fn bind_secure_unix_listener(sock: &Path) -> Result<UnixListener, String> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
+
+    match std::fs::symlink_metadata(sock) {
+        Ok(_) => std::fs::remove_file(sock)
+            .map_err(|error| format!("remove stale IPC socket {}: {error}", sock.display()))?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!(
+                "inspect stale IPC socket {}: {error}",
+                sock.display()
+            ));
+        }
+    }
+
+    let listener =
+        UnixListener::bind(sock).map_err(|error| format!("bind {}: {error}", sock.display()))?;
+    let secure = (|| -> Result<(), String> {
+        std::fs::set_permissions(sock, std::fs::Permissions::from_mode(0o600))
+            .map_err(|error| format!("chmod IPC socket {}: {error}", sock.display()))?;
+        let metadata = std::fs::symlink_metadata(sock)
+            .map_err(|error| format!("inspect IPC socket {}: {error}", sock.display()))?;
+        if !metadata.file_type().is_socket() {
+            return Err(format!("IPC path {} is not a Unix socket", sock.display()));
+        }
+        let mode = metadata.mode() & 0o7777;
+        if mode != 0o600 {
+            return Err(format!(
+                "IPC socket {} has insecure mode {mode:04o}",
+                sock.display()
+            ));
+        }
+        let expected_uid = unsafe { libc::geteuid() };
+        if metadata.uid() != expected_uid {
+            return Err(format!(
+                "IPC socket {} owner mismatch (expected uid {expected_uid})",
+                sock.display()
+            ));
+        }
+        Ok(())
+    })();
+    if let Err(error) = secure {
+        drop(listener);
+        if let Err(cleanup_error) = std::fs::remove_file(sock) {
+            if cleanup_error.kind() != std::io::ErrorKind::NotFound {
+                return Err(format!(
+                    "{error}; cleanup insecure IPC socket {}: {cleanup_error}",
+                    sock.display()
+                ));
+            }
+        }
+        return Err(error);
+    }
+    Ok(listener)
+}
+
+#[cfg(unix)]
 pub async fn run_ipc_server(
     data_dir: PathBuf,
     forward_path: Option<PathBuf>,
 ) -> Result<(), String> {
     std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
-    let sock = socket_path(&data_dir);
-    if sock.exists() {
-        let _ = std::fs::remove_file(&sock);
-    }
-    let listener =
-        UnixListener::bind(&sock).map_err(|e| format!("bind {}: {e}", sock.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600));
-    }
-    eprintln!("raven-node ipc: listening {}", sock.display());
-
     let forward = Arc::new(Mutex::new(match forward_path {
-        Some(p) => ForwardQueue::open(&p).ok(),
+        Some(path) => Some(
+            ForwardQueue::open(&path)
+                .map_err(|error| format!("open forward queue {}: {error}", path.display()))?,
+        ),
         None => None,
     }));
+    let sock = socket_path(&data_dir);
+    let listener = bind_secure_unix_listener(&sock)?;
+    eprintln!("raven-node ipc: listening {}", sock.display());
+
     let data_dir = Arc::new(data_dir);
+    let limiter = Arc::new(Semaphore::new(MAX_IPC_CONNECTION_HANDLERS));
 
     loop {
         let (stream, _) = listener.accept().await.map_err(|e| e.to_string())?;
@@ -422,16 +540,19 @@ pub async fn run_ipc_server(
             eprintln!("raven-node ipc: reject peer (uid mismatch)");
             continue;
         }
+        let Some(permit) = try_acquire_ipc_handler(&limiter) else {
+            eprintln!("raven-node ipc: connection capacity reached");
+            drop(stream);
+            continue;
+        };
         let dd = data_dir.clone();
         let fq = forward.clone();
         tokio::spawn(async move {
+            let _permit = permit;
             serve_one(stream, dd, fq).await;
         });
     }
 }
-
-#[cfg(windows)]
-const MAX_WINDOWS_IPC_HANDLERS: usize = 32;
 
 #[cfg(windows)]
 fn create_windows_pipe(name: &str, first: bool) -> Result<NamedPipeServer, String> {
@@ -442,7 +563,7 @@ fn create_windows_pipe(name: &str, first: bool) -> Result<NamedPipeServer, Strin
         .reject_remote_clients(true)
         // One extra instance is the acceptor prepared before the connected
         // instance is handed to its bounded task.
-        .max_instances(MAX_WINDOWS_IPC_HANDLERS + 1)
+        .max_instances(MAX_IPC_CONNECTION_HANDLERS + 1)
         .in_buffer_size((raven_core::MAX_IPC_FRAME + 4) as u32)
         .out_buffer_size((raven_core::MAX_IPC_FRAME + 4) as u32);
     // SAFETY: `security` owns a valid SECURITY_ATTRIBUTES and self-relative
@@ -459,16 +580,19 @@ pub async fn run_ipc_server(
     forward_path: Option<PathBuf>,
 ) -> Result<(), String> {
     std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
+    let forward = Arc::new(Mutex::new(match forward_path {
+        Some(path) => Some(
+            ForwardQueue::open(&path)
+                .map_err(|error| format!("open forward queue {}: {error}", path.display()))?,
+        ),
+        None => None,
+    }));
     let pipe_name = default_named_pipe_name(&data_dir)?;
     let mut listener = create_windows_pipe(&pipe_name, true)?;
     eprintln!("raven-node ipc: listening on protected per-profile named pipe");
 
-    let forward = Arc::new(Mutex::new(match forward_path {
-        Some(p) => ForwardQueue::open(&p).ok(),
-        None => None,
-    }));
     let data_dir = Arc::new(data_dir);
-    let limiter = Arc::new(Semaphore::new(MAX_WINDOWS_IPC_HANDLERS));
+    let limiter = Arc::new(Semaphore::new(MAX_IPC_CONNECTION_HANDLERS));
 
     loop {
         let permit = limiter
@@ -511,6 +635,216 @@ pub async fn client_ping(sock: &Path) -> Result<IpcResponse, String> {
     stream.flush().await.map_err(|e| e.to_string())?;
     let frame = read_frame(&mut stream).await?;
     raven_core::decode_response(&frame)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use raven_core::envelope::EnvType;
+    use raven_core::identity::Identity;
+
+    #[test]
+    fn ipc_handler_admission_is_hard_bounded_and_releases_capacity() {
+        let limiter = Arc::new(Semaphore::new(MAX_IPC_CONNECTION_HANDLERS));
+        let mut permits = Vec::with_capacity(MAX_IPC_CONNECTION_HANDLERS);
+        for _ in 0..MAX_IPC_CONNECTION_HANDLERS {
+            permits.push(
+                try_acquire_ipc_handler(&limiter)
+                    .expect("every configured handler slot must be available once"),
+            );
+        }
+        assert!(
+            try_acquire_ipc_handler(&limiter).is_none(),
+            "a slow-client burst must not create an unbounded handler task"
+        );
+
+        permits.pop();
+        assert!(
+            try_acquire_ipc_handler(&limiter).is_some(),
+            "dropping a completed handler must restore exactly one slot"
+        );
+    }
+
+    fn sealed_envelope(now: u64, expires_at: u64, marker: u8) -> Envelope {
+        let mut env = Envelope {
+            env_type: EnvType::Message as u8,
+            flags: 0,
+            message_id: [marker; 16],
+            routing_tag: [marker.wrapping_add(1); 16],
+            dest_device_hint: 0,
+            created_at: now.saturating_sub(1),
+            expires_at,
+            hop_limit: 2,
+            replication_budget: 1,
+            anti_replay_nonce: [marker.wrapping_add(2); 12],
+            ratchet_header_ciphertext: vec![],
+            message_ciphertext: vec![marker; 8],
+            sender_authentication: vec![],
+        };
+        env.sign_with(&Identity::from_seed(&[marker.wrapping_add(3); 32]));
+        env
+    }
+
+    fn enqueue_request(env: &Envelope) -> IpcRequest {
+        IpcRequest::EnqueueSealed {
+            v: IPC_VERSION,
+            envelope_b64: b64_encode(&env.pack()),
+            peer_hint: Some("test-peer".into()),
+        }
+    }
+
+    #[test]
+    fn enqueue_sealed_rejects_exact_expiry_and_preserves_future_signed_expiry() {
+        let dir = tempfile::tempdir().unwrap();
+        let forward_path = dir.path().join("forward.sqlite");
+        let forward = Some(ForwardQueue::open(&forward_path).unwrap());
+        let now = 10_000u64;
+
+        let expired = sealed_envelope(now, now, 0xA1);
+        let response = handle_req_at(enqueue_request(&expired), dir.path(), &forward, now);
+        assert!(matches!(
+            response,
+            IpcResponse::Error { ref code, .. } if code == "IPC_EXPIRED"
+        ));
+        assert_eq!(forward.as_ref().unwrap().count_all().unwrap(), 0);
+        assert!(!dir.path().join("queue.sqlite").exists());
+
+        let future = sealed_envelope(now, now + 1, 0xA2);
+        let digest = authenticated_object_digest(&future);
+        assert_eq!(
+            handle_req_at(enqueue_request(&future), dir.path(), &forward, now),
+            IpcResponse::Accepted { v: IPC_VERSION }
+        );
+        let stored = forward
+            .as_ref()
+            .unwrap()
+            .get_object(&digest)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.expires_at_ms, future.expires_at);
+        assert_eq!(stored.packed_envelope, future.pack());
+    }
+
+    #[test]
+    fn status_bridge_capability_tracks_live_runtime_not_policy_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let forward = Some(ForwardQueue::open(&dir.path().join("forward.sqlite")).unwrap());
+
+        let without_listener = handle_req_at(
+            IpcRequest::Status { v: IPC_VERSION },
+            dir.path(),
+            &forward,
+            1,
+        );
+        let IpcResponse::Status { capabilities, .. } = without_listener else {
+            panic!("status request did not return status");
+        };
+        assert!(!capabilities.iter().any(|capability| capability == "bridge"));
+
+        {
+            let _runtime = crate::bridge_run::BridgeRuntimeGuard::register(dir.path());
+            let with_listener = handle_req_at(
+                IpcRequest::Status { v: IPC_VERSION },
+                dir.path(),
+                &forward,
+                1,
+            );
+            let IpcResponse::Status { capabilities, .. } = with_listener else {
+                panic!("status request did not return status");
+            };
+            assert!(capabilities.iter().any(|capability| capability == "bridge"));
+        }
+
+        assert!(!crate::bridge_run::bridge_listener_is_up(dir.path()));
+    }
+
+    #[test]
+    fn status_storage_error_is_explicitly_unhealthy() {
+        let response = build_status_response(
+            IPC_VERSION,
+            &raven_core::node_policy::NodePolicy::default(),
+            true,
+            Err("database unavailable".into()),
+            false,
+            true,
+        );
+        assert!(matches!(
+            response,
+            IpcResponse::Error { ref code, ref message, .. }
+                if code == "STORAGE" && message == "database unavailable"
+        ));
+    }
+
+    #[test]
+    fn forward_custody_acceptance_survives_optional_outbox_collision() {
+        let dir = tempfile::tempdir().unwrap();
+        let forward = Some(ForwardQueue::open(&dir.path().join("forward.sqlite")).unwrap());
+        let now = 20_000;
+        let envelope = sealed_envelope(now, now + 1_000, 0xB1);
+        let digest = authenticated_object_digest(&envelope);
+        let outbox = OutgoingQueue::open(&dir.path().join("queue.sqlite")).unwrap();
+        outbox
+            .enqueue(&QueueItem {
+                message_id: envelope.message_id,
+                packed_envelope: b"preexisting-different-object".to_vec(),
+                peer_addr: "test-peer".into(),
+                state: DeliveryState::Sent,
+                created_at_ms: 1,
+            })
+            .unwrap();
+
+        assert_eq!(
+            handle_req_at(enqueue_request(&envelope), dir.path(), &forward, now),
+            IpcResponse::Accepted { v: IPC_VERSION }
+        );
+        assert_eq!(forward.as_ref().unwrap().count_all().unwrap(), 1);
+        assert_eq!(
+            forward
+                .as_ref()
+                .unwrap()
+                .get_object(&digest)
+                .unwrap()
+                .unwrap()
+                .packed_envelope,
+            envelope.pack()
+        );
+        let existing = outbox.get(&envelope.message_id).unwrap().unwrap();
+        assert_eq!(
+            existing.packed_envelope,
+            b"preexisting-different-object".to_vec()
+        );
+        assert_eq!(existing.state, DeliveryState::Sent);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unix_listener_is_verified_socket_owned_by_self_with_exact_0600_mode() {
+        use std::os::unix::fs::{FileTypeExt, MetadataExt};
+
+        let dir = tempfile::tempdir().unwrap();
+        let sock = socket_path(dir.path());
+        let listener = bind_secure_unix_listener(&sock).unwrap();
+        let metadata = std::fs::symlink_metadata(&sock).unwrap();
+        assert!(metadata.file_type().is_socket());
+        assert_eq!(metadata.mode() & 0o7777, 0o600);
+        assert_eq!(metadata.uid(), unsafe { libc::geteuid() });
+        drop(listener);
+        std::fs::remove_file(sock).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn forward_queue_open_failure_prevents_ipc_socket_publication() {
+        let dir = tempfile::tempdir().unwrap();
+        let invalid_forward_path = dir.path().join("forward-is-a-directory");
+        std::fs::create_dir(&invalid_forward_path).unwrap();
+
+        let error = run_ipc_server(dir.path().to_path_buf(), Some(invalid_forward_path))
+            .await
+            .unwrap_err();
+        assert!(error.contains("open forward queue"));
+        assert!(!socket_path(dir.path()).exists());
+    }
 }
 
 #[cfg(all(test, windows))]

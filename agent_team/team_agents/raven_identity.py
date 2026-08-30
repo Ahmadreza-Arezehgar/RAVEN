@@ -38,10 +38,13 @@ from raven_protocol import fingerprint as rvn_fingerprint
 from raven_protocol._canon import lp
 
 SIGNING_CONTEXT = b'raven.a2a.delegation.v2'
+HTTP_SIGNING_CONTEXT = b'raven.a2a.http-request.v1'
 MAX_FUTURE_SKEW_SECONDS = 60
 DEFAULT_DELEGATION_TTL_SECONDS = 10 * 60
 MAX_DELEGATION_TTL_SECONDS = 24 * 60 * 60
 NONCE_BYTES = 16
+MAX_REPLAY_ENTRIES = 8192
+MAX_REPLAY_DB_BYTES = 8 * 1024 * 1024
 
 
 class ReplayCache:
@@ -51,18 +54,36 @@ class ReplayCache:
         self,
         ttl: int = MAX_DELEGATION_TTL_SECONDS + MAX_FUTURE_SKEW_SECONDS,
         path: str | Path | None = None,
+        max_entries: int = MAX_REPLAY_ENTRIES,
+        max_db_bytes: int = MAX_REPLAY_DB_BYTES,
     ) -> None:
+        if max_entries <= 0 or max_db_bytes < 64 * 1024:
+            raise ValueError('replay-cache bounds must be positive')
         self._ttl = ttl
+        self._max_entries = max_entries
+        self._max_db_bytes = max_db_bytes
         self._path = Path(path) if path else None
         self._lock = threading.Lock()
         self._seen: dict[str, float] = {}
         if self._path is not None:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             with sqlite3.connect(self._path) as db:
+                db.execute('PRAGMA journal_mode=DELETE')
+                db.execute('PRAGMA synchronous=FULL')
+                db.execute('PRAGMA secure_delete=ON')
                 db.execute(
                     'CREATE TABLE IF NOT EXISTS replay_signatures ('
                     'signature_hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL)'
                 )
+                page_size = int(db.execute('PRAGMA page_size').fetchone()[0])
+                max_pages = max(16, max_db_bytes // page_size)
+                current_pages = int(db.execute('PRAGMA page_count').fetchone()[0])
+                if current_pages > max_pages:
+                    raise RuntimeError(
+                        'replay cache exceeds its compiled byte limit; rotate it '
+                        'while the node is stopped'
+                    )
+                db.execute(f'PRAGMA max_page_count={max_pages}')
             try:
                 self._path.chmod(0o600)
             except OSError:
@@ -83,9 +104,16 @@ class ReplayCache:
                         'WHERE signature_hash = ?',
                         (key,),
                     ).fetchone()
-                    if existing and int(existing[0]) >= int(now):
+                    if existing and int(existing[0]) > int(now):
                         # Roll back even though this transaction made no logical
                         # change: a rejected replay must remain mutation-free.
+                        db.rollback()
+                        return False
+                    active_count = int(db.execute(
+                        'SELECT COUNT(*) FROM replay_signatures WHERE expires_at > ?',
+                        (int(now),),
+                    ).fetchone()[0])
+                    if active_count >= self._max_entries:
                         db.rollback()
                         return False
                     if existing:
@@ -102,7 +130,7 @@ class ReplayCache:
                     # signature, never because rejected traffic reached us.
                     db.execute(
                         'DELETE FROM replay_signatures '
-                        'WHERE expires_at < ? AND signature_hash != ?',
+                        'WHERE expires_at <= ? AND signature_hash != ?',
                         (int(now), key),
                     )
                 return True
@@ -115,10 +143,13 @@ class ReplayCache:
                 del self._seen[k]
             if key in self._seen:
                 return False
+            if len(self._seen) >= self._max_entries:
+                return False
             self._seen[key] = now
             return True
 
-    def __contains__(self, signature_b64: str) -> bool:
+    def seen(self, signature_b64: str) -> bool:
+        """Return durable membership, raising if persistence is unavailable."""
         key = hashlib.sha256(signature_b64.encode('ascii')).hexdigest()
         now = time.time()
         if self._path is not None:
@@ -129,11 +160,18 @@ class ReplayCache:
                         'WHERE signature_hash = ?',
                         (key,),
                     ).fetchone()
-                return bool(row and int(row[0]) >= int(now))
-            except sqlite3.Error:
-                return True
+                return bool(row and int(row[0]) > int(now))
+            except sqlite3.Error as exc:
+                raise RuntimeError('replay cache is unavailable') from exc
         with self._lock:
             return key in self._seen and now - self._seen[key] <= self._ttl
+
+    def __contains__(self, signature_b64: str) -> bool:
+        try:
+            return self.seen(signature_b64)
+        except (UnicodeEncodeError, RuntimeError):
+            # Membership is used only in fail-closed authorization paths.
+            return True
 
 
 _REPLAY = ReplayCache()
@@ -310,6 +348,151 @@ def _b64url(raw: bytes) -> str:
     return jwt.utils.base64url_encode(raw).decode()
 
 
+def http_request_signing_bytes(
+    sender_address: str,
+    recipient_address: str,
+    method: str,
+    target: str,
+    issued_at: int,
+    expires_at: int,
+    body: bytes,
+    nonce: str,
+) -> bytes:
+    """Canonical bytes for authenticating one exact A2A HTTP request."""
+    body_digest = hashlib.sha256(body).digest()
+    nonce_raw = bytes.fromhex(nonce)
+    return (
+        lp(HTTP_SIGNING_CONTEXT)
+        + lp(sender_address.encode('utf-8'))
+        + lp(recipient_address.encode('utf-8'))
+        + lp(method.upper().encode('ascii'))
+        + lp(target.encode('ascii'))
+        + lp(str(issued_at).encode('ascii'))
+        + lp(str(expires_at).encode('ascii'))
+        + lp(body_digest)
+        + lp(nonce_raw)
+    )
+
+
+def sign_http_request(
+    identity: RavenIdentity,
+    *,
+    recipient: str,
+    method: str,
+    target: str,
+    body: bytes,
+    issued_at: int | None = None,
+    expires_at: int | None = None,
+    ttl_seconds: int = DEFAULT_DELEGATION_TTL_SECONDS,
+) -> dict[str, str | int]:
+    """Sign one method/target/body for a pinned Raven HTTP peer."""
+    validate_address_public_key(identity.address, identity.public_hex)
+    if not recipient or not method or not target.startswith('/'):
+        raise ValueError('recipient, method and absolute request target are required')
+    try:
+        method.encode('ascii')
+        target.encode('ascii')
+    except UnicodeEncodeError as exc:
+        raise ValueError('HTTP method and request target must be ASCII') from exc
+    now = int(time.time()) if issued_at is None else int(issued_at)
+    expiry = now + int(ttl_seconds) if expires_at is None else int(expires_at)
+    lifetime = expiry - now
+    if lifetime <= 0 or lifetime > MAX_DELEGATION_TTL_SECONDS:
+        raise ValueError('HTTP authorization lifetime is outside the allowed range')
+    nonce = secrets.token_hex(NONCE_BYTES)
+    signature = identity.sign(
+        http_request_signing_bytes(
+            identity.address,
+            recipient,
+            method,
+            target,
+            now,
+            expiry,
+            body,
+            nonce,
+        )
+    )
+    return {
+        'address': identity.address,
+        'recipient': recipient,
+        'issued_at': now,
+        'expires_at': expiry,
+        'nonce': nonce,
+        'algorithm': 'ed25519',
+        'context': HTTP_SIGNING_CONTEXT.decode(),
+        'signature': base64.b64encode(signature).decode('ascii'),
+    }
+
+
+def verify_http_request(
+    authorization: dict[str, object],
+    *,
+    method: str,
+    target: str,
+    body: bytes,
+    trusted_peers: dict[str, str],
+    expected_recipient: str,
+    revoked: set[str] | None = None,
+    replay: ReplayCache | None = None,
+) -> tuple[bool, str, str]:
+    """Verify transport authentication and return ``(ok, reason, owner)``."""
+    sender = str(authorization.get('address', ''))
+    if sender not in trusted_peers:
+        return False, f'unknown peer: {sender or "(none)"}', ''
+    if revoked and sender in revoked:
+        return False, f'revoked peer: {sender}', ''
+    if str(authorization.get('recipient', '')) != expected_recipient:
+        return False, 'HTTP authorization recipient mismatch', ''
+    if str(authorization.get('context', '')) != HTTP_SIGNING_CONTEXT.decode():
+        return False, 'bad HTTP signing context', ''
+    if str(authorization.get('algorithm', '')).lower() != 'ed25519':
+        return False, 'unsupported HTTP signature algorithm', ''
+    try:
+        issued_at = int(authorization.get('issued_at', 0))
+        expires_at = int(authorization.get('expires_at', 0))
+    except (TypeError, ValueError):
+        return False, 'bad HTTP authorization time bounds', ''
+    now = int(time.time())
+    if issued_at > now + MAX_FUTURE_SKEW_SECONDS:
+        return False, 'HTTP authorization issued too far in the future', ''
+    if expires_at <= issued_at:
+        return False, 'invalid HTTP authorization expiry', ''
+    if expires_at - issued_at > MAX_DELEGATION_TTL_SECONDS:
+        return False, 'HTTP authorization lifetime exceeds maximum', ''
+    if now >= expires_at:
+        return False, 'HTTP authorization expired', ''
+    nonce = str(authorization.get('nonce', ''))
+    try:
+        nonce_raw = bytes.fromhex(nonce)
+    except ValueError:
+        return False, 'bad HTTP authorization nonce', ''
+    if len(nonce_raw) != NONCE_BYTES:
+        return False, 'bad HTTP authorization nonce', ''
+    signature_b64 = str(authorization.get('signature', ''))
+    try:
+        signature = base64.b64decode(signature_b64, validate=True)
+        public_raw = validate_address_public_key(sender, trusted_peers[sender])
+        Ed25519PublicKey.from_public_bytes(public_raw).verify(
+            signature,
+            http_request_signing_bytes(
+                sender,
+                expected_recipient,
+                method,
+                target,
+                issued_at,
+                expires_at,
+                body,
+                nonce,
+            ),
+        )
+    except (InvalidSignature, ValueError, TypeError):
+        return False, 'HTTP signature invalid', ''
+    cache = replay or _REPLAY
+    if not cache.first_time(signature_b64, expires_at=expires_at):
+        return False, 'HTTP authorization replay', ''
+    return True, 'HTTP authorization verified', sender
+
+
 def delegation_signing_bytes(
     sender_address: str,
     recipient_address: str,
@@ -395,6 +578,7 @@ def verify_delegation(
     expected_recipient: str = '',
     expected_task_id: str = '',
     expected_kind: str = 'task',
+    consume_replay: bool = True,
 ) -> tuple[bool, str]:
     """Check a `raven` metadata block against trust policy.
 
@@ -435,7 +619,7 @@ def verify_delegation(
         return False, 'invalid delegation expiry'
     if expires_at - issued_at > MAX_DELEGATION_TTL_SECONDS:
         return False, 'delegation lifetime exceeds maximum'
-    if now > expires_at:
+    if now >= expires_at:
         return False, 'delegation expired'
     nonce = str(meta.get('nonce', ''))
     if len(nonce) != NONCE_BYTES * 2:
@@ -468,6 +652,6 @@ def verify_delegation(
         pub.verify(sig, data)
     except InvalidSignature:
         return False, 'signature invalid'
-    if not cache.first_time(sig_b64, expires_at=expires_at):
+    if consume_replay and not cache.first_time(sig_b64, expires_at=expires_at):
         return False, 'replayed delegation'
     return True, f'verified {sender}'

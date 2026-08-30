@@ -2,17 +2,18 @@
 # Safe local two-node DM reliability loop for RAVEN.
 # Uses ONLY local temp dirs and ephemeral keys — no secrets committed.
 set -euo pipefail
+export RAVEN_IDENTITY_BACKEND=locked-file
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="$ROOT/target/debug"
 NODE="$BIN/raven-node"
-WORKDIR="${TMPDIR:-/tmp}/raven-demo-$$"
+WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/raven-demo.XXXXXX")"
 mkdir -p "$WORKDIR/a" "$WORKDIR/b"
 cleanup() { rm -rf "$WORKDIR"; }
 trap cleanup EXIT
 
 if [[ ! -x "$NODE" ]]; then
   echo "Building raven-node..."
-  (cd "$ROOT" && cargo build -p raven-node --features raven-node/unsafe-demo-crypto -q)
+  (cd "$ROOT" && cargo build --locked -p raven-node --features raven-node/unsafe-demo-crypto -q)
 fi
 
 echo "=== RAVEN two-node demo workdir=$WORKDIR ==="

@@ -1,0 +1,4 @@
+[submodule "raven-security"]
+	path = raven-security
+	url = https://github.com/Raven-offline-messenger/raven-security.git
+	branch = main

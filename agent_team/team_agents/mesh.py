@@ -28,6 +28,11 @@ import uuid
 from pathlib import Path
 
 BIN_NAME = 'raven-swarm-mailbox-experimental'
+MAX_MAILBOX_PAGES = 64
+MAX_MAILBOX_OBJECTS = 64
+MAX_MAILBOX_TOTAL_BYTES = 64 * 1024 * 1024
+# raven-swarm: MAX_ENVELOPE_LEN + the 59-byte RSO1 prefix + 64-byte custody sig.
+MAX_MAILBOX_OBJECT_BYTES = 1_048_576 + 59 + 64
 CANDIDATE_DIRS = (
     Path(os.environ.get('RDAP_HOME', str(Path.home() / 'rdap'))) / 'bin',
     Path(__file__).resolve().parents[2] / 'node' / 'target' / 'debug',
@@ -263,9 +268,10 @@ def mailbox_get_all(bin_path: Path, client_dir: Path, store_multiaddr: str,
                     store_peer_id: str, tag_hex: str) -> list[bytes]:
     client_dir.mkdir(parents=True, exist_ok=True)
     objects: list[bytes] = []
+    total_bytes = 0
     after = ''
     seen_cursors: set[str] = set()
-    for _page in range(4096):
+    for _page in range(MAX_MAILBOX_PAGES):
         args = [
             'get', '--peer', store_multiaddr,
             '--peer-id', store_peer_id,
@@ -277,7 +283,22 @@ def mailbox_get_all(bin_path: Path, client_dir: Path, store_multiaddr: str,
         next_cursor = None
         for line in out.splitlines():
             if line.startswith('object_hex='):
-                objects.append(bytes.fromhex(line.split('=', 1)[1].strip()))
+                encoded = line.split('=', 1)[1].strip()
+                if (
+                    len(encoded) % 2
+                    or len(encoded) > MAX_MAILBOX_OBJECT_BYTES * 2
+                ):
+                    raise RuntimeError('mailbox object exceeds the wire byte limit')
+                try:
+                    decoded = bytes.fromhex(encoded)
+                except ValueError as exc:
+                    raise RuntimeError('mailbox returned a non-hex object') from exc
+                if len(objects) >= MAX_MAILBOX_OBJECTS:
+                    raise RuntimeError('mailbox object count exceeds the store limit')
+                if len(decoded) > MAX_MAILBOX_TOTAL_BYTES - total_bytes:
+                    raise RuntimeError('mailbox objects exceed the store byte limit')
+                objects.append(decoded)
+                total_bytes += len(decoded)
             elif line.startswith('next_cursor='):
                 next_cursor = line.split('=', 1)[1].strip()
         if next_cursor is None:
@@ -294,4 +315,4 @@ def mailbox_get_all(bin_path: Path, client_dir: Path, store_multiaddr: str,
             raise RuntimeError('mailbox cursor cycle detected')
         seen_cursors.add(next_cursor)
         after = next_cursor
-    raise RuntimeError('mailbox pagination exceeded the safety page limit')
+    raise RuntimeError('mailbox pagination exceeded the compiled page limit')

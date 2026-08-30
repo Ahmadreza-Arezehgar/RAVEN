@@ -4,10 +4,11 @@
 #  2) opaque-atsam body — DELIVERED opaque_atsam + ACK (honest bridge)
 # Safe: ephemeral /tmp identities only. No secrets.
 set -euo pipefail
+export RAVEN_IDENTITY_BACKEND=locked-file
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="$ROOT/target/debug"
 NODE="$BIN/raven-node"
-WORKDIR="${TMPDIR:-/tmp}/raven-lan-smoke-$$"
+WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/raven-lan-smoke.XXXXXX")"
 mkdir -p "$WORKDIR/a" "$WORKDIR/b"
 cleanup() { rm -rf "$WORKDIR"; }
 trap cleanup EXIT
@@ -15,7 +16,7 @@ trap cleanup EXIT
 source "${HOME}/.cargo/env" 2>/dev/null || true
 if [[ ! -x "$NODE" ]]; then
   echo "Building raven-node..."
-  (cd "$ROOT" && cargo build -p raven-node --features raven-node/unsafe-demo-crypto -q)
+  (cd "$ROOT" && cargo build --locked -p raven-node --features raven-node/unsafe-demo-crypto -q)
 fi
 
 echo "=== LAN path smoke (interim + opaque ATSAM) workdir=$WORKDIR ==="

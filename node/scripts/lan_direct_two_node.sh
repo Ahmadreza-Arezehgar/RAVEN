@@ -5,14 +5,18 @@
 set -euo pipefail
 set +m
 
-# Shared 0600 seed file so ash and raven-node read the same identity (no Keychain ACL).
+# Shared 0600 seed/prekey files so ash and raven-node read the same profile
+# without Keychain prompts. Secure origination is still an explicit debug-lab
+# gate until the production ATSAM bootstrap path is wired end to end.
 export RAVEN_IDENTITY_BACKEND=locked-file
+export RAVEN_PREKEY_BACKEND=locked-file
+export RAVEN_LAB_TEST_A=1
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="$ROOT/target/debug"
 ASH="$BIN/ash"
 NODE="$BIN/raven-node"
-WORKDIR="/tmp/raven-lan-direct-$$"
+WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/raven-lan-direct.XXXXXX")"
 A="$WORKDIR/a"
 B="$WORKDIR/b"
 A_PORT="${A_PORT:-$((18000 + $$ % 500))}"
@@ -52,16 +56,21 @@ A_ADDR=$(grep '^address=' "$WORKDIR/a.init" | cut -d= -f2)
 B_ADDR=$(grep '^address=' "$WORKDIR/b.init" | cut -d= -f2)
 A_PUB=$(grep '^pub_hex=' "$WORKDIR/a.init" | cut -d= -f2)
 B_PUB=$(grep '^pub_hex=' "$WORKDIR/b.init" | cut -d= -f2)
+A_FP=$(grep '^fingerprint=' "$WORKDIR/a.init" | cut -d= -f2)
+B_FP=$(grep '^fingerprint=' "$WORKDIR/b.init" | cut -d= -f2)
 test -n "$A_ADDR" && test -n "$B_ADDR" && test -n "$A_PUB" && test -n "$B_PUB"
+test -n "$A_FP" && test -n "$B_FP"
 
 "$ASH" --data-dir "$A" prekey publish
 "$ASH" --data-dir "$B" prekey publish
 
 echo "=== start two raven-node service processes ==="
-"$NODE" service --data-dir "$A" --lan-listen "127.0.0.1:${A_PORT}" --ble-listen "127.0.0.1:0" \
+"$NODE" service --data-dir "$A" --lan-listen "127.0.0.1:${A_PORT}" \
+  --bridge-listen "127.0.0.1:$((A_PORT + 2))" --ble-listen "127.0.0.1:0" \
   >"$WORKDIR/a.node.log" 2>&1 &
 A_PID=$!
-"$NODE" service --data-dir "$B" --lan-listen "127.0.0.1:${B_PORT}" --ble-listen "127.0.0.1:0" \
+"$NODE" service --data-dir "$B" --lan-listen "127.0.0.1:${B_PORT}" \
+  --bridge-listen "127.0.0.1:$((B_PORT + 2))" --ble-listen "127.0.0.1:0" \
   >"$WORKDIR/b.node.log" 2>&1 &
 B_PID=$!
 
@@ -88,10 +97,10 @@ echo "A_PORT=$A_PORT B_PORT=$B_PORT"
 echo "=== contact add (address + pub_hex + lan_dial) ==="
 "$ASH" --data-dir "$A" contact add \
   --address "$B_ADDR" --pub-hex "$B_PUB" --petname "Bob" --tag bob \
-  --lan-dial "127.0.0.1:${B_PORT}"
+  --lan-dial "127.0.0.1:${B_PORT}" --verify-fp "$B_FP"
 "$ASH" --data-dir "$B" contact add \
   --address "$A_ADDR" --pub-hex "$A_PUB" --petname "Alice" --tag alice \
-  --lan-dial "127.0.0.1:${A_PORT}"
+  --lan-dial "127.0.0.1:${A_PORT}" --verify-fp "$A_FP"
 
 echo "=== ash send --contact @bob (no --peer / no lab import) ==="
 set +e
@@ -152,7 +161,8 @@ C_ADDR=$(grep '^address=' "$WORKDIR/c.init" | cut -d= -f2)
 C_PUB=$(grep '^pub_hex=' "$WORKDIR/c.init" | cut -d= -f2)
 test -n "$C_ADDR" && test -n "$C_PUB"
 "$ASH" --data-dir "$C" prekey publish
-"$NODE" service --data-dir "$C" --lan-listen "127.0.0.1:${C_PORT}" --ble-listen "127.0.0.1:0" \
+"$NODE" service --data-dir "$C" --lan-listen "127.0.0.1:${C_PORT}" \
+  --bridge-listen "127.0.0.1:$((C_PORT + 2))" --ble-listen "127.0.0.1:0" \
   >"$WORKDIR/c.node.log" 2>&1 &
 C_PID=$!
 for _ in $(seq 1 80); do
@@ -169,7 +179,7 @@ fi
 # C knows B; B does NOT know C — PairInit must be refused on B.
 "$ASH" --data-dir "$C" contact add \
   --address "$B_ADDR" --pub-hex "$B_PUB" --petname "Bob" --tag bob \
-  --lan-dial "127.0.0.1:${B_PORT}"
+  --lan-dial "127.0.0.1:${B_PORT}" --verify-fp "$B_FP"
 set +e
 printf '%s\n' "stranger probe" | "$ASH" --data-dir "$C" send --contact @bob \
   >"$WORKDIR/c.send.out" 2>"$WORKDIR/c.send.err"

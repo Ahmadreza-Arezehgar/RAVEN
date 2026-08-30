@@ -1,0 +1,40 @@
+# License policy for the default-feature Raven terminal artifacts.
+#
+# Keep this list explicit: a newly introduced license must stop packaging until
+# it has been reviewed and deliberately added here. `--target` filters the
+# conservative workspace license superset; the companion generator appends
+# separate NOTICE/COPYRIGHT files from the exact three-package release graph.
+accepted = [
+    "AGPL-3.0-or-later",
+    "Apache-2.0",
+    "BSD-1-Clause",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Unlicense",
+    "Zlib",
+]
+
+ignore-build-dependencies = false
+ignore-dev-dependencies = true
+ignore-transitive-dependencies = false
+
+# These are cargo-about's checksum-backed corrections for crates whose
+# published license layout is not reliably machine-readable.
+workarounds = ["ring", "rustix", "rustls"]
+
+[private]
+ignore = true
+
+[ring]
+accepted = ["OpenSSL"]
+
+# cargo-about evaluates the whole virtual workspace, so this lab-only member is
+# present in the conservative superset even though it is not linked into the
+# default terminal artifacts. Keep the copyleft acceptance crate-specific.
+[spqr]
+accepted = ["AGPL-3.0-only"]

@@ -36,8 +36,10 @@ from team_agents.raven_identity import (  # noqa: E402
     ReplayCache,
     load_revocations,
     sign_delegation,
+    sign_http_request,
     validate_address_public_key,
     verify_delegation,
+    verify_http_request,
 )
 
 PASS = []
@@ -148,6 +150,95 @@ def unit_tests() -> None:
             why,
         )
 
+        http_cache = ReplayCache()
+        http_block = sign_http_request(
+            alice,
+            recipient=bob.address,
+            method='POST',
+            target='/',
+            body=b'{"jsonrpc":"2.0"}',
+        )
+        http_ok, http_why, http_owner = verify_http_request(
+            http_block,
+            method='POST',
+            target='/',
+            body=b'{"jsonrpc":"2.0"}',
+            trusted_peers=peers,
+            expected_recipient=bob.address,
+            replay=http_cache,
+        )
+        replay_ok, replay_why, _ = verify_http_request(
+            http_block,
+            method='POST',
+            target='/',
+            body=b'{"jsonrpc":"2.0"}',
+            trusted_peers=peers,
+            expected_recipient=bob.address,
+            replay=http_cache,
+        )
+        tamper_block = sign_http_request(
+            alice,
+            recipient=bob.address,
+            method='POST',
+            target='/',
+            body=b'original',
+        )
+        tamper_ok, tamper_why, _ = verify_http_request(
+            tamper_block,
+            method='POST',
+            target='/',
+            body=b'tampered',
+            trusted_peers=peers,
+            expected_recipient=bob.address,
+            replay=ReplayCache(),
+        )
+        check(
+            'HTTP request auth binds Raven owner, method/target/body and replay',
+            http_ok
+            and http_owner == alice.address
+            and not replay_ok
+            and 'replay' in replay_why
+            and not tamper_ok
+            and 'signature' in tamper_why,
+            f'{http_why}; {replay_why}; {tamper_why}',
+        )
+        bounded_replay_path = tmp / 'bounded-replay.sqlite3'
+        bounded_replay = ReplayCache(
+            path=bounded_replay_path,
+            max_entries=2,
+            max_db_bytes=64 * 1024,
+        )
+        bounded_accepts = []
+        for index in range(3):
+            candidate = sign_http_request(
+                alice,
+                recipient=bob.address,
+                method='POST',
+                target='/',
+                body=f'body-{index}'.encode(),
+            )
+            accepted, _, _ = verify_http_request(
+                candidate,
+                method='POST',
+                target='/',
+                body=f'body-{index}'.encode(),
+                trusted_peers=peers,
+                expected_recipient=bob.address,
+                replay=bounded_replay,
+            )
+            bounded_accepts.append(accepted)
+        with __import__('sqlite3').connect(bounded_replay_path) as replay_db:
+            replay_rows = replay_db.execute(
+                'SELECT COUNT(*) FROM replay_signatures'
+            ).fetchone()[0]
+        check(
+            'replay cache enforces active-row and database-byte ceilings',
+            bounded_accepts == [True, True, False]
+            and replay_rows == 2
+            and bounded_replay_path.stat().st_size <= 64 * 1024,
+            repr((bounded_accepts, replay_rows, bounded_replay_path.stat().st_size)),
+        )
+
         fresh = sign_delegation(
             alice, 'hello task', recipient=bob.address, task_id='task-2'
         )
@@ -187,6 +278,53 @@ def unit_tests() -> None:
         ok, why = verify(expired, 'old', task_id='old-1')
         check('expired task rejected', not ok and 'expired' in why, why)
 
+        from unittest.mock import patch
+
+        expiry_boundary = now + 120
+        boundary_delegation = sign_delegation(
+            alice,
+            'boundary',
+            recipient=bob.address,
+            task_id='boundary-delegation',
+            issued_at=expiry_boundary - 60,
+            expires_at=expiry_boundary,
+        )
+        boundary_http = sign_http_request(
+            alice,
+            recipient=bob.address,
+            method='POST',
+            target='/',
+            body=b'boundary',
+            issued_at=expiry_boundary - 60,
+            expires_at=expiry_boundary,
+        )
+        with patch(
+            'team_agents.raven_identity.time.time',
+            return_value=expiry_boundary,
+        ):
+            boundary_delegation_ok, boundary_delegation_why = verify(
+                boundary_delegation,
+                'boundary',
+                task_id='boundary-delegation',
+            )
+            boundary_http_ok, boundary_http_why, _ = verify_http_request(
+                boundary_http,
+                method='POST',
+                target='/',
+                body=b'boundary',
+                trusted_peers=peers,
+                expected_recipient=bob.address,
+                replay=ReplayCache(),
+            )
+        check(
+            'delegation and HTTP expiry are exclusive at exact boundary',
+            not boundary_delegation_ok
+            and 'expired' in boundary_delegation_why
+            and not boundary_http_ok
+            and 'expired' in boundary_http_why,
+            f'{boundary_delegation_why}; {boundary_http_why}',
+        )
+
         (tmp / 'rev.json').write_text(json.dumps([alice.address]))
         revoked = load_revocations(tmp / 'rev.json')
         blk = sign_delegation(
@@ -202,9 +340,423 @@ def unit_tests() -> None:
             check('broken revocation policy fails closed', True)
 
         check('signed tasks required by default', NodeConfig().require_signed_tasks is True)
+        unsafe_names_rejected = True
+        for unsafe_name in ('.', '..', 'CON', '../escape', 'a/b', 'x' * 65):
+            try:
+                NodeConfig(name=unsafe_name)
+                unsafe_names_rejected = False
+            except ValueError:
+                pass
+        check(
+            'node names are bounded and cross-platform path-safe',
+            unsafe_names_rejected and NodeConfig(name='agent-1.prod').name == 'agent-1.prod',
+        )
+
+        # Fresh initialization must succeed with no global/system Git identity
+        # and leave an explicit non-personal identity in this repository.
+        init_home = tmp / 'fresh-init-no-global-git-identity'
+        init_env = os.environ.copy()
+        for variable in tuple(init_env):
+            if variable.startswith('GIT_CONFIG_') or variable.startswith(
+                ('GIT_AUTHOR_', 'GIT_COMMITTER_')
+            ):
+                init_env.pop(variable, None)
+        init_env.update({
+            'RDAP_HOME': str(init_home),
+            'GIT_CONFIG_NOSYSTEM': '1',
+            'GIT_CONFIG_GLOBAL': str(tmp / 'nonexistent-global-gitconfig'),
+        })
+        init_result = subprocess.run(
+            [
+                sys.executable,
+                str(PKG_ROOT / 'rdap.py'),
+                'init',
+                '--name',
+                'fresh-agent',
+                '--role',
+                'test',
+                '--internet',
+            ],
+            cwd=PKG_ROOT,
+            env=init_env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        initialized_repo = init_home / 'team-repo'
+        init_identity = ''
+        init_author = ''
+        if init_result.returncode == 0:
+            init_identity = (
+                _git(initialized_repo, 'config', '--local', '--get', 'user.name')
+                + ' <'
+                + _git(initialized_repo, 'config', '--local', '--get', 'user.email')
+                + '>'
+            )
+            init_author = _git(
+                initialized_repo,
+                'log', '-1', '--format=%an <%ae>',
+            )
+        check(
+            'fresh init is independent of global Git identity',
+            init_result.returncode == 0
+            and init_identity == 'RDAP Agent <rdap@localhost.invalid>'
+            and init_author == init_identity,
+            (
+                f'rc={init_result.returncode} identity={init_identity!r} '
+                f'author={init_author!r} stderr={init_result.stderr[-500:]!r}'
+            ),
+        )
+
+        initialized_tree = (
+            _git(initialized_repo, 'ls-tree', '-r', '--name-only', 'HEAD')
+            if init_result.returncode == 0 else ''
+        )
+        check(
+            'fresh init commits only its explicit bootstrap allowlist',
+            initialized_tree.splitlines() == ['.gitignore'],
+            initialized_tree,
+        )
+
+        occupied_home = tmp / 'occupied-init-home'
+        occupied_repo = occupied_home / 'team-repo'
+        occupied_repo.mkdir(parents=True)
+        occupied_file = occupied_repo / 'user-notes.txt'
+        occupied_file.write_text('must remain private and uncommitted\n', encoding='utf-8')
+        occupied_env = {**init_env, 'RDAP_HOME': str(occupied_home)}
+        occupied_result = subprocess.run(
+            [
+                sys.executable,
+                str(PKG_ROOT / 'rdap.py'),
+                'init', '--name', 'must-refuse', '--role', 'test', '--internet',
+            ],
+            cwd=PKG_ROOT,
+            env=occupied_env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        check(
+            'init refuses an occupied unmanaged directory without Git mutation',
+            occupied_result.returncode != 0
+            and occupied_file.read_text(encoding='utf-8')
+            == 'must remain private and uncommitted\n'
+            and not (occupied_repo / '.git').exists()
+            and not (occupied_repo / '.gitignore').exists(),
+            occupied_result.stderr[-500:] + occupied_result.stdout[-500:],
+        )
+
+        existing_home = tmp / 'existing-history-init-home'
+        existing_repo = existing_home / 'team-repo'
+        existing_repo.mkdir(parents=True)
+        _git(existing_repo, 'init', '-q')
+        _git(existing_repo, 'config', 'user.name', 'Existing User')
+        _git(existing_repo, 'config', 'user.email', 'existing@example.invalid')
+        custom_ignore = '# project-owned\ncustom.cache\n'
+        (existing_repo / '.gitignore').write_text(custom_ignore, encoding='utf-8')
+        (existing_repo / 'tracked.txt').write_text('tracked\n', encoding='utf-8')
+        _git(existing_repo, 'add', '--', '.gitignore', 'tracked.txt')
+        _git(existing_repo, 'commit', '-q', '-m', 'existing history')
+        existing_head = _git(existing_repo, 'rev-parse', 'HEAD')
+        existing_untracked = existing_repo / 'user-draft.txt'
+        existing_untracked.write_text('do not stage\n', encoding='utf-8')
+        existing_env = {**init_env, 'RDAP_HOME': str(existing_home)}
+        existing_result = subprocess.run(
+            [
+                sys.executable,
+                str(PKG_ROOT / 'rdap.py'),
+                'init', '--name', 'existing-agent', '--role', 'test', '--internet',
+            ],
+            cwd=PKG_ROOT,
+            env=existing_env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        local_exclude = existing_repo / '.git' / 'info' / 'exclude'
+        check(
+            'init preserves existing history, ignore rules, and untracked files',
+            existing_result.returncode == 0
+            and _git(existing_repo, 'rev-parse', 'HEAD') == existing_head
+            and (existing_repo / '.gitignore').read_text(encoding='utf-8')
+            == custom_ignore
+            and existing_untracked.read_text(encoding='utf-8') == 'do not stage\n'
+            and '.team/keys/' in local_exclude.read_text(encoding='utf-8')
+            and _git(existing_repo, 'status', '--short', '--untracked-files=all')
+            == '?? user-draft.txt',
+            f'rc={existing_result.returncode} stderr={existing_result.stderr[-500:]!r}',
+        )
+
+        # Existing homes are a migration path too: a user may have initialized
+        # with an older version and later removed their global Git identity.
+        init_migration_ok = False
+        if init_result.returncode == 0:
+            init_head = _git(initialized_repo, 'rev-parse', 'HEAD')
+            _git(initialized_repo, 'config', '--unset-all', 'user.name')
+            _git(initialized_repo, 'config', '--unset-all', 'user.email')
+            migration_result = subprocess.run(
+                [
+                    sys.executable,
+                    str(PKG_ROOT / 'rdap.py'),
+                    'init',
+                    '--name',
+                    'ignored-on-rerun',
+                    '--role',
+                    'ignored-on-rerun',
+                    '--internet',
+                ],
+                cwd=PKG_ROOT,
+                env=init_env,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            init_migration_ok = (
+                migration_result.returncode == 0
+                and _git(
+                    initialized_repo,
+                    'config', '--local', '--get', 'user.name',
+                ) == 'RDAP Agent'
+                and _git(
+                    initialized_repo,
+                    'config', '--local', '--get', 'user.email',
+                ) == 'rdap@localhost.invalid'
+                and _git(initialized_repo, 'rev-parse', 'HEAD') == init_head
+            )
+        check(
+            're-running init repairs legacy local Git identity without a commit',
+            init_migration_ok,
+        )
+
+        model_result = subprocess.run(
+            [
+                sys.executable,
+                str(PKG_ROOT / 'rdap.py'),
+                'model',
+                'ollama',
+                'llama3.2',
+                '--base-url',
+                'http://localhost:11434/v1',
+            ],
+            cwd=PKG_ROOT,
+            env=init_env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        configured_model = json.loads(
+            (init_home / 'rdap.json').read_text(encoding='utf-8')
+        ).get('llm', {})
+        check(
+            'model CLI validates and persists a provider configuration',
+            model_result.returncode == 0
+            and configured_model == {
+                'provider': 'ollama',
+                'model': 'llama3.2',
+                'base_url': 'http://localhost:11434/v1',
+            },
+            f'rc={model_result.returncode} state={configured_model!r} '
+            f'stderr={model_result.stderr[-500:]!r}',
+        )
+
+        import rdap as rdap_cli
+
+        no_route_refused = False
+        with (
+            patch.object(
+                rdap_cli,
+                'state',
+                return_value={
+                    'name': 'fresh-agent',
+                    'address': alice.address,
+                    'public_key': alice.public_hex,
+                },
+            ),
+            patch.object(rdap_cli, 'lan_ip', return_value=''),
+        ):
+            try:
+                rdap_cli.cmd_invite(
+                    type('Args', (), {'port': 9001, 'ip': ''})()
+                )
+            except SystemExit as exc:
+                no_route_refused = '--ip' in str(exc)
+        check(
+            'invite refuses a loopback lie when no default route exists',
+            no_route_refused,
+        )
+        advertised_host_validation_ok = all(
+            rdap_cli._validated_advertised_host(value) == value
+            for value in ('192.168.1.8', 'alice.local')
+        )
+        for unsafe_host in (
+            '::1',
+            '[::1]',
+            '192.168.1.8/path',
+            '999.1.1.1',
+            '255.255.255.255',
+        ):
+            try:
+                rdap_cli._validated_advertised_host(unsafe_host)
+                advertised_host_validation_ok = False
+            except ValueError:
+                pass
+        check(
+            'advertised endpoint is safe for the IPv4 listener and URL syntax',
+            advertised_host_validation_ok,
+        )
 
         import team_agents.memory as memory_mod
         from team_agents.memory import FileLockTimeout, TeamGitError, TeamMemory
+
+        # Layout creation, claims, and BOARD projection are used concurrently
+        # by the HTTP server, relay worker, and local CLI. Exercise separate
+        # TeamMemory instances so this covers the filesystem lock, not merely
+        # one object's in-memory state.
+        from concurrent.futures import ThreadPoolExecutor
+
+        concurrent_claim_repo = tmp / 'concurrent-claim-repo'
+
+        def concurrent_claim(index: int) -> str:
+            return TeamMemory(
+                concurrent_claim_repo, auto_commit=False
+            ).claim_file('shared.txt', f'owner-{index}')
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            claim_results = list(pool.map(concurrent_claim, range(8)))
+        check(
+            'concurrent file claims produce exactly one winner',
+            sum(result.startswith('ok: claimed') for result in claim_results) == 1,
+            repr(claim_results),
+        )
+
+        concurrent_board_repo = tmp / 'concurrent-board-repo'
+
+        def concurrent_task(index: int) -> dict:
+            return TeamMemory(
+                concurrent_board_repo, auto_commit=False
+            ).set_task(
+                title=f'task-{index}',
+                task_id=f't-{index}',
+                owner=f'owner-{index}',
+            )
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(concurrent_task, range(8)))
+        concurrent_board_memory = TeamMemory(
+            concurrent_board_repo, auto_commit=False
+        )
+        concurrent_board = concurrent_board_memory.read_board()
+        check(
+            'concurrent task writes preserve every delta and BOARD row',
+            len(concurrent_board_memory._parse_board_rows()) == 8
+            and all(
+                f'| t-{index} | task-{index} | owner-{index} | open |'
+                in concurrent_board
+                for index in range(8)
+            ),
+            concurrent_board,
+        )
+
+        poisoned_delta_repo = tmp / 'poisoned-delta-repo'
+        poisoned_memory = TeamMemory(poisoned_delta_repo, auto_commit=False)
+        poisoned_memory.set_task(
+            title='survives poison', task_id='safe-task', owner='safe-owner'
+        )
+        poison_writer = poisoned_delta_repo / '.team' / 'deltas' / 'poison'
+        poison_writer.mkdir()
+        (poison_writer / 'task-list.json').write_text('[]', encoding='utf-8')
+        (poison_writer / 'task-bad-time.json').write_text(
+            json.dumps({'w': 'poison', 'at': 'not-a-number', 'kind': 'task'}),
+            encoding='utf-8',
+        )
+        poisoned_board = poisoned_memory.read_board()
+        escaped_writer_file = poisoned_memory._delta('..').write(
+            'task', {'id': 'hashed-writer', 'title': 'contained'}
+        )
+        (poison_writer / 'chat-overflow.json').write_text(
+            json.dumps({
+                'w': 'poison',
+                'at': 1e308,
+                'kind': 'chat',
+                'sender': '\x1b[31mpoison',
+                'text': 'must not wedge chat',
+            }),
+            encoding='utf-8',
+        )
+        (poison_writer / 'chat-huge-integer.json').write_text(
+            json.dumps({
+                'w': 'poison',
+                'at': 10 ** 400,
+                'kind': 'chat',
+                'sender': 'poison',
+                'text': 'must also be skipped',
+            }),
+            encoding='utf-8',
+        )
+        from team_agents.chat import TeamChat
+
+        poisoned_chat = TeamChat(poisoned_memory).tail()
+        check(
+            'delta projection skips schema poison and contains unsafe writers',
+            '| safe-task | survives poison | safe-owner | open |' in poisoned_board
+            and escaped_writer_file.parent.parent
+            == poisoned_memory.repo_path / '.team' / 'deltas'
+            and escaped_writer_file.parent.name not in {'.', '..'}
+            and poisoned_chat == '(empty)',
+            f'{poisoned_board}\nchat={poisoned_chat}',
+        )
+
+        # A bounded scan must never sort an arbitrary filesystem-order prefix:
+        # when the complete projection exceeds a cap it fails closed.
+        from team_agents import deltas as delta_module
+
+        capped_writer_repo = tmp / 'capped-delta-writers'
+        capped_writer_memory = TeamMemory(capped_writer_repo, auto_commit=False)
+        capped_writer_memory._delta('alpha').write(
+            'task', {'id': 'alpha', 'title': 'alpha'}
+        )
+        capped_writer_memory._delta('beta').write(
+            'task', {'id': 'beta', 'title': 'beta'}
+        )
+        with patch.object(delta_module, 'MAX_DELTA_WRITERS', 1):
+            capped_writers = delta_module.DeltaStore(
+                capped_writer_memory
+            ).read('task')
+
+        capped_file_repo = tmp / 'capped-delta-files'
+        capped_file_memory = TeamMemory(capped_file_repo, auto_commit=False)
+        capped_file_store = capped_file_memory._delta('alpha')
+        capped_file_store.write('task', {'id': 'one', 'title': 'one'})
+        capped_file_store.write('task', {'id': 'two', 'title': 'two'})
+        with patch.object(delta_module, 'MAX_DELTA_DIRECTORY_ENTRIES', 2):
+            capped_files = delta_module.DeltaStore(
+                capped_file_memory
+            ).read('task')
+        check(
+            'delta projection fails closed instead of starving capped entries',
+            capped_writers == [] and capped_files == [],
+            f'writers={capped_writers!r} files={capped_files!r}',
+        )
+
+        unsafe_goal_repo = tmp / 'unsafe-goal-repo'
+        unsafe_goal_memory = TeamMemory(unsafe_goal_repo, auto_commit=False)
+        unsafe_goal_memory.ensure_layout()
+        unsafe_goal = unsafe_goal_repo / '.team' / 'GOAL.md'
+        unsafe_goal.write_bytes(b'x' * (64 * 1024 + 1))
+        from team_agents.llm import _team_goal
+
+        oversized_goal_refused = _team_goal(unsafe_goal_memory) == ''
+        symlink_goal_refused = True
+        if os.name != 'nt':
+            unsafe_goal.unlink()
+            outside_goal = tmp / 'outside-goal.txt'
+            outside_goal.write_text('must not enter the prompt\n', encoding='utf-8')
+            unsafe_goal.symlink_to(outside_goal)
+            symlink_goal_refused = _team_goal(unsafe_goal_memory) == ''
+        check(
+            'brain goal reader is bounded and refuses aliases',
+            oversized_goal_refused and symlink_goal_refused,
+        )
 
         # The live activity projection must stay bounded even when synced Git
         # state is malicious. It also must not follow an event/writer link or
@@ -740,6 +1292,17 @@ def unit_tests() -> None:
         (relay_scope_repo / 'tracked.txt').write_text('baseline\n', encoding='utf-8')
         _git(relay_scope_repo, 'add', '--', 'tracked.txt')
         _git(relay_scope_repo, 'commit', '-q', '-m', 'baseline')
+        relay_scope_remote = tmp / 'relay-scope-remote.git'
+        subprocess.run(
+            ['git', 'init', '--bare', '-q', str(relay_scope_remote)],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        _git(relay_scope_repo, 'branch', '-M', 'main')
+        _git(relay_scope_repo, 'remote', 'add', 'origin', str(relay_scope_remote))
+        _git(relay_scope_repo, 'push', '-q', '-u', 'origin', 'main')
         relay_scope = GitRelay(
             TeamMemory(relay_scope_repo), alice, trusted_peers=_peers(bob)
         )
@@ -884,6 +1447,17 @@ def unit_tests() -> None:
             safe_box.dispatch('read_file', {'path': 'docs/overview.md'})
         )
         visible_files = asyncio.run(safe_box.dispatch('list_files', {}))
+        safe_box.memory.ensure_layout()
+        safe_box.memory.board_md.write_text(
+            'UNVALIDATED-BOARD-POISON\n' + ('x' * (1024 * 1024)),
+            encoding='utf-8',
+        )
+        projected_board = asyncio.run(safe_box.dispatch('board_read', {}))
+        check(
+            'board tool derives a bounded delta projection instead of reading BOARD.md',
+            projected_board.startswith('# Team Board')
+            and 'UNVALIDATED-BOARD-POISON' not in projected_board,
+        )
 
         # A harmless-looking alias must not bypass either the lexical policy or
         # the final file-identity checks. Windows CI cannot always create links
@@ -959,6 +1533,219 @@ def unit_tests() -> None:
                 encoding='utf-8'
             ) == 'allowed',
             f'denied={denied_write} allowed={allowed_write}',
+        )
+
+        # Filesystem/Git/tool bodies and the echo brain are synchronous. Their
+        # async entry points must yield while that work is on a worker thread.
+        import types
+
+        from team_agents.llm import EchoBrain
+
+        mutated_name_cfg = NodeConfig(
+            name='safe-name',
+            repo_path=tmp / 'mutated-output-name',
+        )
+        mutated_name_cfg.name = '../escape-after-init'
+        mutated_name_memory = TeamMemory(
+            mutated_name_cfg.repo_path, auto_commit=False
+        )
+        try:
+            asyncio.run(
+                EchoBrain(mutated_name_cfg, mutated_name_memory).run('probe')
+            )
+            mutated_output_refused = False
+        except ValueError:
+            mutated_output_refused = True
+        check(
+            'echo output revalidates mutated node-name containment',
+            mutated_output_refused
+            and not (mutated_name_cfg.repo_path / '.team' / 'outputs').exists(),
+        )
+
+        blocking_cfg = NodeConfig(
+            name='blocking-test',
+            repo_path=tmp / 'blocking-test',
+        )
+        blocking_memory = TeamMemory(
+            blocking_cfg.repo_path, auto_commit=False
+        )
+        blocking_box = ToolBox(blocking_cfg, blocking_memory)
+        blocking_brain = EchoBrain(blocking_cfg, blocking_memory)
+
+        def slow_echo(_text):
+            time.sleep(0.3)
+            return 'echo-worker-finished'
+
+        async def slow_tool(_self):
+            time.sleep(0.3)
+            return 'tool-worker-finished'
+
+        blocking_brain._run_blocking = slow_echo
+        blocking_box.tool_blocking_probe = types.MethodType(
+            slow_tool, blocking_box
+        )
+
+        async def exercise_event_loop_offload():
+            async def stays_responsive(awaitable):
+                started_at = time.monotonic()
+                task = asyncio.create_task(awaitable)
+                await asyncio.sleep(0.03)
+                heartbeat_elapsed = time.monotonic() - started_at
+                result = await task
+                return heartbeat_elapsed < 0.2, result
+
+            return await asyncio.gather(
+                stays_responsive(blocking_brain.run('probe')),
+                stays_responsive(blocking_box.dispatch('blocking_probe', {})),
+            )
+
+        offload_results = asyncio.run(exercise_event_loop_offload())
+        check(
+            'blocking brain and tool work stays off the ASGI event loop',
+            offload_results == [
+                (True, 'echo-worker-finished'),
+                (True, 'tool-worker-finished'),
+            ],
+            repr(offload_results),
+        )
+
+        # final_answer is invocation-local: malformed calls and overlapping
+        # requests must never observe another task's previous result.
+        from team_agents.config import LLMConfig
+        from team_agents.llm import OpenAIBrain
+
+        answer_cfg = NodeConfig(
+            name='answer-test',
+            repo_path=tmp / 'answer-state',
+            llm=LLMConfig(
+                provider='custom',
+                model='scripted',
+                base_url='https://llm.example.invalid/v1',
+            ),
+        )
+        answer_box = ToolBox(
+            answer_cfg, TeamMemory(answer_cfg.repo_path, auto_commit=False)
+        )
+
+        class ScriptedAnswerBrain(OpenAIBrain):
+            async def _chat(self, client, messages):
+                task = messages[1]['content']
+                tool_results = [m for m in messages if m['role'] == 'tool']
+                if task == 'private-a':
+                    arguments = json.dumps({'answer': 'CLIENT A PRIVATE ANSWER'})
+                elif task == 'malformed-b' and not tool_results:
+                    arguments = '{}'
+                elif task == 'malformed-b':
+                    return {'content': 'safe fallback after malformed call'}
+                else:
+                    await asyncio.sleep(0)
+                    arguments = json.dumps({'answer': f'answer-for:{task}'})
+                return {
+                    'content': None,
+                    'tool_calls': [{
+                        'id': 'call-' + task,
+                        'function': {
+                            'name': 'final_answer',
+                            'arguments': arguments,
+                        },
+                    }],
+                }
+
+        answer_brain = ScriptedAnswerBrain(answer_cfg, answer_cfg.llm, answer_box)
+
+        async def exercise_local_answers():
+            first = await answer_brain.run('private-a')
+            malformed = await answer_brain.run('malformed-b')
+            concurrent = await asyncio.gather(
+                answer_brain.run('concurrent-a'),
+                answer_brain.run('concurrent-b'),
+            )
+            return first, malformed, concurrent
+
+        first_answer, malformed_answer, concurrent_answers = asyncio.run(
+            exercise_local_answers()
+        )
+        check(
+            'malformed final_answer cannot reuse a previous task result',
+            first_answer == 'CLIENT A PRIVATE ANSWER'
+            and malformed_answer == 'safe fallback after malformed call'
+            and 'CLIENT A PRIVATE ANSWER' not in malformed_answer,
+            repr((first_answer, malformed_answer)),
+        )
+        check(
+            'concurrent final_answer calls remain invocation-local',
+            concurrent_answers == [
+                'answer-for:concurrent-a',
+                'answer-for:concurrent-b',
+            ],
+            repr(concurrent_answers),
+        )
+
+        credential_names = (
+            'OPENAI_API_KEY', 'GROQ_API_KEY', 'OPENROUTER_API_KEY',
+            'LLM_API_KEY',
+        )
+        saved_credentials = {
+            name: os.environ.get(name) for name in credential_names
+        }
+        try:
+            for name in credential_names:
+                os.environ.pop(name, None)
+            os.environ.update({
+                'OPENAI_API_KEY': 'openai-only',
+                'GROQ_API_KEY': 'groq-only',
+                'OPENROUTER_API_KEY': 'openrouter-only',
+                'LLM_API_KEY': 'legacy-must-be-ignored',
+            })
+            groq_key = LLMConfig(provider='groq').api_key()
+            openrouter_key = LLMConfig(provider='openrouter').api_key()
+            ollama_key = LLMConfig(
+                provider='ollama', base_url='http://localhost:11434/v1'
+            ).api_key()
+            custom_key = LLMConfig(
+                provider='custom',
+                base_url='https://private-llm.example/v1',
+                _api_key='endpoint-specific',
+            ).api_key()
+            try:
+                LLMConfig(
+                    provider='openai',
+                    base_url='https://attacker.example/v1',
+                )
+                arbitrary_origin_refused = False
+            except ValueError:
+                arbitrary_origin_refused = True
+            try:
+                LLMConfig(
+                    provider='custom',
+                    base_url='http://private-llm.example/v1',
+                    _api_key='must-not-cross-http',
+                )
+                custom_http_refused = False
+            except ValueError:
+                custom_http_refused = True
+        finally:
+            for name, value in saved_credentials.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+        check(
+            'LLM credentials are provider-bound and never fall back globally',
+            groq_key == 'groq-only'
+            and openrouter_key == 'openrouter-only'
+            and ollama_key == ''
+            and custom_key == 'endpoint-specific'
+            and arbitrary_origin_refused
+            and custom_http_refused,
+            repr({
+                'groq': groq_key,
+                'openrouter': openrouter_key,
+                'ollama': ollama_key,
+                'custom': custom_key,
+                'arbitrary_refused': arbitrary_origin_refused,
+                'http_refused': custom_http_refused,
+            }),
         )
         private_cache = '.team/keys/replay-cache.sqlite3'
         _git(relay_scope_repo, 'add', '--', private_cache)
@@ -1118,7 +1905,41 @@ print('import-without-fcntl-ok')
 
         # ---- signed Agent Card JWS + pinned verification ----------------
         from team_agents.client import verify_card_signature
-        from team_agents.server import build_agent_card, build_app
+        from team_agents.server import build_agent_card, build_app, serve
+
+        import socket as socket_mod
+
+        occupied_socket = socket_mod.socket(
+            socket_mod.AF_INET, socket_mod.SOCK_STREAM
+        )
+        if os.name == 'nt' and hasattr(socket_mod, 'SO_EXCLUSIVEADDRUSE'):
+            occupied_socket.setsockopt(
+                socket_mod.SOL_SOCKET,
+                socket_mod.SO_EXCLUSIVEADDRUSE,
+                1,
+            )
+        occupied_socket.bind(('127.0.0.1', 0))
+        occupied_socket.listen(1)
+        occupied_port = occupied_socket.getsockname()[1]
+        occupied_refused = False
+        occupied_cfg = NodeConfig(
+            repo_path=tmp / 'occupied-port',
+            host='127.0.0.1',
+            port=occupied_port,
+        )
+        try:
+            serve(occupied_cfg)
+        except RuntimeError as exc:
+            occupied_refused = (
+                str(occupied_port) in str(exc)
+                and occupied_cfg.port == occupied_port
+            )
+        finally:
+            occupied_socket.close()
+        check(
+            'server refuses occupied advertised port instead of silently moving',
+            occupied_refused,
+        )
 
         card_cfg = NodeConfig(repo_path=tmp / 'card')
         signed = build_agent_card(card_cfg, alice)
@@ -1213,7 +2034,10 @@ print('import-without-fcntl-ok')
         )
 
         from team_agents.client import (
+            MAX_PUBLIC_DOCUMENT_BYTES,
+            PublicDocumentTooLarge,
             UnsafeBearerTransportError,
+            get_bounded_json_async,
             require_secure_bearer_transport,
         )
 
@@ -1226,6 +2050,39 @@ print('import-without-fcntl-ok')
         check(
             'outbound Bearer requires HTTPS even for loopback',
             plaintext_bearer_rejected,
+        )
+
+        async def exercise_bounded_public_document():
+            transport = httpx.MockTransport(lambda request: httpx.Response(
+                200,
+                content=b'x' * (MAX_PUBLIC_DOCUMENT_BYTES + 1),
+                request=request,
+            ))
+            async with httpx.AsyncClient(transport=transport) as client:
+                try:
+                    await get_bounded_json_async(client, 'https://peer.test/card')
+                    return False
+                except PublicDocumentTooLarge:
+                    return True
+
+        check(
+            'remote card/identity fetches stop at the metadata byte cap',
+            asyncio.run(exercise_bounded_public_document()),
+        )
+
+        async def identity_policy_document():
+            transport = httpx.ASGITransport(app=unauth_activity_app)
+            async with httpx.AsyncClient(
+                transport=transport, base_url='http://asgi.test'
+            ) as client:
+                return (await client.get('/raven/identity')).json()
+
+        public_identity = asyncio.run(identity_policy_document())
+        check(
+            'public Raven identity does not disclose trust/revocation graph',
+            'trusted_peers' not in public_identity['policy']
+            and 'revoked' not in public_identity['policy'],
+            repr(public_identity['policy']),
         )
 
         # The SDK's stock in-memory task store is unbounded. Verify our
@@ -1314,10 +2171,12 @@ print('import-without-fcntl-ok')
             owner_a_task = await owner_store.get('same-id', owner_a)
             owner_b_task = await owner_store.get('same-id', owner_b)
 
+            active_clock = [200.0]
             active_store = BoundedTaskStore(
                 max_count=2,
                 max_bytes=64 * 1024,
                 ttl_seconds=60,
+                clock=lambda: active_clock[0],
             )
             await active_store.save(
                 stored_task('active-a', TaskState.TASK_STATE_WORKING), store_context
@@ -1333,6 +2192,7 @@ print('import-without-fcntl-ok')
                 active_refused = False
             except TaskStoreCapacityError:
                 active_refused = True
+            active_clock[0] += 61
             active_stats = await active_store.stats()
 
             byte_store = BoundedTaskStore(
@@ -1450,10 +2310,18 @@ print('import-without-fcntl-ok')
         class FakeContext:
             current_task = None
 
-            def __init__(self, task_id, text, metadata):
+            def __init__(self, task_id, text, metadata, owner=''):
                 self.task_id = task_id
                 self.context_id = 'ctx-' + task_id
                 self._text = text
+                user = type('FakeUser', (), {
+                    'user_name': owner,
+                    'is_authenticated': bool(owner),
+                })()
+                self.call_context = type('FakeCallContext', (), {
+                    'user': user,
+                    'tenant': owner,
+                })()
                 self.message = type('FakeMessage', (), {
                     'message_id': task_id,
                     'metadata': metadata,
@@ -1475,13 +2343,13 @@ print('import-without-fcntl-ok')
         ingress_cfg = NodeConfig(
             name='ingress-test',
             repo_path=ingress_repo,
-            trusted_peers=_peers(alice),
+            trusted_peers={**_peers(alice), **_peers(eve)},
         )
         ingress_executor = TeamAgentExecutor(
             ingress_cfg,
             ingress_brain,
             ingress_memory,
-            trusted_peers=_peers(alice),
+            trusted_peers={**_peers(alice), **_peers(eve)},
             identity=bob,
         )
         pristine_ingress = _tree_snapshot(ingress_repo)
@@ -1493,6 +2361,7 @@ print('import-without-fcntl-ok')
                     'unsigned-ingress',
                     'ATTACKER TEXT MUST NEVER REACH TEAM MEMORY',
                     {},
+                    owner=alice.address,
                 ),
                 unsigned_queue,
             )
@@ -1519,6 +2388,7 @@ print('import-without-fcntl-ok')
                     'policy-failure',
                     signed_text,
                     {f'raven.{key}': value for key, value in signed_meta.items()},
+                    owner=alice.address,
                 ),
                 policy_queue,
             )
@@ -1528,9 +2398,42 @@ print('import-without-fcntl-ok')
                 and 'raven delegation rejected' in str(event).lower()
                 for event in policy_queue.events
             )
-            return unsigned_rejected, policy_rejected
+            ingress_cfg.trusted_peers_file = ''
+            forwarded_text = 'valid Alice envelope forwarded under Eve transport'
+            forwarded_meta = sign_delegation(
+                alice,
+                forwarded_text,
+                recipient=bob.address,
+                task_id='forwarded-before-replay',
+            )
+            forwarded_queue = CaptureQueue()
+            await ingress_executor.execute(
+                FakeContext(
+                    'forwarded-before-replay',
+                    forwarded_text,
+                    {
+                        f'raven.{key}': value
+                        for key, value in forwarded_meta.items()
+                    },
+                    owner=eve.address,
+                ),
+                forwarded_queue,
+            )
+            forwarded_rejected_without_replay = (
+                any(
+                    isinstance(event, Task)
+                    and event.status.state == TaskState.TASK_STATE_REJECTED
+                    for event in forwarded_queue.events
+                )
+                and forwarded_meta['signature'] not in ingress_executor.replay
+            )
+            return (
+                unsigned_rejected,
+                policy_rejected,
+                forwarded_rejected_without_replay,
+            )
 
-        unsigned_rejected, policy_rejected = asyncio.run(
+        unsigned_rejected, policy_rejected, forwarded_rejected = asyncio.run(
             exercise_rejected_executor()
         )
         check(
@@ -1548,6 +2451,10 @@ print('import-without-fcntl-ok')
             and ingress_memory.sync_count == 0
             and ingress_brain.calls == 0
             and _tree_snapshot(ingress_repo) == pristine_ingress,
+        )
+        check(
+            'transport/delegation mismatch rejects before replay insertion',
+            forwarded_rejected,
         )
 
         # Exercise chunked-size, body-time and saturation limits independently
@@ -1703,11 +2610,14 @@ print('import-without-fcntl-ok')
             import a2a.client.client as a2a_client_mod
             from a2a.client import A2ACardResolver, ClientConfig, ClientFactory
             from a2a.types import Role
-            from team_agents.client import _response_text
+            from team_agents.client import RavenHttpAuth, _response_text
+            from team_agents.server import RavenPeerUser
 
             transport = httpx.ASGITransport(app=bounded_app)
             async with httpx.AsyncClient(
-                transport=transport, base_url='http://test'
+                transport=transport,
+                base_url='http://test',
+                auth=RavenHttpAuth(alice, bounded_app.state.raven.address),
             ) as http:
                 card = await A2ACardResolver(
                     httpx_client=http, base_url='http://test/'
@@ -1738,7 +2648,9 @@ print('import-without-fcntl-ok')
                     after_invalid = await bounded_app.state.task_store.stats()
 
                     valid_id = 'bounded-valid-' + os.urandom(8).hex()
-                    valid_text = 'valid task survives bounded store pressure'
+                    valid_text = (
+                        '  valid task survives bounded store pressure\n'
+                    )
                     valid_message = (
                         a2a_client_mod.SendMessageRequest().message.__class__()
                     )
@@ -1759,7 +2671,11 @@ print('import-without-fcntl-ok')
                         status=TaskState.TASK_STATE_COMPLETED
                     )
                     completed_tasks = await bounded_app.state.task_store.list(
-                        completed_request, ServerCallContext()
+                        completed_request,
+                        ServerCallContext(
+                            user=RavenPeerUser(alice.address),
+                            tenant=alice.address,
+                        ),
                     )
                     return (
                         rejected,
@@ -1786,7 +2702,7 @@ print('import-without-fcntl-ok')
             repr(bounded_after_invalid),
         )
         check(
-            'valid signed flow survives bounded-store eviction pressure',
+            'valid signed flow preserves wire whitespace during authentication',
             'completed' in bounded_valid_response
             and bounded_completed_tasks.total_size >= 1
             and all(
@@ -1796,6 +2712,260 @@ print('import-without-fcntl-ok')
             and bounded_after_valid['count'] <= bounded_app_cfg.task_store_max_count
             and bounded_after_valid['bytes'] <= bounded_app_cfg.task_store_max_bytes,
             f'response={bounded_valid_response[:160]} stats={bounded_after_valid}',
+        )
+
+        # Exercise deployed JSON-RPC routes with two independently signed
+        # Raven HTTP principals. SDK live-task registry lookups must not bypass
+        # the owner-scoped store for Get/List/Subscribe/Cancel.
+        isolation_app = build_app(NodeConfig(
+            repo_path=tmp / 'owner-isolation-app',
+            public_url='http://isolation.test',
+            trusted_peers={**_peers(alice), **_peers(bob)},
+            auto_commit_memory=False,
+        ))
+
+        class SlowBrain:
+            def __init__(self):
+                self.started = asyncio.Event()
+                self.started_texts: set[str] = set()
+
+            async def run(self, task_text, *, cancel_event=None):
+                self.started_texts.add(task_text)
+                self.started.set()
+                if cancel_event is None:
+                    await asyncio.Future()
+                await cancel_event.wait()
+                return 'CANCELLED'
+
+        slow_brain = SlowBrain()
+        isolation_app.state.executor.brain = slow_brain
+
+        async def exercise_real_route_owner_isolation():
+            import a2a.client.client as a2a_client_mod
+            from a2a.client import A2ACardResolver, ClientConfig, ClientFactory
+            from a2a.types import Role, TaskState
+            from team_agents.client import RavenHttpAuth
+
+            transport = httpx.ASGITransport(app=isolation_app)
+            async with httpx.AsyncClient(
+                transport=transport, base_url='http://isolation.test'
+            ) as public_http:
+                card = await A2ACardResolver(
+                    httpx_client=public_http,
+                    base_url='http://isolation.test/',
+                ).get_agent_card()
+
+            async def make_client(identity):
+                http = httpx.AsyncClient(
+                    transport=transport,
+                    base_url='http://isolation.test',
+                    auth=RavenHttpAuth(identity, isolation_app.state.raven.address),
+                )
+                client = ClientFactory(ClientConfig(
+                    streaming=False,
+                    polling=False,
+                    httpx_client=http,
+                )).create(card)
+                return http, client
+
+            http_a, client_a = await make_client(alice)
+            http_b, client_b = await make_client(bob)
+            try:
+                async def send_long_task(client, identity, message_id, text):
+                    message = (
+                        a2a_client_mod.SendMessageRequest().message.__class__()
+                    )
+                    message.message_id = message_id
+                    message.role = Role.Value('ROLE_USER')
+                    message.parts.add().text = text
+                    signed = sign_delegation(
+                        identity,
+                        text,
+                        recipient=isolation_app.state.raven.address,
+                        task_id=message_id,
+                    )
+                    for key, value in signed.items():
+                        message.metadata[f'raven.{key}'] = str(value)
+                    request = a2a_client_mod.SendMessageRequest(message=message)
+                    request.configuration.return_immediately = True
+                    returned = None
+                    async for response in client.send_message(request):
+                        if response.task is not None:
+                            returned = response.task
+                    if returned is None:
+                        raise AssertionError('long-running request returned no Task')
+                    return returned
+
+                async def wait_started(text):
+                    async def poll():
+                        while text not in slow_brain.started_texts:
+                            await asyncio.sleep(0.01)
+
+                    await asyncio.wait_for(poll(), timeout=3)
+
+                message_id = 'owner-a-' + os.urandom(8).hex()
+                text = 'CLIENT A PRIVATE LONG-RUNNING TASK'
+                private_task = await send_long_task(
+                    client_a, alice, message_id, text
+                )
+                task_id = private_task.id
+                await asyncio.wait_for(slow_brain.started.wait(), timeout=3)
+
+                listed_a = await client_a.list_tasks(
+                    a2a_client_mod.ListTasksRequest(include_artifacts=True)
+                )
+                listed_b = await client_b.list_tasks(
+                    a2a_client_mod.ListTasksRequest(include_artifacts=True)
+                )
+                got_a = await client_a.get_task(
+                    a2a_client_mod.GetTaskRequest(id=task_id)
+                )
+
+                async def denied(awaitable):
+                    try:
+                        await awaitable
+                        return False
+                    except Exception:
+                        return True
+
+                get_b_denied = await denied(client_b.get_task(
+                    a2a_client_mod.GetTaskRequest(id=task_id)
+                ))
+                cancel_b_denied = await denied(client_b.cancel_task(
+                    a2a_client_mod.CancelTaskRequest(id=task_id)
+                ))
+
+                async def subscribe_b_once():
+                    async for _ in client_b.subscribe(
+                        a2a_client_mod.SubscribeToTaskRequest(id=task_id)
+                    ):
+                        return
+
+                subscribe_b_denied = await denied(subscribe_b_once())
+                canceled = await client_a.cancel_task(
+                    a2a_client_mod.CancelTaskRequest(id=task_id)
+                )
+
+                # A2A task IDs are client controlled.  Two owners may choose the
+                # same generated ID (a custom SDK IDGenerator is supported).
+                # Force that legitimate collision, then exercise the deployed
+                # per-owner registry and cancellation map on real JSON-RPC
+                # routes.
+                from a2a.server.agent_execution import SimpleRequestContextBuilder
+                from a2a.server.id_generator import IDGenerator
+
+                collision_id = 'shared-' + os.urandom(8).hex()
+
+                class FixedTaskIdGenerator(IDGenerator):
+                    def generate(self, context):
+                        return collision_id
+
+                isolation_app.state.handler._request_context_builder = (
+                    SimpleRequestContextBuilder(
+                        should_populate_referred_tasks=False,
+                        task_store=isolation_app.state.task_store,
+                        task_id_generator=FixedTaskIdGenerator(),
+                    )
+                )
+                collision_a_text = 'OWNER A SAME-ID TASK'
+                collision_b_text = 'OWNER B SAME-ID TASK'
+                collision_a_returned = await send_long_task(
+                    client_a, alice, collision_id, collision_a_text
+                )
+                await wait_started(collision_a_text)
+                collision_b_returned = await send_long_task(
+                    client_b, bob, collision_id, collision_b_text
+                )
+                await wait_started(collision_b_text)
+                collision_a = await client_a.get_task(
+                    a2a_client_mod.GetTaskRequest(id=collision_id)
+                )
+                collision_b = await client_b.get_task(
+                    a2a_client_mod.GetTaskRequest(id=collision_id)
+                )
+                await client_a.cancel_task(
+                    a2a_client_mod.CancelTaskRequest(id=collision_id)
+                )
+                collision_b_after_a_cancel = await client_b.get_task(
+                    a2a_client_mod.GetTaskRequest(id=collision_id)
+                )
+                await client_b.cancel_task(
+                    a2a_client_mod.CancelTaskRequest(id=collision_id)
+                )
+
+                unsigned_body = json.dumps({
+                    'jsonrpc': '2.0',
+                    'id': 'unsigned-list',
+                    'method': 'ListTasks',
+                    'params': {},
+                }).encode()
+                async with httpx.AsyncClient(
+                    transport=transport,
+                    base_url='http://isolation.test',
+                ) as unsigned_http:
+                    unsigned_status = (
+                        await unsigned_http.post('/', content=unsigned_body)
+                    ).status_code
+                return {
+                    'task_id': task_id,
+                    'a_ids': {task.id for task in listed_a.tasks},
+                    'b_ids': {task.id for task in listed_b.tasks},
+                    'got_a': got_a.id,
+                    'get_b_denied': get_b_denied,
+                    'cancel_b_denied': cancel_b_denied,
+                    'subscribe_b_denied': subscribe_b_denied,
+                    'canceled': canceled.status.state,
+                    'canceled_value': TaskState.TASK_STATE_CANCELED,
+                    'collision_a_context': collision_a.context_id,
+                    'collision_b_context': collision_b.context_id,
+                    'collision_a_id': collision_a_returned.id,
+                    'collision_b_id': collision_b_returned.id,
+                    'collision_expected_id': collision_id,
+                    'collision_b_after_a_cancel': (
+                        collision_b_after_a_cancel.status.state
+                    ),
+                    'unsigned_status': unsigned_status,
+                }
+            finally:
+                await client_a.close()
+                await client_b.close()
+                await http_a.aclose()
+                await http_b.aclose()
+                await isolation_app.state.handler.aclose()
+
+        isolated = asyncio.run(exercise_real_route_owner_isolation())
+        check(
+            'real routes isolate List/Get/Subscribe/Cancel by signed Raven owner',
+            bool(isolated['task_id'])
+            and isolated['task_id'] in isolated['a_ids']
+            and isolated['task_id'] not in isolated['b_ids']
+            and isolated['got_a'] == isolated['task_id']
+            and isolated['get_b_denied']
+            and isolated['cancel_b_denied']
+            and isolated['subscribe_b_denied'],
+            repr(isolated),
+        )
+        check(
+            'authorized cancellation publishes a terminal canceled Task',
+            isolated['canceled'] == isolated['canceled_value'],
+            repr(isolated),
+        )
+        check(
+            'simultaneous same-ID tasks and cancellation stay owner local',
+            bool(isolated['collision_a_context'])
+            and bool(isolated['collision_b_context'])
+            and isolated['collision_a_id'] == isolated['collision_expected_id']
+            and isolated['collision_b_id'] == isolated['collision_expected_id']
+            and isolated['collision_a_context']
+            != isolated['collision_b_context']
+            and isolated['collision_b_after_a_cancel']
+            != isolated['canceled_value'],
+            repr(isolated),
+        )
+        check(
+            'secure JSON-RPC routes reject unsigned transport requests',
+            isolated['unsigned_status'] == 401,
+            repr(isolated),
         )
 
         experimental_cfg = NodeConfig(
@@ -1832,19 +3002,60 @@ print('import-without-fcntl-ok')
                 objects == [b'\xaa', b'\xbb']
                 and calls[1][-2:] == ['--after-hex', cursor],
             )
+            with patch.object(mesh, 'MAX_MAILBOX_OBJECTS', 1):
+                try:
+                    mesh.mailbox_get_all(
+                        Path('/unused'),
+                        tmp / 'bounded-mesh-client',
+                        '/ip4/127.0.0.1/tcp/1',
+                        'peer',
+                        '00' * 16,
+                    )
+                    mailbox_count_refused = False
+                except RuntimeError as exc:
+                    mailbox_count_refused = 'object count' in str(exc)
+            check(
+                'mailbox adapter enforces the Rust store object-count bound',
+                mailbox_count_refused,
+            )
         finally:
             mesh._run = original_run
 
         # Invalid replies are quarantined rather than destroyed.
+        from team_agents import relay as relay_module
         from team_agents.memory import TeamMemory
         from team_agents.relay import GitRelay
 
-        relay_repo = tmp / 'relay-e2e'
+        relay_remote = tmp / 'relay-e2e.git'
+        subprocess.run(
+            ['git', 'init', '--bare', '-q', str(relay_remote)],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        relay_seed = tmp / 'relay-seed'
+        relay_seed.mkdir()
+        _git(relay_seed, 'init', '-q')
+        _git(relay_seed, 'config', 'user.name', 'RDAP Selftest')
+        _git(relay_seed, 'config', 'user.email', 'rdap-selftest@example.invalid')
+        (relay_seed / '.gitignore').write_text('.team/keys/\n', encoding='utf-8')
+        _git(relay_seed, 'add', '--', '.gitignore')
+        _git(relay_seed, 'commit', '-q', '-m', 'shared relay baseline')
+        _git(relay_seed, 'branch', '-M', 'main')
+        _git(relay_seed, 'remote', 'add', 'origin', str(relay_remote))
+        _git(relay_seed, 'push', '-q', '-u', 'origin', 'main')
+        relay_alice_repo = tmp / 'relay-alice-clone'
+        relay_bob_repo = tmp / 'relay-bob-clone'
+        for clone in (relay_alice_repo, relay_bob_repo):
+            _git(tmp, 'clone', '-q', '--branch', 'main', str(relay_remote), str(clone))
+            _git(clone, 'config', 'user.name', 'RDAP Selftest')
+            _git(clone, 'config', 'user.email', 'rdap-selftest@example.invalid')
         alice_relay = GitRelay(
-            TeamMemory(relay_repo), alice, trusted_peers=_peers(bob)
+            TeamMemory(relay_alice_repo), alice, trusted_peers=_peers(bob)
         )
         bob_relay = GitRelay(
-            TeamMemory(relay_repo), bob, trusted_peers=_peers(alice)
+            TeamMemory(relay_bob_repo), bob, trusted_peers=_peers(alice)
         )
         alice_relay.send_task(bob.address, 'git task')
 
@@ -1855,27 +3066,248 @@ print('import-without-fcntl-ok')
 
         processed = asyncio.run(bob_relay.process_inbox(answer_task))
         signed_replies = alice_relay.take_replies()
+        alice_relay.ack_replies(signed_replies)
+        acknowledged_replies = alice_relay.take_replies()
         check(
             'Git relay verifies task and signed reply end-to-end',
             processed == 1
             and len(signed_replies) == 1
-            and signed_replies[0].get('text') == 'signed answer: git task',
+            and signed_replies[0].get('text') == 'signed answer: git task'
+            and not acknowledged_replies,
+        )
+
+        malformed_task = alice_relay._slot('inbox', bob.address) / 'malformed.json'
+        alice_relay._write_envelope(malformed_task, {
+            'id': 'malformed',
+            'kind': 'task',
+            'from': alice.address,
+            'to': bob.address,
+            'text': 'must never execute',
+            'raven': [],
+        })
+        alice_relay.memory.commit_push('test: publish malformed relay envelope')
+        malformed_processed = asyncio.run(bob_relay.process_inbox(answer_task))
+        malformed_quarantine = list(
+            (relay_bob_repo / '.team' / 'quarantine' / 'tasks').glob(
+                'malformed.json'
+            )
+        )
+        check(
+            'malformed relay documents are quarantined without wedging polling',
+            malformed_processed == 0 and bool(malformed_quarantine),
+        )
+
+        oversized_task = (
+            bob_relay._slot('inbox', bob.address) / 'oversized.json'
+        )
+        oversized_task.write_bytes(
+            b'x' * (relay_module.MAX_RELAY_ENVELOPE_BYTES + 1)
+        )
+        oversized_record = next(
+            envelope for envelope in bob_relay.inbox_for_me()
+            if envelope.get('_file') == oversized_task
+        )
+        bob_relay._quarantine(
+            oversized_record, 'tasks', 'oversized regression input'
+        )
+        compact_evidence = list(
+            (relay_bob_repo / '.team' / 'quarantine' / 'tasks').glob(
+                'unsafe-*.reason.json'
+            )
+        )
+        check(
+            'oversized relay poison becomes compact evidence, not a Git blob copy',
+            not oversized_task.exists()
+            and not (
+                relay_bob_repo / '.team' / 'quarantine' / 'tasks'
+                / 'oversized.json'
+            ).exists()
+            and bool(compact_evidence)
+            and max(path.stat().st_size for path in compact_evidence)
+            < relay_module.MAX_RELAY_ENVELOPE_BYTES,
+        )
+        directory_poison = (
+            bob_relay._slot('inbox', bob.address) / 'directory-poison.json'
+        )
+        directory_poison.mkdir()
+        (directory_poison / 'nested').write_text('poison', encoding='utf-8')
+        directory_record = next(
+            envelope for envelope in bob_relay.inbox_for_me()
+            if envelope.get('_file') == directory_poison
+        )
+        bob_relay._quarantine(
+            directory_record, 'tasks', 'directory regression input'
+        )
+        check(
+            'relay directory poison is removed from polling without recursive deletion',
+            not directory_poison.exists()
+            and any(
+                path.is_dir()
+                for path in (
+                    relay_bob_repo / '.team' / 'keys' / 'relay-rejected'
+                ).iterdir()
+            ),
+        )
+
+        interrupted_file = alice_relay.send_task(
+            bob.address, 'simulate interrupted brain'
+        )
+        interrupted_calls = [0]
+
+        async def interrupted_brain(_text):
+            interrupted_calls[0] += 1
+            raise KeyboardInterrupt
+
+        try:
+            asyncio.run(bob_relay.process_inbox(interrupted_brain))
+        except KeyboardInterrupt:
+            pass
+        recovered_processed = asyncio.run(
+            bob_relay.process_inbox(answer_task)
+        )
+        interrupted_replies = alice_relay.take_replies()
+        interrupted_texts = [
+            str(reply.get('text', '')) for reply in interrupted_replies
+        ]
+        alice_relay.ack_replies(interrupted_replies)
+        check(
+            'interrupted relay tasks are not rerun and return an explicit outcome',
+            interrupted_calls[0] == 1
+            and recovered_processed == 1
+            and not interrupted_file.exists()
+            and any('not automatically retried' in text for text in interrupted_texts),
+            repr(interrupted_texts),
+        )
+
+        alice_relay.send_task(bob.address, 'recover after push failure')
+        real_commit_push = bob_relay._commit_push
+        commit_attempts = [0]
+
+        def fail_final_push(message):
+            commit_attempts[0] += 1
+            if commit_attempts[0] == 2:
+                raise TeamGitError('simulated network failure after durable outcome')
+            return real_commit_push(message)
+
+        bob_relay._commit_push = fail_final_push
+        push_failed = False
+        try:
+            asyncio.run(bob_relay.process_inbox(answer_task))
+        except TeamGitError:
+            push_failed = True
+        finally:
+            bob_relay._commit_push = real_commit_push
+        recovery_processed = asyncio.run(bob_relay.process_inbox(answer_task))
+        recovered_replies = alice_relay.take_replies()
+        alice_relay.ack_replies(recovered_replies)
+        check(
+            'relay flushes durable reply/deletion after a later push recovers',
+            push_failed
+            and recovery_processed == 0
+            and any(
+                reply.get('text') == 'signed answer: recover after push failure'
+                for reply in recovered_replies
+            ),
+            f'attempts={commit_attempts[0]} replies={recovered_replies!r}',
+        )
+
+        alice_relay.send_task(bob.address, 'unicode answer bound')
+
+        async def emoji_answer(_text):
+            return '😀' * 65_536
+
+        emoji_processed = asyncio.run(bob_relay.process_inbox(emoji_answer))
+        emoji_replies = alice_relay.take_replies()
+        emoji_text = str(emoji_replies[0].get('text', '')) if emoji_replies else ''
+        alice_relay.ack_replies(emoji_replies)
+        check(
+            'relay bounds UTF-8 answers by encoded bytes and marks truncation',
+            emoji_processed == 1
+            and len(emoji_text.encode('utf-8'))
+            <= relay_module.MAX_RELAY_ANSWER_BYTES
+            and emoji_text.endswith('[relay output truncated to its durable byte limit]'),
+            f'bytes={len(emoji_text.encode("utf-8"))}',
+        )
+        surrogate_answer = relay_module._bounded_answer_text('\ud800')
+        check(
+            'relay normalizes invalid Unicode before durable signing',
+            surrogate_answer == '?'
+            and surrogate_answer.encode('utf-8') == b'?',
+            repr(surrogate_answer),
+        )
+        try:
+            GitRelay._validated_envelope({
+                'id': '\ud800',
+                'kind': 'task',
+                'from': alice.address,
+                'to': bob.address,
+                'text': 'valid text',
+                'raven': {'signature': 'placeholder'},
+            }, 'task')
+            invalid_id_refused = False
+        except ValueError:
+            invalid_id_refused = True
+        check(
+            'relay rejects invalid Unicode in signed string siblings',
+            invalid_id_refused,
+        )
+        surrogate_chat_memory = TeamMemory(
+            tmp / 'surrogate-chat', auto_commit=False
+        )
+        surrogate_chat = TeamChat(surrogate_chat_memory)
+        surrogate_chat.post('user', '\ud800')
+        check(
+            'chat normalizes invalid Unicode before writing a delta',
+            '\ud800' not in surrogate_chat.tail(),
+            repr(surrogate_chat.tail()),
+        )
+
+        from unittest.mock import patch as unit_patch
+
+        bounded_outcome_path = tmp / 'bounded-relay-outcomes.sqlite3'
+        with unit_patch.multiple(
+            relay_module,
+            MAX_RELAY_OUTCOMES=10,
+            MAX_RELAY_OUTCOME_DB_BYTES=64 * 1024,
+        ):
+            bounded_outcomes = relay_module.RelayOutcomeStore(
+                bounded_outcome_path
+            )
+            outcome_limit_failed = False
+            for index in range(10):
+                signature = f'signature-{index}'
+                try:
+                    bounded_outcomes.claim(signature, int(time.time()) + 3600)
+                    bounded_outcomes.complete(
+                        signature,
+                        int(time.time()) + 3600,
+                        {'text': 'x' * 40_000},
+                    )
+                except RuntimeError:
+                    outcome_limit_failed = True
+                    break
+        check(
+            'relay outcome database enforces its byte ceiling on every write',
+            outcome_limit_failed
+            and bounded_outcome_path.stat().st_size <= 64 * 1024,
+            f'size={bounded_outcome_path.stat().st_size}',
         )
 
         tampered_file = alice_relay.send_task(bob.address, 'outer tamper')
         tampered = json.loads(tampered_file.read_text(encoding='utf-8'))
         tampered['from'] = eve.address
         tampered_file.write_text(json.dumps(tampered), encoding='utf-8')
+        alice_relay.memory.commit_push('test: publish tampered relay envelope')
         processed = asyncio.run(bob_relay.process_inbox(answer_task))
         task_quarantine = list(
-            (relay_repo / '.team' / 'quarantine' / 'tasks').glob('*.json')
+            (relay_bob_repo / '.team' / 'quarantine' / 'tasks').glob('*.json')
         )
         check(
             'Git relay rejects outer sender/signature mismatch',
             processed == 0 and bool(task_quarantine),
         )
 
-        relay = GitRelay(TeamMemory(tmp / 'relay'), bob, trusted_peers=peers)
+        relay = bob_relay
         bad_slot = relay._slot('outbox', bob.address)
         bad_file = bad_slot / 'forged.json'
         bad_file.write_text(json.dumps({
@@ -1883,8 +3315,54 @@ print('import-without-fcntl-ok')
             'to': bob.address, 'text': 'forged', 'raven': {},
         }))
         replies = relay.take_replies()
-        quarantine = list((tmp / 'relay' / '.team' / 'quarantine' / 'replies').glob('forged.json'))
+        quarantine = list(
+            (relay_bob_repo / '.team' / 'quarantine' / 'replies').glob('forged.json')
+        )
         check('invalid reply quarantined and not returned', not replies and bool(quarantine))
+
+        bounded_slot_relay = GitRelay(
+            TeamMemory(tmp / 'bounded-relay-slot', auto_commit=False),
+            alice,
+            trusted_peers=_peers(bob),
+        )
+        bounded_slot = bounded_slot_relay._slot('outbox', alice.address)
+        (bounded_slot / 'a.json').write_text('{}', encoding='utf-8')
+        (bounded_slot / 'b.json').write_text('{}', encoding='utf-8')
+        with unit_patch.object(relay_module, 'MAX_RELAY_DIRECTORY_ENTRIES', 1):
+            try:
+                bounded_slot_relay._read_slot('outbox', alice.address)
+                bounded_slot_refused = False
+            except RuntimeError as exc:
+                bounded_slot_refused = 'directory-entry limit' in str(exc)
+        check(
+            'relay scan fails closed instead of sorting an arbitrary capped prefix',
+            bounded_slot_refused,
+        )
+
+        traversal_id = '../../../../outside-answer'
+        traversal_reply_path = bob_relay._reply_path(alice.address, traversal_id)
+        check(
+            'peer task ids are hashed before becoming reply filenames',
+            traversal_reply_path.parent
+            == bob_relay._slot('outbox', alice.address)
+            and traversal_reply_path.name
+            == hashlib.sha256(traversal_id.encode('utf-8')).hexdigest() + '.json'
+            and '..' not in traversal_reply_path.name,
+            str(traversal_reply_path),
+        )
+
+        local_only_relay = GitRelay(
+            TeamMemory(tmp / 'local-only-relay'), alice, trusted_peers=_peers(bob)
+        )
+        try:
+            local_only_relay.send_task(bob.address, 'must not claim queued')
+            local_only_refused = False
+        except TeamGitError as exc:
+            local_only_refused = 'shared' in str(exc) or 'remote' in str(exc)
+        check(
+            'Git relay refuses local-only repositories instead of claiming queued',
+            local_only_refused,
+        )
 
         broken_revocations = tmp / 'broken-revocations.json'
         broken_revocations.write_text('{broken')
@@ -2016,7 +3494,9 @@ def network_tests(pybin: str) -> None:
             )
             check(
                 'signed task and signed reply executed end-to-end',
-                'completed' in out.lower(),
+                'completed' in out.lower()
+                and not out.lower().startswith('task ')
+                and '→' not in out.splitlines()[0],
                 out.splitlines()[0],
             )
 
@@ -2033,21 +3513,27 @@ def network_tests(pybin: str) -> None:
                 client = ClientFactory(ClientConfig(
                     streaming=False, polling=False, httpx_client=http
                 )).create(resolved)
+                pieces = []
+                unsigned_transport_rejected = False
                 try:
                     message = a2a_client_mod.SendMessageRequest().message.__class__()
                     message.message_id = 'unsigned-' + os.urandom(8).hex()
                     message.role = Role.Value('ROLE_USER')
                     message.parts.add().text = 'unsigned must fail'
                     request = a2a_client_mod.SendMessageRequest(message=message)
-                    pieces = []
                     async for response in client.send_message(request):
                         pieces.append(_response_text(response))
+                except Exception as exc:
+                    unsigned_transport_rejected = '401' in repr(exc)
+                    pieces.append(repr(exc))
                 finally:
                     await client.close()
             unsigned_result = '\n'.join(pieces).lower()
             check(
                 'fresh/default node rejects unsigned JSON-RPC task',
-                'rejected' in unsigned_result or 'failed' in unsigned_result,
+                unsigned_transport_rejected
+                or 'rejected' in unsigned_result
+                or 'failed' in unsigned_result,
                 unsigned_result[:180],
             )
 

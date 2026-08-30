@@ -14,9 +14,9 @@ Terminal welcome uses **black & white** (monochrome bold/dim ANSI — or plain t
 |---|---|---|
 | 1 | Clone/copy the **whole** repo on **this** Mac (your home path) | کل ریپو را روی **همین** مک کپی/کلون کنید (مسیر خانهٔ خودتان) |
 | 2 | `bash scripts/ash_first_run.sh` | اسکریپت پرتابل — مسیر `/Users/ahmd` لازم نیست |
-| 3 | Menu **4 Status** → creates identity | منوی **۴** هویت می‌سازد |
+| 3 | Run `ash init`; **Status is read-only** | `ash init` را اجرا کنید؛ Status فقط خواندنی است |
 | 4 | Share `ash whoami` (address + pub_hex only) | فقط address و pub_hex را بفرستید — **هرگز seed** |
-| 5 | Menu **3** add contact → Menu **2** send | مخاطب → ارسال (شماره مخاطب، نه host:port) |
+| 5 | Menu **5 Contacts** → Menu **1 Send** | مخاطب → ارسال (شماره مخاطب، نه host:port) |
 
 ```bash
 # From repo root — works on any Mac username:
@@ -33,28 +33,46 @@ bash scripts/ash_first_run.sh --init-only
 
 **Why Mac2 often fails:** docs/commands with `/Users/ahmd/...` are **someone else’s home**. On Mac2 use *their* clone path (or the portable script above).
 
+> **Debug-lab only:** terminal message origination currently requires the
+> compile-time Debug build **and** `RAVEN_LAB_TEST_A=1`. Export the gate in both
+> device shells before these commands. A Release binary intentionally ignores
+> this lab gate and must refuse `ash send` until the production ATSAM bootstrap
+> is complete; this walkthrough is not Release-mode send evidence.
+
 ```bash
 # Mac2 — after copying/cloning the repo to YOUR home:
 cd ~/hybrid_messenger          # or wherever YOU put it
 export PATH="$HOME/.cargo/bin:$PATH"
+export RAVEN_LAB_TEST_A=1       # Debug lab only; set on Mac1 too
 bash scripts/ash_first_run.sh --init-only
-# copy address + fingerprint + pub_hex to Mac1 (Messages / AirDrop / …)
-
-# Mac1 — add Mac2 as contact (menu 3), then:
-# Mac2 starts a listener, e.g.:
-DATA=$(mktemp -d)
-./node/target/debug/raven-node run --data-dir "$DATA" --listen 0.0.0.0:7420 \
-  --peer-pub-hex <MAC1_PUB_HEX> --timeout-secs 300
-# Mac1: menu 2 → pick contact # → enter Mac2_LAN_IP:7420 once (saved on contact)
+# Run the same init on Mac1, exchange BOTH `ash whoami` outputs, and verify
+# fingerprints out of band. Each Mac must add/pin the other (menu 5 Contacts)
+# before either listener/send test. Follow “Manual two-device Debug-lab path”
+# below for the exact reciprocal commands, then use menu 4 Listen + menu 1 Send.
 ```
+
+Do not use `raven-node run` as the receiver for `ash send`: that is the legacy
+raw-envelope command and is not the Noise/RLB1 + PairInit service protocol.
+`ash listen` reports success immediately when an installed service is already
+IPC-ready; when it starts the service itself, it stays in the foreground and
+propagates daemon failures.
 
 Automated loopback proof (same machine):
 
 ```bash
 cd node
-./scripts/ash_contacts_lan_demo.sh
+./scripts/ash_listen_secure_service_smoke.sh
+./scripts/lan_direct_two_node.sh
 ./scripts/ash_menu_smoke.sh
 ```
+
+`ash_listen_secure_service_smoke.sh` is the real process-lifecycle regression:
+it starts/reuses the secure service and verifies startup failures are nonzero.
+`lan_direct_two_node.sh` (also available through the compatibility name
+`ash_contacts_lan_demo.sh`) exercises authenticated contact → send → inbox and
+stranger refusal, but explicitly enables the debug-only `RAVEN_LAB_TEST_A`
+origination gate. It is transport/integration evidence, not a claim that the
+production ATSAM bootstrap or automatic A→B→C routing is complete.
 
 ## Prerequisites
 
@@ -80,22 +98,23 @@ cd /path/to/hybrid_messenger/protocol/reference
 ```bash
 cd /path/to/hybrid_messenger/node
 DATA=$(mktemp -d)
-./target/debug/ash --data-dir "$DATA"          # interactive — menu 4 creates identity
-./target/debug/ash --data-dir "$DATA" init     # or create identity up front (public bits only)
+./target/debug/ash --data-dir "$DATA" init     # explicitly create identity (public bits only)
+./target/debug/ash --data-dir "$DATA" status   # read-only; never creates identity/state
+./target/debug/ash --data-dir "$DATA"          # interactive menu after init
 ./target/debug/ash --data-dir "$DATA" banner   # welcome only
 ```
 
 1. Run `ash` with a fresh `--data-dir` — the banner explains first-run steps.
-2. Create identity via menu **4 Status** (auto-creates if missing) or `ash init`.
-3. **Add a contact** (menu **3**) before Send / Chat — paste their `ash whoami` or rvn1… + pub_hex.
-4. Then menu **2** → pick contact **#** or `@tag`. Enter LAN `host:port` **once**; it is saved on the contact (`lan_dial`). Beginners should not re-type host:port every send.
+2. Create identity explicitly with `ash init`. **Status is read-only** and reports a missing identity without creating one.
+3. **Add a contact** (menu **5 Contacts**) before Send / Chat — paste their `ash whoami` or rvn1… + pub_hex.
+4. Then menu **1 Send** → pick contact **#** or `@tag`. Enter LAN `host:port` **once**; it is saved on the contact (`lan_dial`). Beginners should not re-type host:port every send.
 
 ## Add a contact
 
 ### Interactive (recommended)
 
 ```text
-raven> 3
+raven> 5
 Contacts menu
   a  Add contact
 contacts> a
@@ -166,10 +185,14 @@ fingerprint XXXX-XXXX-XXXX
 pub_hex     <64 hex chars>  # public Ed25519 only — never a seed
 
   Menu
-  1  Messages      outgoing queue + local chat history (ids only)
-  2  Send / Chat   message a contact — add contacts first if empty
-  3  Contacts      add by rvn1… / @alias / petname + fingerprint
-  4  Status        identity, bridge, transports (public fields)
+  1  Chat / Send   message a contact — guided
+  2  Inbox         committed endpoint inbox
+  3  Status        identity, bridge, transports (read-only)
+  4  Listen        receive — one command, no flags
+  5  Contacts      add by rvn1… / @alias / petname + fingerprint
+  6  Mailbox       opaque offline put/get
+  7  Nearby scan   ephemeral BLE discovery
+  8  Tutorial      guided walkthrough
   q  Quit
 
 raven>
@@ -195,13 +218,16 @@ cd /path/to/hybrid_messenger/node
 ./scripts/lan_path_smoke.sh
 ./scripts/bridge_abc_demo.sh
 ./scripts/ash_menu_smoke.sh
-./scripts/ash_contacts_lan_demo.sh
+./scripts/ash_listen_secure_service_smoke.sh
+./scripts/lan_direct_two_node.sh
 cargo test -p raven-core --test bridge_v1
 ```
 
 **Expected:** four `round N OK` + `ALL DEMO CHECKS PASSED`; `mode=interim OK`, `mode=opaque-atsam OK`;  
 `bridge_abc_demo` → three A–B–C rounds + store-carry + `ALL BRIDGE A-B-C CHECKS PASSED`;  
-`ash_menu_smoke` / `ash_contacts_lan_demo` → menu + contact LAN deliver green.
+`ash_menu_smoke` → menu green; `ash_listen_secure_service_smoke` → real service
+start/reuse/failure propagation green; `lan_direct_two_node` → lab-gated secure
+contact LAN delivery and untrusted PairInit refusal green.
 
 ## Bridge A–B–C (local, mock BLE)
 
@@ -251,108 +277,103 @@ Start B daemon separately (survives ash quit):
   --timeout-secs 0
 ```
 
-## Manual two-node DM (`raven-node`)
+## Manual two-device Debug-lab path (`ash` + secure service)
 
-Terminal A (receiver):
+Do not use the legacy raw `raven-node run --send …` examples found in old
+snapshots. Plaintext argv sending is deliberately refused, and that raw command
+does not speak the authenticated service protocol used by `ash send`.
+
+This section deliberately uses `target/debug`. In **both** device terminals,
+export `RAVEN_LAB_TEST_A=1` before starting the receiver or sender. The gate is
+compiled out of Release behavior: `target/release/ash send` is expected to fail
+closed today, even if that environment variable is present.
+
+First initialize **both** stable profiles and exchange only the public `whoami`
+fields over an out-of-band channel. Verify both fingerprints before pinning:
 
 ```bash
+# Device A
 cd /path/to/hybrid_messenger/node
-DATA_A=$(mktemp -d) DATA_B=$(mktemp -d)
-./target/debug/raven-node init --data-dir "$DATA_A"
-./target/debug/raven-node init --data-dir "$DATA_B"
-# Note pub_hex from each init (public only).
-./target/debug/raven-node run \
-  --data-dir "$DATA_B" \
-  --listen 127.0.0.1:0 \
-  --peer-pub-hex <A_PUB_HEX> \
-  --write-addr /tmp/raven-b.listen \
-  --exit-after-recv 1 \
-  --timeout-secs 30
-```
+DATA_A="$HOME/.raven-device-a"
+export RAVEN_LAB_TEST_A=1       # Debug-only test gate
+./target/debug/ash --data-dir "$DATA_A" init
+./target/debug/ash --data-dir "$DATA_A" whoami
 
-Terminal B (sender) — after `/tmp/raven-b.listen` exists:
-
-```bash
-./target/debug/raven-node run \
-  --data-dir "$DATA_A" \
-  --listen 127.0.0.1:0 \
-  --peer "$(cat /tmp/raven-b.listen)" \
-  --peer-pub-hex <B_PUB_HEX> \
-  --send "hello from terminal" \
-  --exit-after-ack \
-  --timeout-secs 30
-```
-
-**Expected:** `ACK delivered` / `DELIVERED bytes=…` (length only).
-
-## Phone ↔ Mac terminal (flagged LAN)
-
-**Goal:** iOS packs sealed chat bytes into `RavenEnvelopeV1` and TCP to `raven-node`. MeshEnvelope stays active.
-
-### A. Mac listener
-
-```bash
+# Device B
 cd /path/to/hybrid_messenger/node
-DATA=$(mktemp -d)
-./target/debug/raven-node init --data-dir "$DATA"
-./target/debug/raven-node run \
-  --data-dir "$DATA" \
-  --listen 0.0.0.0:7420 \
-  --peer-pub-hex <IOS_PUB_HEX> \
-  --timeout-secs 300
+DATA_B="$HOME/.raven-device-b"
+export RAVEN_LAB_TEST_A=1       # Debug-only test gate
+./target/debug/ash --data-dir "$DATA_B" init
+./target/debug/ash --data-dir "$DATA_B" whoami
 ```
 
-### B. Phone — Account → Serverless LAN
-
-1. Enable **RavenEnvelopeV1 (serverless)** (Account → **Serverless LAN**)
-2. Copy device **pub hex** into Mac `--peer-pub-hex`
-3. Host = Mac LAN IP (or `127.0.0.1` for Simulator + loopback listen)
-4. Port `7420`; Peer pub = node `pub_hex`
-5. Save — UI shows fingerprint only (no seeds)
-
-### C. Add Mac from iPhone (Discover)
-
-1. Flag **ON** (same Serverless LAN screen)
-2. Account → **Discover** → **Paste ash whoami** (or toolbar menu)
-3. Paste `rvn1…` + `pub_hex` from Mac `ash whoami` (+ optional petname)
-4. Save — local contact only (public bits)
-
-### D. Send a chat message
-
-Mac: `DELIVERED opaque_atsam …` or `DELIVERED bytes=N`. Never screenshot seeds/plaintext.
+Mutual PairInit requires a **reciprocal pin**. Add B on A and A on B; a one-way
+contact book is intentionally rejected as a stranger:
 
 ```bash
-./scripts/lan_path_smoke.sh   # automated stand-in
+# On A
+./target/debug/ash --data-dir "$DATA_A" contact add \
+  --address <B_RVN_ADDRESS> \
+  --pub-hex <B_PUBLIC_HEX> \
+  --petname "Device B" \
+  --tag device-b \
+  --lan-dial <B_LAN_IP>:7420 \
+  --verify-fp <B_FINGERPRINT>
+
+# On B
+./target/debug/ash --data-dir "$DATA_B" contact add \
+  --address <A_RVN_ADDRESS> \
+  --pub-hex <A_PUBLIC_HEX> \
+  --petname "Device A" \
+  --tag device-a \
+  --lan-dial <A_LAN_IP>:7420 \
+  --verify-fp <A_FINGERPRINT>
 ```
 
-## BLE raw RavenEnvelopeV1 (Phase G — flagged)
-
-Behind `FeatureFlag.ravenEnvelopeV1` (default **OFF**):
-
-- `RavenBleRvn1Carrier` packs/unpacks signed `RVN1` for BLE (Message + ACK)
-- `MessageRouter` may enqueue parallel BLE RVN1 when preference is `bleMesh`
-- `BLEMeshEngine` peeks `RVN1` magic before Mesh JSON; posts `.ravenEnvelopeV1BleReceived` (opaque — no decrypt)
-- `RavenEnvelopeBridgeService`: BLE↔LAN forward; **ACK relay** (waiter on LAN socket); destination vs bridge role
-- `RavenEnvelopeEndpointIngest`: when this device is destination, posts `.ravenEnvelopeV1EndpointIngest` with sealed body for chat sealer (BridgeSubsystem stays key-free)
-- `RavenEnvelopeChatWire`: observes that notification → `MessageContentSealer` decrypt/display + opaque Delivered ACK emit; sender LAN/BLE ACK → UI **Delivered** ticks (`MeshACKReceived`) without bridge keys
-- MeshEnvelope default path **unchanged** when flag is off
-
-Unit tests: `RavenBleRvn1CarrierTests`, `RavenEnvelopeBridgeServiceTests`, `RavenEnvelopeEndpointIngestTests`, `RavenEnvelopeChatWireTests`.  
-Rust: `cargo test -p raven-core --test bridge_v1` (cases 1–10).
-
-### Verify locally (run twice)
+In a dedicated terminal on **each** device, export the same Debug gate and keep
+the secure service listening:
 
 ```bash
-cd /path/to/hybrid_messenger/node
-cargo test -p raven-core --test bridge_v1
-./scripts/bridge_abc_demo.sh
-./scripts/two_node_demo.sh
-./scripts/lan_path_smoke.sh
-./scripts/ash_menu_smoke.sh
-./scripts/ash_contacts_lan_demo.sh
-# repeat:
-cargo test -p raven-core --test bridge_v1 && ./scripts/bridge_abc_demo.sh
+# A receiver terminal
+export RAVEN_LAB_TEST_A=1
+./target/debug/ash --data-dir "$DATA_A" listen
+
+# B receiver terminal
+export RAVEN_LAB_TEST_A=1
+./target/debug/ash --data-dir "$DATA_B" listen
 ```
+
+Use second terminals for the two directions (message text stays on stdin):
+
+```bash
+# A → B
+printf '%s\n' 'hello from device A' \
+  | ./target/debug/ash --data-dir "$DATA_A" send --contact @device-b
+
+# B → A
+printf '%s\n' 'hello from device B' \
+  | ./target/debug/ash --data-dir "$DATA_B" send --contact @device-a
+
+# Confirm committed endpoint delivery on both sides.
+./target/debug/ash --data-dir "$DATA_A" inbox
+./target/debug/ash --data-dir "$DATA_B" inbox
+```
+
+Each send must complete through the authenticated session/ACK path and the
+opposite inbox must contain exactly one committed message. The automated
+`scripts/lan_direct_two_node.sh` regression is the deterministic send→decrypt→ACK
+proof (including stranger refusal). A Release build without an approved
+production ATSAM bootstrap must fail closed instead of silently using demo
+crypto; this Debug gate is not physical-device or production-bootstrap evidence.
+
+## Mobile fixtures are not the current terminal acceptance path
+
+Older versions of this document mixed iOS feature-flag fixtures and the legacy
+raw `raven-node run` receiver into the terminal walkthrough. The supported
+open-source product tested here is now the cross-platform terminal/node path.
+Historical iOS/BLE source and unit fixtures may remain in the repository, but
+they are not prerequisites for—and must not be cited as proof of—the two-device
+terminal workflow above.
 
 ## Portable ATSAM KATs (Rust)
 

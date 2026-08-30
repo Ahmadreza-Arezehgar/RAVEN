@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import stat
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 DEFAULT_TASK_STORE_MAX_COUNT = 256
@@ -16,6 +18,35 @@ DEFAULT_TASK_STORE_TTL_SECONDS = 60 * 60
 HARD_TASK_STORE_MAX_COUNT = 4096
 HARD_TASK_STORE_MAX_BYTES = 64 * 1024 * 1024
 HARD_TASK_STORE_TTL_SECONDS = 24 * 60 * 60
+
+LLM_PROVIDER_ENDPOINTS = {
+    'openai': 'https://api.openai.com/v1',
+    'groq': 'https://api.groq.com/openai/v1',
+    'openrouter': 'https://openrouter.ai/api/v1',
+}
+LLM_PROVIDER_KEY_ENVS = {
+    'openai': 'OPENAI_API_KEY',
+    'groq': 'GROQ_API_KEY',
+    'openrouter': 'OPENROUTER_API_KEY',
+}
+_WINDOWS_RESERVED_NAMES = frozenset(
+    {'con', 'prn', 'aux', 'nul', *(f'com{i}' for i in range(1, 10)), *(f'lpt{i}' for i in range(1, 10))}
+)
+
+
+def validate_node_name(value: str) -> str:
+    """Return a path-safe, cross-platform node name or raise."""
+    name = str(value)
+    if len(name.encode('utf-8')) > 64 or re.fullmatch(
+        r'[A-Za-z0-9](?:[A-Za-z0-9._-]{0,62}[A-Za-z0-9])?', name
+    ) is None:
+        raise ValueError(
+            'node name must be 1..64 bytes, ASCII alphanumeric at both ends, '
+            'with only dot, dash, or underscore inside'
+        )
+    if name.split('.', 1)[0].casefold() in _WINDOWS_RESERVED_NAMES:
+        raise ValueError('node name is reserved on Windows')
+    return name
 
 
 def read_secret_file(path: str | Path) -> str:
@@ -39,25 +70,117 @@ def read_secret_file(path: str | Path) -> str:
     return value
 
 
+def resolve_custom_llm_api_key() -> str:
+    """Resolve only the credential explicitly reserved for `custom` provider."""
+    value = os.environ.get('TEAM_LLM_API_KEY', '')
+    path = os.environ.get('TEAM_LLM_API_KEY_FILE', '')
+    if not value and path:
+        value = read_secret_file(path)
+    return value
+
+
 @dataclass
 class LLMConfig:
     """Backend for the agent brain.
 
-    provider='openai' → any OpenAI-compatible /chat/completions endpoint.
-    anything else     → deterministic EchoBrain (no key needed).
+    Hosted providers have fixed origins and provider-specific credentials.
+    Ollama is keyless and loopback-only. ``custom`` uses only an explicitly
+    supplied TEAM_LLM_API_KEY credential and requires HTTPS when keyed.
     """
 
     provider: str = 'echo'
     model: str = ''
-    base_url: str = 'https://api.openai.com/v1'
+    base_url: str = ''
     temperature: float = 0.2
     max_steps: int = 12
     _api_key: str = ''
 
+    def __post_init__(self) -> None:
+        self.provider = str(self.provider or 'echo').strip().lower()
+        self.base_url = str(self.base_url or '').rstrip('/')
+        if self.provider == 'openai' and self.base_url:
+            # Safe migration for state written by the old wizard, which called
+            # every OpenAI-compatible backend "openai".
+            for candidate, endpoint in LLM_PROVIDER_ENDPOINTS.items():
+                if self.base_url == endpoint:
+                    self.provider = candidate
+                    break
+            if self._is_loopback_endpoint(self.base_url):
+                self.provider = 'ollama'
+        if self.provider in LLM_PROVIDER_ENDPOINTS and not self.base_url:
+            self.base_url = LLM_PROVIDER_ENDPOINTS[self.provider]
+        self._validate_endpoint()
+
+    @staticmethod
+    def _parsed_endpoint(value: str):
+        try:
+            parsed = urlsplit(value)
+            port = parsed.port
+        except ValueError as exc:
+            raise ValueError(f'invalid LLM endpoint: {exc}') from exc
+        if (
+            parsed.scheme not in {'http', 'https'}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError('LLM endpoint must be an absolute HTTP(S) URL without credentials/query')
+        return parsed, port
+
+    @classmethod
+    def _is_loopback_endpoint(cls, value: str) -> bool:
+        try:
+            parsed, _ = cls._parsed_endpoint(value)
+        except ValueError:
+            return False
+        host = str(parsed.hostname).lower()
+        if host == 'localhost':
+            return True
+        try:
+            import ipaddress
+
+            return ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            return False
+
+    def _validate_endpoint(self) -> None:
+        if self.provider == 'echo':
+            if self._api_key:
+                raise ValueError('echo provider does not accept an API key')
+            return
+        if self.provider not in {*LLM_PROVIDER_ENDPOINTS, 'ollama', 'custom'}:
+            raise ValueError(
+                'LLM provider must be echo, openai, groq, openrouter, ollama, or custom'
+            )
+        if not self.base_url:
+            raise ValueError(f'{self.provider} provider requires a base URL')
+        parsed, _ = self._parsed_endpoint(self.base_url)
+        if self.provider in LLM_PROVIDER_ENDPOINTS:
+            if self.base_url != LLM_PROVIDER_ENDPOINTS[self.provider]:
+                raise ValueError(
+                    f'{self.provider} credentials are bound to '
+                    f'{LLM_PROVIDER_ENDPOINTS[self.provider]}'
+                )
+            if parsed.scheme != 'https':
+                raise ValueError('hosted LLM credentials require HTTPS')
+        elif self.provider == 'ollama':
+            if not self._is_loopback_endpoint(self.base_url):
+                raise ValueError('Ollama endpoint must use localhost or a loopback IP')
+            if self._api_key:
+                raise ValueError('Ollama is keyless; refusing configured credential')
+        elif self.provider == 'custom' and self._api_key and parsed.scheme != 'https':
+            raise ValueError('custom LLM credentials require HTTPS')
+
     def api_key(self) -> str:
-        return self._api_key or os.environ.get('OPENAI_API_KEY', '') or os.environ.get(
-            'LLM_API_KEY', ''
-        )
+        self._validate_endpoint()
+        if self.provider in {'echo', 'ollama'}:
+            return ''
+        if self._api_key:
+            return self._api_key
+        env_name = LLM_PROVIDER_KEY_ENVS.get(self.provider)
+        return os.environ.get(env_name, '') if env_name else ''
 
 
 @dataclass
@@ -119,6 +242,7 @@ class NodeConfig:
     enable_experimental_mailbox: bool = False
 
     def __post_init__(self) -> None:
+        self.name = validate_node_name(self.name)
         if (
             isinstance(self.task_store_max_count, bool)
             or not isinstance(self.task_store_max_count, int)
@@ -167,6 +291,10 @@ class NodeConfig:
         token_file = os.environ.get('TEAM_AUTH_TOKEN_FILE', '')
         if not auth_token and token_file:
             auth_token = read_secret_file(token_file)
+        llm_provider = os.environ.get('TEAM_LLM_PROVIDER', 'echo').strip().lower()
+        llm_api_key = (
+            resolve_custom_llm_api_key() if llm_provider == 'custom' else ''
+        )
         cfg = cls(
             name=os.environ.get('TEAM_NODE_NAME', cls.name),
             role=os.environ.get('TEAM_NODE_ROLE', ''),
@@ -214,11 +342,12 @@ class NodeConfig:
             allow_shell=os.environ.get('TEAM_ALLOW_SHELL', '') == '1',
             auto_commit_memory=os.environ.get('TEAM_AUTO_COMMIT', '1') == '1',
             llm=LLMConfig(
-                provider=os.environ.get('TEAM_LLM_PROVIDER', 'echo'),
+                provider=llm_provider,
                 model=os.environ.get('TEAM_LLM_MODEL', ''),
                 base_url=os.environ.get(
-                    'TEAM_LLM_BASE_URL', LLMConfig.base_url
+                    'TEAM_LLM_BASE_URL', ''
                 ),
+                _api_key=llm_api_key,
             ),
             # Secure by default.  TEAM_REQUIRE_SIGNED=0 is an explicit open-mode
             # override retained for scripted deployments.

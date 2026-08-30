@@ -6,11 +6,14 @@ cd "$ROOT"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-cargo build -q -p ash -p raven-core
+cargo build --locked -q -p ash -p raven-core
 ASH=./target/debug/ash
 
-# Deterministic K_route (32 bytes) — never a username.
-K_ROUTE="$(python3 -c 'print("00"*32)')"
+# Deterministic K_route (32 bytes) in an owner-only file. The secret is never
+# placed in argv, shell history, or the process listing.
+K_ROUTE_FILE="$TMP/k-route.key"
+python3 -c 'import sys; sys.stdout.buffer.write(bytes(32))' >"$K_ROUTE_FILE"
+chmod 600 "$K_ROUTE_FILE"
 EPOCH=42
 SLOT=0
 
@@ -39,10 +42,10 @@ PY
 )"
 
 RAVEN_ALLOW_EPHEMERAL_DATA_DIR=1 "$ASH" --data-dir "$TMP/store" mailbox put \
-  --k-route-hex "$K_ROUTE" --epoch "$EPOCH" --slot "$SLOT" --envelope-hex "$ENV_HEX"
+  --k-route-file "$K_ROUTE_FILE" --epoch "$EPOCH" --slot "$SLOT" --envelope-hex "$ENV_HEX"
 
 OUT="$(RAVEN_ALLOW_EPHEMERAL_DATA_DIR=1 "$ASH" --data-dir "$TMP/store" mailbox get \
-  --k-route-hex "$K_ROUTE" --epoch "$EPOCH" --slot "$SLOT")"
+  --k-route-file "$K_ROUTE_FILE" --epoch "$EPOCH" --slot "$SLOT")"
 
 echo "$OUT" | grep -q 'store_tag=' || {
   echo "FAIL: expected opaque store_tag hit"
@@ -56,7 +59,7 @@ echo "$OUT" | grep -qi 'username' && {
 
 # Overlap: previous epoch should still find when epoch advanced without put.
 OUT2="$(RAVEN_ALLOW_EPHEMERAL_DATA_DIR=1 "$ASH" --data-dir "$TMP/store" mailbox get \
-  --k-route-hex "$K_ROUTE" --epoch $((EPOCH + 1)) --slot "$SLOT")"
+  --k-route-file "$K_ROUTE_FILE" --epoch $((EPOCH + 1)) --slot "$SLOT")"
 echo "$OUT2" | grep -q 'store_tag=' || {
   echo "FAIL: overlap retrieve (prev epoch) expected a hit"
   echo "$OUT2"
