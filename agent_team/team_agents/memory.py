@@ -46,6 +46,7 @@ MAX_RECENT_EVENT_FILE_BYTES = 16 * 1024
 MAX_RECENT_EVENT_TOTAL_BYTES = 2 * 1024 * 1024
 MAX_RECENT_EVENTS_LIMIT = 200
 MAX_RECENT_EVENT_TEXT_CHARS = 400
+OPERATIONAL_PATH_VALIDATION_ATTEMPTS = 8
 _LOCAL_LOCKS_GUARD = threading.Lock()
 _LOCAL_LOCKS: dict[str, threading.Lock] = {}
 
@@ -83,6 +84,10 @@ class FileLockTimeout(TimeoutError, FileLockError):
 
 class TeamGitError(RuntimeError):
     """An automatic Git operation could not complete without leaving its scope."""
+
+
+class _OperationalTeamPathChanged(RuntimeError):
+    """A shared tree entry disappeared while one validation pass was running."""
 
 
 def _is_link_or_reparse(metadata: os.stat_result) -> bool:
@@ -548,7 +553,35 @@ class TeamMemory:
         return DISABLED_HOOKS_PATH
 
     def _validate_operational_team_paths(self) -> None:
-        """Reject links, reparse points and special files in writable team state."""
+        """Reject links, reparse points and special files in writable team state.
+
+        Atomic projection and claim writes briefly create a regular temporary
+        file next to their destination.  A concurrent validator can enumerate
+        that file immediately before ``os.replace`` removes its old name.  A
+        vanished entry therefore restarts the *whole* scan instead of being
+        silently accepted.  Persistent churn still fails closed after a
+        bounded number of attempts, and every replacement entry is inspected
+        on the next pass.
+        """
+        last_change: _OperationalTeamPathChanged | None = None
+        for attempt in range(OPERATIONAL_PATH_VALIDATION_ATTEMPTS):
+            try:
+                self._validate_operational_team_paths_once()
+                return
+            except _OperationalTeamPathChanged as exc:
+                last_change = exc
+                if attempt + 1 < OPERATIONAL_PATH_VALIDATION_ATTEMPTS:
+                    # Yield to the atomic writer without turning adversarial
+                    # churn into an unbounded wait.
+                    time.sleep(0)
+
+        raise TeamGitError(
+            'operational team paths kept changing during bounded validation: '
+            f'{last_change}'
+        ) from last_change
+
+    def _validate_operational_team_paths_once(self) -> None:
+        """Run one recursive type-validation pass over shared team state."""
         for relative in TEAM_SHARED_PATHS:
             path = self.repo_path / relative
             if not os.path.lexists(path):
@@ -556,6 +589,10 @@ class TeamMemory:
             try:
                 metadata = os.lstat(path)
             except OSError as exc:
+                if exc.errno in {errno.ENOENT, errno.ENOTDIR}:
+                    raise _OperationalTeamPathChanged(
+                        f'{relative}: {exc}'
+                    ) from exc
                 raise TeamGitError(f'cannot inspect team path {relative}: {exc}') from exc
             if _is_link_or_reparse(metadata):
                 raise TeamGitError(
@@ -574,6 +611,10 @@ class TeamMemory:
                 )
 
             def walk_error(exc: OSError) -> None:
+                if exc.errno in {errno.ENOENT, errno.ENOTDIR}:
+                    raise _OperationalTeamPathChanged(
+                        f'{relative}: {exc}'
+                    ) from exc
                 raise TeamGitError(
                     f'cannot recursively inspect team path {relative}: {exc}'
                 ) from exc
@@ -587,6 +628,10 @@ class TeamMemory:
                         try:
                             child_metadata = os.lstat(child)
                         except OSError as exc:
+                            if exc.errno in {errno.ENOENT, errno.ENOTDIR}:
+                                raise _OperationalTeamPathChanged(
+                                    f'{child.relative_to(self.repo_path)}: {exc}'
+                                ) from exc
                             raise TeamGitError(
                                 f'team path changed during validation: {child}: {exc}'
                             ) from exc

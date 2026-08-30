@@ -14,6 +14,7 @@ Network part: boots two real nodes (echo brain) and exercises
 from __future__ import annotations
 
 import asyncio
+import errno
 import hashlib
 import json
 import os
@@ -627,6 +628,73 @@ def unit_tests() -> None:
             'concurrent file claims produce exactly one winner',
             sum(result.startswith('ok: claimed') for result in claim_results) == 1,
             repr(claim_results),
+        )
+
+        # Reproduce the Linux/Python 3.10 CI race deterministically: os.walk
+        # has already enumerated an atomic-write temporary file when its
+        # writer replaces that name.  Validation must rescan the whole tree,
+        # not ignore the replacement or fail a healthy concurrent operation.
+        transient_memory = TeamMemory(
+            tmp / 'transient-validation-repo', auto_commit=False
+        )
+        transient_memory.ensure_layout()
+        transient_path = transient_memory.locks_dir / '.shared.txt.race.tmp'
+        transient_path.write_text('temporary\n', encoding='utf-8')
+        real_lstat = memory_mod.os.lstat
+        transient_removed = False
+
+        def disappearing_lstat(path, *args, **kwargs):
+            nonlocal transient_removed
+            if Path(path) == transient_path and not transient_removed:
+                transient_removed = True
+                transient_path.unlink()
+                raise FileNotFoundError(
+                    errno.ENOENT, 'simulated atomic replacement', str(path)
+                )
+            return real_lstat(path, *args, **kwargs)
+
+        memory_mod.os.lstat = disappearing_lstat
+        try:
+            transient_memory._validate_operational_team_paths()
+            transient_rescan_ok = transient_removed
+        except TeamGitError:
+            transient_rescan_ok = False
+        finally:
+            memory_mod.os.lstat = real_lstat
+        check(
+            'operational path validation safely rescans a vanished atomic temp',
+            transient_rescan_ok,
+        )
+
+        churn_path = transient_memory.locks_dir / 'persistent-churn.lock'
+        churn_path.write_text('unstable\n', encoding='utf-8')
+        churn_attempts = 0
+
+        def always_disappearing_lstat(path, *args, **kwargs):
+            nonlocal churn_attempts
+            if Path(path) == churn_path:
+                churn_attempts += 1
+                raise FileNotFoundError(
+                    errno.ENOENT, 'simulated persistent churn', str(path)
+                )
+            return real_lstat(path, *args, **kwargs)
+
+        memory_mod.os.lstat = always_disappearing_lstat
+        try:
+            transient_memory._validate_operational_team_paths()
+            bounded_churn_refused = False
+        except TeamGitError:
+            bounded_churn_refused = (
+                churn_attempts
+                == memory_mod.OPERATIONAL_PATH_VALIDATION_ATTEMPTS
+            )
+        finally:
+            memory_mod.os.lstat = real_lstat
+            churn_path.unlink()
+        check(
+            'operational path validation fails closed after bounded churn',
+            bounded_churn_refused,
+            f'attempts={churn_attempts}',
         )
 
         concurrent_board_repo = tmp / 'concurrent-board-repo'
