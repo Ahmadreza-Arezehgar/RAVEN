@@ -52,9 +52,13 @@ jobs:
       - name: POSIX launcher smoke
         if: runner.os != 'Windows' && matrix.python == '3.10'
         run: bash ./rdap --help
-      - name: Native Windows launcher smoke
-        if: runner.os == 'Windows' && matrix.python == '3.10'
+      - name: Native Windows PowerShell 5.1 launcher smoke
+        if: runner.os == 'Windows'
         shell: cmd
         run: rdap.cmd --help
+      - name: Native Windows PowerShell 7 launcher smoke
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .\rdap.ps1 --help
       - name: Authentication, relay, cancellation, and transport selftests
         run: python -m team_agents.selftest

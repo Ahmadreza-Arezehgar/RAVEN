@@ -20,14 +20,22 @@ function Invoke-RdapNative {
         # NativeCommandError when the script-wide preference is Stop.  Native
         # success/failure is defined by its process exit code instead.
         $ErrorActionPreference = 'Continue'
-        $LASTEXITCODE = -1
         if ($Quiet) {
             & $Executable @Arguments 2>$null
         }
         else {
             & $Executable @Arguments
         }
-        $exitCode = [Int]$LASTEXITCODE
+        # Assigning to $LASTEXITCODE in this function would create a local
+        # variable that shadows the automatic global value updated by native
+        # processes.  Read the native value explicitly after the invocation.
+        $nativeExitCode = $global:LASTEXITCODE
+        if ($null -eq $nativeExitCode) {
+            $exitCode = 1
+        }
+        else {
+            $exitCode = [Int]$nativeExitCode
+        }
     }
     catch {
         $exitCode = 1
