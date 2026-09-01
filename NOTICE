@@ -1,0 +1,27 @@
+RAVEN — serverless terminal messaging
+Copyright (C) 2026 Ash Robotic Industry
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU Affero General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option) any
+later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU Affero General Public License in the LICENSE
+file for more details.
+
+Additional permissions and limitations that accompany the software license:
+
+  * Trademarks. Consistent with section 7(e) of the AGPL-3.0, no right is
+    granted to use the name "RAVEN", the Raven bird/R symbol, or associated
+    branding to identify a modified product or to imply endorsement. The
+    complete policy is in TRADEMARK.md.
+
+  * Visual assets. Application icons, logos, and product artwork are brand
+    material and are not part of the licensed program except as needed to run
+    or redistribute an unmodified official release. See ASSET_LICENSE.md.
+
+Third-party components keep their own licenses. Vendored sources under
+node/third_party/ carry their upstream notices: SQLCipher 4.17.0 (BSD-3-Clause,
+Zetetic LLC), libsqlite3-sys (MIT), secret-service (MIT OR Apache-2.0).

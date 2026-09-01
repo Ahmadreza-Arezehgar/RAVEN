@@ -1,56 +1,87 @@
 # Security Policy
 
-## Reporting a Vulnerability
+## Reporting a vulnerability
 
-We take security seriously at RAVEN. If you discover a security vulnerability, please report it responsibly.
+Please report security issues privately. **Do not open a public GitHub issue.**
 
-### How to Report
+- Email: info@raven-messenger.com
+- Subject: `[SECURITY] <short description>`
+- Include: affected component and commit, reproduction steps, impact, and a
+  suggested fix if you have one. Encrypted reports are welcome; ask for a key.
 
-- **Email**: info@raven-messenger.com
-- **Subject**: `[SECURITY] Brief description`
-- **Do NOT** open a public GitHub issue for security vulnerabilities
+| Action | Target |
+|---|---|
+| Acknowledgement | within 48 hours |
+| Initial assessment | within 5 business days |
+| Fix or mitigation and coordinated disclosure | within 30 days, or an agreed timeline for protocol-level issues |
 
-### What to Include
+Researchers who report valid issues are credited with their permission.
 
-1. Description of the vulnerability
-2. Steps to reproduce
-3. Potential impact
-4. Suggested fix (if any)
+## Scope
 
-### Response Timeline
+The **terminal product** is in scope:
 
-| Action | Timeline |
-|--------|----------|
-| Acknowledgment | Within 48 hours |
-| Initial Assessment | Within 5 business days |
-| Fix & Disclosure | Within 30 days |
+| Component | Paths |
+|---|---|
+| Protocol core, crypto, stores, transport policy | `node/crates/raven-core/` |
+| Daemon: LAN listener, same-user IPC, bridge harness | `node/crates/raven-node/` |
+| Terminal client | `node/crates/ash/` |
+| Experimental libp2p swarm / mailbox / NAT binaries | `node/crates/raven-swarm/` (feature-gated; still in scope) |
+| Normative specifications, errata, reference codecs, vectors | `protocol/`, `protocol/reference/`, `shared-vectors/rvn1/` |
+| Experimental A2A companion | `agent_team/` (see its README for its own threat model) |
+| Build, release and CI scripts | `node/scripts/`, `scripts/`, `.github/workflows/` |
 
-### Scope
+Especially valuable reports:
 
-The following are in scope:
-- End-to-end encryption implementation (`MeshCryptoService`)
-- Mesh networking protocol (`BLEMeshEngine`, `MeshEnvelope`)
-- Authentication & authorization (`auth.py`, JWT handling)
-- Local data storage encryption (`DatabaseService`, `KeychainService`)
-- Server API endpoints (`server/routers/`)
+- Breaking the LAN path: Noise XX handshake, PairInit (X25519 + ML-KEM-768)
+  transcript, indexed ATSAM session (ChaCha20-Poly1305), ACK, replay windows,
+  or identity/contact pinning.
+- Identity-store continuity: any way to fork a profile into two identities,
+  downgrade to a plaintext seed, or bypass the Release refusals of lab backends.
+- Relay/bridge abuse beyond the documented limits (unauthenticated hop and
+  replication counters are a known, documented boundary — see
+  `protocol/SECURITY_ERRATA_RVN1_2026-08-13.md` §8).
+- A Release build that links any `*-lab`, `unsafe-demo-crypto`, or
+  `debug-trace-delivery` feature.
+- Local privilege boundaries: IPC socket/pipe authorization, file permissions,
+  Windows DACL behaviour.
+- RDAP: signature or replay bypass, Git-relay poisoning, `read_file` path-policy
+  escape, or any path by which a peer's task obtains shell or write access
+  without `--allow-shell`.
 
-### Out of Scope
+Application-era code (`ios-native/`, `RAVEN-*/`, `server/`, `news_bot/`,
+`simulation/`) is legacy. Reports are still welcome, but fixes are not
+guaranteed and those trees carry no security claims for the terminal product.
 
-- Social engineering attacks
-- Denial of service attacks
-- Issues in third-party dependencies (report to upstream)
+## Out of scope
 
-## Security Architecture
+- Denial of service against a node you do not own, and volumetric attacks.
+- Social engineering of maintainers or users.
+- Vulnerabilities in third-party dependencies without a RAVEN-specific impact
+  (report upstream; tell us if RAVEN's usage makes it exploitable).
+- Findings that require the operator to enable a documented unsafe override
+  (`--open`, `--allow-shell`, `unsafe-demo-crypto`, `RAVEN_UNSAFE_*`,
+  `RAVEN_LAB_TEST_A` in Debug) and stay within that override's documented
+  authority.
 
-RAVEN uses multiple layers of security:
+## What we claim, and what we do not
 
-- **AES-256** for message encryption
-- **Ed25519** for message signing
-- **HMAC** for message authentication
-- **iOS Keychain** for secure key storage
-- **TLS 1.3** for server communication
-- **Spray-and-Wait DTN** for mesh message routing
+- **Enabled today:** authenticated, end-to-end-encrypted 1:1 messaging between
+  two terminals on the same LAN, with manual out-of-band identity pinning.
+- **Not enabled:** Internet delivery, NAT traversal, DHT discovery, desktop BLE,
+  automatic bridge routing, contact requests over the wire. These are
+  fail-closed or experimental and must not be reported as "broken" — they are
+  intentionally off.
+- **No independent cryptographic review has been completed.** The primitives
+  are standard; the composition is RAVEN's own.
+- Lab constructions (Full Braid, incremental ML-KEM, SQLCipher durable profile)
+  are compiled out of Release builds.
+- Public documents in `Raven-offline-messenger/raven-security` predate parts of
+  this tree; the errata and `node/FINAL_SERVERLESS_PROOF.md` are authoritative.
 
-## Acknowledgments
+## Secret hygiene
 
-We appreciate responsible disclosure and will credit security researchers who report valid vulnerabilities (with permission).
+Never commit identity seeds, `~/.raven-ash` state, `agent_team/.team/`,
+`.env` files, tokens, or repository exports. `scripts/secret_history_scan.sh
+--ci` runs in CI; if you find a secret in history, report it privately so it
+can be rotated before any public rewrite.

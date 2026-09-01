@@ -36,7 +36,11 @@ jobs:
   build:
     name: Rust terminal (${{ inputs.arch || 'x64' }})
     runs-on: windows-latest
-    timeout-minutes: 90
+    # A cold run compiles cargo-about, a debug test tree and a release tree on
+    # MSVC; 90 minutes was exceeded on every run and a cancelled job never
+    # saved its cache, so the job could never warm up. Allow one long run and
+    # keep the cache even when a later step fails.
+    timeout-minutes: 150
     env:
       RAVEN_ARCH: ${{ inputs.arch || 'x64' }}
       RUST_TARGET: ${{ inputs.arch == 'arm64' && 'aarch64-pc-windows-msvc' || 'x86_64-pc-windows-msvc' }}
@@ -106,6 +110,7 @@ jobs:
         with:
           workspaces: node
           key: windows-${{ env.RUST_TARGET }}
+          cache-on-failure: true
 
       - name: Install pinned third-party license generator
         run: |

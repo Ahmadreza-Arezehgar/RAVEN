@@ -1,0 +1,174 @@
+# Legacy iOS application protocol tests + the Go libp2p bridge it embeds.
+# ios-native/ is a secondary implementation; these jobs run on their own so the
+# terminal gate (raven-serverless.yml) reflects only the shipping product.
+name: Raven iOS Protocol
+
+on:
+  push:
+    paths:
+      - "ios-native/**"
+      - "RAVEN-WatchApp/RAVEN-Watch/**/*.swift"
+      - "shared-vectors/**"
+      - "node/scripts/ios_lan_kat.sh"
+      - "node/scripts/ios_lan_lab_checklist.md"
+      - ".github/workflows/raven-ios-protocol.yml"
+  pull_request:
+    paths:
+      - "ios-native/**"
+      - "RAVEN-WatchApp/RAVEN-Watch/**/*.swift"
+      - "shared-vectors/**"
+      - "node/scripts/ios_lan_kat.sh"
+      - "node/scripts/ios_lan_lab_checklist.md"
+      - ".github/workflows/raven-ios-protocol.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: raven-ios-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go-bridge:
+    name: Go libp2p bridge security
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: ios-native/RAVEN/Libp2pBridge
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version-file: ios-native/RAVEN/Libp2pBridge/go.mod
+          cache-dependency-path: ios-native/RAVEN/Libp2pBridge/go.sum
+      - name: Unit, adversarial, and race tests
+        run: go test -count=1 -race ./...
+      - name: Vet
+        run: go vet ./...
+
+  ios-security:
+    name: iOS protocol security tests
+    runs-on: macos-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: ios-native/RAVEN
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version-file: ios-native/RAVEN/Libp2pBridge/go.mod
+          cache-dependency-path: ios-native/RAVEN/Libp2pBridge/go.sum
+      - name: Build the required libp2p XCFramework
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/go/bin:$PATH"
+          MOBILE_VERSION="v0.0.0-20260611195102-4dd8f1dbf5d2"
+          go install "golang.org/x/mobile/cmd/gomobile@${MOBILE_VERSION}"
+          go install "golang.org/x/mobile/cmd/gobind@${MOBILE_VERSION}"
+          gomobile init
+          bash Libp2pBridge/build-xcframework.sh
+          test -d Libp2pBridge/RavenLibp2p.xcframework
+      - name: Select an available iOS simulator
+        id: simulator
+        run: |
+          DEVICE_ID=$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          data = json.load(sys.stdin)["devices"]
+          candidates = [
+              (runtime, d)
+              for runtime, devices in data.items()
+              for d in devices
+              if d.get("isAvailable") and "iPhone" in d.get("name", "")
+          ]
+          if not candidates:
+              raise SystemExit("no available iPhone simulator")
+          # Runtime identifiers end in a dotted version with dashes. Prefer
+          # the newest available runtime instead of relying on JSON order.
+          def version(item):
+              raw = item[0].rsplit("iOS-", 1)[-1]
+              return tuple(int(part) for part in raw.split("-") if part.isdigit())
+          print(max(candidates, key=version)[1]["udid"])
+          ')
+          echo "device_id=$DEVICE_ID" >> "$GITHUB_OUTPUT"
+          xcrun simctl boot "$DEVICE_ID" 2>/dev/null || true
+          xcrun simctl bootstatus "$DEVICE_ID" -b
+      - name: Build and run protocol security tests
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project RAVEN.xcodeproj \
+            -scheme RAVEN \
+            -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.device_id }}" \
+            -parallel-testing-enabled NO \
+            -only-testing:RAVENTests/RavenEnvelopeV1VectorsTests \
+            -only-testing:RAVENTests/RavenServerlessLanPathTests \
+            -only-testing:RAVENTests/RavenEnvelopeEndpointIngestTests \
+            -only-testing:RAVENTests/RavenBleRvn1CarrierTests \
+            -only-testing:RAVENTests/RavenEnvelopeChatWireTests \
+            -only-testing:RAVENTests/ATSAMChainRatchetTests \
+            -only-testing:RAVENTests/ATSAMIndexedSessionProfileTests \
+            -only-testing:RAVENTests/ATSAMPairInitV1Tests \
+            -only-testing:RAVENTests/ATSAMEndpointTransactionV1Tests \
+            -only-testing:RAVENTests/ATSAMPairingRootAgreementTests \
+            -only-testing:RAVENTests/RavenEnvelopeBridgeServiceTests \
+            -only-testing:RAVENTests/MeshInteropVectorsTests \
+            -only-testing:RAVENTests/RavenContactRequestV1Tests \
+            -only-testing:RAVENTests/ContactRequestInboxTests \
+            -only-testing:RAVENTests/RavenServerlessLanSettingsTests \
+            -only-testing:RAVENTests/MessagingProductBoundaryTests
+      - name: LAN handshake KAT + Release lab gate (scripted)
+        run: bash ../../node/scripts/ios_lan_kat.sh
+        env:
+          DEVICE_ID: ${{ steps.simulator.outputs.device_id }}
+      - name: Prove XCTest host stayed offline
+        run: |
+          set -euo pipefail
+          RESULT=$(find "$HOME/Library/Developer/Xcode/DerivedData" \
+            -path '*/Logs/Test/*.xcresult' -type d -print0 \
+            | xargs -0 stat -f '%m %N' \
+            | sort -nr \
+            | head -1 \
+            | cut -d' ' -f2-)
+          test -n "$RESULT"
+          xcrun xcresulttool get test-results tests --path "$RESULT" \
+            | python3 -c '
+          import json, sys
+          data = json.load(sys.stdin)
+          names = set()
+          failures = []
+          def walk(value):
+              if isinstance(value, dict):
+                  name = value.get("name")
+                  if isinstance(name, str):
+                      names.add(name)
+                  status = value.get("testStatus") or value.get("status")
+                  if isinstance(status, str) and status.lower() in {"failed", "failure"}:
+                      failures.append(name or "unnamed test")
+                  for child in value.values():
+                      walk(child)
+              elif isinstance(value, list):
+                  for child in value:
+                      walk(child)
+          walk(data)
+          required = {
+              "testAppHostRecognizesXCTestAndSuppressesExternalSideEffects()",
+              "testAppStartupNeverReachedAnExternalSideEffectBoundary()",
+              "testRuntimeDetectorDoesNotDisableProductionShapedLaunch()",
+          }
+          missing = required - names
+          if failures or missing:
+              raise SystemExit(f"offline XCTest proof missing={sorted(missing)} failures={failures}")
+          print("offline XCTest proof present")
+          '
+      - name: Release build (unsafe demo crypto must stay unavailable)
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project RAVEN.xcodeproj \
+            -scheme RAVEN \
+            -configuration Release \
+            -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.device_id }}" \
+            CODE_SIGNING_ALLOWED=NO

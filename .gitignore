@@ -208,3 +208,11 @@ agent_team/rdap.json
 agent_team/.rdap-state.lock
 agent_team/team-repo/
 node/raven-data/
+
+# Repository exports (git bundles / bare mirrors / Actions metadata) and Xcode
+# project backups are local evidence only — a bundle re-publishes history that
+# a future purge would need to remove, and the backups are 250 KB each.
+RAVEN_GITHUB_EXPORT_*/
+RAVEN_GITHUB_EXPORT_*.tar.gz
+RAVEN_GITHUB_EXPORT_*.tar.gz.sha256
+*.pbxproj.pre-*

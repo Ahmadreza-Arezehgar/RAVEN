@@ -87,6 +87,14 @@ if [[ ! -S "$A/raven-node.sock" || ! -S "$B/raven-node.sock" ]]; then
 fi
 "$ASH" --data-dir "$A" ipc-ping >/dev/null
 "$ASH" --data-dir "$B" ipc-ping >/dev/null
+# The IPC socket is ready before the LAN listener logs its bind line, so poll
+# for the bind instead of sampling the log once (slow CI runners lost this race).
+for _ in $(seq 1 150); do
+  if grep -q "lan_direct: listen" "$WORKDIR/a.node.log" && grep -q "lan_direct: listen" "$WORKDIR/b.node.log"; then
+    break
+  fi
+  sleep 0.1
+done
 if ! grep -q "lan_direct: listen" "$WORKDIR/a.node.log" || ! grep -q "lan_direct: listen" "$WORKDIR/b.node.log"; then
   echo "lan_direct did not bind" >&2
   cat "$WORKDIR/a.node.log" "$WORKDIR/b.node.log" >&2 || true
