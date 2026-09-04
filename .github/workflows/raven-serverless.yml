@@ -110,6 +110,11 @@ jobs:
           python3 scripts/audit_active_dependencies.py
       - name: test raven-core + ash
         run: cargo test -p raven-core -p ash -p raven-node
+      # CLI DX: Linux install→doctor→menu/send path (not cargo-test-only).
+      # Script uses RAVEN_IDENTITY_BACKEND=locked-file and ephemeral mktemp dirs.
+      # Builds target/debug/ash if cargo test did not emit the CLI binary.
+      - name: ash menu smoke
+        run: ./scripts/ash_menu_smoke.sh
       - name: LAN handshake KAT (shared vectors, no live network)
         run: cargo test -p raven-core --lib lan_
       - name: LAN direct two-node smoke
