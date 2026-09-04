@@ -1502,13 +1502,17 @@ mod tests {
         assert_eq!(binding.len(), IDENTITY_BINDING_LEN);
         binding[44] ^= 0x80;
         std::fs::write(binding_path(dir), binding).unwrap();
-        let err = load_identity(dir).err().expect("tamper must fail");
+        let err = load_identity(dir).expect_err("tamper must fail");
         assert!(matches!(err, IdentityStoreError::Continuity(_)));
 
         #[cfg(target_os = "macos")]
         {
             let seed = keychain_get(&account_for_data_dir(dir)).unwrap().unwrap();
             assert_eq!(Identity::from_seed(&seed).public_key_bytes(), original_pub);
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = original_pub;
         }
         test_cleanup(dir);
     }
@@ -1721,9 +1725,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
         std::fs::write(marker_path(dir), b"macos-keychain\nextra\n").unwrap();
-        let err = backend_consistency_with(dir, false)
-            .err()
-            .expect("malformed marker");
+        let err = backend_consistency_with(dir, false).expect_err("malformed marker");
         assert!(matches!(err, IdentityStoreError::Continuity(_)));
         assert!(!err.redacted_display().contains("seed"));
         test_cleanup(dir);
