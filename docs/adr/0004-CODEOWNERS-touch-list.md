@@ -1,10 +1,10 @@
 # CODEOWNERS touch list — ADR 0004 / O6
 
-**Risk class:** R3 (ATSAM / crypto transport). **No R3 self-merge.**
+Risk class R3; approvers Architect #1, Crypto #3, Identity #15 (+ Security Board as matrix); No R3 self-merge; M1–M3 production enablement subordinate to `docs/THREAT_MODEL.md` + `protocol/SECURITY_ERRATA_RVN1_2026-08-13.md` HOLD.
 
-Required ack before merge: Architect (`@Raven-ASHCO/architecture` #1), Crypto ATSAM (`@Raven-ASHCO/crypto` #3), Identity AuthZ (`@Raven-ASHCO/identity` #15). Security Board as the review matrix requires.
+Required ack before merge: `@Raven-ASHCO/architecture` (#1), `@Raven-ASHCO/crypto` (#3), `@Raven-ASHCO/identity` (#15). Security Board as the review matrix requires. **No R3 self-merge.**
 
-M1–M3 **production enablement** is subordinate to `docs/THREAT_MODEL.md` + `protocol/SECURITY_ERRATA_RVN1_2026-08-13.md` HOLD. ADR ack does not lift the RVN1 production hold.
+ADR ack does not lift the RVN1 production hold.
 
 Proposed when M1–M2 land:
 - ADR 0004 docs: architecture (+ rdap team if available on this repo)
