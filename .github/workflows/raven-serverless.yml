@@ -307,6 +307,7 @@ jobs:
       - name: Test Full Braid (Rust)
         run: |
           cargo test -p raven-core --features full-braid-lab --lib hybrid_ratchet_v2_full_braid
+          cargo test -p raven-core --features full-braid-lab --test adversarial_atsam
           cargo test -p raven-fb-ffi --lib
       - name: Clippy Full Braid
         run: |
