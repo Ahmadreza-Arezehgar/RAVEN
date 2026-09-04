@@ -68,7 +68,7 @@ Crypto asks if a signature is valid. AuthZ asks whether the **key has authority 
 1. **User identity ↔ device** — only identity-signed cert authorizes a device key.
 2. **Local deny-set ↔ network gossip** — unsigned gossip MUST NOT authorize or clear revokes.
 3. **Peer A view ↔ peer B view** — no instant global revoke under partition.
-4. **RAVEN device lineage ↔ RDAP peer address** — different revoke granularities; G5 is **A ↛ R always** + **conditional R → A** (Identity-correct M1: pin ≢ `device_ed_pub`). See `G5_CROSS_STACK_REVOKE_POLICY.md` §2.2.
+4. **RAVEN device lineage ↔ RDAP peer address** — different revoke granularities; G5 is **A ↛ R always**, **R ↛ auto address-deny**, and **R → fail-closed on bound data-plane** (lineage-scoped). See `G5_CROSS_STACK_REVOKE_POLICY.md` §2.2.
 5. **Protected store ↔ SQL/journal** — corrupt/exhausted markers fail closed for authz.
 6. **RDAP transport principal ↔ delegation sender** — mismatch must reject before replay consume.
 
