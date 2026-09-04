@@ -73,4 +73,6 @@ Fail closed for further origination; RDAP never claims success after Raven refus
 
 ## G5.8 Review
 
-Engineering SoT: PR #5 `docs/engineering/G5_CROSS_STACK_REVOKE_POLICY.md` §2.2 — G5.2 is a verbatim copy; appendix MUST NOT diverge. ADR body ACK stands. Architect Appendix G5 ACK withdrawn (conditional); awaiting re-ACK Appendix G5.
+- Engineering SoT: main `docs/engineering/G5_CROSS_STACK_REVOKE_POLICY.md` §2.2 (merged PR #5) — G5.2 MUST NOT diverge.
+- Architect + Crypto + Identity **ACK** Appendix G5 / ADR 0004 full (2026-09-04).
+- Docs-only; no M1; RVN1 HOLD bars Release.

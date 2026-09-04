@@ -164,7 +164,7 @@ See companion `docs/adr/0004-CODEOWNERS-touch-list.md`.
 
 ## Appendix G5 — Joint Raven↔RDAP revoke policy
 
-See `docs/adr/0004-appendix-g5-raven-rdap-revoke.md` (Architecture SoT = Identity PR #5 §2.2 verbatim; R → fail-closed on bound data-plane; R ↛ auto address-deny). Appendix G5 re-ACK pending.
+See `docs/adr/0004-appendix-g5-raven-rdap-revoke.md` (Architecture SoT = Identity PR #5 §2.2 verbatim; R → fail-closed on bound data-plane; R ↛ auto address-deny). Architect + Crypto + Identity **ACK** Appendix G5 / ADR 0004 full (2026-09-04).
 
 ## References
 
