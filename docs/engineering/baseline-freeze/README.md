@@ -1,51 +1,72 @@
-# RAVEN + RDAP — Ownership & Baseline Freeze (Sprint 0)
+# Baseline Freeze — Sprint 0 Engineering Handoff
 
-**بستهٔ فریز مالکیت و خط پایه | Ownership & Baseline Freeze Package**  
-Date: 2026-09-04 · Org: RAVEN + RDAP engineering
+This directory is the **Sprint 0 engineering baseline**. It is the contract between
+the founder and every engineering role. Do not invent a parallel checklist.
 
-## Purpose
+## Start here
 
-This package freezes **who owns what**, **how risk is classified**, and **what must be true** before feature work starts. Without a baseline freeze, PRs merge without required review, trust boundaries stay implicit, and Raven↔RDAP gaps accumulate silently.
+1. Read **[sprint0-checklist.md](sprint0-checklist.md)** — the single source of
+   truth for Sprint 0 completeness.
+2. Read **[risk-classes.md](risk-classes.md)** — R0–R3 risk class definitions
+   (no role may skip this).
+3. Read **[codeowners-policy.md](codeowners-policy.md)** — who reviews what,
+   and the R3 two-reviewer rule. **Live GitHub CODEOWNERS** (when present):
+   [`/.github/CODEOWNERS`](../../../.github/CODEOWNERS) — not invented by this
+   Architecture PR.
+4. Read **[org-structure.md](org-structure.md)** — 18 engineering roles.
+5. Read **[crate-ownership.md](crate-ownership.md)** — crate-to-role mapping.
 
-هدف: قبل از شروع فیچر، مالکیت، مرز اعتماد، و قوانین مرژ مشخص و قابل اجرا باشند.
+## Architecture drafts (this PR — Principal Architect)
 
-## What must be true before feature work
+| File | Status |
+| --- | --- |
+| [architecture-dependency-map.md](architecture-dependency-map.md) | **DONE** — Architect draft. Layer map, allowed/forbidden deps, crate inventory, RDAP→node path. |
+| [trust-boundaries.md](trust-boundaries.md) | **DONE** — Architect draft of TB1–TB5. **#17 Security Board + #6 Identity** still requested; this PR does not close that row. |
+| [adr-framework.md](adr-framework.md) | **DONE** — ADR-0001 (layers), ADR-0002 (terminal-first), ADR-0003 (three pathways, not collapsed), ADR-0004 (O6 / Appendix G5 — pin ≢ `device_ed_pub`). |
+| [undocumented-cross-layer-deps.md](undocumented-cross-layer-deps.md) | **DONE** — D1–D45 findings (mesh, identity, RDAP, build, iOS). |
 
-| Gate | Required state |
-|------|----------------|
-| Ownership | Every critical path has a primary owner (role #) + team handle |
-| Risk | R0–R3 classes published; R3 cannot be self-merged by anyone |
-| Reviews | Approval matrix enforced via branch protection / rulesets |
-| CODEOWNERS | Active on GitHub Org repos (not personal-account repos) |
-| CI | Required status checks on `main` for RAVEN and RDAP |
-| Baseline | Protocol versions, experimental flags, perf numbers, known gaps recorded |
-| Security | Trust boundaries + known security/interop gaps documented |
+These four files are **R0 documentation**. They do **not** authorize R3
+crypto, CODEOWNERS, or feature code.
 
-Feature PRs that touch R2/R3 surfaces **must not** land until the Sprint 0 checklist (`08-sprint0-checklist.md`) is complete or explicitly waived by Architecture Board + Security Board.
+**Try-phase (normative, this PR):** docs, the architecture map, and ADRs
+are **not** pass evidence. A pathway is **pass** only when **Delivered +
+ACK + dedup + opaque** is shown on a **named** path, on **≥2 OS** or with
+Architecture **and** Security **WAIVE**, with labels **per OS × path**.
+Do not collapse the three planes (mesh / bridge / direct). **Do not
+conflate software vs hardware.** Cross-link (may land on `main` via SRE):
+[`terminal-path-reliability.md`](terminal-path-reliability.md),
+[`reliability-evidence-bar.md`](reliability-evidence-bar.md). **Bridge** is
+**sealed-ACK-only / opaque**: forward envelopes only — **must not decrypt
+or mint endpoint ACKs**.
 
-## Document map
+## Other Sprint 0 docs (this repo)
 
-| File | Contents |
-|------|----------|
-| [`01-risk-classes.md`](01-risk-classes.md) | R0–R3 definitions + no-self-merge-R3 rule |
-| [`02-org-structure.md`](02-org-structure.md) | 5 domains, roles #1–#20, boards, text org chart |
-| [`03-role-charters.md`](03-role-charters.md) | Per-role ownership paths, skills, 90-day KPI |
-| [`04-approval-matrix.md`](04-approval-matrix.md) | Change type → owner → mandatory second approval |
-| [`05-codeowners-draft.md`](05-codeowners-draft.md) | Proposed CODEOWNERS mapping + Org blocker note |
-| [`06-github-teams.md`](06-github-teams.md) | Teams to create; Org prerequisite |
-| [`07-ninety-day-outcomes.md`](07-ninety-day-outcomes.md) | Outcomes O1–O7 |
-| [`08-sprint0-checklist.md`](08-sprint0-checklist.md) | Deliverables checklist with status columns |
-| [`09-audit-snapshot-2026-09-04.md`](09-audit-snapshot-2026-09-04.md) | Factual audit as of 2026-09-04 |
-| [`docs/network/raven-swarm-connectivity-matrix.md`](../../network/raven-swarm-connectivity-matrix.md) | Sprint 0 raven-swarm connectivity / relay / NAT inventory; §0 founder direct-Internet honesty |
-| [`artifacts/CODEOWNERS.raven`](artifacts/CODEOWNERS.raven) | Ready-to-paste CODEOWNERS for RAVEN |
-| [`artifacts/CODEOWNERS.rdap`](artifacts/CODEOWNERS.rdap) | Ready-to-paste CODEOWNERS for RDAP |
+| File | Owner | Notes |
+| --- | --- | --- |
+| [sprint0-checklist.md](sprint0-checklist.md) | All | Completeness; Architecture + Trust rows updated on this PR |
+| [risk-classes.md](risk-classes.md) | Founder / Security | R0–R3 |
+| [crate-ownership.md](crate-ownership.md) | Architect / Founder | Crate → role |
+| [codeowners-policy.md](codeowners-policy.md) | Founder | Policy; live file is `/.github/CODEOWNERS` if present |
+| [org-structure.md](org-structure.md) | Founder | 18 roles |
+| [handoff.md](handoff.md) | Founder | Handoff narrative |
+| [apple-tree-gap.md](apple-tree-gap.md) | Apple / Founder | iOS/watchOS tree gap (exists on `main`) |
+| [windows-tree-gap.md](windows-tree-gap.md) | Windows / Founder | Windows tree gap (exists on `main`) |
 
-## Non-goals
+**Connectivity (founder Internet honesty, `main`):**
+[`docs/network/raven-swarm-connectivity-matrix.md`](../../../network/raven-swarm-connectivity-matrix.md)
+§0 — three planes; do not collapse. Mesh radio vs `mock_ble` vs Circuit
+Relay v2 are not interchangeable (see D19/D20/D39 on this PR).
 
-- Assigning named humans to roles (use role numbers / `@Raven-ASHCO/*` teams only until staffing is confirmed).
-- Cloning or modifying live repos from this package (docs + paste-ready artifacts only).
-- Inventing current CODEOWNERS or branch protection that do not exist (see audit).
+**Identity (merged on `main` via PR #5):**
+[`docs/engineering/SPRINT0_IDENTITY_THREAT_MODEL.md`](../SPRINT0_IDENTITY_THREAT_MODEL.md),
+[`docs/engineering/G5_CROSS_STACK_REVOKE_POLICY.md`](../G5_CROSS_STACK_REVOKE_POLICY.md).
+Architect ACK: §2.4 + OPEN-ID-P0 is a **documented defect**, not a code
+approval. Soft-load fail-open stays **held**.
 
-## Next step
+## Next step after reading this folder
 
-Complete [`08-sprint0-checklist.md`](08-sprint0-checklist.md), create/use a GitHub Organization, stand up teams in [`06-github-teams.md`](06-github-teams.md), then apply CODEOWNERS + branch protection.
+1. Confirm Architecture + Trust rows on [sprint0-checklist.md](sprint0-checklist.md)
+   (Architect **DONE** draft; Trust still requests **#17 + #6**).
+2. Do **not** treat this PR as merge-ready until **#17** countersigns.
+3. Further work is **#17 / #6 / #3 / #8 / #9 / #11** per checklist — not
+   a second Architecture rewrite.
