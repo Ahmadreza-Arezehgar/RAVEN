@@ -59,7 +59,7 @@ Reviewer for all IMPLEMENTED rows: **pending human** unless noted.
 | 33 | Raven Bridge Definition | IMPLEMENTED | bridge never decrypts |
 | 34 | Transport Adapter Architecture | IMPLEMENTED | mock_ble + LAN + Internet + store |
 | 35 | Routing Policy | IMPLEMENTED | Spray-and-Wait / bridge_v1 |
-| 36 | Bluetooth Transport | PASS_SOFTWARE_SUBSTITUTE | mock_ble TCP framing only; iOS GATT **unverified** (0 `.swift` / `ios-native` absent); RBF1 held; physical GATT **BLOCKED_HARDWARE** |
+| 36 | Bluetooth Transport | PASS_SOFTWARE_SUBSTITUTE | mock_ble TCP framing only; iOS GATT **absent on main** (SoT `feature/raven-serverless-v1` until B8); RBF1 held; physical GATT **BLOCKED_HARDWARE** |
 | 37 | Bluetooth Forwarding Policy | PASS_SOFTWARE_SUBSTITUTE | Software multi-hop mock_ble; physical **BLOCKED_HARDWARE** |
 | 38 | Mobile Compatibility | IMPLEMENTED | iPhone + iPad sim loops |
 | 39 | Multi-Device User Support | IMPLEMENTED | DeviceCert + ash device |

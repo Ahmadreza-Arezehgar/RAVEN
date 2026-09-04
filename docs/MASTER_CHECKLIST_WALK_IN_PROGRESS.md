@@ -74,7 +74,7 @@
 | 33 | Raven Bridge Definition | PASS | DTN gateway sense; bridge never decrypts |
 | 34 | Transport Adapter Architecture | PASS | mock_ble + LAN + Internet + store |
 | 35 | Routing Policy | PASS | Spray-and-Wait bounds in bridge_v1 tests |
-| 36 | Bluetooth Transport | PASS_SOFTWARE_SUBSTITUTE | mock_ble TCP framing only; iOS GATT **unverified** in this repo (`RavenBleRvn1CarrierTests` / `ios-native` absent); RBF1 held; headless GATT **BLOCKED_HARDWARE** |
+| 36 | Bluetooth Transport | PASS_SOFTWARE_SUBSTITUTE | mock_ble TCP framing only; iOS GATT **absent on main** (SoT `feature/raven-serverless-v1` until B8; `RavenBleRvn1CarrierTests` not in this tree); RBF1 held; headless GATT **BLOCKED_HARDWARE** |
 | 37 | Bluetooth Forwarding Policy | PASS_SOFTWARE_SUBSTITUTE | Software multi-hop mock_ble / bridge_abc; physical BLE **BLOCKED_HARDWARE** |
 | 38 | Mobile Compatibility | PASS | iPhone + iPad sim XCTest loops (Discovery/Contact/Envelope) |
 | 39 | Multi-Device | PASS | DeviceCert + ash device sync commands |

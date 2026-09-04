@@ -4,8 +4,8 @@
 //!   carrying the same packed `RavenEnvelopeV1` (see `bridge_run`).
 //! - **Live radio:** not implemented here. Headless CoreBluetooth / BlueZ
 //!   remain BLOCKED_HARDWARE. `prefer_platform_gatt` is a software path flag
-//!   only; it does not open a radio. iOS GATT (`BLEMeshEngine` /
-//!   `ios-native`) is unverified in this repo (no Swift sources on `main`).
+//!   only; it does not open a radio. iOS GATT is absent on `main`
+//!   (SoT `feature/raven-serverless-v1` until B8; do not treat as present).
 //! - **RBF1:** GATT chunk framing (`RBF1` magic) is **not** implemented.
 //!   See `protocol/RAVEN_BLE_FRAMING_V1.md`. Held for Sprint 1.
 //!

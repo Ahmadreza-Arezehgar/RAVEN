@@ -1219,7 +1219,7 @@ Implement one router over multiple transport adapters.
 
 # 36. Bluetooth Transport
 
-**Sprint 0 inventory (this repo, `main`):** software path is **`mock_ble` only** — TCP `u32 BE len || RavenEnvelopeV1` in `raven-core::ble_adapter`. **RBF1 GATT framing is not implemented** (spec only: `protocol/RAVEN_BLE_FRAMING_V1.md`; held for Sprint 1 with shared-vectors). **No BlueZ or CoreBluetooth live radio.** Desktop radio stays mock-only; `BleStatus` is fail-closed. Physical three-device proof remains **`BLOCKED_HARDWARE`** (`docs/PHYSICAL_BLE_THREE_DEVICE.md`). iOS GATT (`BLEMeshEngine` / `ios-native`) is **unverified here** — 0 `.swift` files; `ios-native` absent on `main`. **Do not treat any row below as a hardware or RBF1 DoD.**
+**Sprint 0 inventory (this repo, `main`):** software path is **`mock_ble` only** — TCP `u32 BE len || RavenEnvelopeV1` in `raven-core::ble_adapter`. **RBF1 GATT framing is not implemented** (spec only: `protocol/RAVEN_BLE_FRAMING_V1.md`; held for Sprint 1 with shared-vectors). **No BlueZ or CoreBluetooth live radio.** Desktop radio stays mock-only; `BleStatus` is fail-closed. Physical three-device proof remains **`BLOCKED_HARDWARE`** (`docs/PHYSICAL_BLE_THREE_DEVICE.md`). iOS GATT is **absent on `main`** (0 `.swift`; `ios-native` not in this tree). Implementation SoT is `feature/raven-serverless-v1` until B8 export (`BLEMeshEngine`, `RavenBleRvn1Carrier`; `FeatureFlag.ravenEnvelopeV1` default OFF, Phase G / experimental). **Do not treat as present on `main`. Do not treat any row below as a hardware or RBF1 DoD.**
 
 Legend: `software` = mock_ble / policy in this repo (not a live-radio pass). `missing` = RBF1, BlueZ, CoreBluetooth radio, or physical test. Boxes are **not** hardware/RBF1 completion.
 
@@ -1251,7 +1251,7 @@ Legend: `software` = mock_ble / policy in this repo (not a live-radio pass). `mi
 * [x] Handle Bluetooth hardware being absent. — software (`mock_ble` + fail-closed `BleStatus`; not a radio driver)
 * [ ] Handle permission denial. — missing (no live radio / TCC / BlueZ)
 * [ ] Handle intermittent Bluetooth. — missing (no live radio)
-* [ ] Handle recurring iOS disconnects. — missing (iOS GATT unverified; `ios-native` absent)
+* [ ] Handle recurring iOS disconnects. — missing (iOS GATT absent on `main`; SoT `feature/raven-serverless-v1` until B8)
 * [ ] Handle Windows Bluetooth differences. — missing (no Windows GATT radio)
 * [ ] Handle macOS Bluetooth differences. — missing (CoreBluetooth compile seam only; radio **BLOCKED_HARDWARE**)
 * [ ] Handle Linux BlueZ differences. — missing (no BlueZ live radio)

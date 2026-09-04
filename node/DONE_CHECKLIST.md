@@ -36,7 +36,7 @@ Companion to `docs/MASTER_CHECKLIST_STATUS.md`. This is **not** Final DoD §60.
 | Item | Status | Evidence |
 |------|--------|----------|
 | mock_ble CI | ✅ software | `bridge_abc` + §59 — TCP `u32 BE len \|\| envelope` only; **not** RBF1 GATT |
-| iOS GATT flagged | ❌ unverified in this repo | 0 `.swift` files; `ios-native` absent on `main`; do not treat `BLEMeshEngine` / carrier as proven here |
+| iOS GATT flagged | ❌ absent on `main` | 0 `.swift` / `ios-native` on `main` (aspirational ✅ vs this tree). SoT until B8: `feature/raven-serverless-v1` (`BLEMeshEngine`, `RavenBleRvn1Carrier`, tests). `FeatureFlag.ravenEnvelopeV1` default OFF (Phase G / experimental). Do not check off as present on `main` |
 | raven-node CoreBluetooth | 🟡 compile seam | `--features corebluetooth`; radio **BLOCKED_HARDWARE**; desktop stays mock-only; `BleStatus` fail-closed |
 | RBF1 GATT framing | ❌ held Sprint 1 | spec `protocol/RAVEN_BLE_FRAMING_V1.md`; no implementation / shared-vectors in this repo |
 | BlueZ / live desktop radio | ❌ missing | no BlueZ or CoreBluetooth live radio wiring |
