@@ -58,7 +58,7 @@ RDAP is a **fourth companion plane** (delegated agent tasks). It is **not** yet 
 | # | Pathway | What it is | What it is not | Cite |
 |---|---------|------------|----------------|------|
 | 1 | **Mesh relay** | BLE / nearby opaque forward of packed `RavenEnvelopeV1` (mock-BLE on headless node; GATT on flagged mobile when that tree lands) | A social graph; a plaintext radio; a place that learns contacts; **not** libp2p **Circuit Relay v2** | ADR 0003 Bridge; `RAVEN_BLE_FRAMING_V1.md`; `MESH_PROTOCOL.md` (legacy JSON, deferred with iOS) |
-| 2 | **Bridge** | Untrusted **cross-transport** store-and-forward of the **same** envelope (DTN gateway). No conversation keys on the bridge. | Friend introducer; contact-graph broker; decrypt/re-seal; **not** Circuit Relay v2 | ADR 0002 (relays never decrypt); ADR 0003; SERVERLESS plane 3; `RAVEN_BRIDGE_V1.md` |
+| 2 | **Bridge** | Untrusted **cross-transport** store-and-forward of the **same** envelope (DTN gateway). **Sealed-ACK-only / opaque:** forwards envelopes; does **not** decrypt or mint endpoint ACKs. No conversation keys. | Friend introducer; contact-graph broker; decrypt/re-seal; ACK minter; **not** Circuit Relay v2 | ADR 0002 (relays never decrypt); ADR 0003; SERVERLESS plane 3; `RAVEN_BRIDGE_V1.md` |
 | 3 | **Direct internet** | `InternetTransport` (V1 shipping: length-prefixed envelope, Ed25519 hello) and/or `raven-swarm` dial (target libp2p) | A Raven-operated inbox; transport auth as E2EE | ADR 0002; `RAVEN_TRANSPORT_INTERFACE_V1.md`; [`docs/network/raven-swarm-connectivity-matrix.md`](https://github.com/Raven-ASHCO/RAVEN/blob/main/docs/network/raven-swarm-connectivity-matrix.md) §0 (on `main`) |
 
 **Mesh relay ≠ Circuit Relay v2.** Pathway 1 is BLE/nearby (or `mock_ble`) opaque envelope forward. libp2p Circuit Relay v2 is an experimental NAT hop in `raven-swarm-connectivity-experimental` only (`experimental-nat-connectivity`; production-disabled). Do not conflate them. `raven_core::transport` `PathChoice::Relay` is a **policy bit**, not Circuit Relay v2 (connectivity matrix §0).
@@ -67,17 +67,27 @@ Do not collapse: Trust/friendship stays local pin + OOB (plane 1). A mesh hop, a
 
 #### Try-phase evidence bar (2026-09-04)
 
-**Architecture lock** on layer boundaries (this map, allowed/forbidden edges, ADRs 0001–0003) is **accepted**. That lock is **not proof** that a pathway works.
+**Architecture lock** on layer boundaries (this map, allowed/forbidden edges, ADRs 0001–0003) is **accepted**. Manager accepted this try-phase bar as **normative**. That lock is **not proof** that a pathway works.
 
-A pathway is **not “proven”** until **executed evidence** exists for **terminal** Win / macOS / Linux, **separately** for each pathway:
+**SRE honesty bar (cross-link):** [`terminal-path-reliability.md`](terminal-path-reliability.md) and [`reliability-evidence-bar.md`](reliability-evidence-bar.md) — path `docs/engineering/baseline-freeze/` on [PR #29](https://github.com/Raven-ASHCO/RAVEN/pull/29) (not on `main` at this writing). Architecture pass criteria **align** with that honest bar; SRE owns evidence tiers / named CI jobs (Role #19 SRE Perf).
+
+A pathway is **not “proven”** until **executed evidence** exists for **terminal** Win / macOS / Linux, **separately** for each pathway (labels apply **per OS × path**):
 
 | Pathway | Executed-evidence bar |
 |---------|------------------------|
-| Mesh relay | Opaque `RavenEnvelopeV1` forward end-to-end. Lab/harness OK if labeled **non-release** under the RVN1 production **HOLD** (`docs/THREAT_MODEL.md`, `protocol/SECURITY_ERRATA_RVN1_2026-08-13.md`). **BLE Transport / Manager lock:** on `main`, terminal-desktop mesh “proven” = **`mock_ble` only** until **B8** (iOS GATT trees on `main`) **and** **RBF1** (Sprint 1 with Protocol Spec + Adversarial QA). `mock_ble` green **≠** live mesh-relay DoD / physical 3-device (`docs/PHYSICAL_BLE_THREE_DEVICE.md`). Live radio: **BLOCKED_HARDWARE**; desktop `BleStatus` fail-closed; iOS GATT SoT until B8 is `feature/raven-serverless-v1` (**not** `main`). Dual framing / UUID / daemon-radio gaps: [D19](undocumented-cross-layer-deps.md), [D20](undocumented-cross-layer-deps.md), [D39](undocumented-cross-layer-deps.md). |
-| Bridge | Opaque store-and-forward **across transports**; assert the bridge **holds no conversation keys** (ADR 0002/0003, `RAVEN_BRIDGE_V1.md`). |
-| Direct internet | `InternetTransport` and/or `raven-swarm` dial **delivers** a sealed envelope (ADR 0002). |
+| Mesh relay | **Delivered + ACK + dedup + opaque** on this **named** path. Lab/harness OK if labeled **non-release** under the RVN1 production **HOLD** (`docs/THREAT_MODEL.md`, `protocol/SECURITY_ERRATA_RVN1_2026-08-13.md`). **BLE Transport / Manager lock:** on `main`, terminal-desktop mesh “proven” = **`mock_ble` only** until **B8** (iOS GATT trees on `main`) **and** **RBF1** (Sprint 1 with Protocol Spec + Adversarial QA). `mock_ble` green **≠** live mesh-relay DoD / physical 3-device (`docs/PHYSICAL_BLE_THREE_DEVICE.md`). Live radio: **BLOCKED_HARDWARE**; desktop `BleStatus` fail-closed; iOS GATT SoT until B8 is `feature/raven-serverless-v1` (**not** `main`). Dual framing / UUID / daemon-radio gaps: [D19](undocumented-cross-layer-deps.md), [D20](undocumented-cross-layer-deps.md), [D39](undocumented-cross-layer-deps.md). **Mesh relay ≠ Circuit Relay v2** (see above + connectivity matrix §0). |
+| Bridge | **Delivered + ACK + dedup + opaque** across transports. **Sealed-ACK-only / opaque:** the bridge **forwards** packed envelopes and **must not decrypt** or **mint endpoint ACKs** (DTN Forward / ADR 0003; `RAVEN_BRIDGE_V1.md`). SRE wording: *opaque means the carrier/bridge does not decrypt or mint endpoint ACKs.* Recipient (or its endpoint actor) is the only ACK minter. No conversation keys on the bridge. |
+| Direct internet | **Delivered + ACK + dedup + opaque:** `InternetTransport` and/or `raven-swarm` dial delivers a **sealed** envelope (ADR 0002). WAN/direct-Internet honesty: [`raven-swarm-connectivity-matrix.md`](https://github.com/Raven-ASHCO/RAVEN/blob/main/docs/network/raven-swarm-connectivity-matrix.md) §0 on `main` (not proven / fail-closed today). Circuit Relay v2 is **not** this pathway. |
 
-Docs, this map, and ADRs **≠ proof**. Pass-criteria ownership: **Architecture (#1)** (what counts). Execution: **SRE / QA / platform** (#18 Interop & QA, #20 CI/DevEx, #13 Windows, desktop macOS/Linux under #7/#1 until a named SRE role exists). The HOLD still **bars Release confidential / E2EE claims** even after a labeled lab pass.
+**Pass criteria (normative; same as SRE honest bar):**
+
+1. **Delivered + ACK + dedup + opaque** on that **named** path, via a **named** CI job or test on that OS.
+2. The same proof on **≥2 of {Linux, macOS, Windows}** for terminal/node — **or** Architecture Board **and** Security Board **WAIVE** with written notes from both (Eng Management alone cannot waive).
+3. **Soft soak** fail-rate / latency bounds **only after** a real harvested snapshot (or cited Actions run ID). Do not invent metrics.
+4. **Never conflate** software/CI proof with physical/hardware proof (`bridge_v1` / `mock_ble` / localhost swarm ≠ radio, CGNAT, DCUtR, or WAN).
+5. Labels are **per OS × path**. One green Linux job does not make Windows Proven.
+
+Docs, this map, and ADRs **≠ proof**. Pass-criteria ownership: **Architecture (#1)** (what counts) jointly with **SRE honesty bar** (Role #19). Execution: **SRE / QA / platform** (#18 Interop & QA, #20 CI/DevEx, #13 Windows). The HOLD still **bars Release confidential / E2EE claims** even after a labeled lab pass.
 
 ---
 
