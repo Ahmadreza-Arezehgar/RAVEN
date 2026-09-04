@@ -20,7 +20,11 @@
 
 **Path A (mesh / NAT / relay) is locked.** Localhost reservation **only**. Two-client circuit / WAN / auto-fallback / DCUtR **NOT proven**. Hop server **missing**. Multi-NAT **BLOCKED_HARDWARE**. NAT hold **intact**.
 
-**Do not call mesh relay reliable.** Continue **B** (bridge) + **C** (direct) + **terminal**. See [`three-path-verification-board.md`](three-path-verification-board.md).
+**Do not call mesh relay reliable.** Path B is separately locked below. Continue **C** (direct) + **terminal**. See [`three-path-verification-board.md`](three-path-verification-board.md).
+
+## Manager Path B lock (2026-09-04)
+
+**Path B (DTN / bridge) claim language is locked.** Opaque custody + `ENDPOINT_ACK_ONLY` **proven (software)** — prefer executed green/red citations (linked CI or agent smoke). Hop/repl **cooperative-only**. Prod mailbox **held**. iOS **blocked on B8**. **Not flood-proof / not Byzantine-safe.** Continue **C + terminal**.
 
 ## Founder rules (try phase = execute)
 
@@ -39,7 +43,8 @@
 | Specialist path coverage | **PARTIAL** — B3 **CLEARED** (RAVEN#7); B4 FlatBuffer FFI still `*` |
 | Team bus factor | **Accepted (bot-only)** — founder sole GitHub member; escalate only if human reviewers added |
 | Founder Priority #1 | Terminal L/M/W + three-path matrices **above** O6 M1+ |
-| Path A (mesh/NAT/relay) | **LOCKED** — localhost reservation only; circuit/WAN/auto-fallback/DCUtR **NOT proven**; hop server missing; multi-NAT **BLOCKED_HARDWARE**; NAT hold intact. **Not reliable.** Continue B+C+terminal. |
+| Path A (mesh/NAT/relay) | **LOCKED** — localhost reservation only; circuit/WAN/auto-fallback/DCUtR **NOT proven**; hop server missing; multi-NAT **BLOCKED_HARDWARE**; NAT hold intact. **Not reliable.** |
+| Path B (DTN/bridge) | **LOCKED** — opaque custody + `ENDPOINT_ACK_ONLY` **proven (software)**; hop/repl cooperative-only; prod mailbox held; iOS blocked on B8. **Not flood-proof / not Byzantine-safe.** Prefer executed green/red citations. Continue **C+terminal**. |
 | Critical path / O6 gate | **M0 ack gate ✅** — Architect M0 gate **CLOSED** (full ACK: body + G5 + HOLD/R3/IPC + Crypto D4; three-way Architect + Crypto + Identity) on [RAVEN#3](https://github.com/Raven-ASHCO/RAVEN/pull/3). **No Architect BLOCK. Do not await Architect re-ACK.** Docs merge = **Manager**. **No M1 code.** |
 | Performance baseline | **#19 SRE Perf** — IN PROGRESS (harvest; docs-only ≠ Proven) |
 | Menu-smoke | Sole CI via RAVEN#16 (Apple APPROVE + Core ACK); converge DONE with SRE; **Proven flip only after executed green** (linked CI or agent smoke) |
@@ -56,7 +61,8 @@ Org-create / personal-account CODEOWNERS blockers from morning audit are **clear
 4. **Terminal first:** do not schedule M1 eng until terminal board green (CEO override only). Flag premature Raven↔RDAP / M1–M3 production PRs.
 5. **Menu-smoke merge order:** #20 **done** → land #16 when green → #19 rebases **preserving** menu-smoke.
 6. Keep this board under `docs/engineering/baseline-freeze/` (this PR). **M0 docs merge = Manager.** Architect M0 gate is **CLOSED** — do **not** await Architect re-ACK.
-7. **Path A locked** — do not claim mesh relay reliable. Continue **B+C+terminal**.
+7. **Path A locked** — do not claim mesh relay reliable.
+8. **Path B locked** — opaque custody + `ENDPOINT_ACK_ONLY` proven (software); hop/repl cooperative-only; prod mailbox held; iOS blocked on B8. **Not flood-proof / not Byzantine-safe.** Prefer executed green/red citations. Continue **C+terminal**.
 
 ---
 

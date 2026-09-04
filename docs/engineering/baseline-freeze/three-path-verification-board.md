@@ -31,7 +31,23 @@ Companion: [`blockers-ownership-board.md`](blockers-ownership-board.md) · evide
 | Multi-NAT | **BLOCKED_HARDWARE** |
 | NAT hold | **intact** |
 
-**Do not call mesh relay reliable.** Continue **B** (bridge) + **C** (direct) + **terminal**.
+**Do not call mesh relay reliable.** Path B is separately locked below. Continue **C** (direct) + **terminal**.
+
+## Manager Path B lock (2026-09-04)
+
+**Path B (DTN / bridge) claim language is locked.** Honest cells only:
+
+| Cell | Lock |
+|------|------|
+| Opaque custody | **Proven (software)** — prefer executed green/red citations (linked CI or agent smoke). Docs-only ≠ Proven. |
+| `ENDPOINT_ACK_ONLY` | **Proven (software)** — sealed-ACK-only; Forwarded≠Delivered. Prefer executed green/red citations. |
+| Hop / replication | **cooperative-only** |
+| Production mailbox | **held** |
+| iOS | **blocked on B8** (Phase 1+ PARKED) |
+| Flood-proof | **not claimed** |
+| Byzantine-safe | **not claimed** |
+
+**Claim language locked — not flood-proof / not Byzantine-safe.** Continue **C** (direct) + **terminal**.
 
 ## FOUNDER RULE (try phase = execute)
 
@@ -56,7 +72,7 @@ Terminal Win / macOS / Linux reliability **and** this three-path matrix sit **ab
 | Path | Honest status | What exists (not Proven) | What would Proven require |
 |------|---------------|--------------------------|---------------------------|
 | **mesh** (Path A) | **Not Proven** — **locked** | **Path A lock:** localhost reservation only. Two-client circuit / WAN / auto-fallback / DCUtR **NOT proven**. Hop server **missing**. Multi-NAT **BLOCKED_HARDWARE**. NAT hold **intact**. Policy/sim (`network_sim_1000`) + `mock_ble` hygiene ≠ live mesh. **Do not call mesh relay reliable.** | Executed green/red only (linked CI or agent smoke) on a **named** mesh path after the lock lifts. CI ≠ hardware. |
-| **bridge** | **Not Proven** | Strongest **software** evidence on `main` (`bridge_v1`, `bridge_abc` / serverless proof scripts). Still **docs/software ≠ Proven** until a linked green CI run or agent-executed smoke is attached to this cell. | Linked green CI URL or agent-executed smoke for the named bridge path. Cross-OS (≥2 of Linux, macOS, Windows) remains a terminal-board concern (see B10 / menu-smoke). |
+| **bridge** (Path B) | **Locked** — opaque custody + `ENDPOINT_ACK_ONLY` **proven (software)** | **Path B lock:** hop/repl **cooperative-only**; prod mailbox **held**; iOS **blocked on B8**. Claim language locked — **not flood-proof / not Byzantine-safe**. Prefer executed green/red citations (`bridge_v1` / named smokes — do not invent run IDs here). | Broader Proven (flood / Byzantine / prod mailbox / iOS) is **out of claim**. Continue **C + terminal**. |
 | **direct** | **Not Proven** | Founder honesty: terminal-to-terminal **direct Internet is not proven**; shipping message path is fail-closed. Localhost/LAN + fail-closed `internet_dial_smoke` **≠** WAN reliability. See connectivity matrix §0. | Linked green CI or agent-executed smoke that dials a **non-loopback / non-RFC1918** peer on the named direct path. `127.0.0.1` (incl. B12 `127.0.0.1:7420`) is **not** Proven direct. |
 
 ---
@@ -79,4 +95,5 @@ Terminal Win / macOS / Linux reliability **and** this three-path matrix sit **ab
 - This file does **not** greenlight M1–M3 production code.
 - Soft soak / fail-rate bounds wait for the SRE Perf (#19) snapshot ([`perf-baseline-2026-09-04.md`](perf-baseline-2026-09-04.md) — harvest in flight; docs-only ≠ Proven).
 - B11 `install.sh` ([RAVEN#17](https://github.com/Raven-ASHCO/RAVEN/pull/17)) is a hazard track, **not** install Proven.
-- Path A lock: do **not** call mesh relay reliable. Localhost reservation only; circuit/WAN/auto-fallback/DCUtR **NOT proven**; hop server missing; multi-NAT **BLOCKED_HARDWARE**; NAT hold intact. Continue **B+C+terminal**.
+- Path A lock: do **not** call mesh relay reliable. Localhost reservation only; circuit/WAN/auto-fallback/DCUtR **NOT proven**; hop server missing; multi-NAT **BLOCKED_HARDWARE**; NAT hold intact.
+- Path B lock: opaque custody + `ENDPOINT_ACK_ONLY` **proven (software)** only. Hop/repl cooperative-only; prod mailbox held; iOS blocked on B8. **Not flood-proof / not Byzantine-safe.** Prefer executed green/red citations. Continue **C+terminal**.
