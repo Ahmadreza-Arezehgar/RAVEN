@@ -164,7 +164,7 @@ See companion `docs/adr/0004-CODEOWNERS-touch-list.md`.
 
 ## Appendix G5 — Joint Raven↔RDAP revoke policy
 
-See `docs/adr/0004-appendix-g5-raven-rdap-revoke.md` (A↛R always; R→ data-plane mandatory; R→A address deny conditional only (correct M1 ⇒ no auto address-deny); pin ≢ `device_ed_pub`).
+See `docs/adr/0004-appendix-g5-raven-rdap-revoke.md` (A↛R always; R↛ auto address-deny / playbook A; R→ fail-closed on bound data-plane; address deny = B/C + file + exhausted marker).
 
 ## References
 
