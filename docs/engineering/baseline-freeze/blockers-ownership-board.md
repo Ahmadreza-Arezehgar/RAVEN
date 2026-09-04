@@ -42,6 +42,10 @@
 | SCM + LAN parity | **P1 after pipe** |
 | WAN Path C | **Not unblocked** by this work |
 
+## Manager macOS slice (2026-09-04)
+
+**CI unit/smoke proven.** Menu smokes are **not GHA-gated yet** — **decision:** wire `ash_menu_smoke` / `ash doctor` into CI (**not** operator-only). Track [RAVEN#16](https://github.com/Raven-ASHCO/RAVEN/pull/16) + [RAVEN#22](https://github.com/Raven-ASHCO/RAVEN/pull/22). Notarize remains **BLOCKED_HUMAN** residual.
+
 ## Founder rules (try phase = execute)
 
 **Try-phase = execute:** consolidate **executed green/red only** (linked CI or agent smoke). **Docs-only ≠ Proven.** Applies to **terminal reliability** and the **three paths** (`mesh` | `bridge` | `direct`). See [`three-path-verification-board.md`](three-path-verification-board.md).
@@ -66,6 +70,7 @@
 | Critical path / O6 gate | **M0 docs ack ✅ CLOSED / MERGED** — [RAVEN#3](https://github.com/Raven-ASHCO/RAVEN/pull/3) ADR 0004 on `main` `ce087c7d9cfb`. Three-way ACK **final** (Architect + Crypto + Identity; body + G5 + HOLD/R3/IPC + Crypto D4). **Not** awaiting Manager docs merge. M1–M3 **production** code still **closed** (terminal + HOLD). |
 | Performance baseline | **#19 SRE Perf** — IN PROGRESS (harvest; docs-only ≠ Proven) |
 | Menu-smoke | Sole CI via RAVEN#16 (Apple APPROVE + Core ACK); converge DONE with SRE; **Proven flip only after executed green** (linked CI or agent smoke) |
+| macOS slice | **CI unit/smoke proven.** Menu smokes **not GHA-gated yet** — wire `ash_menu_smoke`/`doctor` into CI (not operator-only). Track #16/#22. Notarize **BLOCKED_HUMAN**. |
 
 Org-create / personal-account CODEOWNERS blockers from morning audit are **cleared**. **B3 cleared** via merged RAVEN#7.
 
@@ -83,6 +88,7 @@ Org-create / personal-account CODEOWNERS blockers from morning audit are **clear
 8. **Path B locked** — opaque custody + `ENDPOINT_ACK_ONLY` proven (software); hop/repl cooperative-only; prod mailbox held; iOS blocked on B8. **Not flood-proof / not Byzantine-safe.** Prefer executed green/red citations.
 9. **Path C locked** — LAN/localhost proven; WAN blocked/untested; internet dial fail-closed proven — **NOT** a WAN reliability claim. `ash_menu_smoke` → CLI DX #16. Windows honest fail-closed until named-pipe. **A+B+C board fills now present.** Continue **terminal**.
 10. **Node IPC:** Windows named-pipe = **#1** B10 remaining (UDS-only `ipc_server`; `ash --send-stdin`). Linux/macOS UDS mostly green. SCM+LAN parity = P1 after pipe. **Does not unblock WAN Path C.**
+11. **macOS slice:** CI unit/smoke proven. Menu smokes not GHA-gated yet — wire `ash_menu_smoke`/`doctor` into CI (not operator-only). Track #16/#22. Notarize **BLOCKED_HUMAN**.
 
 ---
 
@@ -91,7 +97,7 @@ Org-create / personal-account CODEOWNERS blockers from morning audit are **clear
 | Track | Status | PR / next | Notes |
 |-------|--------|-----------|-------|
 | Windows MSVC `ash` `Command` ungate (compile P0-1) | **DONE / MERGED** via [RAVEN#20](https://github.com/Raven-ASHCO/RAVEN/pull/20) + [RAVEN#21](https://github.com/Raven-ASHCO/RAVEN/pull/21) | #20 + #21 on `main` | **Do not greenlight duplicate compile fixes.** Compile ungate only — docs/helpers **not** e2e-proven. |
-| `ash_menu_smoke` | In flight → CLI DX [RAVEN#16](https://github.com/Raven-ASHCO/RAVEN/pull/16) | #16 | Apple APPROVE + Core ACK; SRE converge DONE. Windows **honest fail-closed** until named-pipe. **Proven flip only after executed green** (linked CI or agent smoke). |
+| `ash_menu_smoke` / doctor CI | In flight → CLI DX [RAVEN#16](https://github.com/Raven-ASHCO/RAVEN/pull/16) + [RAVEN#22](https://github.com/Raven-ASHCO/RAVEN/pull/22) | #16 / #22 | **Decision:** wire into CI (**not** operator-only). Menu smokes **not GHA-gated yet**. macOS CI unit/smoke **proven**. Notarize **BLOCKED_HUMAN**. Windows honest fail-closed until named-pipe. |
 | `install.sh` fail-close (B11) | In flight (draft) | [RAVEN#17](https://github.com/Raven-ASHCO/RAVEN/pull/17) | Hazard retire / fail-close. **Not** install Proven. |
 | Core doctor axes (presence / ready / send_path) | In flight | [RAVEN#22](https://github.com/Raven-ASHCO/RAVEN/pull/22) | `ash doctor` exit 0 ≠ send Proven. |
 | Doctor identity-backend mismatch | In flight | [RAVEN#23](https://github.com/Raven-ASHCO/RAVEN/pull/23) | Identity usable / `daemon_ready` honesty. |
@@ -246,3 +252,4 @@ Fake-integration watch: any PR that wires RDAP tasks to production raven-node AT
 11. **Path A locked:** localhost reservation only; do **not** call mesh relay reliable.
 12. **Path B locked:** opaque custody + `ENDPOINT_ACK_ONLY` proven (software); not flood-proof / not Byzantine-safe. Prefer executed green/red citations.
 13. **Path C locked:** LAN/localhost proven; WAN blocked/untested; internet dial fail-closed proven — **NOT** a WAN reliability claim. `ash_menu_smoke` → CLI DX #16. Windows honest fail-closed until named-pipe. **A+B+C board fills now present.** Continue **terminal**.
+14. **macOS slice:** CI unit/smoke proven. Menu smokes not GHA-gated yet — wire `ash_menu_smoke`/`doctor` into CI (not operator-only). Track #16/#22. Notarize **BLOCKED_HUMAN**.
