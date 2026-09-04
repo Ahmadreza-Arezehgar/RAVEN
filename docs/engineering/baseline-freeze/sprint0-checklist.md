@@ -4,7 +4,7 @@ Status legend: `NOT STARTED` · `IN PROGRESS` · `BLOCKED` · `DONE` · `WAIVED`
 
 | Deliverable | Owner (role) | Status | Evidence / notes |
 |-------------|--------------|--------|------------------|
-| Architecture map | #1 | DONE | Architect deliverable: [`architecture-dependency-map.md`](architecture-dependency-map.md) (PR cites Cargo.toml, ADRs 0001–0003, MESH/SERVERLESS, THREAT_MODEL, RDAP `main`) |
+| Architecture map | #1 | DONE | Architect deliverable: [`architecture-dependency-map.md`](architecture-dependency-map.md) (PR cites Cargo.toml, ADRs 0001–0003, MESH/SERVERLESS, THREAT_MODEL, RDAP `main`). **Lock accepted;** founder try-phase **executed evidence** required before any pathway is “proven” (§2.1). |
 | Trust boundaries | #1, #17, #6 | DONE | Architect draft: [`trust-boundaries.md`](trust-boundaries.md). **OPEN-ID-P0:** Identity docs [PR#5](https://github.com/Raven-ASHCO/RAVEN/pull/5) (`SPRINT0_IDENTITY_THREAT_MODEL.md` §3.2 P0 + G5); Architect ack on §2.4 + P0 note; **code held.** **#17 + #6 countersign still requested** (not a self-approval of the assurance artifact). |
 | Component ownership | Domain leads #2–#20 | NOT STARTED | Role charters drafted in `03-role-charters.md` |
 | CODEOWNERS | #20, #1 | BLOCKED | Draft in `artifacts/`; **blocked on GitHub Org** (see audit) |

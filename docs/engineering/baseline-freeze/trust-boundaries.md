@@ -58,7 +58,7 @@ For each boundary:
 
 ## TB2 — Network boundary (swarm / BLE / bridge)
 
-**Cut:** Bytes arriving from LAN TCP, InternetTransport (`RIH1` + length-prefixed frames), libp2p (`raven-swarm`), BLE GATT / mock-BLE, or a Bridge hop. Relays and stores are **untrusted** (`SERVERLESS_FRIEND_MESH_BRIDGE_DESIGN.md` plane 2–3). Founder priority (2026-09-04): terminal Win/macOS/Linux first; keep the three delivery pathways (mesh relay / bridge / direct internet) uncollapsed — [`architecture-dependency-map.md` §2.1](architecture-dependency-map.md). iOS/Watch trees **UNKNOWN** / deferred.
+**Cut:** Bytes arriving from LAN TCP, InternetTransport (`RIH1` + length-prefixed frames), libp2p (`raven-swarm`), BLE GATT / mock-BLE, or a Bridge hop. Relays and stores are **untrusted** (`SERVERLESS_FRIEND_MESH_BRIDGE_DESIGN.md` plane 2–3). Founder priority (2026-09-04): terminal Win/macOS/Linux first; keep the three delivery pathways (mesh relay / bridge / direct internet) uncollapsed — [`architecture-dependency-map.md` §2.1](architecture-dependency-map.md). Architecture lock ≠ proof: try-phase **executed evidence** required before a pathway is “proven.” iOS/Watch trees **UNKNOWN** / deferred.
 
 | | |
 |--|--|

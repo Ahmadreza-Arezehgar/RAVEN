@@ -63,6 +63,20 @@ RDAP is a **fourth companion plane** (delegated agent tasks). It is **not** yet 
 
 Do not collapse: Trust/friendship stays local pin + OOB (plane 1). A mesh hop, a bridge hop, and an internet dial are interchangeable **carriers** of one opaque object (SPEC invariants 5–6) — not three products and not three identity systems.
 
+#### Try-phase evidence bar (2026-09-04)
+
+**Architecture lock** on layer boundaries (this map, allowed/forbidden edges, ADRs 0001–0003) is **accepted**. That lock is **not proof** that a pathway works.
+
+A pathway is **not “proven”** until **executed evidence** exists for **terminal** Win / macOS / Linux, **separately** for each pathway:
+
+| Pathway | Executed-evidence bar |
+|---------|------------------------|
+| Mesh relay | Opaque `RavenEnvelopeV1` forward end-to-end. Lab/harness OK if labeled **non-release** under the RVN1 production **HOLD** (`docs/THREAT_MODEL.md`, `protocol/SECURITY_ERRATA_RVN1_2026-08-13.md`). |
+| Bridge | Opaque store-and-forward **across transports**; assert the bridge **holds no conversation keys** (ADR 0002/0003, `RAVEN_BRIDGE_V1.md`). |
+| Direct internet | `InternetTransport` and/or `raven-swarm` dial **delivers** a sealed envelope (ADR 0002). |
+
+Docs, this map, and ADRs **≠ proof**. Pass-criteria ownership: **Architecture (#1)** (what counts). Execution: **SRE / QA / platform** (#18 Interop & QA, #20 CI/DevEx, #13 Windows, desktop macOS/Linux under #7/#1 until a named SRE role exists). The HOLD still **bars Release confidential / E2EE claims** even after a labeled lab pass.
+
 ---
 
 ## 3. Allowed dependency diagram
