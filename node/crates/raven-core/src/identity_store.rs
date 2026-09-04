@@ -5,7 +5,10 @@
 //! - Windows: DPAPI-protected `identity.seed` file
 //! - Linux: Secret Service (glibc) — *loading only*; creation stays fail-closed
 //!   until R1 authorizes an add-only prompt-free backend
-//! - locked-file mode is an explicit lab/CI override only
+//! - locked-file mode is an explicit lab/CI override only (debug builds).
+//!   First-install and unmarked-seed load require proven platform absence
+//!   (`Ok(None)`). macOS `SecureStore` (locked/denied Keychain) is Continuity.
+//!   Linux may treat `secret-service connect:` (no session bus) as no store.
 //!
 //! Legacy plaintext `identity.seed` (exactly 32 raw bytes) is migrated on first load.
 
@@ -911,10 +914,11 @@ fn bytes_to_seed(bytes: &[u8]) -> Result<[u8; 32], IdentityStoreError> {
 /// Locked-file lab/CI (debug only) may proceed only when Keychain is
 /// **proven absent** (`Ok(None)` / `errSecItemNotFound`).
 ///
-/// Lab CI uses proven-absent only. It is **not Release-safe** to treat
-/// `SecureStore` as absence: a locked Keychain *with* an existing item
-/// often surfaces as `SecureStore`, which would fork a locked-file
-/// identity beside the Keychain root.
+/// Used for first-install *and* unmarked planted/legacy seed load. It is
+/// **not Release-safe** to treat `SecureStore` as absence: a locked
+/// Keychain *with* an existing item often surfaces as `SecureStore`
+/// (search hits, then `get_generic_password` fails), which would fork a
+/// locked-file identity beside the Keychain root.
 #[cfg(target_os = "macos")]
 fn locked_file_after_keychain_probe(
     result: Result<Option<[u8; 32]>, IdentityStoreError>,
@@ -940,7 +944,8 @@ fn refuse_locked_file_if_keychain_not_proven_absent(
 
 /// Headless Linux CI has no session bus. `secret-service connect:` is the
 /// documented lab-only exception ("no provider"), not "item exists but
-/// locked". Locked/search/get failures stay Continuity.
+/// locked". This soft path is debug + `RAVEN_IDENTITY_BACKEND=locked-file`
+/// only. Locked/search/get failures stay Continuity.
 ///
 /// Lab CI uses proven-absent only plus this connect-fail exception. It is
 /// **not Release-safe** to treat other `SecureStore` errors as absence.
@@ -952,6 +957,8 @@ fn linux_secret_service_is_session_bus_missing(err: &IdentityStoreError) -> bool
     )
 }
 
+/// Same unmarked locked-file probe as macOS, plus one lab-only exception:
+/// session-bus connect-fail. Never Release; never without locked-file env.
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 fn locked_file_after_secret_service_probe(
     result: Result<Option<[u8; 32]>, IdentityStoreError>,
@@ -1567,12 +1574,19 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn locked_file_maps_keychain_securestore_to_continuity() {
-        // Locked/denied (`SecureStore`) must not soft-succeed as absence.
-        let err = locked_file_after_keychain_probe(Err(IdentityStoreError::SecureStore(
-            "keychain get status -25308".into(),
-        )))
-        .expect_err("locked Keychain is not proven absent");
-        assert!(matches!(err, IdentityStoreError::Continuity(_)));
+        // Locked/denied (`SecureStore`) must not soft-succeed as first-install
+        // *or* as unmarked planted-seed load. Search-hit + get fail is the
+        // locked-with-item case Core flagged.
+        for msg in [
+            "keychain get status -25308",
+            "keychain read status -25293",
+            "keychain get status -25393",
+        ] {
+            let err =
+                locked_file_after_keychain_probe(Err(IdentityStoreError::SecureStore(msg.into())))
+                    .expect_err("locked Keychain is not proven absent");
+            assert!(matches!(err, IdentityStoreError::Continuity(_)), "{msg}");
+        }
         locked_file_after_keychain_probe(Ok(None)).expect("item-not-found is absence");
         let visible = locked_file_after_keychain_probe(Ok(Some([0x11; 32])))
             .expect_err("visible Keychain identity conflicts");
@@ -1588,19 +1602,20 @@ mod tests {
         );
         let locked = IdentityStoreError::SecureStore("secret-service identity item locked".into());
         let search = IdentityStoreError::SecureStore("secret-service search: denied".into());
+        let get = IdentityStoreError::SecureStore("secret-service get: denied".into());
         assert!(linux_secret_service_is_session_bus_missing(&connect));
         assert!(!linux_secret_service_is_session_bus_missing(&locked));
         assert!(!linux_secret_service_is_session_bus_missing(&search));
+        assert!(!linux_secret_service_is_session_bus_missing(&get));
         locked_file_after_secret_service_probe(Ok(None)).expect("empty collection is absence");
         locked_file_after_secret_service_probe(Err(connect))
             .expect("session-bus connect-fail is the lab-only exception");
-        let locked_err = locked_file_after_secret_service_probe(Err(locked))
-            .expect_err("locked Secret Service item is not absence");
-        assert!(matches!(locked_err, IdentityStoreError::Continuity(_)));
-        let search_err = locked_file_after_secret_service_probe(Err(search))
-            .expect_err("search failure is not absence");
-        assert!(matches!(search_err, IdentityStoreError::Continuity(_)));
-        let visible = locked_file_after_secret_service_probe(Ok(Some([0x11; 32])))
+        for err in [locked, search, get] {
+            let mapped = locked_file_after_secret_service_probe(Err(err))
+                .expect_err("locked/search/get is not absence");
+            assert!(matches!(mapped, IdentityStoreError::Continuity(_)));
+        }
+        let visible = locked_file_after_secret_service_probe(Ok(Some([0x22; 32])))
             .expect_err("visible Secret Service identity conflicts");
         assert!(matches!(visible, IdentityStoreError::Continuity(_)));
     }
