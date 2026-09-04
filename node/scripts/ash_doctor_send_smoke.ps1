@@ -7,7 +7,11 @@
 #   daemon_presence / daemon_ready / send_path (default not_ready / unchecked)
 #   doctor exit 0 = report completed, ≠ send Proven
 #   IPC-up / presence alone is NOT enough — this script requires identity + serverless_rvn1
-#   Windows: no UDS probe; until a named-pipe client, presence is blocked (\\.\pipe\raven-node)
+#   Windows: no UDS probe; until a named-pipe client, presence is blocked
+#   (reason=ipc_transport_missing). Do NOT require daemon_presence: present.
+#   After PR #22 lands on this tree: also require printed lines
+#   daemon_presence: / daemon_ready: / send_path: not_ready|unchecked.
+#   Do not require those strings until #22 is merged (not printed today).
 #
 # Operator (from node/, Windows / pwsh host):
 #   pwsh -File scripts/ash_doctor_send_smoke.ps1
@@ -151,7 +155,12 @@ try {
         Write-Host $doc.Text
         Fail "ash doctor must show identity present (IPC-up / daemon_state alone is not Proven)"
     }
-    Write-Host "doctor: identity + serverless_rvn1 OK (IPC-up not used as pass)"
+    Write-Host "doctor: identity + serverless_rvn1 OK (IPC-up / daemon_presence:present not used as pass)"
+    # Follow-up after PR #22 is on this tree (not printed by ash doctor today):
+    #   Require-Match daemon_presence:  (Windows: blocked (reason=ipc_transport_missing))
+    #   Require-Match daemon_ready:
+    #   Require-Match send_path:\s*(not_ready|unchecked)
+    # Do not require daemon_presence: present (false-green on Windows).
 
     # Interactive line-menu send teach path (Windows uses line_menu_loop).
     # clap `ash send` / `ash contact add` are not dispatched in ash run() today;

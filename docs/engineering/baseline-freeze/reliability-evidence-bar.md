@@ -335,7 +335,9 @@ cd node
 pwsh -File scripts/ash_doctor_send_smoke.ps1
 ```
 
-The script `cargo build`s `-p ash -p raven-node` if needed, then `init` → `whoami` → `doctor` (requires identity + `serverless_rvn1`; IPC-up alone is not enough) → menu send teach / fail-closed. Exit 0 only when every required string is present.
+The script `cargo build`s `-p ash -p raven-node` if needed, then `init` → `whoami` → `doctor` (requires identity + `serverless_rvn1`; IPC-up / `daemon_presence: present` alone is not enough) → menu send teach / fail-closed. Exit 0 only when every required string is present.
+
+**Windows Platform co-review (PR #26):** workflow glue LGTM. Today the smoke correctly does **not** require `daemon_presence: present` (that would greenwash Windows `blocked (reason=ipc_transport_missing)`). **Follow-up once [PR #22](https://github.com/Raven-ASHCO/RAVEN/pull/22) is on this tree** — do not require those strings yet (they are not printed by `ash doctor` here): also assert lines `daemon_presence:`, `daemon_ready:`, and `send_path: not_ready|unchecked`. Until a Sprint 1 named-pipe client, expect `daemon_presence: blocked (reason=ipc_transport_missing)`. Requiring `present` remains a false-green.
 
 If `target\debug\ash.exe` is still missing after cargo: **exit 1** with `MSVC ash binary missing — blocked on Windows Platform PR1`. Same fail-closed if the `.ps1` itself is missing.
 
