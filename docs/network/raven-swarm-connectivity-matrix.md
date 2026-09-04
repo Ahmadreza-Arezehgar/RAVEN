@@ -5,6 +5,7 @@
 **Published org mapping:** [docs/engineering/baseline-freeze/org-structure.md](../engineering/baseline-freeze/org-structure.md) names **#9 Network Lead** for D3 networking; [`.github/CODEOWNERS`](../../.github/CODEOWNERS) maps `/node/crates/raven-swarm/` to `@Raven-ASHCO/network`. This doc does not resolve that numbering; it inventories the crate.  
 **Date of inventory:** 2026-09-04 (repo `main` at investigation time).  
 **Founder addendum:** 2026-09-04 — [§0 terminal-to-terminal direct Internet](#0-founder-terminal-to-terminal-direct-internet) (read-only; no network-code change).  
+**Execute addendum:** 2026-09-04 — [Execution evidence](#execution-evidence-2026-09-04) (live commands on `main` @ `1f66c40`; no WAN peer; no production-behavior change).  
 **Constraint:** read-only investigation. No product requirements invented. Confidence is labeled **documented** (spec/ADR/TODO/test/comment) vs **inferred** (architecture intent from composition or rust-libp2p defaults).
 
 **Status legend**
@@ -33,6 +34,59 @@
 | `plan_paths` Direct vs Internet vs Relay (`raven-core`) | **yes** as **policy order only** — not a live WAN dial | `node/crates/raven-core/src/transport.rs`: Direct if `peer_reachable_direct`; Internet if `local_has_internet && peer_reachable_internet`; Relay if `relay_enabled && local_has_internet`. Test: `relay_and_store_are_ordered_fallbacks_not_delivery_claims`. Defaults: `MessageRouter.relay_enabled = false`, `NodePolicy.relay = false`. | **Direct** ≠ public Internet (local/LAN reachability flag). **Internet** is a carrier label, not a proving dial. **Relay** is a policy bit, **not** Circuit Relay v2, and is off by default. No `raven-swarm` caller walks this list onto a WAN or `/p2p-circuit` dial (§3.3). |
 
 `docs/adr/0002-internet-transport.md` still names InternetTransport the “V1 shipping path”; `node/adr/0002-internet-transport.md` names the same module a “V1 laboratory path” and requires the negative smoke. This section follows the **node ADR + CI gate**: codec exists, message origination must refuse.
+
+### Execution evidence (2026-09-04)
+
+**Role:** #6 raven-swarm owner · **Phase:** try / execute (live proof; docs only).  
+**Tree:** `origin/main` `1f66c40` (`chore(CODEOWNERS): B3 mlkem FFI crypto+core`).  
+**Host:** Cursor Cloud Agent Linux (no public Raven peer; no invented WAN dial).  
+**Toolchain:** snapshot `rustc 1.83.0` failed `edition2024` (`block-buffer-0.12.1`). Installed `rustc 1.98.1 (48a229cea 2026-09-01)` / `cargo 1.98.1` to match CI `dtolnay/rust-toolchain@stable`.  
+**Identity harness:** raw script runs **exit 1** — GNU/Linux first-install requires a reachable Secret Service even with `RAVEN_IDENTITY_BACKEND=locked-file` (`secret-service connect: zbus error: I/O error: No such file or directory`). After `dbus-launch` + unlocked `gnome-keyring-daemon` + `RAVEN_IDENTITY_BACKEND=locked-file` (documented debug/CI override; **not** a production backend), the intended gates ran.
+
+Commands from repo root (crate builds in `node/`):
+
+| # | Command | Exit | Meaning |
+|---|---------|------|---------|
+| 1 | `cargo build -p raven-swarm -q` | **0** | Default swarm binary built (`~43s`). |
+| 2 | `cargo build -p raven-node -q` | **0** | Node binary built (`~11s`; unused `fingerprint_of` warning only). |
+| 3a | `bash node/scripts/libp2p_swarm_smoke.sh` (no session bus) | **1** | Identity store blocked serve; **not** a dial result. |
+| 3b | same + session bus + `RAVEN_IDENTITY_BACKEND=locked-file` | **0** | Localhost TCP+Noise+Kad two-node smoke **PASS**. |
+| 4a | `bash node/scripts/internet_dial_smoke.sh` (no session bus) | **1** | `init failed: secure store unavailable: secret-service connect: …` |
+| 4b | same + session bus + `RAVEN_IDENTITY_BACKEND=locked-file` | **0** | Negative ATSAM gate **PASS** (fail-closed; sender `A_STATUS=1`). |
+| 5 | `cargo test -p raven-swarm --all-features fixed_localhost_nodes_connect_over_noise_tcp -- --nocapture` | **0** | `connectivity::tests::fixed_localhost_nodes_connect_over_noise_tcp ... ok` |
+| 6 | `cargo test -p raven-swarm --all-features fixed_localhost_nodes_connect_over_authenticated_quic -- --nocapture` | **0** | `…_over_authenticated_quic ... ok` |
+
+Key log lines (3b — libp2p swarm smoke):
+
+```
+manual_peer_only=true
+connection_established peer=12D3KooWKEv3KUcrzptFK7kYPqvPfpuCjhiGb1ECX4GhmD1Ftwgn
+kad_get_ok dial=/ip4/127.0.0.1/tcp/40499
+peer_record_verified=1
+=== LIBP2P SWARM SMOKE OK (TCP/Kad, no FastAPI) ===
+```
+
+Key log lines (4b — internet dial smoke; sender log):
+
+```
+raven-node: listen 127.0.0.1:33901
+ATSAM_SESSION_REQUIRED: no authenticated persisted ATSAM session is available
+PASS: legacy InternetTransport remains fail-closed pending indexed endpoint wiring
+```
+
+(Receiver logged `listen 127.0.0.1:37389` only; no `DELIVERED` / `ACK delivered`.)
+
+**Direct path after this run** (localhost proven; public Internet **not** claimed):
+
+| Path | Proven? | Blocked? |
+|------|---------|----------|
+| Default `raven-swarm` TCP+Noise+Kad on **127.0.0.1** | **Yes** — smoke 3b exit 0 + test 5 | — |
+| Experimental localhost authenticated QUIC | **Yes** — test 6 | — |
+| `raven-node` InternetTransport **message origination** | **Yes, fail-closed** — smoke 4b exit 0, sender exit 1, `ATSAM_SESSION_REQUIRED` | Indexed ATSAM session + sealed ACK not wired |
+| Two Raven terminals on the **public Internet** (T2T WAN) | **No** | **Untested / blocked (no proving harness)** — this host has no public peer; no non-`127.0.0.1` dial was attempted |
+| Experimental Circuit Relay / DCUtR / AutoNAT | Not re-run | Still production-disabled (see §0 table) |
+
+WAN remains **untested**. Localhost success is not a public-IP or NAT claim.
 
 ---
 
