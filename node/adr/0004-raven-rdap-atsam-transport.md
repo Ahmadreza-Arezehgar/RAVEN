@@ -1,6 +1,6 @@
 # ADR 0004 — Raven↔RDAP production ATSAM transport (O6)
 
-**Status:** Architect **ACK** ADR 0004 body; Appendix G5 re-ACK pending PR #5 §2.2 verbatim sync.
+**Status:** Architect **ACK** ADR body; Crypto **ACK**; Identity **ACK** ADR body + Appendix G5 (full). Architect Appendix G5 ACK pending tip `5d39099907ea`. No M1 code; RVN1 HOLD bars production enablement.
 **Date:** 2026-09-04  
 **Risk class (normative):** **R3** (ATSAM / crypto transport). Approvers: Architect (#1), Crypto ATSAM (#3), Identity AuthZ (#15); Security Board as matrix requires. **No R3 self-merge.**  
 **Deciders (required ack before merge):** Architect (#1), Crypto ATSAM (#3), Identity AuthZ (#15); Security Board as matrix requires  

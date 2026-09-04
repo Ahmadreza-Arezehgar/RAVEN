@@ -1,6 +1,6 @@
 # Appendix G5 — Joint Raven↔RDAP revoke policy (docs-first)
 
-**Status:** Architect Appendix G5 ACK withdrawn (conditional) — rewrite to PR #5 §2.2; ADR body ACK stands; awaiting re-ACK Appendix G5.
+**Status:** Identity AuthZ **ACK** Appendix G5 (full) 2026-09-04. Architect Appendix G5 ACK pending (body ACK stands). Crypto G5.4/G5.5 ACK stands. Tip freeze SHA: `5d39099907ea` (G5.2 verbatim PR #5 §2.2).
 **Date:** 2026-09-04  
 **Owners:** Raven↔RDAP + Identity AuthZ; Crypto consult on session fail-closed  
 **Normative refs:** `protocol/RAVEN_DEVICE_REVOCATION_V1.md`, Identity `docs/engineering/G5_CROSS_STACK_REVOKE_POLICY.md` (PR #5), ADR 0004 D3
