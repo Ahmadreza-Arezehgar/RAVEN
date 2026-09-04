@@ -23,8 +23,7 @@ use raven_core::envelope::Envelope;
 use raven_core::fingerprint::device_fingerprint_v1;
 use raven_core::identity::Identity;
 #[cfg(unix)]
-use raven_core::ipc::{decode_response, encode_request};
-use raven_core::ipc::{default_socket_path, IpcRequest, IpcResponse, IPC_VERSION};
+use raven_core::ipc::default_socket_path;
 use raven_core::messaging_path::{assert_no_silent_fastapi, resolve_terminal_messaging_path};
 use raven_core::paths::PRIMARY_DEVICE_ID;
 use raven_core::prekey_bundle::{PrekeyBundle, PrekeyBundleJson, PrekeyStore};
@@ -122,18 +121,18 @@ fn local_lan_ipv4_hint() -> Option<String> {
     None
 }
 
-/// Start / revive Mac LAN + IPC daemon so local-listen enqueue works.
+/// Start / revive LAN + IPC daemon so local-listen enqueue works.
 pub fn ensure_mac_lan_daemon(data_dir: &Path) -> bool {
-    let sock = default_socket_path(data_dir);
-    if sock.exists() {
-        if matches!(
-            ipc_request_blocking(&sock, &IpcRequest::Ping { v: IPC_VERSION }),
-            Ok(IpcResponse::Pong { .. })
-        ) {
-            return true;
+    if super::ipc_client::ipc_daemon_up(data_dir) {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        let sock = default_socket_path(data_dir);
+        if sock.exists() {
+            // Stale UDS after crash → remove so a fresh service can bind.
+            let _ = std::fs::remove_file(&sock);
         }
-        // Stale UDS after crash → remove so a fresh service can bind.
-        let _ = std::fs::remove_file(&sock);
     }
     let node = raven_node_bin();
     // Outbound-IPC-only deployments (or same-host tests) may need a different
@@ -160,12 +159,7 @@ pub fn ensure_mac_lan_daemon(data_dir: &Path) -> bool {
         return false;
     }
     for _ in 0..50 {
-        if sock.exists()
-            && matches!(
-                ipc_request_blocking(&sock, &IpcRequest::Ping { v: IPC_VERSION }),
-                Ok(IpcResponse::Pong { .. })
-            )
-        {
+        if super::ipc_client::ipc_daemon_up(data_dir) {
             return true;
         }
         std::thread::sleep(Duration::from_millis(40));
@@ -481,36 +475,6 @@ pub fn refuse_argv_plaintext() {
     );
     eprintln!("{C_DIM} or:{C_RESET} ash send --peer … --peer-pub-hex … --stdin-text < msg.txt");
     std::process::exit(2);
-}
-
-fn ipc_request_blocking(sock: &Path, req: &IpcRequest) -> Result<IpcResponse, String> {
-    #[cfg(unix)]
-    {
-        use std::io::{Read, Write};
-        use std::os::unix::net::UnixStream;
-        let mut stream = UnixStream::connect(sock).map_err(|e| e.to_string())?;
-        let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
-        let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
-        let frame = encode_request(req)?;
-        stream.write_all(&frame).map_err(|e| e.to_string())?;
-        let mut len_buf = [0u8; 4];
-        stream.read_exact(&mut len_buf).map_err(|e| e.to_string())?;
-        let n = u32::from_be_bytes(len_buf) as usize;
-        if n == 0 || n > raven_core::MAX_IPC_FRAME {
-            return Err("IPC_FRAME".into());
-        }
-        let mut body = vec![0u8; n];
-        stream.read_exact(&mut body).map_err(|e| e.to_string())?;
-        let mut frame = Vec::with_capacity(4 + n);
-        frame.extend_from_slice(&len_buf);
-        frame.extend_from_slice(&body);
-        decode_response(&frame)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (sock, req);
-        Err("IPC UDS not available on this OS — use Windows named-pipe daemon".into())
-    }
 }
 
 /// Lab Test A send: PairInit LAN OOB → PairResponse → IndexedSessionStore envelope.

@@ -28,7 +28,7 @@ Dedicated IPC only: `raven-node ipc --data-dir $Data`.
 
 - Server binds `WINDOWS_NAMED_PIPE` (`\\.\pipe\raven-node`) with a **current-user DACL** (no World/Everyone ACE). DACL setup is **fail-closed**: if the descriptor cannot be built, the process does not bind.
 - Framing is the same length-prefixed JSON as Unix UDS (`raven-core::ipc`, IPC_VERSION=1): Ping, Status, SetPolicy, EnqueueSealed, LanDial. Secrets (`seed` / `private_key` / `plaintext` / `recovery`) are refused; EnqueueSealed is already-sealed only.
-- Unix ash uses UDS; Windows ash client / `ash doctor` named-pipe connect is a CLI DX follow-up (`ipc_transport_missing` until then). Do not treat a missing ash client as a server gap.
+- `ipc_endpoint(data_dir)` selects the Unix socket vs this pipe so callers cannot UDS-only on Windows. ash, `ash ipc-ping`, and `ash doctor` connect here with the same framing (`encode_request` / `decode_response`). Doctor `daemon_presence` is Ping→Pong over the pipe (Ping ≠ ready ≠ send_path). A missing transport is `daemon_presence: blocked (reason=ipc_transport_missing)` — never a soft pass.
 - Software path: framing + refuse-secret-fields are shared; OS bind is platform-specific.
 
 ## Try / Proven
