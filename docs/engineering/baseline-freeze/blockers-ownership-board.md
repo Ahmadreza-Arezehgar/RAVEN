@@ -74,7 +74,7 @@ Org-create / personal-account CODEOWNERS blockers from morning audit are **clear
 | B11 | `install.sh` hazard | 0d | CLI DX (#12) + DevSecOps (#20) | High | [RAVEN#17](https://github.com/Raven-ASHCO/RAVEN/pull/17) (draft) — fail-close install path. **Not** install evidence; docs/PR ≠ Proven. |
 | B12 | Win loopback `127.0.0.1:7420` | 0d | Windows (#11) + Node IPC (#8) | Med | Loopback bind/listen is **not** WAN / named-pipe Proven. Docs-only ≠ Proven. |
 
-**Cleared:** GitHub Org missing · repos on personal account · no CODEOWNERS · unprotected `main` · no teams · **B3** (RAVEN#7).
+**Cleared:** GitHub Org missing · repos on personal account · no CODEOWNERS · unprotected `main` · no teams · **B3** (RAVEN#7) · **M0 ack gate ✅** (RAVEN#3 three-way ACK, ADR body + Appendix G5).
 
 ---
 
