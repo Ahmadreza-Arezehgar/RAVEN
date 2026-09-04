@@ -4,7 +4,6 @@
 //! Lab import files are optional leftovers; the live path uses RLB1 on the socket.
 
 use std::collections::HashMap;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -16,7 +15,7 @@ use raven_core::identity::Identity;
 use raven_core::indexed_session_store::{
     AuthorizedEndpointDevice, EndpointOutboundKind, IndexedSessionRecordKey, IndexedSessionStore,
 };
-use raven_core::ipc::{default_socket_path, IpcRequest, IpcResponse, IPC_VERSION};
+use raven_core::ipc::{ipc_endpoint, IpcRequest, IpcResponse, IPC_VERSION};
 use raven_core::lan_dispatch::{
     cache_peer_bundle, create_initiator_pair_init, find_confirmed_peer_session, parse_peer_offer,
     wrap_pair_init,
@@ -98,9 +97,9 @@ fn ipc_lan_dial(
     frames: &[Vec<u8>],
 ) -> Result<Vec<Vec<u8>>, String> {
     use base64::Engine;
-    let sock = default_socket_path(data_dir);
-    if !sock.exists() {
-        return Err("IPC socket missing — start raven-node service first".into());
+    let ep = ipc_endpoint(data_dir);
+    if !ep.transport_available() {
+        return Err("ipc_transport_missing".into());
     }
     if lan_dial.trim().is_empty()
         || lan_dial.eq_ignore_ascii_case("local-listen")
@@ -118,53 +117,19 @@ fn ipc_lan_dial(
         expected_pub_hex: expected_pub_hex.to_string(),
         frames_b64,
     };
-    #[cfg(unix)]
-    {
-        use raven_core::ipc::{decode_response, encode_request};
-        use std::io::Read;
-        use std::os::unix::net::UnixStream;
-        let mut stream = UnixStream::connect(&sock).map_err(|e| format!("ipc connect: {e}"))?;
-        let _ = stream.set_read_timeout(Some(Duration::from_secs(50)));
-        let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
-        let frame = encode_request(&req).map_err(|e| format!("ipc encode: {e}"))?;
-        stream
-            .write_all(&frame)
-            .map_err(|e| format!("ipc write: {e}"))?;
-        let mut len_buf = [0u8; 4];
-        stream
-            .read_exact(&mut len_buf)
-            .map_err(|e| format!("ipc read len: {e}"))?;
-        let n = u32::from_be_bytes(len_buf) as usize;
-        if n == 0 || n > raven_core::MAX_IPC_FRAME {
-            return Err("IPC_FRAME".into());
-        }
-        let mut body = vec![0u8; n];
-        stream
-            .read_exact(&mut body)
-            .map_err(|e| format!("ipc read body: {e}"))?;
-        let mut resp_frame = Vec::with_capacity(4 + n);
-        resp_frame.extend_from_slice(&len_buf);
-        resp_frame.extend_from_slice(&body);
-        match decode_response(&resp_frame).map_err(|e| format!("ipc decode: {e}"))? {
-            IpcResponse::LanDialResult { frames_b64, .. } => frames_b64
-                .iter()
-                .map(|s| {
-                    base64::engine::general_purpose::STANDARD
-                        .decode(s.trim())
-                        .or_else(|_| {
-                            base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(s.trim())
-                        })
-                        .map_err(|e| e.to_string())
-                })
-                .collect(),
-            IpcResponse::Error { code, message, .. } => Err(format!("ipc {code}: {message}")),
-            other => Err(format!("unexpected ipc: {other:?}")),
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (data_dir, lan_dial, expected_pub_hex, frames, req);
-        Err("IPC UDS unavailable".into())
+    match super::ipc_client::ipc_request_timeout(data_dir, &req, Duration::from_secs(50)) {
+        Ok(IpcResponse::LanDialResult { frames_b64, .. }) => frames_b64
+            .iter()
+            .map(|s| {
+                base64::engine::general_purpose::STANDARD
+                    .decode(s.trim())
+                    .or_else(|_| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(s.trim()))
+                    .map_err(|e| e.to_string())
+            })
+            .collect(),
+        Ok(IpcResponse::Error { code, message, .. }) => Err(format!("ipc {code}: {message}")),
+        Ok(other) => Err(format!("unexpected ipc: {other:?}")),
+        Err(e) => Err(e),
     }
 }
 

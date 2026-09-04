@@ -141,8 +141,9 @@ pub use internet::{
 };
 pub use introduction::{IntroductionInbox, RavenIntroductionV1};
 pub use ipc::{
-    decode_request, decode_response, default_socket_path, encode_request, encode_response,
-    IpcRequest, IpcResponse, IPC_VERSION, MAX_IPC_FRAME,
+    decode_request, decode_response, default_ipc_endpoint, default_pipe_name, default_socket_path,
+    encode_request, encode_response, ipc_endpoint, IpcEndpoint, IpcRequest, IpcResponse,
+    IPC_VERSION, MAX_IPC_FRAME, WINDOWS_NAMED_PIPE,
 };
 pub use lan_dispatch::{
     cache_peer_bundle, create_initiator_pair_init, dispatch_frame, encode_local_offer,

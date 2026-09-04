@@ -130,9 +130,78 @@ pub fn decode_response(frame: &[u8]) -> Result<IpcResponse, String> {
     serde_json::from_slice(&frame[4..4 + n]).map_err(|e| e.to_string())
 }
 
-/// Default socket path under data dir (mode 0600 expected at bind).
+/// Default Unix domain socket path under data dir (mode 0600 expected at bind).
+///
+/// Windows callers must not use this alone — the daemon binds
+/// [`WINDOWS_NAMED_PIPE`], not a `.sock` file. Use [`ipc_endpoint`].
 pub fn default_socket_path(data_dir: &std::path::Path) -> std::path::PathBuf {
     data_dir.join("raven-node.sock")
+}
+
+/// Canonical Windows named-pipe bind/connect name.
+/// Windows Platform server MUST bind this exact string (user DACL only).
+pub const WINDOWS_NAMED_PIPE: &str = r"\\.\pipe\raven-node";
+
+/// Alias for [`WINDOWS_NAMED_PIPE`] (Windows Platform bind name).
+pub fn default_pipe_name() -> &'static str {
+    WINDOWS_NAMED_PIPE
+}
+
+/// Platform-local IPC connect target.
+///
+/// Callers must obtain this from [`ipc_endpoint`] so Windows never looks for a
+/// UDS path under `data_dir`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IpcEndpoint {
+    /// Unix domain socket (`<data_dir>/raven-node.sock`).
+    UnixSocket(std::path::PathBuf),
+    /// Canonical Windows named pipe ([`WINDOWS_NAMED_PIPE`]).
+    NamedPipe(&'static str),
+    /// No local IPC transport on this OS. Clients/doctor must fail closed
+    /// (`ipc_transport_missing`) — never treat as a pass.
+    Unsupported,
+}
+
+impl std::fmt::Display for IpcEndpoint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IpcEndpoint::UnixSocket(p) => write!(f, "{}", p.display()),
+            IpcEndpoint::NamedPipe(n) => write!(f, "{n}"),
+            IpcEndpoint::Unsupported => write!(f, "ipc_transport_missing"),
+        }
+    }
+}
+
+impl IpcEndpoint {
+    /// False when this OS has no ash↔raven-node IPC transport.
+    pub fn transport_available(&self) -> bool {
+        !matches!(self, IpcEndpoint::Unsupported)
+    }
+}
+
+/// Unix socket path vs Windows named-pipe name.
+///
+/// Never returns a UDS path on Windows.
+pub fn ipc_endpoint(data_dir: &std::path::Path) -> IpcEndpoint {
+    #[cfg(unix)]
+    {
+        IpcEndpoint::UnixSocket(default_socket_path(data_dir))
+    }
+    #[cfg(windows)]
+    {
+        let _ = data_dir;
+        IpcEndpoint::NamedPipe(WINDOWS_NAMED_PIPE)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = data_dir;
+        IpcEndpoint::Unsupported
+    }
+}
+
+/// Alias for [`ipc_endpoint`].
+pub fn default_ipc_endpoint(data_dir: &std::path::Path) -> IpcEndpoint {
+    ipc_endpoint(data_dir)
 }
 
 #[cfg(test)]
@@ -183,5 +252,67 @@ mod tests {
         };
         let rf = encode_response(&resp).unwrap();
         assert_eq!(decode_response(&rf).unwrap(), resp);
+    }
+
+    #[test]
+    fn windows_named_pipe_is_canonical_bind_name() {
+        assert_eq!(WINDOWS_NAMED_PIPE, r"\\.\pipe\raven-node");
+        assert_eq!(default_pipe_name(), WINDOWS_NAMED_PIPE);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ipc_endpoint_selects_unix_socket() {
+        let dir = std::path::Path::new("/tmp/raven-data");
+        let ep = ipc_endpoint(dir);
+        assert_eq!(default_ipc_endpoint(dir), ep);
+        assert_eq!(ep, IpcEndpoint::UnixSocket(default_socket_path(dir)));
+        assert_eq!(
+            ep.to_string(),
+            dir.join("raven-node.sock").display().to_string()
+        );
+        assert!(ep.transport_available());
+        assert!(!matches!(ep, IpcEndpoint::NamedPipe(_)));
+        assert!(!matches!(ep, IpcEndpoint::Unsupported));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn ipc_endpoint_selects_windows_named_pipe() {
+        let dir = std::path::Path::new(r"C:\raven-data");
+        let ep = ipc_endpoint(dir);
+        assert_eq!(default_ipc_endpoint(dir), ep);
+        assert_eq!(ep, IpcEndpoint::NamedPipe(WINDOWS_NAMED_PIPE));
+        assert_eq!(ep.to_string(), r"\\.\pipe\raven-node");
+        assert_eq!(default_pipe_name(), r"\\.\pipe\raven-node");
+        assert!(ep.transport_available());
+        assert!(!matches!(ep, IpcEndpoint::UnixSocket(_)));
+        assert!(!matches!(ep, IpcEndpoint::Unsupported));
+    }
+
+    #[test]
+    fn enqueue_sealed_roundtrip_has_no_secret_fields() {
+        let req = IpcRequest::EnqueueSealed {
+            v: IPC_VERSION,
+            envelope_b64: "QUJD".into(),
+            peer_hint: Some("peer".into()),
+        };
+        let f = encode_request(&req).unwrap();
+        assert_eq!(decode_request(&f).unwrap(), req);
+        let raw = std::str::from_utf8(&f[4..]).unwrap().to_ascii_lowercase();
+        for bad in ["seed", "private_key", "plaintext", "recovery"] {
+            assert!(!raw.contains(bad), "{bad} leaked into EnqueueSealed JSON");
+        }
+    }
+
+    #[test]
+    fn rejects_all_secret_field_names() {
+        for bad in ["seed", "private_key", "plaintext", "recovery"] {
+            let body = format!(r#"{{"op":"ping","v":1,"{bad}":"nope"}}"#);
+            let mut frame = Vec::new();
+            frame.extend_from_slice(&(body.len() as u32).to_be_bytes());
+            frame.extend_from_slice(body.as_bytes());
+            assert!(decode_request(&frame).is_err(), "expected refuse for {bad}");
+        }
     }
 }

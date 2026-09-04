@@ -4,6 +4,7 @@
 //! Never prints private keys, seeds, session keys, recovery secrets, or plaintext.
 
 mod ext;
+mod ipc_client;
 mod pair_init_lab;
 mod trace_delivery;
 
@@ -25,9 +26,7 @@ use raven_core::discovery_resolver::{
 use raven_core::fingerprint::device_fingerprint_v1;
 use raven_core::forward_queue::ForwardQueue;
 use raven_core::identity::Identity;
-#[cfg(unix)]
-use raven_core::ipc::{decode_response, encode_request, IpcRequest, IPC_VERSION};
-use raven_core::ipc::{default_socket_path, IpcResponse};
+use raven_core::ipc::{ipc_endpoint, IpcResponse};
 use raven_core::messaging_path::{
     assert_no_silent_fastapi, resolve_terminal_messaging_path, MessagingPath,
 };
@@ -1092,11 +1091,7 @@ fn env_peer_lan_dial() -> Option<String> {
 }
 
 fn ipc_daemon_up(data_dir: &Path) -> bool {
-    let sock = default_socket_path(data_dir);
-    if !sock.exists() {
-        return false;
-    }
-    matches!(ipc_ping_blocking(&sock), Ok(IpcResponse::Pong { .. }))
+    ipc_client::ipc_daemon_up(data_dir)
 }
 
 fn ensure_mac_lan_service(data_dir: &Path) -> bool {
@@ -3659,15 +3654,15 @@ fn print_welcome_minimal(data_dir: &Path) {
 }
 
 fn cmd_ipc_ping(data_dir: &Path) {
-    let sock = default_socket_path(data_dir);
-    if !sock.exists() {
-        eprintln!("ipc socket missing: {}", sock.display());
+    let ep = ipc_endpoint(data_dir);
+    if !ep.transport_available() {
+        eprintln!("ipc_transport_missing");
         eprintln!("start: raven-node ipc --data-dir {}", data_dir.display());
         std::process::exit(1);
     }
-    match ipc_ping_blocking(&sock) {
+    match ipc_client::ipc_ping(data_dir) {
         Ok(IpcResponse::Pong { v }) => {
-            println!("{C_GREEN}ipc pong{C_RESET} v={v} sock={}", sock.display());
+            println!("{C_GREEN}ipc pong{C_RESET} v={v} endpoint={ep}");
         }
         Ok(other) => {
             eprintln!("unexpected response: {other:?}");
@@ -3677,34 +3672,6 @@ fn cmd_ipc_ping(data_dir: &Path) {
             eprintln!("ipc ping failed: {e}");
             std::process::exit(1);
         }
-    }
-}
-
-fn ipc_ping_blocking(sock: &Path) -> Result<IpcResponse, String> {
-    #[cfg(unix)]
-    {
-        use std::io::{Read, Write};
-        use std::os::unix::net::UnixStream;
-        let mut stream = UnixStream::connect(sock).map_err(|e| e.to_string())?;
-        let req = encode_request(&IpcRequest::Ping { v: IPC_VERSION })?;
-        stream.write_all(&req).map_err(|e| e.to_string())?;
-        let mut len_buf = [0u8; 4];
-        stream.read_exact(&mut len_buf).map_err(|e| e.to_string())?;
-        let n = u32::from_be_bytes(len_buf) as usize;
-        if n == 0 || n > raven_core::MAX_IPC_FRAME {
-            return Err("IPC_FRAME".into());
-        }
-        let mut body = vec![0u8; n];
-        stream.read_exact(&mut body).map_err(|e| e.to_string())?;
-        let mut frame = Vec::with_capacity(4 + n);
-        frame.extend_from_slice(&len_buf);
-        frame.extend_from_slice(&body);
-        decode_response(&frame)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = sock;
-        Err("IPC UDS not available on this OS".into())
     }
 }
 
@@ -3732,25 +3699,25 @@ fn cmd_doctor(data_dir: &Path) {
         );
     }
 
-    let sock = default_socket_path(data_dir);
+    let ep = ipc_endpoint(data_dir);
     println!(
-        "  ipc_sock={} exists={}",
-        sanitize_terminal_text(&sock.display().to_string()),
-        sock.exists()
+        "  ipc_endpoint={}",
+        sanitize_terminal_text(&ep.to_string())
     );
-    if sock.exists() {
-        match ipc_ping_blocking(&sock) {
+    if !ep.transport_available() {
+        // Fail closed — never soft-skip a missing transport as pass.
+        println!("  daemon_presence: blocked (reason=ipc_transport_missing)");
+    } else {
+        match ipc_client::ipc_ping(data_dir) {
             Ok(IpcResponse::Pong { v }) => {
-                println!("  daemon_state: {C_GREEN}up{C_RESET} (ipc_ping ok v={v})");
+                println!("  daemon_presence: {C_GREEN}up{C_RESET} (ipc_ping ok v={v})");
             }
-            Ok(_) => println!("  daemon_state: unexpected ipc response"),
+            Ok(_) => println!("  daemon_presence: unexpected ipc response"),
             Err(e) => {
                 let clean = sanitize_terminal_text(&e);
-                println!("  daemon_state: {C_DIM}down/fail ({clean}){C_RESET}");
+                println!("  daemon_presence: {C_DIM}down ({clean}){C_RESET}");
             }
         }
-    } else {
-        println!("  daemon_state: no socket (start raven-node ipc)");
     }
 
     // Identity store (backend label only — never seed bytes).

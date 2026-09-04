@@ -5,7 +5,7 @@
 mod bridge_run;
 #[cfg(feature = "corebluetooth")]
 mod corebluetooth_exp;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod ipc_server;
 mod lan_direct;
 
@@ -166,8 +166,8 @@ enum Commands {
         #[arg(long, default_value_t = 15)]
         timeout_secs: u64,
     },
-    /// Always-on local IPC (UDS) for ash ↔ raven-node. macOS/Linux.
-    #[cfg(unix)]
+    /// Always-on local IPC (UDS on Unix, named pipe on Windows) for ash ↔ raven-node.
+    #[cfg(any(unix, windows))]
     Ipc {
         #[arg(long, default_value = "./raven-data")]
         data_dir: PathBuf,
@@ -175,8 +175,8 @@ enum Commands {
         #[arg(long)]
         forward_db: Option<PathBuf>,
     },
-    /// Always-on daemon: bridge + IPC together (launchd/systemd target).
-    #[cfg(unix)]
+    /// Always-on daemon: bridge + IPC together (launchd/systemd/Task Scheduler).
+    #[cfg(any(unix, windows))]
     Service {
         #[arg(long, default_value_os_t = raven_core::default_raven_data_dir())]
         data_dir: PathBuf,
@@ -1281,7 +1281,7 @@ async fn main() {
                 eprintln!("raven-node: flush done (check pending)");
             }
         }
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         Commands::Ipc {
             data_dir,
             forward_db,
@@ -1299,7 +1299,7 @@ async fn main() {
                 std::process::exit(1);
             }
         }
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         Commands::Service {
             data_dir,
             lan_listen,

@@ -1,10 +1,10 @@
-//! Unix domain socket IPC server (macOS/Linux).
+//! Local IPC server — UDS on Unix, named pipe on Windows.
 //!
-//! Auth model (V1): socket path under the caller's data dir, mode `0600`,
-//! removed/rebound on start, plus peer-credential UID check (must match
-//! the raven-node process euid). Same-UID filesystem permissions + SO_PEERCRED
-//! / getpeereid are the gate; requests still refuse secret field names
-//! (`raven_core::ipc`).
+//! Shared request handling and length-prefixed JSON framing live here
+//! (`raven_core::ipc`, IPC_VERSION=1). Transport bind/accept is cfg-gated:
+//! Unix uses a `0600` socket plus peer-cred UID check; Windows binds
+//! `WINDOWS_NAMED_PIPE` with a current-user DACL (fail-closed).
+//! Requests still refuse secret field names (`raven_core::ipc`).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -12,9 +12,9 @@ use std::sync::Arc;
 use raven_core::bridge::authenticated_object_digest;
 use raven_core::envelope::Envelope;
 use raven_core::forward_queue::{ForwardItem, ForwardQueue, ForwardState};
-use raven_core::ipc::{
-    decode_request, default_socket_path, encode_response, IpcRequest, IpcResponse, IPC_VERSION,
-};
+#[cfg(unix)]
+use raven_core::ipc::default_socket_path;
+use raven_core::ipc::{decode_request, encode_response, IpcRequest, IpcResponse, IPC_VERSION};
 use tokio::time::Duration;
 
 use crate::lan_direct;
@@ -24,10 +24,16 @@ const LAN_DIAL_TIMEOUT: Duration = Duration::from_secs(45);
 use raven_core::node_policy::{load_policy, save_policy};
 use raven_core::queue::{DeliveryState, OutgoingQueue, QueueItem};
 use raven_core::transport::TransportKind;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+#[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Mutex;
 
+#[cfg(windows)]
+#[path = "ipc_server_windows.rs"]
+mod windows;
+
+#[cfg(unix)]
 pub fn socket_path(data_dir: &Path) -> PathBuf {
     default_socket_path(data_dir)
 }
@@ -93,7 +99,10 @@ fn peer_uid_matches_self(stream: &UnixStream) -> bool {
     }
 }
 
-async fn read_frame(stream: &mut UnixStream) -> Result<Vec<u8>, String> {
+async fn read_frame<S>(stream: &mut S) -> Result<Vec<u8>, String>
+where
+    S: AsyncRead + Unpin,
+{
     let read = async {
         let mut len_buf = [0u8; 4];
         stream
@@ -335,16 +344,13 @@ fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
         .map_err(|e| e.to_string())
 }
 
-async fn serve_one(
-    mut stream: UnixStream,
+async fn serve_one<S>(
+    mut stream: S,
     data_dir: Arc<PathBuf>,
     forward: Arc<Mutex<Option<ForwardQueue>>>,
-) {
-    #[cfg(unix)]
-    if !peer_uid_matches_self(&stream) {
-        eprintln!("raven-node ipc: reject peer (uid mismatch)");
-        return;
-    }
+) where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let frame = match read_frame(&mut stream).await {
         Ok(f) => f,
         Err(_) => return,
@@ -380,11 +386,36 @@ async fn serve_one(
     }
 }
 
-/// Bind UDS with mode 0600 and serve until the process exits.
+fn open_forward_queue(forward_path: Option<PathBuf>) -> Arc<Mutex<Option<ForwardQueue>>> {
+    Arc::new(Mutex::new(match forward_path {
+        Some(p) => ForwardQueue::open(&p).ok(),
+        None => None,
+    }))
+}
+
+/// Bind the platform IPC transport and serve until the process exits.
 pub async fn run_ipc_server(
     data_dir: PathBuf,
     forward_path: Option<PathBuf>,
 ) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        run_uds_server(data_dir, forward_path).await
+    }
+    #[cfg(windows)]
+    {
+        windows::run_named_pipe_server(data_dir, forward_path).await
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (data_dir, forward_path);
+        Err("IPC transport not supported on this OS".into())
+    }
+}
+
+/// Bind UDS with mode 0600 and serve until the process exits.
+#[cfg(unix)]
+async fn run_uds_server(data_dir: PathBuf, forward_path: Option<PathBuf>) -> Result<(), String> {
     std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
     let sock = socket_path(&data_dir);
     if sock.exists() {
@@ -392,21 +423,21 @@ pub async fn run_ipc_server(
     }
     let listener =
         UnixListener::bind(&sock).map_err(|e| format!("bind {}: {e}", sock.display()))?;
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600));
     }
     eprintln!("raven-node ipc: listening {}", sock.display());
 
-    let forward = Arc::new(Mutex::new(match forward_path {
-        Some(p) => ForwardQueue::open(&p).ok(),
-        None => None,
-    }));
+    let forward = open_forward_queue(forward_path);
     let data_dir = Arc::new(data_dir);
 
     loop {
         let (stream, _) = listener.accept().await.map_err(|e| e.to_string())?;
+        if !peer_uid_matches_self(&stream) {
+            eprintln!("raven-node ipc: reject peer (uid mismatch)");
+            continue;
+        }
         let dd = data_dir.clone();
         let fq = forward.clone();
         tokio::spawn(async move {
@@ -416,6 +447,7 @@ pub async fn run_ipc_server(
 }
 
 /// Client helper for same-process smoke tests.
+#[cfg(unix)]
 #[allow(dead_code)]
 pub async fn client_ping(sock: &Path) -> Result<IpcResponse, String> {
     let mut stream = UnixStream::connect(sock)
@@ -426,4 +458,16 @@ pub async fn client_ping(sock: &Path) -> Result<IpcResponse, String> {
     stream.flush().await.map_err(|e| e.to_string())?;
     let frame = read_frame(&mut stream).await?;
     raven_core::decode_response(&frame)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn pipe_name_constant_is_exact() {
+        assert_eq!(raven_core::WINDOWS_NAMED_PIPE, r"\\.\pipe\raven-node");
+        assert_eq!(
+            raven_core::default_pipe_name(),
+            raven_core::WINDOWS_NAMED_PIPE
+        );
+    }
 }
