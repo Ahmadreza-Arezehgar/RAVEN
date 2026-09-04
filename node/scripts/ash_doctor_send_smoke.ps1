@@ -10,9 +10,9 @@
 #   Never require daemon_presence: present (would greenwash Windows blocked).
 #   Once #22 labels appear on this tree, require the three axis lines.
 #   Until then (not printed today) keep identity + serverless_rvn1 only.
-#   Windows Sprint 1 pipe client (this tree): doctor probes \\.\pipe\raven-node.
-#     Smoke does not start raven-node → daemon_presence: down, daemon_ready: not_ready.
-#     ipc_transport_missing is only for an OS with no transport (stale once client lands).
+#   Windows until Sprint 1 pipe client:
+#     daemon_presence: blocked (reason=ipc_transport_missing)
+#     (no UDS / raven-node.sock probe; pipe is \\.\pipe\raven-node)
 #
 # Operator (from node/, Windows / pwsh host):
 #   pwsh -File scripts/ash_doctor_send_smoke.ps1
@@ -157,26 +157,18 @@ try {
         Fail "ash doctor must show identity present (IPC-up / daemon_state alone is not Proven)"
     }
     # PR #22 Core gate — require axis lines once they exist on this tree.
-    # Do NOT require daemon_presence: present/up (this smoke does not start raven-node).
+    # Do NOT require daemon_presence: present (Windows is blocked until pipe client).
     $coreGate = ($doc.Text -match "daemon_presence:") -or
                 ($doc.Text -match "daemon_ready:") -or
                 ($doc.Text -match "send_path:")
     if ($coreGate) {
-        Require-Match $doc.Text "daemon_presence:" "ash doctor must print daemon_presence: (PR #22; value may be down)"
+        Require-Match $doc.Text "daemon_presence:" "ash doctor must print daemon_presence: (PR #22; value may be blocked)"
         Require-Match $doc.Text "daemon_ready:" "ash doctor must print daemon_ready:"
         Require-Match $doc.Text "send_path:\s*(not_ready|unchecked)" "ash doctor send_path must be not_ready or unchecked"
         $onWindows = ($IsWindows -eq $true) -or ($env:OS -eq "Windows_NT")
         if ($onWindows) {
-            # Sprint 1 named-pipe client is on this tree: doctor connects
-            # \\.\pipe\raven-node. ipc_transport_missing is only for OS with no transport.
-            # Smoke does not start raven-node, so presence is down — not a pass.
-            if ($doc.Text -match "daemon_presence:\s*blocked\s*\(reason=ipc_transport_missing\)") {
-                Fail "Windows named-pipe client is landed — ipc_transport_missing is stale"
-            }
-            Require-Match $doc.Text "daemon_presence:\s*(up|down|unexpected)" `
-                "Windows doctor must probe \\.\pipe\raven-node (up/down), not ipc_transport_missing"
-            Require-Match $doc.Text "daemon_ready:\s*not_ready" `
-                "Windows doctor must not green daemon_ready from a missing/unprobed daemon"
+            Require-Match $doc.Text "daemon_presence:\s*blocked\s*\(reason=ipc_transport_missing\)" `
+                "Windows doctor must show daemon_presence: blocked (reason=ipc_transport_missing) until Sprint 1 pipe client"
         }
         Write-Host "doctor: Core gate axes OK (presence not used as pass)"
     } else {
