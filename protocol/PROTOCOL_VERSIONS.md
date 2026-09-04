@@ -48,7 +48,20 @@ Capability negotiation is layered on version negotiation. Reconciling legacy RUM
 
 ## RDAP (cross-repo note only)
 
-[`Raven-ASHCO/raven-distributed-agent-protocol`](https://github.com/Raven-ASHCO/raven-distributed-agent-protocol) package **1.1.0** is an experimental A2A companion. It vendors `protocol/reference/raven_protocol`. It is **not** the `raven-node` identity store.
+[`Raven-ASHCO/raven-distributed-agent-protocol`](https://github.com/Raven-ASHCO/raven-distributed-agent-protocol) package **1.1.0** is an experimental A2A companion. It vendors `protocol/reference/raven_protocol`. It is **not** the `raven-node` identity store. Those package / companion facts are unchanged.
+
+**Live B1 required pins (RDAP `main`).** Manager GO applied GitHub branch protection on RDAP `main` requiring these six check contexts. They are **verified live required checks**, not provisional names. Job display names are from workflow **RDAP selftest** (`.github/workflows/selftest.yml` in the RDAP repo):
+
+1. `A2A selftest (ubuntu-latest, Python 3.10)`
+2. `A2A selftest (ubuntu-latest, Python 3.12)`
+3. `A2A selftest (macos-latest, Python 3.10)`
+4. `A2A selftest (macos-latest, Python 3.12)`
+5. `A2A selftest (windows-latest, Python 3.10)`
+6. `A2A selftest (windows-latest, Python 3.12)`
+
+Example green tips cited by DevSecOps: `148cdc9` (run [`33867613614`](https://github.com/Raven-ASHCO/raven-distributed-agent-protocol/actions/runs/33867613614)), `b7fca2a` (run [`33869790847`](https://github.com/Raven-ASHCO/raven-distributed-agent-protocol/actions/runs/33869790847)).
+
+**RAVEN Serverless Node B1 remains held / separate.** This inventory does **not** promote jobs in `.github/workflows/raven-serverless.yml` to required gates on this repo’s `main`. See **CI consumers on serverless `main`** below. Do not treat RDAP B1 as RAVEN `main` branch protection, and do not invent RAVEN green checks from this note.
 
 ---
 
