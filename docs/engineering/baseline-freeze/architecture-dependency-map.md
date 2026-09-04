@@ -49,6 +49,20 @@ Three product planes (do not collapse) — `docs/SERVERLESS_FRIEND_MESH_BRIDGE_D
 
 RDAP is a **fourth companion plane** (delegated agent tasks). It is **not** yet on the production raven-node ATSAM path (RDAP `README.md` “Important integration gap”).
 
+### 2.1 Founder priority (2026-09-04) — terminal first; three delivery pathways
+
+**Priority:** most reliable **terminal** RAVEN (`ash` / `raven` + `raven-node`) on **Windows / macOS / Linux**. Landing the iOS/Watch (and other platform-client) trees is **deferred below** this. Those trees remain **UNKNOWN** in this checkout (U1); do not treat their absence as a Sprint 0 architecture blocker.
+
+**Three delivery pathways** (how an already-trusted envelope moves). Keep these crisp. They are **not** a substitute for the three planes above: pathway choice lives in **Delivery** and **Bridge**; it must not become a friendship/directory, and Bridge must not hold conversation keys ([`docs/adr/0003-wire-crypto-identity-bridge-ipc.md`](../../adr/0003-wire-crypto-identity-bridge-ipc.md), [`docs/SERVERLESS_FRIEND_MESH_BRIDGE_DESIGN.md`](../../SERVERLESS_FRIEND_MESH_BRIDGE_DESIGN.md) “never collapse”).
+
+| # | Pathway | What it is | What it is not | Cite |
+|---|---------|------------|----------------|------|
+| 1 | **Mesh relay** | BLE / nearby opaque forward of packed `RavenEnvelopeV1` (mock-BLE on headless node; GATT on flagged mobile when that tree lands) | A social graph; a plaintext radio; a place that learns contacts | ADR 0003 Bridge; `RAVEN_BLE_FRAMING_V1.md`; `MESH_PROTOCOL.md` (legacy JSON, deferred with iOS) |
+| 2 | **Bridge** | Untrusted **cross-transport** store-and-forward of the **same** envelope (DTN gateway). No conversation keys on the bridge. | Friend introducer; contact-graph broker; decrypt/re-seal | ADR 0002 (relays never decrypt); ADR 0003; SERVERLESS plane 3; `RAVEN_BRIDGE_V1.md` |
+| 3 | **Direct internet** | `InternetTransport` (V1 shipping: length-prefixed envelope, Ed25519 hello) and/or `raven-swarm` dial (target libp2p) | A Raven-operated inbox; transport auth as E2EE | ADR 0002; `RAVEN_TRANSPORT_INTERFACE_V1.md` |
+
+Do not collapse: Trust/friendship stays local pin + OOB (plane 1). A mesh hop, a bridge hop, and an internet dial are interchangeable **carriers** of one opaque object (SPEC invariants 5–6) — not three products and not three identity systems.
+
 ---
 
 ## 3. Allowed dependency diagram
