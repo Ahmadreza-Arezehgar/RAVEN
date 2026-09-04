@@ -160,7 +160,7 @@ See companion `docs/adr/0004-CODEOWNERS-touch-list.md`.
 
 ## Appendix G5 — Joint Raven↔RDAP revoke policy
 
-See `docs/adr/0004-appendix-g5-raven-rdap-revoke.md` (device-lineage `RVDR1` vs RDAP address deny; R→A fail-closed under O6/M1; A↛R no auto-mint).
+See `docs/adr/0004-appendix-g5-raven-rdap-revoke.md` (playbooks A–D; R→A effective deny ≠ address-file write).
 
 ## References
 

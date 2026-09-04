@@ -1,77 +1,74 @@
 # Appendix G5 — Joint Raven↔RDAP revoke policy (docs-first)
 
-**Status:** Proposed with ADR 0004 (Identity AuthZ Sprint 0 alignment)  
+**Status:** Proposed with ADR 0004 — aligned to Identity AuthZ Sprint 0 `docs/engineering/G5_CROSS_STACK_REVOKE_POLICY.md`  
 **Date:** 2026-09-04  
-**Owners:** Raven↔RDAP + Identity AuthZ (ack required); Crypto consult on session fail-closed  
-**Normative refs:** `protocol/RAVEN_DEVICE_REVOCATION_V1.md` (APPROVED companion; production still gated), RDAP `team_agents/raven_identity.py` (`load_revocations`, verify paths), ADR 0004 D3 (same RVN1 for O6/M1)
+**Owners:** Raven↔RDAP + Identity AuthZ; Crypto consult on session fail-closed  
+**Normative refs:** `protocol/RAVEN_DEVICE_REVOCATION_V1.md`, Identity G5 engineering draft, ADR 0004 D3, RDAP `team_agents/raven_identity.py`
 
-## G5.1 Two different instruments (do not conflate)
+## G5.1 Core distinction (do not conflate)
 
-| Layer | Instrument | Target | Who mints | Sticky? | Scope |
-|---|---|---|---|---|---|
-| **R** | `RavenDeviceRevocationV1` (`RVDR1`) | **Device lineage**: `device_id` + `device_ed_pub` + `device_x_pub` + `device_cert_hash` under an `identity_address` | Owning **identity** Ed25519 key | Yes — append-only union; never clears | Messenger / PairInit / ATSAM authorization for that lineage |
-| **A** | RDAP `revocations_file` | **RVN1 address** (peer principal string) | Local operator / deployment policy | Local file; hot-reload; not a signed global record | A2A HTTP + delegation verify; cancel auth; task accept |
+| Stack | Revokes | Wire / store | Effect |
+|---|---|---|---|
+| **RAVEN (R)** | **Device lineage** (`device_id`, `device_ed_pub`, `device_x_pub`, `device_cert_hash`) under one user identity | `RVDR1` + local sticky denylist | Device loses PairInit / envelope / ACK / bind; **identity address remains** |
+| **RDAP (A)** | Peer **identity address** (`rvn1…`) | JSON `revocations_file` (hot-reload) | Reject `verify_delegation` / signed HTTP / task accept for that address |
 
-**RAVEN non-goal (normative):** RVDR1 does **not** revoke an entire Raven identity/address.  
-**RDAP today:** address revoke is exactly that coarser local deny — “do not accept this peer address.”
+Naming: **device-lineage revoke** (R) vs **RDAP address deny** (A). Avoid “identity revoke” unless a future RAVEN identity-revoke profile exists.
 
-Naming rule for docs and UI: call layer R **device-lineage revoke**; call layer A **RDAP address deny** (avoid “identity revoke” for either unless a future RAVEN identity-revoke profile exists).
+**File / mint cross-clear:** Neither stack’s revoke **file or mint** clears the other automatically in V1. Propagation of address-deny files or RVDR1 objects is an explicit operator or automation action (see playbooks). This does **not** weaken O6 **effective deny** in G5.2.
 
-## G5.2 Honest coupling under O6/M1 (same RVN1)
+## G5.2 O6/M1 apply rules (same RVN1; no soft parallel identity)
 
-ADR 0004 M1 pins RDAP to the **same RVN1** as local `raven-node`. That does **not** merge the instruments; it tightens **apply** rules:
+Per ADR 0004 D3: RDAP binds to the local `raven-node` **user identity** that derives that RVN1; trust/invite MUST be an **ash-style contact pin** of that same RVN1 (no second pin namespace).
 
-1. **R → A (mandatory fail-closed for O6 data plane):**  
-   If the local node has accepted an RVDR1 whose denied lineage identifiers cover the **peer device material** RDAP is using for that pin (for M1 single-device: the peer Ed25519 used in trust / ATSAM), then RDAP MUST treat that peer as **A2A-denied** for both control-plane verify and ATSAM task send/recv — even if the address is absent from `revocations_file`.  
-   Rationale: signed HTTP or LanDial must not resurrect a lineage Raven already retired.
+1. **No automatic file cross-write (V1):** RVDR1 apply MUST NOT auto-append the identity address to `revocations_file`. Address deny MUST NOT mint RVDR1 (**A ↛ R**).
 
-2. **A ↛ R (no auto-mint):**  
-   Adding an RVN1 to RDAP `revocations_file` MUST NOT mint or forge RVDR1. It is local A2A policy only. Operators who need Raven-wide lineage retire still use identity-signed RVDR1 via ash/`raven-node` paths.
+2. **O6 effective deny (R → A at verify/send time):** If the local node has accepted an RVDR1 whose denied lineage identifiers cover the **peer device material bound to the current ash-style pin / ATSAM path**, RDAP MUST treat that peer as **A2A-denied** for control-plane verify and confidential send/recv — even when the address is absent from `revocations_file`.  
+   Rationale: do not resurrect a retired lineage over signed HTTP or LanDial.  
+   This is **not** playbook-A address revoke: after re-pair on a **new** lineage under the same address, re-pin and proceed without having poisoned the address deny list.
 
-3. **Local self vs peer:**  
-   Revoking **own** compromised device uses RVDR1 (layer R). Removing a **peer** from the agent team uses layer A (and/or untrust). Do not document “rdap revoke” as a substitute for device retirement.
+3. **Effective peer deny** = address-revoke-set ∪ pins whose current device material is RVDR1-covered ∪ (recommended) identity namespaces under `IDENTITY_REVOKE_EXHAUSTED` while the marker is active.
 
-4. **Follow-on (post-M2, distinct `USER_AGENT_DEVICE`):**  
-   When agent credentials diverge from device lineage, layer A may deny an agent address without RVDR1; layer R may retire a device without deleting every agent grant — exact mapping deferred to Identity after agent-runtime gates; **not** an O6 blocker.
+4. **`USER_AGENT_DEVICE` follow-on (after M2):** distinct principal under G5 — do not silently share revoke/authority with the user identity.
 
-## G5.3 Partition and propagation (shared honesty)
+## G5.3 Incident playbooks (normative intent)
 
-Both layers inherit Raven’s **no instant global revoke**:
+| Incident | Must do | Must not / notes |
+|---|---|---|
+| **A. Stolen device; identity seed safe** | Mint/apply **RVDR1** (or local sticky) for that lineage; close sessions; re-pair **new** lineage (no id/key reuse). O6 effective deny applies while old lineage is pinned. | **Do not** RDAP-address-revoke unless tasks from that identity must stop entirely. |
+| **B. Identity seed compromised** | Continuity/recovery (Continuity V2 when applicable); **RDAP address revoke** on controlled nodes; revoke **all** known device lineages; re-pin **new** address after recovery. | Clear address deny on the old `rvn1…` only after new address is pinned (see G5.7). |
+| **C. RDAP peer misbehavior / key disagreement** | **RDAP address revoke** + remove/replace ash-style pin. | Add device-lineage revoke only if the misbehavior is device-scoped. |
+| **D. Partition / stale peer** | Documented lag: peers that have not observed RVDR1 may still trust until sync. | UX MUST NOT claim “revoked everywhere” after local apply alone. |
 
-- RVDR1: eventual propagation as public endpoint objects; partitioned verifiers may still trust until they learn (`RAVEN_DEVICE_REVOCATION_V1` §1 non-claim).
-- RDAP address deny: local file only unless operators distribute it out-of-band; no claim of mesh-wide A2A revoke in O6.
+## G5.4 Normative extras
 
-Status surfaces SHOULD expose separately:
+- **Signed HTTP invite/trust** = ash-style contact pin of that same RVN1 (ADR 0004 D3) — control plane only; never confidential.
+- **OPEN MODE** (`require_signed_tasks=false`) makes **no** authz claim; forbidden as default for shared/prod / O6 demos.
+- **Signed-mode revocations file path:** **required** when signed tasks are on. File may be empty (`[]` / `{"revoked":[]}`). **Missing path ⇒ fail-closed startup.** Empty list ⇒ no addresses revoked (not “revocation disabled”).
+- Soft `unwrap_or_default` on registry/revoke loaders = **P0 held for Sprint 1** — out of this ADR.
+- Status SHOULD expose separately: `raven_device_revocations_applied`, `rdap_address_deny_list`, `rdap_effective_peer_deny`.
 
-- `raven_device_revocations_applied` (count / digests as appropriate)
-- `rdap_address_deny_list` (configured path + count)
-- `rdap_effective_peer_deny` (union after R→A apply)
+## G5.5 Session fail-closed (Crypto)
 
-## G5.4 Session / crypto fail-closed (Crypto consult)
+When layer R denies a lineage used for an ATSAM session: fail closed for further origination; RDAP MUST NOT claim task success; re-pair on new lineage; no automatic session heal. Exact refuse opcode owned by Crypto.
 
-When layer R denies a lineage used for an ATSAM session:
-
-- Existing sessions MUST fail closed for further origination toward that peer (align `ATSAM_SESSION_REQUIRED` / session actor policy — exact opcode owned by Crypto).
-- RDAP MUST NOT report task success after Raven refuse.
-- Re-pair / new lineage required; no automatic session heal after revoke (RAVEN non-goal).
-
-## G5.5 O6 harness expectations (docs / tests later)
+## G5.6 Harness / joint tests (later eng)
 
 | Case | Expected |
 |---|---|
-| Peer in `revocations_file` only | RDAP reject signed HTTP + refuse ATSAM ask; Raven may still have device authorized |
-| RVDR1 applied covering peer device; address not in file | RDAP effective deny + Raven fail-closed; harness asserts both |
-| Neither | Normal O6 encrypted path |
-| Experimental mailbox | Still non-confidential; revoke policy still applies to task accept if drained into RDAP |
+| Address on revoke list only | RDAP reject; Raven device may still be authorized |
+| RVDR1 covers pinned device material; address **not** on list | RDAP **effective** deny + Raven fail-closed; re-pin new lineage → succeed without address-deny entry |
+| Playbook B | Address deny + all lineages revoked |
+| OPEN MODE | Not used in O6 harness |
+| Experimental mailbox | Non-confidential; revoke/effective-deny still apply on accept |
 
-## G5.6 CODEOWNERS / review
+## G5.7 Resolved open questions (Raven↔RDAP positions)
 
-- Appendix rides with ADR 0004: Architecture + Identity + Crypto ack.  
-- Future code bridging R→A apply: `@Raven-ASHCO/identity` + `@Raven-ASHCO/rdap` (+ crypto for session close).  
-- Risk class R3 for any revoke-apply wiring.
+1. **Signed-mode require revocations file path (even if empty)?** **Yes** — see G5.4.  
+2. **Continuity V2 → address rotation before clearing address revoke?** **Yes** — old address stays denied until new pin is live; Identity Continuity owns gate text.  
+3. **B-playbook fleet fan-out?** **Ops/automation (script), not protocol auto**, for V1.  
+4. **R→A remove from `trusted_peers` file?** **No** for V1 — verify/send-time effective deny only; optional UX untrust later.  
+5. **`IDENTITY_REVOKE_EXHAUSTED`?** **Yes** — treat address as A2A-denied while marker active (O6 recommend).
 
-## G5.7 Open questions for Identity AuthZ Sprint 0
+## G5.8 Review
 
-1. Confirm M1 single-device: peer pin Ed25519 ≡ device_ed_pub covered by RVDR1 (no separate identity-key pin in RDAP yet)?  
-2. Should R→A apply also **remove** peer from `trusted_peers` live file, or only deny at verify time? (Recommend: deny at verify; optional UX untrust later.)  
-3. Exhausted-marker / `IDENTITY_REVOKE_EXHAUSTED` — does RDAP inherit namespace fail-closed for that identity address in O6? (Recommend: yes, treat address as A2A-denied while marker active.)
+Appendix rides with ADR 0004 (Architect + Identity + Crypto). Engineering source of truth for playbooks: `docs/engineering/G5_CROSS_STACK_REVOKE_POLICY.md` (keep E4 aligned with G5.2 effective deny, not “device revoke never affects RDAP”).
