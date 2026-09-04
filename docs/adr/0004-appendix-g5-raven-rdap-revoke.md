@@ -1,6 +1,6 @@
 # Appendix G5 — Joint Raven↔RDAP revoke policy (docs-first)
 
-**Status:** Proposed with ADR 0004 — revision addressing Identity **BLOCK** on G5.2 (2026-09-04)  
+**Status:** Proposed with ADR 0004 — revision addressing Identity **BLOCK** on G5.2 (2026-09-04); Crypto **ACK** G5.4 2026-09-04  
 **Date:** 2026-09-04  
 **Owners:** Raven↔RDAP + Identity AuthZ; Crypto consult on session fail-closed  
 **Normative refs:** `protocol/RAVEN_DEVICE_REVOCATION_V1.md`, Identity `docs/engineering/G5_CROSS_STACK_REVOKE_POLICY.md`, ADR 0004 D3, RDAP `team_agents/raven_identity.py`
@@ -58,9 +58,18 @@ Per ADR 0004 D3: RDAP binds to the local `raven-node` **user identity** that der
 - Soft `unwrap_or_default` on registry/revoke loaders = **P0 held for Sprint 1** — out of this ADR.
 - Status SHOULD expose: `raven_device_revocations_applied`, `rdap_address_deny_list`, `rdap_data_plane_fail_closed` (and optional demo knob state).
 
-## G5.5 Session fail-closed (Crypto)
+## G5.5 Session fail-closed (Crypto ACK)
 
-When layer R denies the device lineage used for an ATSAM session: fail closed for further origination; RDAP MUST NOT claim task success; re-pair on new lineage; no automatic session heal. Exact refuse opcode owned by Crypto.
+When layer R denies the device lineage used for an ATSAM session:
+- Existing sessions MUST **fail closed** for further origination toward that peer.
+- RDAP MUST NOT claim task success after Raven refuse.
+- **No automatic session heal**; re-pair only on a **new** device lineage (RAVEN_DEVICE_REVOCATION_V1 non-goal).
+
+**Refuse-code guidance (Crypto-owned; freeze exact IPC string with Identity at M2):**
+- Do **not** collapse revoke-deny into soft `ATSAM_SESSION_REQUIRED` if that would UX-prompt “ensure session” / re-PairInit the **same** lineage.
+- Prefer a distinct hard deny aligned with apply-gates reason `revoked_target` on surface `session`/`message` (e.g. `DEVICE_REVOKED` / `ATSAM_LINEAGE_REVOKED`).
+- Until that string freezes: any Raven refuse on a revoked lineage is a **hard deny**; RDAP surfaces it and never claims success.
+- `IDENTITY_REVOKE_EXHAUSTED`: O6 treats as address/namespace A2A-denied while marker active.
 
 ## G5.6 Harness / joint tests (later eng)
 

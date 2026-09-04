@@ -1,6 +1,6 @@
 # ADR 0004 — Raven↔RDAP production ATSAM transport (O6)
 
-**Status:** Proposed (Architect **BLOCK** narrowed — HOLD/R3-header/IPC-trust revision; awaiting Architect ACK ADR 0004)  
+**Status:** Proposed (Architect **BLOCK** narrowed — HOLD/R3-header/IPC-trust revision; Crypto **ACK** G5.4 2026-09-04; awaiting Architect ACK ADR 0004)  
 **Date:** 2026-09-04  
 **Risk class (normative):** **R3** (ATSAM / crypto transport). Approvers: Architect (#1), Crypto ATSAM (#3), Identity AuthZ (#15); Security Board as matrix requires. **No R3 self-merge.**  
 **Deciders (required ack before merge):** Architect (#1), Crypto ATSAM (#3), Identity AuthZ (#15); Security Board as matrix requires  
