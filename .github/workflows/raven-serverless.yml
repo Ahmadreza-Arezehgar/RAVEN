@@ -615,6 +615,11 @@ jobs:
           cargo test -p raven-core --lib lan_
           cargo build -p raven-swarm -p raven-node
           cargo build --release -p raven-core -p raven-node -p ash
+      # CLI DX: install→doctor→menu/send path (not cargo-test-only).
+      # locked-file backend avoids Keychain ACL hangs in CI — not a production Keychain claim.
+      # Builds target/debug/ash if prior cargo test/build did not emit the CLI binary.
+      - name: ash menu smoke
+        run: ./scripts/ash_menu_smoke.sh
       # Named reliability gates (Sprint 0 evidence bar). reliability_10k is
       # #[ignore] and is NOT run by the umbrella cargo test above.
       # reliability_10k on macOS is QUEUE DURABILITY ONLY — not a path proof.
