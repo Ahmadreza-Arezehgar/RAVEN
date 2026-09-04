@@ -20,6 +20,8 @@
 /node/crates/raven-core/                                  @Raven-ASHCO/core
 /node/crates/raven-core/src/atsam*                        @Raven-ASHCO/crypto @Raven-ASHCO/core
 /node/crates/raven-core/src/hybrid*                       @Raven-ASHCO/crypto @Raven-ASHCO/core
+/node/crates/raven-core/src/mlkem768_incremental*         @Raven-ASHCO/crypto @Raven-ASHCO/core
+/node/crates/raven-mlkem768-incremental-ffi/              @Raven-ASHCO/crypto @Raven-ASHCO/core
 /node/crates/raven-core/src/device_*                      @Raven-ASHCO/identity @Raven-ASHCO/crypto
 /node/crates/raven-core/src/prekey*                       @Raven-ASHCO/identity @Raven-ASHCO/crypto
 /node/crates/raven-core/src/ble*                          @Raven-ASHCO/transport @Raven-ASHCO/apple
