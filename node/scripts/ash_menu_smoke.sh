@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Non-interactive smoke for ash menus 1–4 + q (first-run + empty contacts).
 # Safe: ephemeral mktemp data dirs only. No secrets.
+# Must use target/debug/ash: RAVEN_IDENTITY_BACKEND=locked-file is refused in Release.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -19,7 +20,10 @@ cleanup() { rm -rf "$WORKDIR"; }
 trap cleanup EXIT
 
 # Share identity across ash menu smoke without Keychain ACL issues.
+# locked-file is debug-only. RAVEN_ALLOW_EPHEMERAL_DATA_DIR=1 keeps mktemp
+# --data-dir (ash otherwise remaps /tmp/raven-ash-* to ~/.raven for Mac whoami).
 export RAVEN_IDENTITY_BACKEND=locked-file
+export RAVEN_ALLOW_EPHEMERAL_DATA_DIR=1
 
 echo "=== ash menu smoke workdir=$WORKDIR ==="
 

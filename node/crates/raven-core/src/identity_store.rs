@@ -963,22 +963,30 @@ fn load_seed_with_migrate(
                 Err(IdentityStoreError::Corrupt)
             }
             None => {
-                // Generation path: absence must be PROVEN, never assumed. A
-                // locked or unavailable Keychain/Secret Service is not proof
-                // that no identity exists; generating here could fork the
-                // profile into a second Raven identity.
+                // Explicit locked-file first install (CI/lab). A *visible*
+                // protected identity is a hard conflict. SecureStore-unavailable
+                // is not visible — same rule as the legacy-plaintext branch.
+                // require_proven_first_install still refuses non-empty profiles.
                 if marker.is_none() {
                     #[cfg(target_os = "macos")]
-                    if keychain_get(&account)?.is_some() {
-                        return Err(IdentityStoreError::Continuity(
-                            "locked-file override conflicts with existing Keychain identity",
-                        ));
+                    match keychain_get(&account) {
+                        Ok(Some(_)) => {
+                            return Err(IdentityStoreError::Continuity(
+                                "locked-file override conflicts with existing Keychain identity",
+                            ));
+                        }
+                        Ok(None) | Err(IdentityStoreError::SecureStore(_)) => {}
+                        Err(e) => return Err(e),
                     }
                     #[cfg(all(target_os = "linux", target_env = "gnu"))]
-                    if secret_service_get(&account)?.is_some() {
-                        return Err(IdentityStoreError::Continuity(
-                            "locked-file override conflicts with existing Secret Service identity",
-                        ));
+                    match secret_service_get(&account) {
+                        Ok(Some(_)) => {
+                            return Err(IdentityStoreError::Continuity(
+                                "locked-file override conflicts with existing Secret Service identity",
+                            ));
+                        }
+                        Ok(None) | Err(IdentityStoreError::SecureStore(_)) => {}
+                        Err(e) => return Err(e),
                     }
                 }
                 require_proven_first_install(data_dir, marker)?;
@@ -1576,6 +1584,31 @@ mod tests {
         let keys: Vec<[u8; 32]> = workers.into_iter().map(|w| w.join().unwrap()).collect();
         assert!(keys.windows(2).all(|pair| pair[0] == pair[1]));
         test_cleanup(&dir);
+    }
+
+    static LOCKED_FILE_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct LockedFileEnvGuard;
+    impl Drop for LockedFileEnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: test-only, held under LOCKED_FILE_ENV.
+            unsafe { std::env::remove_var("RAVEN_IDENTITY_BACKEND") }
+        }
+    }
+
+    #[test]
+    fn locked_file_first_install_when_platform_store_unavailable() {
+        let _lock = LOCKED_FILE_ENV.lock().expect("env lock");
+        // SAFETY: test-only, serialized by LOCKED_FILE_ENV.
+        unsafe { std::env::set_var("RAVEN_IDENTITY_BACKEND", "locked-file") }
+        let _clear = LockedFileEnvGuard;
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let (id, backend) = load_or_create_identity(dir).expect("locked-file first install");
+        assert_eq!(backend, IdentityStoreBackend::LockedFile);
+        let loaded = load_identity(dir).unwrap().expect("loaded");
+        assert_eq!(id.public_key_bytes(), loaded.public_key_bytes());
+        test_cleanup(dir);
     }
 
     #[cfg(all(unix, not(target_os = "macos")))]
