@@ -1,6 +1,6 @@
 # Appendix G5 — Joint Raven↔RDAP revoke policy (docs-first)
 
-**Status:** Proposed with ADR 0004 — awaiting Architect **ACK Appendix G5** + Identity **ACK G5**; Crypto **ACK** G5.4/G5.5; Identity §4/G5.7 answers ACK’d
+**Status:** Architect Appendix G5 ACK withdrawn (conditional) — rewrite to PR #5 §2.2; ADR body ACK stands; awaiting re-ACK Appendix G5.
 **Date:** 2026-09-04  
 **Owners:** Raven↔RDAP + Identity AuthZ; Crypto consult on session fail-closed  
 **Normative refs:** `protocol/RAVEN_DEVICE_REVOCATION_V1.md`, Identity `docs/engineering/G5_CROSS_STACK_REVOKE_POLICY.md` (PR #5), ADR 0004 D3
@@ -21,14 +21,17 @@
 
 Naming: **device-lineage revoke** (R) vs **RDAP address deny** (A). Avoid “identity revoke.”
 
-## G5.2 O6/M1 apply rules (Architect + Identity binding)
+## G5.2 O6/M1 apply rules (Architecture SoT = Identity PR #5 §2.2)
 
-Per ADR 0004 D3: same raven-node RVN1; PairInit / device-cert / transcript binding; ash-style contact pin (user identity → RVN1). **Pin ≢ `device_ed_pub`.**
+Engineering SoT: `docs/engineering/G5_CROSS_STACK_REVOKE_POLICY.md` (PR #5). ADR appendix MUST NOT diverge. Per ADR 0004 D3: ash-style pin = user identity → RVN1; **pin ≠ `device_ed_pub`** without explicit binding.
 
-1. **A ↛ R (always)** — no automatic file cross-write either direction.
-2. **R ↛ auto address-deny (playbook A)** — RVDR1 MUST NOT write identity into `revocations_file` or imply layer-A address deny.
-3. **R → lineage-scoped data-plane fail-closed (mandatory)** — when accepted RVDR1 covers **device lineage material actually bound into** ATSAM/`LanDial`/task on this node, refuse that bound data-plane (Crypto hard deny; not soft `ATSAM_SESSION_REQUIRED` same-lineage re-pair). Predicate = covering **lineage ids**, **not** pin≡`device_ed_pub`.
-4. **Address revoke = playbook B/C** + operator file + `IDENTITY_REVOKE_EXHAUSTED` while marker active. Verify-time deny only.
+Copied from PR #5 §2.2 (3)–(7):
+
+3. **A ↛ R (always):** Adding an RVN1 to RDAP `revocations_file` MUST NOT mint or forge RVDR1.
+4. **R ↛ auto address-deny:** An accepted RVDR1 MUST NOT by itself require writing the identity `rvn1…` into RDAP `revocations_file`. Playbook A (stolen device, seed safe): other/new lineages under that identity may remain valid; do not conflate device-lineage revoke with address deny. Pin address ≠ `device_ed_pub` without an explicit binding.
+5. **R → fail-closed on bound data-plane (mandatory):** If ATSAM / LanDial / RDAP task paths are using **device key material covered by an applied RVDR1**, those paths MUST refuse (session close / task reject / no task-success after Raven refuse). This is **lineage-scoped** deny, not address-scoped. Predicate = covering lineage identifiers (`device_id` / `device_ed_pub` / `device_x_pub` / `device_cert_hash`), **not** “pin string equals device_ed_pub.”
+6. **Address revoke** remains playbook B/C (identity seed compromise or peer policy), plus operator file / `IDENTITY_REVOKE_EXHAUSTED` fail-closed for that address namespace while the marker is active.
+7. Effective denies at verify time only — do not auto-edit `trusted_peers` or `revocations_file` from RVDR1 apply.
 
 ## G5.3 Incident playbooks
 
@@ -70,4 +73,4 @@ Fail closed for further origination; RDAP never claims success after Raven refus
 
 ## G5.8 Review
 
-Engineering SoT playbooks: PR #5 `docs/engineering/G5_CROSS_STACK_REVOKE_POLICY.md` — must match this G5.2 four-point ruling. ADR core body: Architect **ACK** + Identity **ACK**. This appendix awaits Architect **ACK Appendix G5** + Identity **ACK G5**.
+Engineering SoT: PR #5 `docs/engineering/G5_CROSS_STACK_REVOKE_POLICY.md` §2.2 — G5.2 is a verbatim copy; appendix MUST NOT diverge. ADR body ACK stands. Architect Appendix G5 ACK withdrawn (conditional); awaiting re-ACK Appendix G5.
