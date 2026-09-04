@@ -1,0 +1,5 @@
+requested=5
+passed=5
+failed=0
+verdict=HARVEST_OK
+artifact_dir=/workspace/docs/engineering/baseline-freeze/artifacts/20260904T111355Z-2345
