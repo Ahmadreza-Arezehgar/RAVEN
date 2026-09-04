@@ -270,9 +270,11 @@ Do **not** conflate `windows_service.ps1` parse-only with this tier.
 
 ## Doctor / install exit codes (CLI DX)
 
-<!-- CLI DX: ash doctor checks, install script exit codes, fail-closed messaging.
-     Source of truth for appendix tables (presence / ready / send_path + exit codes):
-     https://github.com/Raven-ASHCO/RAVEN/pull/22
-     Do not invent exit-code tables here — paste/adapt from #22. -->
+<!-- CLI DX: paste presence/ready/send_path + exit-code appendix from PR #22.
+     Do not invent tables here. -->
 
-Operator/authors: fill this appendix from **[PR #22](https://github.com/Raven-ASHCO/RAVEN/pull/22)** (Core doctor gate). SRE Perf does not invent numeric exit-code tables in this file. The binding evidence rule is already locked above: **exit 0 ≠ send Proven**; presence / ready / send_path stay distinct.
+**Source of truth for this appendix:** [PR #22](https://github.com/Raven-ASHCO/RAVEN/pull/22) (`presence` / `ready` / `send_path` + doctor exit codes).
+
+Operators/authors: paste or adapt the appendix from #22. **Do not invent exit-code tables in this file.**
+
+SRE binding rule (locked above, not restated as a table): **`ash doctor` exit 0 ≠ send Proven**; presence / ready / send_path stay distinct.
