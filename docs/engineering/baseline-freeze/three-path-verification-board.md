@@ -1,6 +1,6 @@
 # Three-path verification board — Sprint 0
 
-**As of:** 2026-09-04 ~13:45 Europe/Madrid (Eng Program; rebased onto `main` incl. #24)  
+**As of:** 2026-09-04 ~13:45 Europe/Madrid (Eng Program; rebased onto `main` incl. #24 / #26 / #30)  
 **Owner:** Eng Program (#2) · consult SRE Perf (#19), P2P Network (#6), BLE Transport (#9)  
 **Scope:** Honesty board for `mesh` | `bridge` | `direct` — **no invented reliability numbers**
 
@@ -126,7 +126,7 @@ Terminal Win / macOS / Linux reliability **and** this three-path matrix sit **ab
 
 - This file does **not** enable required CI checks.
 - This file does **not** greenlight M1–M3 production code (terminal + HOLD). **M0 docs done** — ADR 0004 **MERGED** `ce087c7d9cfb`; Architect **full ACK** body+G5; Identity **full ACK** body+G5 pin `5d39099907ea` (= `main`); Crypto **ACK**. **Only** M1–M3 code remains gated.
-- Soft soak / fail-rate bounds wait for the SRE Perf (#19) snapshot ([`perf-baseline-2026-09-04.md`](perf-baseline-2026-09-04.md) — harvest in flight; docs-only ≠ Proven).
+- Soft soak / fail-rate bounds: SRE Perf (#19) harvest landed [RAVEN#26](https://github.com/Raven-ASHCO/RAVEN/pull/26) ([`perf-baseline-2026-09-04.md`](perf-baseline-2026-09-04.md)). Soft budgets draft. Docs-only ≠ Proven.
 - B11 `install.sh` ([RAVEN#17](https://github.com/Raven-ASHCO/RAVEN/pull/17)) is a hazard track, **not** install Proven.
 - Path A lock: do **not** call mesh relay reliable. Localhost reservation only; circuit/WAN/auto-fallback/DCUtR **NOT proven**; hop server missing; multi-NAT **BLOCKED_HARDWARE**; NAT hold intact.
 - Path B lock: opaque custody + `ENDPOINT_ACK_ONLY` **proven (software)** only. Hop/repl cooperative-only; prod mailbox held; iOS blocked on B8. **Not flood-proof / not Byzantine-safe.** Prefer executed green/red citations.

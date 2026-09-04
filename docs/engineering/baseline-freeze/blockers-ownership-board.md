@@ -1,6 +1,6 @@
 # Living blockers / ownership status — Sprint 0
 
-**As of:** 2026-09-04 ~13:45 Europe/Madrid (Eng Program refresh after rebase onto latest `main`, incl. #24)  
+**As of:** 2026-09-04 ~13:45 Europe/Madrid (Eng Program refresh after rebase onto latest `main`, incl. #24 / #26 / #30)  
 **Owner:** Eng Program (#2)  
 **Audience:** Manager (CEO)  
 **Scope:** Ownership freeze only — no feature velocity metrics  
@@ -83,7 +83,7 @@
 | Path C (direct Internet) | **LOCKED** — LAN/localhost **proven**; WAN **blocked/untested**; internet dial **fail-closed proven** — **NOT** a WAN reliability claim. `ash_menu_smoke` → CLI DX #16. Windows honest fail-closed until named-pipe. **A+B+C fills present.** Continue **terminal**. |
 | Node IPC / B10 #1 | **Decision A AUTHORIZED NOW** — named-pipe implement **not** Sprint-1-deferred. Sprint 1 terminal slice **OPEN for pipe only**. Windows + Node IPC. Doctor/client keyed on `WINDOWS_NAMED_PIPE`. **Does not unblock WAN Path C.** |
 | Critical path / O6 gate | **M0 docs done ✅ CLOSED / MERGED** — [RAVEN#3](https://github.com/Raven-ASHCO/RAVEN/pull/3) ADR 0004 on `main` `ce087c7d9cfb`. Architect **full ACK** body+G5; Identity **full ACK** body+G5 pin `5d39099907ea` (= `main`); Crypto **ACK**. **Only** M1–M3 **production** code remains gated (terminal + HOLD). |
-| Performance baseline | **#19 SRE Perf** — IN PROGRESS (harvest; docs-only ≠ Proven) |
+| Performance baseline | **#19 SRE Perf** — harvest landed [RAVEN#26](https://github.com/Raven-ASHCO/RAVEN/pull/26); soft budgets draft; docs-only ≠ Proven |
 | Menu-smoke | Sole CI via RAVEN#16 (Apple APPROVE + Core ACK); converge DONE with SRE; **Proven flip only after executed green** (linked CI or agent smoke) |
 | macOS slice | **CI unit/smoke proven.** Menu smokes **not GHA-gated yet** — wire `ash_menu_smoke`/`doctor` into CI (not operator-only). Track #16/#22. Notarize **BLOCKED_HUMAN**. |
 
@@ -266,7 +266,7 @@ Fake-integration watch: any PR that wires RDAP tasks to production raven-node AT
 6. **B10 decision A:** named-pipe **implement AUTHORIZED NOW** (not Sprint-1-deferred). Sprint 1 terminal slice **OPEN for pipe only**. Windows + Node IPC. Doctor/client keyed on `WINDOWS_NAMED_PIPE`. **Does not unblock WAN Path C.** No duplicate compile fixes.
 7. **B11 / B12:** track #17 fail-close; do not treat `install.sh` or Win loopback `127.0.0.1:7420` as Proven.
 8. **B8 Phase 1+ PARKED** (Windows terminal > iOS landing).
-9. **SRE Perf (#19):** Performance baseline remains #19; harvest in flight — docs-only ≠ Proven.
+9. **SRE Perf (#19):** Performance baseline remains #19; harvest landed [RAVEN#26](https://github.com/Raven-ASHCO/RAVEN/pull/26). Soft budgets draft. Docs-only ≠ Proven.
 10. **Apple/Windows trees:** B5 remains; B8 parked. **Manager + SRE:** `perf` team or fold #19 (B6).
 11. **Path A locked:** localhost reservation only; do **not** call mesh relay reliable.
 12. **Path B locked:** opaque custody + `ENDPOINT_ACK_ONLY` proven (software); not flood-proof / not Byzantine-safe. Prefer executed green/red citations.
