@@ -23,21 +23,17 @@ Naming: **device-lineage revoke** (R) vs **RDAP address deny** (A). Avoid “ide
 
 **File / mint cross-clear:** Neither stack’s revoke file or mint clears the other automatically in V1.
 
-## G5.2 O6/M1 apply rules (Identity BLOCK revision)
+## G5.2 O6/M1 apply rules (Identity + Architect aligned)
 
-Per ADR 0004 D3: RDAP binds to the local `raven-node` **user identity** that derives that RVN1; trust/invite MUST be an **ash-style contact pin** of that same RVN1 (no second pin namespace).
+Per ADR 0004 D3: RDAP binds to the local `raven-node` **user identity** that derives that RVN1; trust/invite MUST be an **ash-style contact pin** of that same RVN1 (no second pin namespace). **M1 pin Ed25519 ≢ `device_ed_pub`.**
 
-1. **R → data-plane fail-closed (mandatory for O6):**  
-   If an accepted RVDR1 covers the peer **device lineage** used for PairInit/ATSAM with that contact, RDAP MUST fail-closed **ATSAM / `LanDial` task send-recv** (no task-success after Raven refuse) — even when the address is absent from `revocations_file`.
+1. **A ↛ R (always):** Adding an RVN1 to `revocations_file` MUST NOT mint or forge RVDR1. Address deny never auto-writes device-lineage revoke.
 
-2. **R ↛ A (default):**  
-   RVDR1 MUST NOT by itself imply layer-A **address deny**, remove the ash-style pin, or auto-edit `trusted_peers` / `revocations_file`. Address deny remains playbook **B** (seed compromise), explicit operator file action, or exhausted-marker policy (G5.7).
+2. **R → A (conditional only):** RVDR1 implies layer-A **address deny** **only if** the revoked lineage material is **actually present in that peer’s RDAP auth path** (the material used for pin / verify). Under **correct M1** (pin = user-identity pub → RVN1, not device key), RVDR1 does **not** cover pin material ⇒ **no auto address-deny** on device revoke (playbook **A** intact). Mis-wired M1 that put device material into the auth path MUST NOT be papered over by silent address-deny — fix the binding; optional operator address-deny remains playbook **B** / file / exhausted marker.
 
-3. **A ↛ R (unchanged):**  
-   Adding an RVN1 to `revocations_file` MUST NOT mint or forge RVDR1.
+3. **R → data-plane fail-closed (mandatory for O6):** When an accepted RVDR1 covers the peer **device lineage** used for PairInit/ATSAM with that contact, RDAP MUST fail-closed **ATSAM / `LanDial` task send-recv** (no task-success after Raven refuse; Crypto hard deny — not soft `ATSAM_SESSION_REQUIRED` that re-PairInits the same lineage) — even when the address is absent from `revocations_file`.
 
-4. **Harness note (optional, documented):**  
-   O6 single-device demos MAY set an **explicit knob** that also denies control-plane verify when that peer has no remaining authorized device. Default normative policy is **data-plane-only** fail-closed (preserves playbook **A**: stolen phone, seed safe → lineage revoke only; do not address-deny).
+4. **Harness note (optional):** O6 single-device demos MAY set an explicit knob that also denies control-plane verify when that peer has no remaining authorized device. Default = data-plane-only fail-closed.
 
 5. **`USER_AGENT_DEVICE` follow-on (after M2):** distinct principal under G5 — do not silently share revoke/authority with the user identity.
 

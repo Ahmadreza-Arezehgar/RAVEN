@@ -164,7 +164,7 @@ See companion `docs/adr/0004-CODEOWNERS-touch-list.md`.
 
 ## Appendix G5 — Joint Raven↔RDAP revoke policy
 
-See `docs/adr/0004-appendix-g5-raven-rdap-revoke.md` (R → data-plane fail-closed; R ↛ A default (Identity revision); align with Identity `docs/engineering/G5_CROSS_STACK_REVOKE_POLICY.md`).
+See `docs/adr/0004-appendix-g5-raven-rdap-revoke.md` (A↛R always; conditional R→A; R→ data-plane fail-closed).
 
 ## References
 
