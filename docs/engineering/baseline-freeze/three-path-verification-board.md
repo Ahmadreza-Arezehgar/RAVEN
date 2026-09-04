@@ -1,6 +1,6 @@
 # Three-path verification board — Sprint 0
 
-**As of:** 2026-09-04 ~13:45 Europe/Madrid (Eng Program; rebased onto `main` incl. #24 / #26 / #30)  
+**As of:** 2026-09-04 ~13:45 Europe/Madrid (Eng Program; rebased onto `main` incl. #24 / #26 / #30 / #29)  
 **Owner:** Eng Program (#2) · consult SRE Perf (#19), P2P Network (#6), BLE Transport (#9)  
 **Scope:** Honesty board for `mesh` | `bridge` | `direct` — **no invented reliability numbers**
 

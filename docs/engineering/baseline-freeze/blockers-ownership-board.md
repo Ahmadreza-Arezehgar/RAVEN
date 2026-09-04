@@ -1,6 +1,6 @@
 # Living blockers / ownership status — Sprint 0
 
-**As of:** 2026-09-04 ~13:45 Europe/Madrid (Eng Program refresh after rebase onto latest `main`, incl. #24 / #26 / #30)  
+**As of:** 2026-09-04 ~13:45 Europe/Madrid (Eng Program refresh after rebase onto latest `main`, incl. #24 / #26 / #30 / #29)  
 **Owner:** Eng Program (#2)  
 **Audience:** Manager (CEO)  
 **Scope:** Ownership freeze only — no feature velocity metrics  
