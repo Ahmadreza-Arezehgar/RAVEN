@@ -1,6 +1,6 @@
 # ADR 0004 — Raven↔RDAP production ATSAM transport (O6)
 
-**Status:** Proposed (Architect **BLOCK** 2026-09-04 — revision addressing required changes; Crypto **ACK** 2026-09-04 with D4 nit incorporated; awaiting Architect + Identity ack)  
+**Status:** Proposed (Architect **BLOCK** 2026-09-04 — revision addressing required changes; Crypto **ACK** 2026-09-04 with D4 nit incorporated; Identity **ACK** 2026-09-04 with D3 wording fixes; awaiting Architect re-ACK after BLOCK revision)  
 **Date:** 2026-09-04  
 **Risk class:** **R3** (ATSAM / crypto transport)  
 **Deciders (required ack before merge):** Architect (#1), Crypto ATSAM (#3), Identity AuthZ (#15); Security Board as matrix requires  
@@ -84,10 +84,11 @@ Status output MUST NOT leak confidential metadata (no plaintext task bodies, no 
 
 ### D3 — Identity binding for M1 (no soft parallel identity)
 
-- For the O6 harness, RDAP MUST use the **same RVN1 identity already owned by the local `raven-node` data dir** (`~/.raven` or configured `--data-dir`).
-- M1 **reuses the local raven-node RVN1 device binding**: the PairInit / device certificate / transcript binding that `raven-node` already uses for that data dir — not a newly invented RDAP-only keypair under `.team/keys` that merely happens to print a similar address string.
+- For the O6 harness, RDAP MUST use the **same RVN1** already owned by the local `raven-node` data dir (`~/.raven` or configured `--data-dir`).
+- M1 binds to the node’s **user identity key material that derives that RVN1** (Identity V1: user identity → address), together with the PairInit / device certificate / transcript binding `raven-node` already uses for that data dir — **not** a parallel device-only key, and **not** a newly invented RDAP-only keypair under `.team/keys` that merely prints a similar address string.
+- **Trust / invite MUST map to an ash-style contact pin of that same RVN1** — no second pin namespace and no parallel `trusted_peers` identity root beside the node’s contact/pin plane.
 - Mapping mechanism (read-only import of public material, IPC-mediated signing, documented export of public whoami, etc.) is an M1 implementation choice owned with Identity + Node IPC; **private keys MUST NOT** appear in IPC JSON (ADR 0003 / `ipc.rs`).
-- “Distinct `USER_AGENT_DEVICE` is follow-on” is permitted **only** as a documented post-O6 path. M1 MUST NOT invent a soft parallel identity, soft pin, or second trust root that bypasses PairInit/device-cert/transcript checks.
+- Distinct `USER_AGENT_DEVICE` is a **documented follow-on after M2** and MUST NOT block M2. When it lands, treat it as a **distinct principal under G5** (device lineage vs address / agent address) — do **not** silently share revoke or authority with the user identity. M1 MUST NOT invent a soft parallel identity, soft pin, or second trust root that bypasses PairInit/device-cert/transcript checks.
 - This reuse still MUST NOT bypass the RVN1 HOLD or errata.
 
 ### D4 — Sealing ownership (M2)
