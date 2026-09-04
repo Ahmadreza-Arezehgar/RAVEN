@@ -1,0 +1,80 @@
+# RAVEN Protocol Version Inventory
+
+**Status:** Living inventory (docs only). Not a wire change.
+**Updated:** 2026-09-04
+**Audience:** protocol owners, ports, CI readers.
+
+This page lists which protocol families are frozen, which are draft / production-disabled, and which CI jobs in `.github/workflows/raven-serverless.yml` (workflow display name: **Raven Serverless Node**) can be cited as evidence on the current serverless `main` tree.
+
+Wire codecs, vectors, and workflow YAML are unchanged by this document.
+
+---
+
+## Frozen families
+
+| Family | Spec | Vectors | Freeze rule | Breaking next |
+|---|---|---|---|---|
+| **Mesh BLE `v1`** | [`docs/MESH_PROTOCOL.md`](../docs/MESH_PROTOCOL.md) | [`shared-vectors/v1/`](../shared-vectors/v1/) | Frozen per [`shared-vectors/VERSIONING.md`](../shared-vectors/VERSIONING.md). Once a vector lands it never changes. | New tree `shared-vectors/v2/` plus `docs/MESH_PROTOCOL_v2.md` |
+| **Serverless `rvn1`** | [`SPEC.md`](SPEC.md) Version 1 (`rvn1`) | [`shared-vectors/rvn1/`](../shared-vectors/rvn1/) | Wire codec frozen. Domain prefixes include `rvn1/ack`, `rvn1/alias`, `rvn1/devcert`, `rvn1/caps`, `rvn1/route` (and later record prefixes in the same `rvn1/*` namespace). | New version byte + `shared-vectors/rvn2/` |
+
+**`rvn1` production hold.** The codec and committed vectors remain the contract. Production messaging is **not** approved: [`SECURITY_ERRATA_RVN1_2026-08-13.md`](SECURITY_ERRATA_RVN1_2026-08-13.md) overrides conflicting processing and release claims in the V1 family.
+
+---
+
+## Draft / not production wire
+
+These are **not** production wire. Do not treat lab vectors or architecture approval as a Release flag.
+
+| Profile | Spec | Status | Vectors |
+|---|---|---|---|
+| ATSAM hybrid-ratchet v2 + PairInit V2 | [`ATSAM_HYBRID_RATCHET_V2.md`](ATSAM_HYBRID_RATCHET_V2.md) | `REQUIRED / NOT YET APPROVED`; production disabled; PairInit V2 is new wire (`RVPI2` / `RVPR2`), not a reinterpretation of PairInit V1 | `shared-vectors/rvn1/atsam/pair_init_v2_001.json`, `atsam/negative/pair_init_v1_as_v2_001.json`, `atsam/tr_*.json` |
+| Identity Continuity V2 | [`RAVEN_IDENTITY_CONTINUITY_V2.md`](RAVEN_IDENTITY_CONTINUITY_V2.md) | `REQUIRED / NOT YET APPROVED`; production disabled; no V2 address, codec, or Release flag | none yet |
+| Unified Serverless Architecture V2 | [`RAVEN_UNIFIED_SERVERLESS_ARCHITECTURE_V2.md`](RAVEN_UNIFIED_SERVERLESS_ARCHITECTURE_V2.md) | Architecture **Approved**; **production disabled** until §8 companions are `APPROVED` and §9 / §10.2 gates pass. Does not freeze KDF, ratchet headers, or companion codecs. | — (umbrella; companions own vectors) |
+
+Companions whose headers say **wire not frozen** (and remain production disabled / `NOT YET APPROVED`): [`RAVEN_ID_RESOLUTION_V1.md`](RAVEN_ID_RESOLUTION_V1.md), [`RAVEN_PRIVATE_DISCOVERY_V1.md`](RAVEN_PRIVATE_DISCOVERY_V1.md), [`RAVEN_PRIVATE_INTRODUCTION_V1.md`](RAVEN_PRIVATE_INTRODUCTION_V1.md), [`RAVEN_PRIVATE_RENDEZVOUS_V1.md`](RAVEN_PRIVATE_RENDEZVOUS_V1.md), [`RAVEN_PUBLIC_REPOSITORY_SYNC_V1.md`](RAVEN_PUBLIC_REPOSITORY_SYNC_V1.md). Related drafts that say wire/adapters or library/implementation profile not frozen: [`RAVEN_SOVEREIGN_INTEROPERABILITY_GATEWAY_V1.md`](RAVEN_SOVEREIGN_INTEROPERABILITY_GATEWAY_V1.md), [`RAVEN_SOVEREIGN_MEDIA_PROVENANCE_V1.md`](RAVEN_SOVEREIGN_MEDIA_PROVENANCE_V1.md), [`RAVEN_PRIVATE_REALTIME_MEDIA_V1.md`](RAVEN_PRIVATE_REALTIME_MEDIA_V1.md). Additive `rvn1` lab profiles that **do** freeze bytes but stay production-disabled are listed in [`RAVEN_INTEROPERABILITY_MATRIX.md`](RAVEN_INTEROPERABILITY_MATRIX.md) §5.
+
+---
+
+## Negotiation
+
+| Mechanism | What it is | Known risk |
+|---|---|---|
+| `RavenProtocolCapabilitiesV1` | Signed, identity-scoped capability record (`env_type=4`). Domain `"rvn1/caps"`. See [`RAVEN_CAPABILITIES_V1.md`](RAVEN_CAPABILITIES_V1.md). | Single signed namespace going forward. |
+| Legacy unsigned RUM v2 `Capabilities` | BLE GATT advertisement bitmask (`docs/MESH_PROTOCOL.md` §A). Anyone in radio range can observe or alter it. | Bits 0–12 agree across current clients. **Bit 13 `doubleRatchet`** is present on iOS/macOS and **unallocated** on Windows/Android. Documented platform drift; this inventory does not authorize a code fix. |
+
+Capability negotiation is layered on version negotiation. Reconciling legacy RUM bits onto `RavenProtocolCapabilitiesV1.capability_bits` is not part of the `rvn1` freeze.
+
+---
+
+## RDAP (cross-repo note only)
+
+[`Raven-ASHCO/raven-distributed-agent-protocol`](https://github.com/Raven-ASHCO/raven-distributed-agent-protocol) package **1.1.0** is an experimental A2A companion. It vendors `protocol/reference/raven_protocol`. It is **not** the `raven-node` identity store.
+
+---
+
+## CI consumers on serverless `main` (honesty)
+
+This repo’s current `main` has **`node/`**, **`protocol/`**, and **`shared-vectors/`**. It has **0** `ios-native/` and **0** `RAVEN-WatchApp/` paths. The workflow file still names iOS / Watch / Libp2pBridge jobs. Those jobs are **blocked / N/A on serverless main until tree and workflow are aligned**. DevSecOps owns that CI fix. This inventory does **not** treat those jobs as healthy required gates.
+
+Cite present-tree evidence first:
+
+| Workflow job `name:` | Step `name:` (when relevant) | Present-tree status |
+|---|---|---|
+| **Rust + vectors (Linux)** | **protocol vectors (python)** | Intended `rvn1` vector regen/drift gate (`pytest` + `generate_rvn1.py` + `git diff --exit-code` on `shared-vectors/rvn1`). Job as a whole is **not-yet-green** on live PRs (`cargo fmt --check`). |
+| **Rust + vectors (Linux)** | **experimental mailbox/NAT tests (still production-disabled)** | Intended fail-closed hold: experimental binaries must refuse to run without explicit opt-in. Same job is **not-yet-green** (`fmt`). |
+| **.NET / C# rvn1 shared-vector consumer** | — | **NOT YET.** No smoke gate in `raven-serverless.yml`. Do not invent a C# harness. |
+
+Jobs that exist in YAML but are **path-missing / red / not required gates** on this `main`:
+
+| Workflow job `name:` | Why it is not a healthy gate here |
+|---|---|
+| **Messaging-only product boundary** | Script requires `ios-native/RAVEN` and `RAVEN-WatchApp/RAVEN-Watch` sources. **Path-missing.** |
+| **Go libp2p bridge security** | `working-directory: ios-native/RAVEN/Libp2pBridge` (`go.mod` absent). **Path-missing.** |
+| **iOS protocol security tests** | `working-directory: ios-native/RAVEN`. **Path-missing.** |
+| **Full Braid Slice 2 lab (iOS)** | `ios_full_braid_lab_gate.sh` requires `ios-native/RAVEN`. **Path-missing / blocked.** |
+| **Full Braid Task 0A macOS + iOS (0A.2–0A.4)** | iOS half needs the same missing tree. **Blocked / N/A** until alignment. |
+| **Rust (macOS)** | Live PR failure: `adversarial_atsam` / `full-braid-lab` feature issue. **Red / not-yet-green.** Do not cite as green. |
+
+Other job display names in the same workflow (not claimed green here): **Secret pattern scan**, **ML-KEM-768 incremental (portable)**, **ML-KEM-768 incremental (AVX2)**, **ML-KEM-768 incremental (NEON)**, **Full Braid Slice 2 lab**, **Full Braid Task 0A provenance (0A.1)**, **Full Braid Task 0A Linux (0A.2/0A.4/0A.5)**, **Full Braid Task 0A Windows MSVC (0A.2/0A.4)**, **Rust (Windows)**.
+
+Platform vector consumers outside this workflow: see [`../shared-vectors/README.md`](../shared-vectors/README.md). **.NET / C# `rvn1` CI consumer is NOT YET.**

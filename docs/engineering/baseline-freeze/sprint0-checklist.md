@@ -11,7 +11,7 @@ Status legend: `NOT STARTED` · `IN PROGRESS` · `BLOCKED` · `DONE` · `WAIVED`
 | PR risk classification | #17, #1 | IN PROGRESS | Classes defined in `01-risk-classes.md`; not yet enforced in PR template |
 | Required review matrix | #17 | IN PROGRESS | `04-approval-matrix.md` drafted; not enforced in branch protection |
 | CI required checks | #20 | NOT STARTED | Workflows exist (`raven-serverless.yml`, `selftest.yml`); not required on `main` |
-| Current protocol versions | #2, #3, #14 | NOT STARTED | |
+| Current protocol versions | #2, #3, #14 | IN PROGRESS | Inventory: `protocol/PROTOCOL_VERSIONS.md` (linked from `protocol/SPEC.md`); production-disabled evidence in `protocol/RAVEN_INTEROPERABILITY_MATRIX.md` §5. Docs only; CI YAML alignment is DevSecOps. |
 | Experimental-only features | #2, #14, #10 | NOT STARTED | |
 | Known security / interop / Raven↔RDAP gaps | #4, #17, #18 | NOT STARTED | |
 | Performance baseline | #11 | NOT STARTED | |
