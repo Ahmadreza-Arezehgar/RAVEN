@@ -4,6 +4,7 @@
 **Assignment:** Sprint 0 Role #6 — P2P / libp2p Network Engineer, raven-swarm owner.  
 **Published org mapping:** [docs/engineering/baseline-freeze/org-structure.md](../engineering/baseline-freeze/org-structure.md) names **#9 Network Lead** for D3 networking; [`.github/CODEOWNERS`](../../.github/CODEOWNERS) maps `/node/crates/raven-swarm/` to `@Raven-ASHCO/network`. This doc does not resolve that numbering; it inventories the crate.  
 **Date of inventory:** 2026-09-04 (repo `main` at investigation time).  
+**Founder addendum:** 2026-09-04 — [§0 terminal-to-terminal direct Internet](#0-founder-terminal-to-terminal-direct-internet) (read-only; no network-code change).  
 **Constraint:** read-only investigation. No product requirements invented. Confidence is labeled **documented** (spec/ADR/TODO/test/comment) vs **inferred** (architecture intent from composition or rust-libp2p defaults).
 
 **Status legend**
@@ -14,6 +15,24 @@
 | **partial** | Code or composition exists; missing a role, production path, or a proving test |
 | **missing** | No Raven-authored implementation of the axis |
 | **untested** | Composed or configured, but no test asserts the behavior |
+
+---
+
+## 0. Founder: terminal-to-terminal direct Internet
+
+**Question:** Can two Raven terminals on the public Internet establish a **direct** path today?  
+**Constraint:** honesty from named tests only. No WAN claim without a proving test. This section does not change §2–§6; it answers the founder question against the same evidence.
+
+**Terminal-to-terminal direct Internet today:** **No — not proven, and the shipping message path is fail-closed.** Two public-Internet terminals cannot be claimed to connect. `raven_core::internet` (RIH1) is a codec plus a negative `ATSAM_SESSION_REQUIRED` gate; default `raven-swarm` TCP+Noise works only on explicit localhost multiaddrs; the experimental relay/DCUtR/AutoNAT stack is production-disabled. No CI or in-tree smoke dials a non-`127.0.0.1` / non-RFC1918 peer.
+
+| Path / mechanism | Proven? | Evidence (file + test/CI) | What blocks WAN today |
+|------------------|---------|---------------------------|------------------------|
+| `raven_core::internet` / InternetTransport (RIH1 hello + length-prefix) — ADR-0002 V1 first land | **fail-closed** for messages; **yes** for in-process codec only | Codec: `node/crates/raven-core/src/internet.rs` (`hello_roundtrip`, `frame_roundtrip`); fuzz: `node/crates/raven-core/tests/fuzz_smoke.rs`. Negative gate: `node/scripts/internet_dial_smoke.sh` (CI `rust-linux` “legacy Internet path remains fail-closed”). Hold: `node/adr/0002-internet-transport.md`; `node/DONE_CHECKLIST.md` “InternetTransport endpoint delivery”. | No socket in `internet.rs` (pack/unpack only). `raven-node run` builds the envelope **before** `TcpStream::connect` and exits on `ATSAM_SESSION_REQUIRED` (`node/crates/raven-node/src/main.rs` `build_message_envelope` + send path). Smoke binds `127.0.0.1:0` and never completes a peer dial. Indexed ATSAM session + sealed ACK not wired to this carrier. |
+| Default `raven-swarm` libp2p TCP+Noise (explicit multiaddr) | **localhost-only** | `build_swarm` TCP+Noise+Yamux (`node/crates/raven-swarm/src/main.rs`); `cmd_dial` `swarm.dial(addr /p2p/<peer>)` — no listen. Smoke: `node/scripts/libp2p_swarm_smoke.sh` (`--listen /ip4/127.0.0.1/tcp/0`). CI: `rust-linux` + `rust-macos` “libp2p swarm smoke”. Test: `fixed_localhost_nodes_connect_over_noise_tcp` (`src/connectivity.rs`). Same claim as §2.1. | Default serve listen is loopback (`/ip4/127.0.0.1/tcp/0`). Dialer does not bind/advertise a WAN address. Operator *may* pass a public multiaddr (no filter), but **no** named test or CI job dials a non-loopback / non-RFC1918 peer. `OutgoingConnectionError` returns immediately — no NAT/relay fallback (§3.1). Public Kad **BLOCKED_HARDWARE** (Transport Interface §5–6). |
+| Experimental NAT stack (Circuit Relay v2 client / DCUtR / AutoNAT v2 client) — **contrast only** | **blocked** (production-disabled); localhost composition only | Spec: `protocol/RAVEN_NAT_CONNECTIVITY_V1.md`. Gate: `PRODUCTION_NAT_CONNECTIVITY_ENABLED = false`; Cargo `experimental-nat-connectivity` **and** `--enable-experimental-nat-connectivity`. CI: `expect_failure_with_message` “…requires explicit runtime opt-in”. Tests: reservation + limits on `127.0.0.1` only (§2.4–§2.10, §4.1). | Dual compile/runtime hold. Default `raven-swarm` does not compose relay/DCUtR/AutoNAT. No two-client circuit, no `dcutr=direct_connection_established` test, no AutoNAT server. Live multi-NAT/CGNAT: `NAT_STATUS` **BLOCKED_HARDWARE**. Not a production path and not a WAN proof. |
+| `plan_paths` Direct vs Internet vs Relay (`raven-core`) | **yes** as **policy order only** — not a live WAN dial | `node/crates/raven-core/src/transport.rs`: Direct if `peer_reachable_direct`; Internet if `local_has_internet && peer_reachable_internet`; Relay if `relay_enabled && local_has_internet`. Test: `relay_and_store_are_ordered_fallbacks_not_delivery_claims`. Defaults: `MessageRouter.relay_enabled = false`, `NodePolicy.relay = false`. | **Direct** ≠ public Internet (local/LAN reachability flag). **Internet** is a carrier label, not a proving dial. **Relay** is a policy bit, **not** Circuit Relay v2, and is off by default. No `raven-swarm` caller walks this list onto a WAN or `/p2p-circuit` dial (§3.3). |
+
+`docs/adr/0002-internet-transport.md` still names InternetTransport the “V1 shipping path”; `node/adr/0002-internet-transport.md` names the same module a “V1 laboratory path” and requires the negative smoke. This section follows the **node ADR + CI gate**: codec exists, message origination must refuse.
 
 ---
 
@@ -328,10 +347,13 @@ There are **no** `#[ignore]` / `#[should_panic]` DCUtR or NAT tests in `raven-sw
 
 Localhost Noise/TCP, QUIC, Kad put/get, connection-limit admission, and a **client reservation** against a test hop are real. Circuit Relay v2 **hop**, automatic relay fallback, DCUtR, AutoNAT probes, symmetric NAT/CGNAT, and public DHT are not proven. The experimental behaviour **composes** the libp2p NAT stack behind two gates; composition is not a traversal claim.
 
+Founder WAN question (two terminals on the public Internet, direct path): **not proven** — see [§0](#0-founder-terminal-to-terminal-direct-internet).
+
 ---
 
 ## 7. See also
 
+- [§0 Founder: terminal-to-terminal direct Internet](#0-founder-terminal-to-terminal-direct-internet)
 - [`protocol/RAVEN_NAT_CONNECTIVITY_V1.md`](../../protocol/RAVEN_NAT_CONNECTIVITY_V1.md)
 - [`protocol/RAVEN_TRANSPORT_INTERFACE_V1.md`](../../protocol/RAVEN_TRANSPORT_INTERFACE_V1.md)
 - [`docs/adr/0002-internet-transport.md`](../adr/0002-internet-transport.md)
