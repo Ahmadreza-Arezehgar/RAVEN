@@ -1,6 +1,6 @@
 # ADR 0004 — Raven↔RDAP production ATSAM transport (O6)
 
-**Status:** Proposed (Architect **BLOCK** 2026-09-04 — revision addressing required changes; awaiting Architect + Crypto + Identity ack)  
+**Status:** Proposed (Architect **BLOCK** 2026-09-04 — revision addressing required changes; Crypto **ACK** 2026-09-04 with D4 nit incorporated; awaiting Architect + Identity ack)  
 **Date:** 2026-09-04  
 **Risk class:** **R3** (ATSAM / crypto transport)  
 **Deciders (required ack before merge):** Architect (#1), Crypto ATSAM (#3), Identity AuthZ (#15); Security Board as matrix requires  
@@ -53,7 +53,8 @@ These are binding for any implementation claiming conformance to this ADR:
 Any claim of confidential / encrypted RDAP task delivery MUST mean:
 
 - Task and reply application payloads are sealed under a **production-shaped ATSAM** session bound to the peer’s pinned Raven identity / device binding.
-- Sealed frames are submitted to and received from a running **`raven-node`** via documented IPC (`LanDial` primary; `EnqueueSealed` only where the dial path already established session/routing as specified by Crypto/Node IPC).
+- Sealed frames are submitted to and received from a running **`raven-node`** via documented IPC (`LanDial` primary; `EnqueueSealed` only for already-sealed frames where dial/session/routing already established as specified by Crypto/Node IPC).
+- **`LanDial` Noise XX is transport peer authentication only.** O6 confidentiality claims require an **ATSAM session seal** of application payloads — Noise alone is not sufficient.
 - Experimental swarm mailbox and cleartext HTTP A2A are **out of scope** for confidentiality claims.
 - Claims remain subordinate to the **RVN1 production HOLD**.
 
@@ -66,6 +67,8 @@ Any claim of confidential / encrypted RDAP task delivery MUST mean:
 | ATSAM via `raven-node` `LanDial` | **Primary** task/reply data plane | **Yes** for harness claims; **not** Release/production until HOLD lifts |
 | Production opaque mailbox / bridge | Stretch | Yes if used; **not** O6 gate |
 | `raven-swarm-mailbox-experimental` plaintext | Lab only, opt-in, labeled non-production | **Never** |
+
+**Noise vs ATSAM:** A successful `LanDial` Noise XX handshake authenticates the transport peer only. Reporting `atsam_rvn1` / claiming confidential delivery requires ATSAM-sealed application payloads under a persisted session — not Noise encapsulation alone.
 
 ### D2.1 — Carrier status enum (normative names)
 
@@ -90,8 +93,11 @@ Status output MUST NOT leak confidential metadata (no plaintext task bodies, no 
 ### D4 — Sealing ownership (M2)
 
 - Sealing and session ratchet state live in **Raven** (`raven-core` / `raven-node`).
-- Python RDAP obtains sealed frames only through: (a) IPC to a node that already holds the session, or (b) a future approved FFI/bindings surface owned by Crypto.
-- Forbidden: stuffing plaintext into `message_ciphertext`; Python-side ATSAM; client-triggered seal without a local authenticated session.
+- **Current IPC** (`EnqueueSealed` / `LanDial`) is **sealed-frame-only** — the daemon does **not** seal plaintext today (`ipc.rs`). Python MUST NOT construct RVNA1/ATSAM ciphertext.
+- **M2 MUST add a Crypto-owned `raven-node` path** that seals application payloads *inside* the daemon under the persisted ATSAM session (new IPC op or documented extension). Until that exists, RDAP MUST NOT invent a seal path and MUST NOT claim confidential send.
+- After M2: Python RDAP submits plaintext application payloads only to that daemon seal IPC (or receives already-sealed frames for dial), never sealing locally.
+- **FFI (if ever):** Crypto-owned, **R3**, Architect + Protocol Spec (#4) ack, shared-vectors KATs before RDAP may consume it.
+- Forbidden: stuffing plaintext into `message_ciphertext`; Python-side ATSAM; client-triggered seal without a local authenticated session; treating Noise-only dial as confidential.
 
 ### D5 — Harness acceptance (M3)
 
