@@ -31,13 +31,15 @@ Relays, stores, and RDAP HTTP terminate transport or task auth only. They MUST N
 | RDAP | `.team/keys` (parallel agent identity) |
 | `raven-node` | `~/.raven` (or configured `--data-dir`) |
 
-This split is the documented **Important integration gap**. O6/M1 closes it by pinning the **same RVN1** already owned by local `raven-node` (ADR 0004 D3, proposed [PR #3](https://github.com/Raven-ASHCO/RAVEN/pull/3)). A newly invented RDAP-only keypair that merely prints a similar address string is not that binding.
+This split is the documented **Important integration gap**. O6/M1 closes it by pinning the **same RVN1** already owned by local `raven-node` ([ADR 0004](../adr/0004-raven-rdap-atsam-transport.md) D3; on `main`, three-way ACK’d 2026-09-04; historical merge [PR #3](https://github.com/Raven-ASHCO/RAVEN/pull/3)). A newly invented RDAP-only keypair that merely prints a similar address string is not that binding.
 
 M1 MUST NOT invent a soft parallel identity, soft pin, or second trust root that bypasses PairInit / device-cert / transcript checks. Distinct `USER_AGENT_DEVICE` is a documented follow-on after M2.
 
 ---
 
-## 3. Only honest confidential path (proposed)
+## 3. Only honest confidential path
+
+ADR 0004 is **accepted on `main`** ([`docs/adr/0004-raven-rdap-atsam-transport.md`](../adr/0004-raven-rdap-atsam-transport.md); three-way ACK 2026-09-04). The ADR does **not** implement M2. Crypto-owned seal-inside-daemon remains future work.
 
 Confidential / encrypted RDAP task delivery is allowed only when **all** of the following hold:
 
@@ -78,7 +80,7 @@ Non-ATSAM carriers MUST NOT be labeled confidential. Status MUST NOT leak confid
 
 ## 6. G5 (one-liner)
 
-Accepted **RVDR1** covering a device lineage in use on ATSAM / `LanDial` / task ⇒ **data-plane fail-closed**. No auto-heal. Hard revoke refuse (`DEVICE_REVOKED` / `ATSAM_LINEAGE_REVOKED` or equivalent), **not** soft `ATSAM_SESSION_REQUIRED` same-lineage re-pair. Re-pair only on a **new** lineage. RVDR1 does not auto-write RDAP address deny (playbook A). Full policy: [`docs/engineering/G5_CROSS_STACK_REVOKE_POLICY.md`](../engineering/G5_CROSS_STACK_REVOKE_POLICY.md); ADR 0004 appendix G5 (PR #3, pending ACK).
+Accepted **RVDR1** covering a device lineage in use on ATSAM / `LanDial` / task ⇒ **data-plane fail-closed**. No auto-heal. Hard revoke refuse (`DEVICE_REVOKED` / `ATSAM_LINEAGE_REVOKED` or equivalent), **not** soft `ATSAM_SESSION_REQUIRED` same-lineage re-pair. Re-pair only on a **new** lineage. RVDR1 does not auto-write RDAP address deny (playbook A). Full policy: [`docs/engineering/G5_CROSS_STACK_REVOKE_POLICY.md`](../engineering/G5_CROSS_STACK_REVOKE_POLICY.md); ADR 0004 [appendix G5](../adr/0004-appendix-g5-raven-rdap-revoke.md) on `main` (three-way ACK’d 2026-09-04).
 
 ---
 
@@ -86,7 +88,7 @@ Accepted **RVDR1** covering a device lineage in use on ATSAM / `LanDial` / task 
 
 | Document | Role |
 |----------|------|
-| ADR 0004 ([PR #3](https://github.com/Raven-ASHCO/RAVEN/pull/3); `docs/adr/0004-raven-rdap-atsam-transport.md` when merged) | Proposed Raven↔RDAP production ATSAM transport (O6). Single SoT for M1–M3. |
+| [`docs/adr/0004-raven-rdap-atsam-transport.md`](../adr/0004-raven-rdap-atsam-transport.md) | Accepted Raven↔RDAP production ATSAM transport (O6). Three-way ACK’d 2026-09-04 (Architect + Crypto ATSAM + Identity AuthZ, body + Appendix G5). On `main` (`ce087c7`; historical [PR #3](https://github.com/Raven-ASHCO/RAVEN/pull/3)). Single SoT for M1–M3. M2 seal-inside-daemon is still future work. |
 | `docs/crypto/ATSAM_THREAT_ASSUMPTIONS_V1.md` ([PR #18](https://github.com/Raven-ASHCO/RAVEN/pull/18), when present) | Combiner, HOLD, library matrix, RDAP/O6, revoke. |
 | `docs/crypto/ATSAM_KAT_CONSUMER_MATRIX_V1.md` ([PR #18](https://github.com/Raven-ASHCO/RAVEN/pull/18), when present) | Vector consumers. Python is not a seal oracle. |
 | [`protocol/SECURITY_ERRATA_RVN1_2026-08-13.md`](../../protocol/SECURITY_ERRATA_RVN1_2026-08-13.md) | Normative HOLD. `ATSAM_SESSION_REQUIRED`. |
