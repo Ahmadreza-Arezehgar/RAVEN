@@ -1,12 +1,27 @@
 # Windows tree gap on `main`
 
-**Status:** Documented gap · no Windows tree bring-up this sprint · WinUI retired prototype  
+**Status:** Documented gap · no Windows tree bring-up this sprint · WinUI retired prototype · this-phase reliability blocker is the terminal path (named-pipe IPC)  
 **As of:** 2026-09-04  
 **Sprint 0 source of truth:** `main` (Rust / serverless)
 
 ## Governance
 
 Sprint 0 governance source of truth is **`main`**. The live baseline is the Rust node (`node/`), protocol specs (`protocol/`), shared vectors, and serverless CI. A feature branch does not silently hold authority for trees that are not on `main`.
+
+## Founder priority this phase
+
+The real Windows reliability blocker this phase is the **terminal path** (`ash` / `raven-node`), especially **named-pipe IPC absence** — not WinUI.
+
+Windows terminal reliability is elevated **above WinUI for the entire phase**. WinUI / `RAVEN-Windows` remains a retired prototype; do not revive WinUI CI this sprint.
+
+Facts on `main` today:
+
+- `raven-node` IPC server is `#[cfg(unix)]` only (`ipc` / `service` commands and UDS bind; no Windows named-pipe server).
+- `ash` has no named-pipe client (non-unix IPC path errors out; framing in `raven-core::ipc` is shared, OS bind is not).
+- `ash doctor` / daemon probes are UDS-shaped (`default_socket_path` + UDS ping) → **false-red / no local IPC** while the Task Scheduler bridge (`RavenNodeBridge` / `windows_service.ps1`) may be up.
+- MSVC `ash` compile was also blocked (P0 in flight separately; not this note).
+
+This note does not implement those fixes. SoT remains **`main`**. Eng Program **B9** still owns Windows tree landing. The RAVEN-Windows absence / unrelated-history / no-force-merge record below is unchanged.
 
 ## Absent trees
 
@@ -51,11 +66,15 @@ Do **not** force-merge unrelated histories this sprint. Eng Program owns landing
 
 ## Related debt (out of scope here)
 
-Priority backlog **after** the B9 landing plan — mention only; not this PR:
+This-phase founder priority (terminal path; **not** this PR — see above):
+
+- named-pipe IPC — **ABSENT** (`raven-node` server `#[cfg(unix)]` only; `ash` has no named-pipe client)
+- MSVC `ash` compile — blocked; P0 in flight separately
+
+Priority backlog **after** the B9 landing plan — mention only:
 
 - MSVC CI on `main`
 - `protected_anchor` Windows backend — **ABSENT**
-- named-pipe IPC decision — **ABSENT**
 - installer / Authenticode
 
-This note does not implement those items.
+This note does not implement those items. WinUI bring-up is not the this-phase reliability work.
