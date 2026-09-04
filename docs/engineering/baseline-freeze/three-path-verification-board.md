@@ -42,7 +42,7 @@ Terminal Win / macOS / Linux reliability **and** this three-path matrix sit **ab
 |----|---------------|-------|
 | Linux | **Not Proven** on this board | Menu-smoke sole CI is [RAVEN#16](https://github.com/Raven-ASHCO/RAVEN/pull/16) (Apple APPROVE + Core ACK; SRE converge DONE). **Proven flip only after linked green CI.** |
 | macOS | **Not Proven** on this board | Same #16 rust-macos menu-smoke when green. Keychain / launchd / notarization are **out of scope** for menu-smoke. |
-| Windows | **Not Proven** on this board | [RAVEN#20](https://github.com/Raven-ASHCO/RAVEN/pull/20) **MERGED** (ash MSVC `Command` ungate). Next: `doctor` → pwsh smoke → `windows_service.ps1`. Named-pipe = PR2 (B10). Loopback B12 ≠ Proven. |
+| Windows | **Not Proven** on this board | Compile P0-1 **DONE** — [RAVEN#20](https://github.com/Raven-ASHCO/RAVEN/pull/20) **and** [RAVEN#21](https://github.com/Raven-ASHCO/RAVEN/pull/21) **MERGED** (not CI-held). Remaining B10 open P0 = named-pipe IPC + install→doctor→send CI. Docs/helpers **not** e2e-proven. Loopback B12 ≠ Proven. **Do not greenlight duplicate compile fixes.** |
 
 **Merge order (Eng Program):** #20 done → land #16 **when green** → [RAVEN#19](https://github.com/Raven-ASHCO/RAVEN/pull/19) rebases **preserving** menu-smoke. B1 required-check enable still needs green + Manager GO.
 

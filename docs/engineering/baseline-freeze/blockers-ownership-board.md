@@ -48,12 +48,12 @@ Org-create / personal-account CODEOWNERS blockers from morning audit are **clear
 
 | Track | Status | PR / next | Notes |
 |-------|--------|-----------|-------|
-| Windows MSVC `ash` `Command` ungate | **MERGED** via [RAVEN#20](https://github.com/Raven-ASHCO/RAVEN/pull/20) | #20 on `main` | **Not** Blocked. **Not** Platform PR1. Compile ungate only — **not** terminal Proven. |
+| Windows MSVC `ash` `Command` ungate (compile P0-1) | **DONE / MERGED** via [RAVEN#20](https://github.com/Raven-ASHCO/RAVEN/pull/20) + [RAVEN#21](https://github.com/Raven-ASHCO/RAVEN/pull/21) | #20 + #21 on `main` | **Do not greenlight duplicate compile fixes.** Compile ungate only — docs/helpers **not** e2e-proven. |
 | Menu-smoke (Linux + macOS) | In flight | [RAVEN#16](https://github.com/Raven-ASHCO/RAVEN/pull/16) | Apple APPROVE + Core ACK; SRE converge DONE. **Proven flip only after linked green CI.** |
 | `install.sh` fail-close (B11) | In flight (draft) | [RAVEN#17](https://github.com/Raven-ASHCO/RAVEN/pull/17) | Hazard retire / fail-close. **Not** install Proven. |
 | Core doctor axes (presence / ready / send_path) | In flight | [RAVEN#22](https://github.com/Raven-ASHCO/RAVEN/pull/22) | `ash doctor` exit 0 ≠ send Proven. |
 | Doctor identity-backend mismatch | In flight | [RAVEN#23](https://github.com/Raven-ASHCO/RAVEN/pull/23) | Identity usable / `daemon_ready` honesty. |
-| Windows `doctor` → pwsh smoke → `windows_service.ps1` | Next (after #20) | B10 | Named-pipe IPC = **PR2**. Docs / parse-only ≠ Proven. |
+| Named-pipe IPC + install→doctor→send CI | **Open P0** (remaining B10) | B10 | Remaining B10 after compile P0-1 **DONE**. Docs/helpers **not** e2e-proven. |
 | Win loopback `127.0.0.1:7420` | Excluded (B12) | — | Loopback ≠ WAN / named-pipe / terminal Proven. |
 
 ---
@@ -70,11 +70,11 @@ Org-create / personal-account CODEOWNERS blockers from morning audit are **clear
 | B6 | No GitHub team for SRE/Perf | 0d | SRE Perf (#19) + Manager | Med | No `@Raven-ASHCO/perf` (or similar). |
 | B7 | Review-latency baseline under-sampled | 0d | Eng Program (#2) | Low | Early sample was RAVEN#1 self-merge. More PRs merged today; **SLA still undefined** — exclude self-merges. Do not invent latency numbers here. |
 | B8 | iOS / Apple tree landing (Phase 1+) | — | Apple (#10) + Eng Program | **PARKED** | **Phase 1+ PARKED** — Windows terminal **>** iOS landing this phase. See `apple-tree-gap.md`. |
-| B10 | Windows terminal path after MSVC ungate | 0d | Windows (#11) + CLI DX (#12) + SRE Perf (#19) | High (Priority #1) | RAVEN#20 **MERGED** (ash MSVC `Command` ungate). **Next:** `doctor` → pwsh smoke → `windows_service.ps1`. Named-pipe IPC = **PR2**. Companion [RAVEN#21](https://github.com/Raven-ASHCO/RAVEN/pull/21) Class A `full-braid-lab` cfg **merged** but still **CI-held** (lab feature; not a Proven terminal cell). |
+| B10 | Windows terminal path — remaining P0 after compile | 0d | Windows (#11) + CLI DX (#12) + SRE Perf (#19) | High (Priority #1) | **Compile P0-1 DONE** — [RAVEN#20](https://github.com/Raven-ASHCO/RAVEN/pull/20) **and** [RAVEN#21](https://github.com/Raven-ASHCO/RAVEN/pull/21) **MERGED**. **Do not greenlight duplicate compile fixes.** **#21 is not CI-held.** Remaining open P0 = **named-pipe IPC** + **install→doctor→send CI**. Docs/helpers still **not** e2e-proven. |
 | B11 | `install.sh` hazard | 0d | CLI DX (#12) + DevSecOps (#20) | High | [RAVEN#17](https://github.com/Raven-ASHCO/RAVEN/pull/17) (draft) — fail-close install path. **Not** install evidence; docs/PR ≠ Proven. |
 | B12 | Win loopback `127.0.0.1:7420` | 0d | Windows (#11) + Node IPC (#8) | Med | Loopback bind/listen is **not** WAN / named-pipe Proven. Docs-only ≠ Proven. |
 
-**Cleared:** GitHub Org missing · repos on personal account · no CODEOWNERS · unprotected `main` · no teams · **B3** (RAVEN#7) · **M0 ack gate ✅** (RAVEN#3 three-way ACK, ADR body + Appendix G5).
+**Cleared:** GitHub Org missing · repos on personal account · no CODEOWNERS · unprotected `main` · no teams · **B3** (RAVEN#7) · **M0 ack gate ✅** (RAVEN#3 three-way ACK, ADR body + Appendix G5) · **B10 compile P0-1** (RAVEN#20 + #21 MERGED).
 
 ---
 
@@ -156,9 +156,9 @@ Fake-integration watch: any PR that wires RDAP tasks to production raven-node AT
 |------|--------|
 | Sole menu-smoke CI | [RAVEN#16](https://github.com/Raven-ASHCO/RAVEN/pull/16) — Apple **APPROVE** + Core **ACK**; converge **DONE** with SRE |
 | Proven flip | **Only** after linked green CI run URL (founder rule) |
-| Merge order | #20 **done** (MSVC `Command` ungate) → land #16 **when green** → #19 rebases **preserving** menu-smoke |
-| B10 next (Windows) | `doctor` → pwsh smoke → `windows_service.ps1`; named-pipe = PR2 |
-| #21 companion | Class A `full-braid-lab` cfg **merged**, still **CI-held** — not a terminal Proven cell |
+| Merge order | #20 + #21 **MERGED** (compile P0-1 **DONE**) → land #16 **when green** → #19 rebases **preserving** menu-smoke |
+| B10 remaining open P0 | **named-pipe IPC** + **install→doctor→send CI**. Docs/helpers **not** e2e-proven. **Do not greenlight duplicate compile fixes.** |
+| #21 | **MERGED** with #20 — **not** CI-held. Compile P0-1 closed. |
 
 ---
 
@@ -193,7 +193,7 @@ Fake-integration watch: any PR that wires RDAP tasks to production raven-node AT
 3. **B2:** accepted for bot-only org; escalate only if human reviewers added.
 4. **Founder Priority #1:** terminal L/M/W + three-path matrices; **no M1 eng** until terminal board green (CEO override only).
 5. **Menu-smoke:** land #16 when green; #19 rebases preserving menu-smoke; Proven only after linked green CI.
-6. **B10:** `doctor` → pwsh smoke → `windows_service.ps1`; named-pipe = PR2. #21 remains CI-held.
+6. **B10:** compile P0-1 **DONE** (#20 + #21 MERGED). Remaining open P0 = named-pipe IPC + install→doctor→send CI. **Do not greenlight duplicate compile fixes.** Docs/helpers still not e2e-proven.
 7. **B11 / B12:** track #17 fail-close; do not treat `install.sh` or Win loopback `127.0.0.1:7420` as Proven.
 8. **B8 Phase 1+ PARKED** (Windows terminal > iOS landing).
 9. **SRE Perf (#19):** Performance baseline remains #19; harvest in flight — docs-only ≠ Proven.
