@@ -154,7 +154,7 @@ Default catch-all on both repos: `@Raven-ASHCO/architecture` + `@Raven-ASHCO/rel
 
 **Order is hard dependency.** Terminal Win/macOS/Linux reliability + three-path matrices **before** O6 M1+.
 
-**Do not claim production Raven↔RDAP integration until lower layers are owned + CI-gated + Proven** (linked green CI or agent-executed smoke). Docs-only ≠ Proven.
+**Do not claim production Raven↔RDAP integration until lower layers are owned + CI-gated + Proven** (try-phase: executed green/red only — linked CI or agent smoke). Docs-only ≠ Proven.
 
 Fake-integration watch: any PR that wires RDAP tasks to production raven-node ATSAM sessions, or lands M1–M3 **production** code, while B1 remains open **or** terminal board is not green → Eng Program flags as premature.
 
