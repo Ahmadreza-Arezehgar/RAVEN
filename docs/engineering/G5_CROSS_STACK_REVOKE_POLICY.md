@@ -1,9 +1,9 @@
 # G5 — Cross-stack revoke policy (RAVEN device lineage ↔ RDAP address)
 
-**Status:** Docs-first SoT for G5 coupling. Architect + Identity full-ACK’d eng G5 (PR #5 → main, 2026-09-04). ADR 0004 Appendix G5 on PR #3 tip `5d39099` (and follow-on Status-only tip) copies §2.2 (3)–(7) verbatim — Architect + Identity + Raven↔RDAP + Crypto ACK’d; freeze G5.2 body. Soft-load P0 still held for Sprint 1.  
+**Status:** Docs-first SoT for G5 coupling. Architect + Identity full-ACK’d eng G5 (PR #5 → main, 2026-09-04). ADR 0004 Appendix G5 on main (merged from PR #3; G5.2 body from tip `5d39099`) copies §2.2 (3)–(7) verbatim — Architect + Identity + Raven↔RDAP + Crypto ACK’d (three-way closed; Architect restored full ACK). Freeze G5.2 body. Soft-load P0 still held for Sprint 1.  
 **Owners:** Identity AuthZ · Raven↔RDAP · RDAP Protocol  
 **Repos:** `Raven-ASHCO/RAVEN`, `Raven-ASHCO/raven-distributed-agent-protocol`  
-**Related:** `docs/adr/0004-appendix-g5-raven-rdap-revoke.md` on [RAVEN PR #3](https://github.com/Raven-ASHCO/RAVEN/pull/3); `docs/engineering/SPRINT0_IDENTITY_THREAT_MODEL.md`; `protocol/RAVEN_DEVICE_REVOCATION_V1.md`; RDAP `docs/rdap-revocation.md` (RDAP PR #2)  
+**Related:** `docs/adr/0004-appendix-g5-raven-rdap-revoke.md` on main (merged ADR 0004 / [PR #3](https://github.com/Raven-ASHCO/RAVEN/pull/3)); `docs/engineering/SPRINT0_IDENTITY_THREAT_MODEL.md`; `protocol/RAVEN_DEVICE_REVOCATION_V1.md`; RDAP `docs/rdap-revocation.md` (RDAP PR #2)  
 **Date:** 2026-09-04
 
 ## 1. Problem
@@ -77,4 +77,4 @@ Without a joint policy, operators can:
 - [x] Identity AuthZ (author)
 - [x] Raven↔RDAP (ACK Appendix G5 on PR #3, 2026-09-04)
 - [x] RDAP Protocol (ACK on RDAP PR #2 `docs/rdap-revocation.md`)
-- [x] Architect (Sprint 0 §2.4 + full G5 ACK eng SoT + Appendix G5 on PR #3 tip `5d39099`, 2026-09-04)
+- [x] Architect (Sprint 0 §2.4 + full G5 ACK eng SoT + Appendix G5 restored full ACK on merged ADR 0004 / PR #3, 2026-09-04)

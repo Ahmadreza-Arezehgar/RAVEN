@@ -170,7 +170,7 @@ From `MULTI_DEVICE_PARTITION_REVOCATION.md` / RVDR1 non-claim:
 - [x] Architect ack on trust boundaries row (2026-09-04, PR #5)
 - [ ] Security Board ack on trust boundaries row
 - [ ] P0 soft-load ban ticketed with failing tests (held for Sprint 1 batch)
-- [x] Joint note with Raven↔RDAP on G5 mapping (`G5_CROSS_STACK_REVOKE_POLICY.md`; ADR 0004 Appendix G5 ACK’d on PR #3)
+- [x] Joint note with Raven↔RDAP on G5 mapping (`G5_CROSS_STACK_REVOKE_POLICY.md`; ADR 0004 Appendix G5 on main / PR #3, three-way ACK closed)
 - [ ] Confirm production flag status for RVDR1 on each surface
 
 ## 6. Asks
