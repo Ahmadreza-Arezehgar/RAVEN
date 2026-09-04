@@ -1,6 +1,9 @@
 //! ATSAM adversarial battery — attacks an active adversary may mount against
 //! the sealed-message path. Every test encodes one attack; the assertion is the
 //! defense. Green here means the attack failed.
+//!
+//! Class A (Double Ratchet replay / reorder) requires `--features full-braid-lab`.
+//! Classes B–F run on default builds.
 
 use std::collections::HashSet;
 
@@ -13,16 +16,19 @@ use raven_core::atsam_indexed_session::{
 };
 use raven_core::atsam_root::{derive_root, transcript_hash, x25519_shared_checked};
 use raven_core::envelope::{EnvType, Envelope};
+#[cfg(feature = "full-braid-lab")]
 use raven_core::hybrid_ratchet_v2_tr::{
     ec_dr_decrypt, ec_dr_encrypt, ec_dr_init_alice, ec_dr_init_bob, EcDrHeader,
 };
 use raven_core::identity::Identity;
+#[cfg(feature = "full-braid-lab")]
 use x25519_dalek::{PublicKey, StaticSecret};
 
 fn addr(seed: u8) -> String {
     Identity::from_seed(&[seed; 32]).address()
 }
 
+#[cfg(feature = "full-braid-lab")]
 fn dr_setup() -> (Identity, Identity, [u8; 32]) {
     let alice = Identity::from_seed(&[0xA1; 32]);
     let bob = Identity::from_seed(&[0xB0; 32]);
@@ -32,8 +38,10 @@ fn dr_setup() -> (Identity, Identity, [u8; 32]) {
 
 // ---------------------------------------------------------------------------
 // Class A — replay / reorder against the Double Ratchet
+// Requires `--features full-braid-lab` (`hybrid_ratchet_v2_tr` is lab-only).
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "full-braid-lab")]
 #[test]
 fn a1_replayed_consumed_message_is_rejected() {
     let (_alice, bob, rk0) = dr_setup();
@@ -52,6 +60,7 @@ fn a1_replayed_consumed_message_is_rejected() {
     assert!(replay.is_err(), "replayed message must not decrypt twice");
 }
 
+#[cfg(feature = "full-braid-lab")]
 #[test]
 fn a2_replayed_skipped_message_cannot_open_twice() {
     let (_alice, _bob, rk0) = dr_setup();
@@ -78,6 +87,7 @@ fn a2_replayed_skipped_message_cannot_open_twice() {
     assert!(replay.is_err(), "skipped-key replay must fail");
 }
 
+#[cfg(feature = "full-braid-lab")]
 #[test]
 fn a3_adversarial_reordering_is_fully_recoverable() {
     let (_alice, _bob, rk0) = dr_setup();
@@ -108,6 +118,7 @@ fn a3_adversarial_reordering_is_fully_recoverable() {
     assert_eq!(bob.nr, 5, "receive head must reach the last index");
 }
 
+#[cfg(feature = "full-braid-lab")]
 #[test]
 fn a4_max_skip_flood_leaves_state_usable() {
     let (_alice, _bob, rk0) = dr_setup();
@@ -140,6 +151,7 @@ fn a4_max_skip_flood_leaves_state_usable() {
     let (_bob, _) = ec_dr_decrypt(&bob, &hdr1, 50, None, 2000).unwrap();
 }
 
+#[cfg(feature = "full-braid-lab")]
 #[test]
 fn a5_skipped_store_exhaustion_is_bounded_and_recovers() {
     let (_alice, _bob, rk0) = dr_setup();
