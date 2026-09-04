@@ -21,6 +21,8 @@ Org chart [`org-structure.md`](org-structure.md) still titles #19 as Release Eng
 | Surface | Owner | Owns |
 |---------|-------|------|
 | Evidence tiers, named CI jobs, what may be labeled Proven | **#19 SRE Perf** | This document; workflow steps that are reliability *evidence* (queue 10k, `bridge_v1`, path-row labels) |
+| **B11 / B12 evidence exclusion** (what must not be labeled Proven) | **#19 SRE Perf** (co-own) | Keep `install.sh`, Win `127.0.0.1:7420` loopback, and doctor-alone off the Proven list |
+| Operator retire / relabel of `install.sh` | **CLI DX** (co-own) | [PR #17](https://github.com/Raven-ASHCO/RAVEN/pull/17) fatal-exit / README one-liner removal — **in flight**, not Proven |
 | Operator how-to, `ash doctor` / install exit codes, how to run `reliability_matrix_20.sh` | **CLI DX** | Stubs at the bottom of this file; `ash` menu UX; install-script operator docs |
 
 **Menu-smoke CI (linux + macOS):** owned by **CLI DX PR #16** (`cursor/ash-menu-smoke-linux-ci-a976`, agent `bc-097f7c8d`). That PR wires `node/scripts/ash_menu_smoke.sh` into `rust-linux` **and** `rust-macos`. This PR does **not** add those steps. Until #16 is merged to `main`, menu-smoke is **pending / in-flight** — do not claim green.
@@ -67,11 +69,11 @@ No evidence on that OS’s CI job, or the path is hardware / portal / public-Int
 - Physical BLE (mock_ble / software bridge is not a radio claim)
 - Public CGNAT / DCUtR / live multi-NAT
 - Apple notarization / Windows Authenticode
-- **B11** — `node/scripts/install.sh` (see exclusion below)
+- **B11** — `node/scripts/install.sh` ([PR #17](https://github.com/Raven-ASHCO/RAVEN/pull/17) fatal-exit is relabel, not Proven; see exclusion below)
 - **B12** — Windows `127.0.0.1:7420` loopback (not WAN / not terminal-path Proven)
 - Any path with **no** named job/test on that OS
 
-### Core doctor gate (agreed with CLI DX)
+### Core doctor gate (locked with Eng Program / CLI DX)
 
 `ash doctor` reports **three distinct axes**. They must not be collapsed into one “healthy” bit.
 
@@ -113,6 +115,8 @@ Until the named step is green **on `main`**, label the row **proposed / in-fligh
 
 ## B11 — `node/scripts/install.sh` is non-evidence (Blocked)
 
+**Eng Program B11 High — locked 2026-09-04.**
+
 **Board ID B11** = `install.sh` is **NOT install evidence**. Status: **Blocked / non-evidence**. Our CI exclusion stays correct.
 
 Do not cite [`node/scripts/install.sh`](../../../node/scripts/install.sh) as Proven or as an install path for reliability claims.
@@ -125,7 +129,7 @@ Reasons the path was never evidence (this branch’s copy still shows the old bo
 
 **CLI DX P0 [PR #17](https://github.com/Raven-ASHCO/RAVEN/pull/17):** `node/scripts/install.sh` now **fatal-exits** (fail-closed for leftover `curl | bash`). README one-liner removed. That is **operator relabel + fail-closed, not Proven install evidence.** Cite #17 next to B11 in every non-evidence list.
 
-**Ownership:** SRE Perf **co-owns CI / evidence exclusion** (this bar). CLI DX **co-owns operator retire / relabel** (#17). Both labels stay until a *named* CI job proves an endorsed install path.
+**Ownership (locked):** SRE Perf **co-owns evidence exclusion** (this bar + CI). CLI DX **co-owns operator retire / relabel** (already in flight via #17). Fatal-exit is progress on the hazard, **still not Proven**.
 
 Prefer [`node/scripts/install/`](../../../node/scripts/install/) (`linux_systemd_user.sh`, `macos_launchd.sh`, `windows_service.ps1`) **only when separately proven** by a named job — do not invent Proven:
 
@@ -227,7 +231,7 @@ Software bridge is the strongest automated story. Mesh is sim + (optional) manua
 | **Bridge** | **Proven (software)** on current `main` via named `bridge_v1` + `lan_direct_two_node.sh`. Not physical BLE. | **Partial** on current `main` (umbrella `cargo test` includes `bridge_v1`). **This PR:** named `bridge_v1` → **proposed Proven (software)** once green on `main`. No `lan_direct` / `bridge_abc` on this job. | **Partial** on current `main`. **This PR:** named `bridge_v1` → **proposed Proven (software)** once green on `main`. No bash bridge demo. |
 | **Direct Internet** | **Not WAN Proven.** `internet_dial_smoke.sh` proves legacy `InternetTransport` origination stays **fail-closed** on localhost. Public IP / CGNAT / DCUtR **Blocked**. | **Blocked** for WAN. No `internet_dial_smoke` on `rust-macos`. Swarm smoke is localhost Kad/Noise, not public Internet. | **Blocked** for WAN. No internet smoke. Wine `ash --help` is **Substitute**, not this row. |
 
-**Always Blocked (all OS):** physical BLE, public CGNAT/DCUtR, notarization / Authenticode, **B11** `install.sh`, **B12** Win loopback-as-WAN, doctor-alone (exit 0), any path with no named evidence on that OS.
+**Always Blocked (all OS):** physical BLE, public CGNAT/DCUtR, notarization / Authenticode, **B11** `install.sh` ([#17](https://github.com/Raven-ASHCO/RAVEN/pull/17) fatal-exit ≠ Proven), **B12** Win loopback-as-WAN, doctor-alone (exit 0), any path with no named evidence on that OS.
 
 ---
 
