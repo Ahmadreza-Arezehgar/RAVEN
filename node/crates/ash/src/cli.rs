@@ -9,7 +9,6 @@ mod trace_delivery;
 
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
-#[cfg(unix)]
 use std::process::Command;
 
 use clap::{Parser, Subcommand};
@@ -3370,7 +3369,10 @@ fn wait_back() -> bool {
 }
 
 fn stty(args: &[&str]) {
+    #[cfg(unix)]
     let _ = Command::new("stty").args(args).status();
+    #[cfg(not(unix))]
+    let _ = args;
 }
 
 fn read_key_raw() -> MenuKey {
