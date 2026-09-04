@@ -859,7 +859,7 @@ class MessageStore {
         // Run delivery in background so the Send button is freed instantly
         Task {
             await self.attemptDelivery(mutableMessage)
-            // Reload DB to reflect status changes (.sent, .delivered) on the message bubble
+            // Reload DB to reflect status changes (.sent after write; .delivered only via ACK)
             await self.loadFromDB()
         }
     }
@@ -1148,12 +1148,12 @@ class MessageStore {
             do {
                 let result = try await sendViaServerWithTimeout(message, timeout: serverTimeout)
                 #if DEBUG
-                print("[Route] ✅ server delivered")
+                print("[Route] ✅ server accepted (transmitted, not protocol Delivered)")
                 #endif
                 await serverOutcome.markSucceeded()
 
-                // Mark server job as delivered
-                try? await DeliveryJobRepository.shared.markDelivered(messageId: clientId, channel: .server)
+                // Mark server job as transmitted (FORWARDED). Not protocol Delivered.
+                try? await DeliveryJobRepository.shared.markTransmitted(messageId: clientId, channel: .server)
                 
 
                 

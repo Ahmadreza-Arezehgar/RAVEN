@@ -3331,6 +3331,8 @@ struct MessageBubbleView: View {
     }
 
     /// Delivery status rendered as trailing terminal glyphs (own msgs only).
+    /// ✓✓ Delivered/Read come from verified ACK `MessageStatus`, never from
+    /// per-channel `JobState.transmitted` (write success is `.sent` / single ✓).
     private var statusSuffix: AttributedString {
         guard isFromMe else { return AttributedString("") }
         let glyph: String

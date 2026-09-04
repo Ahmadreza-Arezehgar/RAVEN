@@ -440,7 +440,10 @@ actor MessageRepository {
     }
     
     // MARK: - Mark Delivered/Read
-    
+
+    /// Protocol `DELIVERED_TO_DEVICE`. Reserved for a verified sealed
+    /// `env_type=2` ACK with `status=1` (`RAVEN_ACK_V1` §3). Transport write
+    /// success must use `DeliveryJobRepository.markTransmitted` instead.
     func markDelivered(clientMessageId: String, at: Date) async throws {
         try await db.execute(
             "UPDATE messages SET delivered_at = ?, status = 'delivered', updated_at = CURRENT_TIMESTAMP WHERE client_message_id = ?",

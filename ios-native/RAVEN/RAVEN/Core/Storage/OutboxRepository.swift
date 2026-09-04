@@ -107,8 +107,10 @@ actor OutboxRepository {
         #endif
     }
     
-    /// Mark message as delivered (stops both channels)
-    func markDelivered(clientMessageId: String, via: DeliveryVia) async throws {
+    /// First-arrival custody: stop both channels after a path reports arrival.
+    /// This is **not** protocol `DELIVERED_TO_DEVICE` — that stays on
+    /// `MessageRepository.markDelivered` after a verified sealed ACK.
+    func markFirstArrival(clientMessageId: String, via: DeliveryVia) async throws {
         let now = SharedDateFormatters.formatISO8601(Date())
         
         let sql = """
@@ -126,7 +128,7 @@ actor OutboxRepository {
         ])
         
         #if DEBUG
-        print("✅ [Outbox] Delivered via \(via.rawValue): \(clientMessageId.prefix(8))")
+        print("📤 [Outbox] First arrival via \(via.rawValue): \(clientMessageId.prefix(8))")
         #endif
     }
     

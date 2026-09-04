@@ -344,24 +344,33 @@ actor MeshACKHandler {
 
         logger.debug("Processing ACK for message \(messageId, privacy: .private) status=\(ack.status.rawValue, privacy: .public) from=\(ack.senderId, privacy: .private)")
         
-        // Update message status based on ACK
-        let newStatus: MessageStatus
-        switch ack.status {
-        case .delivered:
-            newStatus = .delivered
-        case .read:
-            newStatus = .read
-        }
-        
-        guard Self.statusAdvances(from: authorization.currentStatus, to: newStatus) else {
+        // Protocol Delivered/Read only from a verified ACK (RAVEN_ACK_V1 §3).
+        let ackStatusByte: UInt8 = ack.status == .read
+            ? RavenAckV1.readStatus
+            : RavenAckV1.deliveredStatus
+        guard let newStatus = EndpointDeliveryPolicy.afterVerifiedAck(status: ackStatusByte),
+              Self.statusAdvances(from: authorization.currentStatus, to: newStatus) else {
             return
         }
 
         do {
-            try await MessageRepository.shared.updateStatus(
-                clientMessageId: messageId,
-                status: newStatus
-            )
+            switch newStatus {
+            case .delivered:
+                try await MessageRepository.shared.markDelivered(
+                    clientMessageId: messageId,
+                    at: Date()
+                )
+            case .read:
+                try await MessageRepository.shared.markRead(
+                    clientMessageId: messageId,
+                    at: Date()
+                )
+            default:
+                try await MessageRepository.shared.updateStatus(
+                    clientMessageId: messageId,
+                    status: newStatus
+                )
+            }
             let committed = try await db.query(
                 "SELECT status FROM messages WHERE client_message_id = ? LIMIT 1",
                 params: [messageId]

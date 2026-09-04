@@ -22,6 +22,7 @@ fileprivate let logger = Logger(subsystem: "app.raven.ios", category: "Mesh.Deli
 // MARK: - Mesh Confidence State
 
 /// Delivery confidence state for mesh messages (distinct from TransportTypes.DeliveryState).
+/// `.delivered` is set only by `onDestinationACK` after a verified sealed ACK.
 enum MeshConfidenceState: Equatable {
     case queued
     case inTransit(firstRelayAt: Date, hopsConfirmed: UInt8)
@@ -124,7 +125,8 @@ final class DeliveryStateService: ObservableObject {
         }
     }
     
-    /// Called when destination ACK is received.
+    /// Called when a verified destination ACK is received (`status=1` or `2`).
+    /// Transport write success must not call this.
     func onDestinationACK(messageId: String) {
         guard FeatureFlag.isDeliveryConfidenceEnabled else { return }
         
