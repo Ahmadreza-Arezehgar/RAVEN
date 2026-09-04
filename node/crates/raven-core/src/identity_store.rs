@@ -908,11 +908,15 @@ fn bytes_to_seed(bytes: &[u8]) -> Result<[u8; 32], IdentityStoreError> {
     Ok(seed)
 }
 
-/// macOS locked-file first-install: proven absent is `Ok(None)` only
-/// (`errSecItemNotFound`). Locked/denied Keychain (`SecureStore`) is Continuity
-/// — it is not proof the account is empty.
+/// Locked-file lab/CI (debug only) may proceed only when Keychain is
+/// **proven absent** (`Ok(None)` / `errSecItemNotFound`).
+///
+/// Lab CI uses proven-absent only. It is **not Release-safe** to treat
+/// `SecureStore` as absence: a locked Keychain *with* an existing item
+/// often surfaces as `SecureStore`, which would fork a locked-file
+/// identity beside the Keychain root.
 #[cfg(target_os = "macos")]
-fn locked_file_first_install_after_keychain_probe(
+fn locked_file_after_keychain_probe(
     result: Result<Option<[u8; 32]>, IdentityStoreError>,
 ) -> Result<(), IdentityStoreError> {
     match result {
@@ -921,22 +925,25 @@ fn locked_file_first_install_after_keychain_probe(
         )),
         Ok(None) => Ok(()),
         Err(IdentityStoreError::SecureStore(_)) => Err(IdentityStoreError::Continuity(
-            "locked-file first-install requires proven-absent Keychain; unavailable or locked is not absence",
+            "locked-file path requires proven-absent Keychain; unavailable or locked is not absence",
         )),
         Err(e) => Err(e),
     }
 }
 
 #[cfg(target_os = "macos")]
-fn refuse_locked_file_first_install_if_keychain_not_proven_absent(
+fn refuse_locked_file_if_keychain_not_proven_absent(
     account: &str,
 ) -> Result<(), IdentityStoreError> {
-    locked_file_first_install_after_keychain_probe(keychain_get(account))
+    locked_file_after_keychain_probe(keychain_get(account))
 }
 
-/// Headless Linux CI has no session bus. `secret-service connect:` is "no
-/// provider", not "item exists but locked". Locked/search/get failures stay
-/// Continuity so we never mint a second root.
+/// Headless Linux CI has no session bus. `secret-service connect:` is the
+/// documented lab-only exception ("no provider"), not "item exists but
+/// locked". Locked/search/get failures stay Continuity.
+///
+/// Lab CI uses proven-absent only plus this connect-fail exception. It is
+/// **not Release-safe** to treat other `SecureStore` errors as absence.
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 fn linux_secret_service_is_session_bus_missing(err: &IdentityStoreError) -> bool {
     matches!(
@@ -946,20 +953,27 @@ fn linux_secret_service_is_session_bus_missing(err: &IdentityStoreError) -> bool
 }
 
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
-fn refuse_locked_file_first_install_if_secret_service_present(
-    account: &str,
+fn locked_file_after_secret_service_probe(
+    result: Result<Option<[u8; 32]>, IdentityStoreError>,
 ) -> Result<(), IdentityStoreError> {
-    match secret_service_get(account) {
+    match result {
         Ok(Some(_)) => Err(IdentityStoreError::Continuity(
             "locked-file override conflicts with existing Secret Service identity",
         )),
         Ok(None) => Ok(()),
         Err(e) if linux_secret_service_is_session_bus_missing(&e) => Ok(()),
         Err(IdentityStoreError::SecureStore(_)) => Err(IdentityStoreError::Continuity(
-            "locked-file first-install requires proven-absent Secret Service or a missing session bus; a locked item is not absence",
+            "locked-file path requires proven-absent Secret Service or a missing session bus; a locked item is not absence",
         )),
         Err(e) => Err(e),
     }
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn refuse_locked_file_if_secret_service_not_proven_absent(
+    account: &str,
+) -> Result<(), IdentityStoreError> {
+    locked_file_after_secret_service_probe(secret_service_get(account))
 }
 
 /// Load from platform store or locked file; migrate legacy plaintext when needed.
@@ -983,30 +997,15 @@ fn load_seed_with_migrate(
         }
         return match read_raw_seed_file(&path)? {
             Some(mut bytes) if is_legacy_plaintext(&bytes) => {
-                // Established headless Debug/CI profile: loading may tolerate a
-                // temporarily unavailable platform store, but any *visible*
-                // protected identity is a hard conflict — never generate twice.
+                // Planted CI / leftover plaintext seed. Same proven-absent
+                // rule as first-install: macOS only Ok(None); Linux only
+                // Ok(None) or session-bus connect-fail. SecureStore is not
+                // absence (locked item with a file seed would fork).
                 if marker.is_none() {
                     #[cfg(target_os = "macos")]
-                    match keychain_get(&account) {
-                        Ok(Some(_)) => {
-                            return Err(IdentityStoreError::Continuity(
-                                "locked-file override conflicts with existing Keychain identity",
-                            ));
-                        }
-                        Ok(None) | Err(IdentityStoreError::SecureStore(_)) => {}
-                        Err(e) => return Err(e),
-                    }
+                    refuse_locked_file_if_keychain_not_proven_absent(&account)?;
                     #[cfg(all(target_os = "linux", target_env = "gnu"))]
-                    match secret_service_get(&account) {
-                        Ok(Some(_)) => {
-                            return Err(IdentityStoreError::Continuity(
-                                "locked-file override conflicts with existing Secret Service identity",
-                            ));
-                        }
-                        Ok(None) | Err(IdentityStoreError::SecureStore(_)) => {}
-                        Err(e) => return Err(e),
-                    }
+                    refuse_locked_file_if_secret_service_not_proven_absent(&account)?;
                 }
                 let seed = bytes_to_seed(&bytes)?;
                 bytes.zeroize();
@@ -1025,9 +1024,9 @@ fn load_seed_with_migrate(
                 // require_proven_first_install still refuses non-empty profiles.
                 if marker.is_none() {
                     #[cfg(target_os = "macos")]
-                    refuse_locked_file_first_install_if_keychain_not_proven_absent(&account)?;
+                    refuse_locked_file_if_keychain_not_proven_absent(&account)?;
                     #[cfg(all(target_os = "linux", target_env = "gnu"))]
-                    refuse_locked_file_first_install_if_secret_service_present(&account)?;
+                    refuse_locked_file_if_secret_service_not_proven_absent(&account)?;
                 }
                 require_proven_first_install(data_dir, marker)?;
                 Ok(None)
@@ -1567,16 +1566,15 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn locked_file_first_install_maps_keychain_securestore_to_continuity() {
-        // Locked/denied (`SecureStore`) must not soft-succeed as first-install.
-        let err = locked_file_first_install_after_keychain_probe(Err(
-            IdentityStoreError::SecureStore("keychain get status -25308".into()),
-        ))
+    fn locked_file_maps_keychain_securestore_to_continuity() {
+        // Locked/denied (`SecureStore`) must not soft-succeed as absence.
+        let err = locked_file_after_keychain_probe(Err(IdentityStoreError::SecureStore(
+            "keychain get status -25308".into(),
+        )))
         .expect_err("locked Keychain is not proven absent");
         assert!(matches!(err, IdentityStoreError::Continuity(_)));
-        locked_file_first_install_after_keychain_probe(Ok(None))
-            .expect("item-not-found is absence");
-        let visible = locked_file_first_install_after_keychain_probe(Ok(Some([0x11; 32])))
+        locked_file_after_keychain_probe(Ok(None)).expect("item-not-found is absence");
+        let visible = locked_file_after_keychain_probe(Ok(Some([0x11; 32])))
             .expect_err("visible Keychain identity conflicts");
         assert!(matches!(visible, IdentityStoreError::Continuity(_)));
     }
@@ -1593,6 +1591,18 @@ mod tests {
         assert!(linux_secret_service_is_session_bus_missing(&connect));
         assert!(!linux_secret_service_is_session_bus_missing(&locked));
         assert!(!linux_secret_service_is_session_bus_missing(&search));
+        locked_file_after_secret_service_probe(Ok(None)).expect("empty collection is absence");
+        locked_file_after_secret_service_probe(Err(connect))
+            .expect("session-bus connect-fail is the lab-only exception");
+        let locked_err = locked_file_after_secret_service_probe(Err(locked))
+            .expect_err("locked Secret Service item is not absence");
+        assert!(matches!(locked_err, IdentityStoreError::Continuity(_)));
+        let search_err = locked_file_after_secret_service_probe(Err(search))
+            .expect_err("search failure is not absence");
+        assert!(matches!(search_err, IdentityStoreError::Continuity(_)));
+        let visible = locked_file_after_secret_service_probe(Ok(Some([0x11; 32])))
+            .expect_err("visible Secret Service identity conflicts");
+        assert!(matches!(visible, IdentityStoreError::Continuity(_)));
     }
 
     #[cfg(target_os = "macos")]
