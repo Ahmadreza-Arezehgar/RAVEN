@@ -243,7 +243,7 @@ Fake-integration watch: any PR that wires RDAP tasks to production raven-node AT
 2. **B3:** **CLEARED** (RAVEN#7). No further CODEOWNERS action on mlkem FFI.
 3. **B2:** accepted for bot-only org; escalate only if human reviewers added.
 4. **Founder Priority #1:** terminal L/M/W + three-path matrices; **no M1 eng** until terminal board green (CEO override only).
-5. **Menu-smoke:** `ash_menu_smoke` → CLI DX [RAVEN#16](https://github.com/Raven-ASHCO/RAVEN/pull/16); land when green; #19 rebases preserving menu-smoke; Proven only after executed green (linked CI or agent smoke). Windows honest fail-closed until named-pipe.
+5. **Menu-smoke / macOS:** wire `ash_menu_smoke`/`doctor` into CI (not operator-only) via [RAVEN#16](https://github.com/Raven-ASHCO/RAVEN/pull/16) + [RAVEN#22](https://github.com/Raven-ASHCO/RAVEN/pull/22). Menu smokes not GHA-gated yet. macOS CI unit/smoke proven. Notarize **BLOCKED_HUMAN**. Windows honest fail-closed until named-pipe.
 6. **B10:** compile P0-1 **DONE**. **#1 remaining = Windows named-pipe** (UDS-only `ipc_server`; `ash --send-stdin`). Linux/macOS UDS mostly green. SCM+LAN parity = P1 after pipe. **Does not unblock WAN Path C.** Then install→doctor→send CI. No duplicate compile fixes.
 7. **B11 / B12:** track #17 fail-close; do not treat `install.sh` or Win loopback `127.0.0.1:7420` as Proven.
 8. **B8 Phase 1+ PARKED** (Windows terminal > iOS landing).
