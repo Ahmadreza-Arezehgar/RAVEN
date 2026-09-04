@@ -1,0 +1,13 @@
+harvest_perf_baseline
+utc=20260904T111355Z
+pid=2345
+repo=/workspace
+cwd=/workspace/node
+host=Linux 6.12.94+ x86_64
+hostname=cursor
+rustc=rustc 1.98.1 (48a229cea 2026-09-01)
+cargo=cargo 1.98.1 (797e8a9bc 2026-08-05)
+nproc=4
+RAVEN_PERF_RELEASE=1
+RAVEN_RELIABILITY_10K=1
+RAVEN_RELIABILITY_10K_RUNS=3

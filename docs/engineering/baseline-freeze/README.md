@@ -39,6 +39,7 @@ Feature PRs that touch R2/R3 surfaces **must not** land until the Sprint 0 check
 | [`apple-tree-gap.md`](apple-tree-gap.md) | iOS/watchOS tree gap (exists on `main`) |
 | [`windows-tree-gap.md`](windows-tree-gap.md) | Windows tree gap (exists on `main`) |
 | [`docs/network/raven-swarm-connectivity-matrix.md`](../../network/raven-swarm-connectivity-matrix.md) | Sprint 0 raven-swarm connectivity / relay / NAT inventory; §0 founder direct-Internet honesty |
+| [`perf-baseline-2026-09-04.md`](perf-baseline-2026-09-04.md) | Sprint 0 perf harvest (Role #19 SRE Perf); soft budgets draft |
 | Live CODEOWNERS | [`.github/CODEOWNERS`](../../../.github/CODEOWNERS) (RAVEN); RDAP repo `.github/CODEOWNERS` |
 
 ### Sprint 0 architecture drafts (#1)
