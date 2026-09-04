@@ -4149,6 +4149,9 @@ fn probe_ipc_status(data_dir: &Path) -> Result<IpcResponse, String> {
     ipc_client::ipc_request(data_dir, &IpcRequest::Status { v: IPC_VERSION })
 }
 
+/// Thin wrapper used by doctor unit tests. Production doctor uses
+/// `probe_doctor_identity` (same `raven_core::identity_usable` backend).
+#[cfg_attr(not(test), allow(dead_code))]
 fn identity_usable(data_dir: &Path) -> bool {
     match raven_core::identity_usable(data_dir) {
         Ok(u) => u.usable,
