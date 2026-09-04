@@ -167,7 +167,8 @@ From `MULTI_DEVICE_PARTITION_REVOCATION.md` / RVDR1 non-claim:
 - [x] Device lifecycle threat model outline (this doc §2)
 - [x] Fail-open auth risk list with severity (§3)
 - [x] Revocation / partition / Raven↔RDAP gap register (§4)
-- [ ] Architect + Security Board ack on trust boundaries row
+- [x] Architect ack on trust boundaries row (2026-09-04, PR #5)
+- [ ] Security Board ack on trust boundaries row
 - [ ] P0 soft-load ban ticketed with failing tests (held for Sprint 1 batch)
 - [ ] Joint note with Raven↔RDAP on G5 mapping
 - [ ] Confirm production flag status for RVDR1 on each surface
