@@ -2669,17 +2669,25 @@ fn cmd_prekey_fetch(data_dir: &Path, pub_hex: &str, file: Option<&Path>) {
     println!("{C_DIM}expires_ms{C_RESET}  {}", bundle.expires_at_ms);
 }
 
-fn print_messaging_path_diag() {
+fn print_messaging_path_diag() -> Result<(), String> {
     let path = resolve_terminal_messaging_path();
-    let _ = assert_no_silent_fastapi(path);
-    kv("messaging", &format!("{} ({})", path.as_diag_label(), path.human()));
-    kv(
-        "path_rule",
-        &format!(
-            "never silently uses FastAPI ({})",
-            MessagingPath::LegacyFastApi.as_diag_label()
-        ),
-    );
+    match assert_no_silent_fastapi(path) {
+        Ok(()) => {
+            kv("messaging", &format!("{} ({})", path.as_diag_label(), path.human()));
+            kv(
+                "path_rule",
+                &format!(
+                    "never silently uses FastAPI ({})",
+                    MessagingPath::LegacyFastApi.as_diag_label()
+                ),
+            );
+            Ok(())
+        }
+        Err(e) => {
+            println!("  FAIL: messaging_path {}", sanitize_terminal_text(&e));
+            Err(e)
+        }
+    }
 }
 
 fn print_production_gate_matrix() {
@@ -2749,7 +2757,7 @@ fn cmd_status(data_dir: &Path) -> Result<(), String> {
     println!("{}STATUS \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}{}", c.bold, c.reset);
 
     kv("profile", &data_dir.display().to_string());
-    print_messaging_path_diag();
+    print_messaging_path_diag()?;
 
     match try_load_identity(data_dir) {
         Ok(Some(id)) => {
@@ -3528,7 +3536,11 @@ pub fn run() {
                 std::process::exit(1);
             }
         }
-        Some(Commands::Doctor) => cmd_doctor(&data_dir),
+        Some(Commands::Doctor) => {
+            if !cmd_doctor(&data_dir) {
+                std::process::exit(1);
+            }
+        }
         Some(Commands::IpcPing) => cmd_ipc_ping(&data_dir),
         Some(Commands::Inbox) => cmd_endpoint_inbox(&data_dir),
         _ => {} // other subcommands handled by their own dispatch
@@ -3706,7 +3718,8 @@ fn ipc_ping_blocking(sock: &Path) -> Result<IpcResponse, String> {
     }
 }
 
-fn cmd_doctor(data_dir: &Path) {
+fn cmd_doctor(data_dir: &Path) -> bool {
+    let mut failed = false;
     println!("{C_BOLD}raven doctor{C_RESET}");
     let exe = std::env::current_exe()
         .map(|p| p.display().to_string())
@@ -3718,7 +3731,9 @@ fn cmd_doctor(data_dir: &Path) {
         "  data_dir={}",
         sanitize_terminal_text(&data_dir.display().to_string())
     );
-    print_messaging_path_diag();
+    if print_messaging_path_diag().is_err() {
+        failed = true;
+    }
     print_production_gate_matrix();
     {
         let cfg = raven_core::load_bootstrap(data_dir);
@@ -3751,26 +3766,9 @@ fn cmd_doctor(data_dir: &Path) {
         println!("  daemon_state: no socket (start raven-node ipc)");
     }
 
-    // Identity store (backend label only — never seed bytes).
-    match raven_core::store_status(data_dir) {
-        Ok(ks) => {
-            let backend = ks.backend.map(|b| b.as_str()).unwrap_or("none");
-            println!(
-                "  secure_keystore: backend={backend} identity={}",
-                if ks.has_identity { "present" } else { "absent" }
-            );
-            if ks.legacy_plaintext_present {
-                println!(
-                    "  {C_PURPLE}secure_keystore{C_RESET}: legacy plaintext seed file still present — reopen once to migrate"
-                );
-            }
-        }
-        Err(e) => {
-            println!(
-                "  {C_PURPLE}secure_keystore{C_RESET}: unavailable ({})",
-                sanitize_terminal_text(&e.redacted_display())
-            );
-        }
+    // Identity usable (daemon_ready input). Mismatch is FAIL, not a new green light.
+    if !print_identity_usable_doctor(data_dir) {
+        failed = true;
     }
 
     // Database / queue files (existence only — no secret contents).
@@ -3850,6 +3848,54 @@ fn cmd_doctor(data_dir: &Path) {
         "{C_DIM}Closing this CLI does not stop raven-node if installed as a service.{C_RESET}"
     );
     println!("{C_DIM}Diagnostics never print private keys, seeds, or plaintext bodies.{C_RESET}");
+    !failed
+}
+
+/// Keystore + identity-usable doctor lines. Hard env/marker mismatch prints
+/// FAIL and is **not usable** for CLI DX `daemon_ready`. No extra OK status
+/// beside presence / ready / send_path. Legacy plaintext is a soft note.
+fn print_identity_usable_doctor(data_dir: &Path) -> bool {
+    match raven_core::identity_usable(data_dir) {
+        Ok(report) => {
+            let backend = report
+                .consistency
+                .recorded
+                .map(|b| b.as_str())
+                .unwrap_or("none");
+            println!(
+                "  secure_keystore: backend={backend} identity={}",
+                if report.has_identity { "present" } else { "absent" }
+            );
+            if report.consistency.blocks_identity_use() {
+                let issue = report
+                    .reason
+                    .as_deref()
+                    .or(report.consistency.issue.as_deref())
+                    .unwrap_or("identity backend mismatch");
+                println!("{}", identity_not_usable_fail_line(issue));
+                return false;
+            }
+            if let Ok(ks) = raven_core::store_status(data_dir) {
+                if ks.legacy_plaintext_present {
+                    println!(
+                        "  {C_PURPLE}secure_keystore{C_RESET}: legacy plaintext seed file still present — reopen once to migrate"
+                    );
+                }
+            }
+            true
+        }
+        Err(e) => {
+            println!("{}", identity_not_usable_fail_line(&e.redacted_display()));
+            false
+        }
+    }
+}
+
+fn identity_not_usable_fail_line(issue: &str) -> String {
+    format!(
+        "  FAIL: identity not usable ({})",
+        sanitize_terminal_text(issue)
+    )
 }
 
 #[cfg(test)]
@@ -3999,5 +4045,41 @@ pub_hex     d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a
             hex::encode(got),
             "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
         );
+    }
+
+    #[test]
+    fn doctor_identity_mismatch_prints_fail_not_usable() {
+        let line = identity_not_usable_fail_line(
+            "locked-file override conflicts with recorded protected backend",
+        );
+        assert!(line.contains("FAIL"));
+        assert!(line.contains("identity not usable"));
+        assert!(line.contains("recorded protected backend"));
+        assert!(!line.contains("seed"));
+        assert!(!line.contains("private"));
+    }
+
+    #[test]
+    fn doctor_identity_usable_false_on_locked_file_without_env() {
+        if std::env::var_os("RAVEN_IDENTITY_BACKEND").is_some_and(|v| v == "locked-file") {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("identity.backend"), b"locked-file\n").unwrap();
+        let report = raven_core::identity_usable(dir.path()).unwrap();
+        assert!(!report.usable);
+        assert!(report.consistency.blocks_identity_use());
+        let line = identity_not_usable_fail_line(report.reason.as_deref().unwrap());
+        assert!(line.contains("FAIL: identity not usable"));
+        assert!(!line.contains("seed"));
+    }
+
+    #[test]
+    fn doctor_messaging_path_refuses_legacy_fastapi() {
+        let err = assert_no_silent_fastapi(MessagingPath::LegacyFastApi).unwrap_err();
+        assert!(err.contains("FastAPI"));
+        let line = format!("  FAIL: messaging_path {}", sanitize_terminal_text(&err));
+        assert!(line.contains("FAIL"));
+        assert!(!line.contains("seed"));
     }
 }

@@ -96,6 +96,41 @@ pub struct IdentityStoreStatus {
     pub legacy_plaintext_present: bool,
 }
 
+/// Env vs recorded-marker check for `ash doctor` (no seed material).
+///
+/// Aligns with the fail-closed conflict rules in `load_seed_with_migrate`.
+/// A hard mismatch means identity is **not usable** for `daemon_ready` —
+/// this is not a separate green light beside presence / ready / send_path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdentityBackendConsistency {
+    pub recorded: Option<IdentityStoreBackend>,
+    pub env_locked_file_requested: bool,
+    pub ok: bool,
+    /// Redacted operator issue; never contains seed bytes.
+    pub issue: Option<String>,
+}
+
+impl IdentityBackendConsistency {
+    /// Env/marker conflict (or Release locked-file forbid). Fold into
+    /// identity-not-usable / `daemon_ready` fail — do not treat as a
+    /// standalone doctor green.
+    pub fn blocks_identity_use(&self) -> bool {
+        !self.ok
+    }
+}
+
+/// Combined identity input for CLI DX `daemon_ready`: present **and**
+/// backend-consistent. Doctor should print FAIL on mismatch, not a new
+/// top-level OK status.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdentityUsable {
+    pub usable: bool,
+    pub has_identity: bool,
+    pub consistency: IdentityBackendConsistency,
+    /// Redacted; set when `usable` is false.
+    pub reason: Option<String>,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum IdentityStoreError {
     #[error("identity store I/O: {0}")]
@@ -1150,8 +1185,89 @@ pub fn load_identity_required(data_dir: &Path) -> Result<Identity, IdentityStore
     })
 }
 
+/// Env vs `identity.backend` marker, without loading seed bytes.
+///
+/// Malformed markers propagate [`IdentityStoreError::Continuity`] (fail-closed).
+/// Hard mismatches return `ok: false` with a redacted `issue` — they do not
+/// invent backends or print secrets.
+pub fn backend_consistency(
+    data_dir: &Path,
+) -> Result<IdentityBackendConsistency, IdentityStoreError> {
+    backend_consistency_with(data_dir, locked_file_backend_requested())
+}
+
+fn backend_consistency_with(
+    data_dir: &Path,
+    env_locked_file_requested: bool,
+) -> Result<IdentityBackendConsistency, IdentityStoreError> {
+    let recorded = read_marker_checked(data_dir)?;
+    let mut ok = true;
+    let mut issue = None;
+
+    // Same order as `load_seed_with_migrate`: Release forbid, then env vs
+    // recorded protected backend, then recorded locked-file without override.
+    if env_locked_file_requested {
+        if !cfg!(debug_assertions) {
+            ok = false;
+            issue = Some("locked-file identity backend is forbidden in Release builds".into());
+        } else if matches!(
+            recorded,
+            Some(
+                IdentityStoreBackend::MacosKeychain
+                    | IdentityStoreBackend::WindowsDpapiFile
+                    | IdentityStoreBackend::LinuxSecretService
+            )
+        ) {
+            ok = false;
+            issue = Some("locked-file override conflicts with recorded protected backend".into());
+        }
+    } else if recorded == Some(IdentityStoreBackend::LockedFile) {
+        ok = false;
+        issue = Some(
+            "locked-file identity requires explicit RAVEN_IDENTITY_BACKEND=locked-file".into(),
+        );
+    }
+
+    Ok(IdentityBackendConsistency {
+        recorded,
+        env_locked_file_requested,
+        ok,
+        issue,
+    })
+}
+
+/// Identity is usable for daemon/send only when the backend is consistent
+/// and a seed can be loaded. Intended as the Core hook for CLI DX
+/// `daemon_ready` (mismatch ⇒ not usable ⇒ ready fails).
+///
+/// Does not invent backends. Never embeds seed material in `reason`.
+pub fn identity_usable(data_dir: &Path) -> Result<IdentityUsable, IdentityStoreError> {
+    let consistency = backend_consistency(data_dir)?;
+    if consistency.blocks_identity_use() {
+        let reason = consistency.issue.clone();
+        return Ok(IdentityUsable {
+            usable: false,
+            has_identity: false,
+            consistency,
+            reason,
+        });
+    }
+    let has_identity = load_identity(data_dir)?.is_some();
+    Ok(IdentityUsable {
+        usable: has_identity,
+        has_identity,
+        consistency,
+        reason: if has_identity {
+            None
+        } else {
+            Some("identity missing — run init / ash init first".into())
+        },
+    })
+}
+
 /// Non-secret status for `ash doctor` and operators. Store failures remain
-/// distinguishable from a proven-empty first install.
+/// distinguishable from a proven-empty first install. Does not report env vs
+/// marker conflict — call [`backend_consistency`] for that diagnostic.
 pub fn store_status(data_dir: &Path) -> Result<IdentityStoreStatus, IdentityStoreError> {
     let path = seed_path(data_dir);
     let has_identity = load_identity(data_dir)?.is_some();
@@ -1476,6 +1592,147 @@ mod tests {
         assert_eq!(meta.permissions().mode() & 0o777, 0o600);
         let loaded = load_identity(dir).unwrap().unwrap();
         assert_eq!(loaded.public_key_bytes(), id.public_key_bytes());
+        test_cleanup(dir);
+    }
+
+    #[test]
+    fn backend_consistency_env_locked_file_conflicts_with_protected_marker() {
+        for backend in [
+            IdentityStoreBackend::MacosKeychain,
+            IdentityStoreBackend::WindowsDpapiFile,
+            IdentityStoreBackend::LinuxSecretService,
+        ] {
+            let tmp = TempDir::new().unwrap();
+            let dir = tmp.path();
+            write_marker(dir, backend).unwrap();
+            let c = backend_consistency_with(dir, true).unwrap();
+            assert!(!c.ok, "{backend:?}");
+            assert!(c.blocks_identity_use());
+            assert_eq!(c.recorded, Some(backend));
+            assert!(c.env_locked_file_requested);
+            let issue = c.issue.as_deref().expect("issue");
+            if cfg!(debug_assertions) {
+                assert!(
+                    issue.contains("conflicts with recorded protected backend"),
+                    "{issue}"
+                );
+            } else {
+                assert!(issue.contains("forbidden in Release"), "{issue}");
+            }
+            assert!(!issue.contains("seed"));
+            test_cleanup(dir);
+        }
+    }
+
+    #[test]
+    fn backend_consistency_recorded_locked_file_requires_explicit_env() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        write_marker(dir, IdentityStoreBackend::LockedFile).unwrap();
+        let c = backend_consistency_with(dir, false).unwrap();
+        assert!(!c.ok);
+        assert!(c.blocks_identity_use());
+        let issue = c.issue.as_deref().expect("issue");
+        assert!(
+            issue.contains("RAVEN_IDENTITY_BACKEND=locked-file"),
+            "{issue}"
+        );
+        assert!(!issue.contains("seed"));
+        test_cleanup(dir);
+    }
+
+    #[test]
+    fn backend_consistency_locked_file_with_env_ok_in_debug() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        write_marker(dir, IdentityStoreBackend::LockedFile).unwrap();
+        let c = backend_consistency_with(dir, true).unwrap();
+        assert!(c.env_locked_file_requested);
+        if cfg!(debug_assertions) {
+            assert!(c.ok);
+            assert!(!c.blocks_identity_use());
+            assert!(c.issue.is_none());
+        } else {
+            assert!(!c.ok);
+            assert!(c.issue.as_deref().unwrap().contains("forbidden in Release"));
+        }
+        test_cleanup(dir);
+    }
+
+    #[test]
+    fn backend_consistency_matching_protected_marker_without_env_ok() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        write_marker(dir, IdentityStoreBackend::MacosKeychain).unwrap();
+        let c = backend_consistency_with(dir, false).unwrap();
+        assert!(c.ok);
+        assert!(!c.blocks_identity_use());
+        assert_eq!(c.recorded, Some(IdentityStoreBackend::MacosKeychain));
+        assert!(c.issue.is_none());
+        test_cleanup(dir);
+    }
+
+    #[test]
+    fn backend_consistency_empty_dir_is_consistent() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let c = backend_consistency_with(dir, false).unwrap();
+        assert!(c.ok);
+        assert!(c.recorded.is_none());
+        assert!(!c.env_locked_file_requested);
+        test_cleanup(dir);
+    }
+
+    #[test]
+    fn backend_consistency_malformed_marker_is_continuity() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        std::fs::write(marker_path(dir), b"macos-keychain\nextra\n").unwrap();
+        let err = backend_consistency_with(dir, false)
+            .err()
+            .expect("malformed marker");
+        assert!(matches!(err, IdentityStoreError::Continuity(_)));
+        assert!(!err.redacted_display().contains("seed"));
+        test_cleanup(dir);
+    }
+
+    #[test]
+    fn identity_usable_false_on_recorded_locked_file_without_env() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        write_marker(dir, IdentityStoreBackend::LockedFile).unwrap();
+        // Public API reads process env. This VM leaves the override unset;
+        // if a harness exports locked-file, skip rather than flake.
+        if locked_file_backend_requested() {
+            test_cleanup(dir);
+            return;
+        }
+        let u = identity_usable(dir).unwrap();
+        assert!(!u.usable);
+        assert!(!u.has_identity);
+        assert!(u.consistency.blocks_identity_use());
+        let reason = u.reason.as_deref().expect("reason");
+        assert!(
+            reason.contains("RAVEN_IDENTITY_BACKEND=locked-file"),
+            "{reason}"
+        );
+        assert!(!reason.contains("seed"));
+        test_cleanup(dir);
+    }
+
+    #[test]
+    fn identity_usable_empty_dir_is_not_ready_but_consistent() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        if locked_file_backend_requested() && !cfg!(debug_assertions) {
+            test_cleanup(dir);
+            return;
+        }
+        let u = identity_usable(dir).unwrap();
+        assert!(!u.usable);
+        assert!(!u.has_identity);
+        assert!(u.consistency.ok);
+        assert!(!u.consistency.blocks_identity_use());
         test_cleanup(dir);
     }
 }
