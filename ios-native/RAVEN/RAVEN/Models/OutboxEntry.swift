@@ -15,8 +15,8 @@ enum RouteState: Int, Codable {
     case idle = 0       // Not yet queued
     case queued = 1     // Waiting to send
     case sending = 2    // Actively being sent
-    case sent = 3       // Sent but not confirmed delivered
-    case delivered = 4  // Confirmed delivered to recipient
+    case sent = 3       // Sent / forwarded (transport success)
+    case delivered = 4  // Legacy first-arrival custody — not protocol Delivered
     case stopped = 5    // Stopped (other channel delivered first)
     case failed = 6     // Permanent failure
 }
@@ -78,8 +78,9 @@ struct OutboxEntry: Codable, Identifiable {
     
     // MARK: - Computed
     
-    /// Is this message fully delivered?
-    var isDelivered: Bool {
+    /// First-arrival custody recorded (a channel reported arrival).
+    /// Not protocol Delivered — UI must use `MessageStatus` from a verified ACK.
+    var hasFirstArrival: Bool {
         deliveredVia != nil
     }
     

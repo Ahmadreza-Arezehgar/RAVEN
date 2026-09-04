@@ -25,9 +25,28 @@ enum JobChannel: String, Codable {
 enum JobState: String, Codable {
     case pending = "pending"
     case inProgress = "in_progress"
-    case delivered = "delivered"
+    /// Local transmit / custody bookkeeping (FORWARDED). Never protocol Delivered.
+    case transmitted = "transmitted"
     case failed = "failed"
     case stopped = "stopped"
+
+    /// Parse persisted job state. Legacy rows stored write-success as `delivered`;
+    /// that name was a foot-gun (RAVEN_ACK_V1 §3) and maps to `.transmitted`.
+    static func parse(_ raw: String) -> JobState? {
+        if raw == "delivered" { return .transmitted }
+        return JobState(rawValue: raw)
+    }
+
+    /// Per-channel bookkeeping must never be read as protocol Delivered / Read.
+    /// Transmitted is FORWARDED (`MessageStatus.sent`). Delivered/Read stay ACK-only.
+    var protocolMessageStatus: MessageStatus? {
+        switch self {
+        case .pending, .inProgress: return .pending
+        case .transmitted: return .sent
+        case .failed: return .failed
+        case .stopped: return nil
+        }
+    }
 }
 
 // MARK: - Delivery Job Model
@@ -145,17 +164,21 @@ actor DeliveryJobRepository {
     
     // MARK: - Update State
     
-    /// Mark job as delivered
-    func markDelivered(messageId: String, channel: JobChannel) async throws {
+    /// Mark a per-channel job as locally transmitted (FORWARDED).
+    ///
+    /// Transport write / HTTP 2xx / stream success only. This is **not**
+    /// protocol `DELIVERED_TO_DEVICE` — that stays on `MessageRepository.markDelivered`
+    /// after a verified sealed `env_type=2` ACK (`RAVEN_ACK_V1` §3).
+    func markTransmitted(messageId: String, channel: JobChannel) async throws {
         let now = Date().timeIntervalSince1970
         let sql = """
             UPDATE delivery_jobs 
-            SET state = 'delivered', updated_at = ?
+            SET state = 'transmitted', updated_at = ?
             WHERE message_id = ? AND channel = ?
         """
         try await db.execute(sql, params: [now, messageId, channel.rawValue])
         #if DEBUG
-        print("✅ [Job] Marked \(channel.rawValue) job delivered for \(messageId.prefix(8))")
+        print("📤 [Job] Marked \(channel.rawValue) job transmitted for \(messageId.prefix(8))")
         #endif
     }
     
@@ -216,7 +239,7 @@ actor DeliveryJobRepository {
         let cutoff = Date().timeIntervalSince1970 - 86400 // 24 hours ago
         let sql = """
             DELETE FROM delivery_jobs 
-            WHERE (state = 'delivered' OR state = 'stopped')
+            WHERE (state = 'transmitted' OR state = 'delivered' OR state = 'stopped')
             AND updated_at < ?
         """
         try await db.execute(sql, params: [cutoff])
@@ -230,7 +253,7 @@ actor DeliveryJobRepository {
               let channelStr = row["channel"] as? String,
               let channel = JobChannel(rawValue: channelStr),
               let stateStr = row["state"] as? String,
-              let state = JobState(rawValue: stateStr),
+              let state = JobState.parse(stateStr),
               let createdAt = (row["created_at"] as? Double).map({ Date(timeIntervalSince1970: $0) }),
               let updatedAt = (row["updated_at"] as? Double).map({ Date(timeIntervalSince1970: $0) })
         else { return nil }

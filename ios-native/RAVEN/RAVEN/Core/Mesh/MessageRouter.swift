@@ -428,7 +428,7 @@ final class MessageRouter: ObservableObject {
                 try? await outbox.updateTimeline(clientMessageId: mid, field: .serverAck)
                 try? await MessageRepository.shared.updateServerId(clientMessageId: mid, serverId: response.id)
                 await mesh.gossipReceipt(ServerReceipt(messageId: mid, serverReceivedAt: Date(), serverSequence: nil, uploaderDeviceId: await getDeviceId()))
-                try? await DeliveryJobRepository.shared.markDelivered(messageId: mid, channel: .server)
+                try? await DeliveryJobRepository.shared.markTransmitted(messageId: mid, channel: .server)
                 try? await DeliveryJobRepository.shared.markStopped(messageId: mid)
                 
             } else {
@@ -448,11 +448,13 @@ final class MessageRouter: ObservableObject {
                 try? await outbox.updateTimeline(clientMessageId: mid, field: .serverAck)
                 try? await MessageRepository.shared.updateServerId(clientMessageId: mid, serverId: response.id)
                 await mesh.gossipReceipt(ServerReceipt(messageId: mid, serverReceivedAt: Date(), serverSequence: nil, uploaderDeviceId: await getDeviceId()))
-                try? await DeliveryJobRepository.shared.markDelivered(messageId: mid, channel: .server)
+                try? await DeliveryJobRepository.shared.markTransmitted(messageId: mid, channel: .server)
                 try? await DeliveryJobRepository.shared.markStopped(messageId: mid)
                 
                 if response.recipientDelivered == true {
-                    try? await outbox.markDelivered(clientMessageId: mid, via: .server)
+                    // First-arrival custody (stop the other channel). Not protocol
+                    // DELIVERED_TO_DEVICE — that stays on a verified sealed ACK.
+                    try? await outbox.markFirstArrival(clientMessageId: mid, via: .server)
                     await mesh.broadcastStop(mid)
                 }
             }
@@ -794,7 +796,7 @@ final class MessageRouter: ObservableObject {
         // 1. Update outbox
         if let entry = try? await outbox.get(clientMessageId: mid),
            entry.deliveredVia == nil {
-            try? await outbox.markDelivered(clientMessageId: mid, via: .mesh)
+            try? await outbox.markFirstArrival(clientMessageId: mid, via: .mesh)
         }
         
         // 2. Notify server (or queue if offline)
@@ -849,7 +851,7 @@ final class MessageRouter: ObservableObject {
         
         if let entry = try? await outbox.get(clientMessageId: mid),
            entry.deliveredVia == nil {
-            try? await outbox.markDelivered(clientMessageId: mid, via: .server)
+            try? await outbox.markFirstArrival(clientMessageId: mid, via: .server)
         }
         
         // 2. Stop mesh propagation

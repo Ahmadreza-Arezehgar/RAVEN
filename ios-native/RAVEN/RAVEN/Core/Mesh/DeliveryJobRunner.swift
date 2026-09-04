@@ -191,25 +191,26 @@ class DeliveryJobRunner {
                     }
                     guard message.type == .text || message.type == .location || message.type == .system
                         || message.type == .image || message.type == .voice || message.type == .file else {
-                        try await DeliveryJobRepository.shared.markDelivered(messageId: job.messageId, channel: .bridge)
+                        try await DeliveryJobRepository.shared.markTransmitted(messageId: job.messageId, channel: .bridge)
                         continue
                     }
 
                     // Bridge is 1:1 only. Group internet fan-out would need a
                     // per-member dial; groups go over mesh. A group message has
                     // a local Group row matching its roomId.
-                    // NB: use markDelivered(.bridge) — NOT markStopped — to take
+                    // NB: use markTransmitted(.bridge) — NOT markStopped — to take
                     // the bridge job out of rotation, since markStopped kills
                     // ALL channels (the mesh job must keep carrying the message).
+                    // Transmitted is FORWARDED only, not protocol Delivered.
                     let recipientId = message.recipientId
                     if recipientId.isEmpty {
-                        try await DeliveryJobRepository.shared.markDelivered(messageId: job.messageId, channel: .bridge)
+                        try await DeliveryJobRepository.shared.markTransmitted(messageId: job.messageId, channel: .bridge)
                         continue
                     }
                     if let rid = message.roomId, !rid.isEmpty {
                         let groupExists = (try? await GroupRepository().get(groupId: rid)) != nil
                         if groupExists {
-                            try await DeliveryJobRepository.shared.markDelivered(messageId: job.messageId, channel: .bridge)
+                            try await DeliveryJobRepository.shared.markTransmitted(messageId: job.messageId, channel: .bridge)
                             continue
                         }
                     }
@@ -278,9 +279,10 @@ class DeliveryJobRunner {
                         recipientHint: recipientId
                     )
 
-                    // Stream write to the peer succeeded → delivered on this
-                    // channel (overall delivery state still tracked via ACK).
-                    try await DeliveryJobRepository.shared.markDelivered(messageId: job.messageId, channel: .bridge)
+                    // Stream write to the peer succeeded → transmitted on this
+                    // channel (FORWARDED). Protocol DELIVERED_TO_DEVICE stays
+                    // on a verified sealed env_type=2 ACK (RAVEN_ACK_V1 §3).
+                    try await DeliveryJobRepository.shared.markTransmitted(messageId: job.messageId, channel: .bridge)
                     #if DEBUG
                     print("[JobRunner] ✅ bridge sent: \(job.messageId.prefix(8))")
                     #endif
@@ -363,7 +365,7 @@ class DeliveryJobRunner {
                     
                     guard message.type == .text || message.type == .location || message.type == .system
                         || message.type == .image || message.type == .voice || message.type == .file else {
-                        try await DeliveryJobRepository.shared.markDelivered(messageId: job.messageId, channel: .mesh)
+                        try await DeliveryJobRepository.shared.markTransmitted(messageId: job.messageId, channel: .mesh)
                         continue
                     }
                     
@@ -464,13 +466,13 @@ class DeliveryJobRunner {
                                 // structural row re-built the same empty seal every
                                 // cycle and pended FOREVER. Take the structural row
                                 // out of rotation for THIS channel only via
-                                // markDelivered(.mesh) — NOT markStopped, which would
+                                // markTransmitted(.mesh) — NOT markStopped, which would
                                 // kill the server/bridge jobs for the same message too.
                                 if sealed.base64.isEmpty {
                                     #if DEBUG
                                     print("🔒 [JobRunner] structural seal failure (reason=\(sealed.reason)) for mid=\(message.id.prefix(8)) — taking mesh job out of rotation")
                                     #endif
-                                    try await DeliveryJobRepository.shared.markDelivered(messageId: job.messageId, channel: .mesh)
+                                    try await DeliveryJobRepository.shared.markTransmitted(messageId: job.messageId, channel: .mesh)
                                     continue
                                 }
                                 #if DEBUG
@@ -555,8 +557,8 @@ class DeliveryJobRunner {
                     
                     let result = try await sendViaServer(messageRow)
                     
-                    // Mark server job delivered
-                    try await DeliveryJobRepository.shared.markDelivered(messageId: job.messageId, channel: .server)
+                    // Mark server job transmitted (HTTP accept / FORWARDED only).
+                    try await DeliveryJobRepository.shared.markTransmitted(messageId: job.messageId, channel: .server)
                     
                     // If recipient actually received, stop mesh too
                     if result.recipientDelivered {

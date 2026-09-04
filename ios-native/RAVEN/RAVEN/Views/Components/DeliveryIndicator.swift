@@ -9,7 +9,8 @@
 import SwiftUI
 
 /// Shows delivery status with colored checkmarks
-/// Blue for server-delivered, Purple for mesh-delivered
+/// Blue for server-delivered, Purple for mesh-delivered.
+/// `.delivered` / `.read` are ACK-driven; transport write success is `.sent`.
 struct DeliveryIndicator: View {
     let status: MessageStatus
     let authority: DeliveryAuthority

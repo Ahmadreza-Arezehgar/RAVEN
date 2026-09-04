@@ -405,6 +405,8 @@
 		E7A1B2C3D4E5F60718293A1A /* RavenEnvelopeEndpointIngestTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293A19 /* RavenEnvelopeEndpointIngestTests.swift */; };
 		E7A1B2C3D4E5F60718293A1C /* RavenEnvelopeChatWire.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293A1B /* RavenEnvelopeChatWire.swift */; };
 		E7A1B2C3D4E5F60718293A1E /* RavenEnvelopeChatWireTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293A1D /* RavenEnvelopeChatWireTests.swift */; };
+		E7A1B2C3D4E5F60718293E02 /* EndpointDeliveryPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293E01 /* EndpointDeliveryPolicy.swift */; };
+		E7A1B2C3D4E5F60718293E04 /* EndpointDeliveryPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293E03 /* EndpointDeliveryPolicyTests.swift */; };
 		E7A1B2C3D4E5F60718293A20 /* RavenEnvelopeSenderResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293A1F /* RavenEnvelopeSenderResolver.swift */; };
 		E7A1B2C3D4E5F60718293A22 /* RavenTagDisplay.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293A21 /* RavenTagDisplay.swift */; };
 		E7A1B2C3D4E5F60718293B02 /* DiscoveryResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1B2C3D4E5F60718293B01 /* DiscoveryResolver.swift */; };
@@ -641,6 +643,8 @@
 		E7A1B2C3D4E5F60718293A19 /* RavenEnvelopeEndpointIngestTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RavenEnvelopeEndpointIngestTests.swift; sourceTree = "<group>"; };
 		E7A1B2C3D4E5F60718293A1B /* RavenEnvelopeChatWire.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RavenEnvelopeChatWire.swift; path = RAVEN/Core/Protocol/RavenEnvelopeChatWire.swift; sourceTree = "<group>"; };
 		E7A1B2C3D4E5F60718293A1D /* RavenEnvelopeChatWireTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RavenEnvelopeChatWireTests.swift; sourceTree = "<group>"; };
+		E7A1B2C3D4E5F60718293E01 /* EndpointDeliveryPolicy.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = EndpointDeliveryPolicy.swift; sourceTree = "<group>"; };
+		E7A1B2C3D4E5F60718293E03 /* EndpointDeliveryPolicyTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = EndpointDeliveryPolicyTests.swift; sourceTree = "<group>"; };
 		E7A1B2C3D4E5F60718293A1F /* RavenEnvelopeSenderResolver.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RavenEnvelopeSenderResolver.swift; path = RAVEN/Core/Protocol/RavenEnvelopeSenderResolver.swift; sourceTree = "<group>"; };
 		E7A1B2C3D4E5F60718293A21 /* RavenTagDisplay.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RavenTagDisplay.swift; path = RAVEN/Core/Protocol/RavenTagDisplay.swift; sourceTree = "<group>"; };
 		E7A1B2C3D4E5F60718293B01 /* DiscoveryResolver.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DiscoveryResolver.swift; path = RAVEN/Core/Protocol/DiscoveryResolver.swift; sourceTree = "<group>"; };
@@ -1640,6 +1644,7 @@
 				6F2C0D1CB7EC1248A4B27343 /* MeshACKHandler.swift */,
 				C483D9011A20F1F7C727399A /* PresenceService.swift */,
 				1CFE577A9A014DB09009CB9A /* DeliveryJobRunner.swift */,
+				E7A1B2C3D4E5F60718293E01 /* EndpointDeliveryPolicy.swift */,
 				44251FA9566F1619C78509F2 /* BLEMeshEngine.swift */,
 				A7DC2CE00EFF475583D88E86 /* WatchSnapshotProjector.swift */,
 				587193F5374400847B89D49B /* NetworkMonitor.swift */,
@@ -1959,6 +1964,7 @@
 				E7A1B2C3D4E5F60718293A15 /* RavenEnvelopeBridgeServiceTests.swift */,
 				E7A1B2C3D4E5F60718293A19 /* RavenEnvelopeEndpointIngestTests.swift */,
 				E7A1B2C3D4E5F60718293A1D /* RavenEnvelopeChatWireTests.swift */,
+				E7A1B2C3D4E5F60718293E03 /* EndpointDeliveryPolicyTests.swift */,
 				E7A1B2C3D4E5F60718293C01 /* RavenEnvelopeSenderResolverTests.swift */,
 				15B36E34E30E171DA9D47854 /* MeshInteropVectorsTests.swift */,
 			);
@@ -2982,6 +2988,7 @@
 				8AACEE409EA340C5DCE3E9DA /* PresenceService.swift in Sources */,
 				D79B891F05A993A1A8363A37 /* DeliveryJobRepository.swift in Sources */,
 				811539B22DCD076D1137A39A /* DeliveryJobRunner.swift in Sources */,
+				E7A1B2C3D4E5F60718293E02 /* EndpointDeliveryPolicy.swift in Sources */,
 				19919819847A803EE34278B6 /* OutboxEntry.swift in Sources */,
 				54C994D9C146AABD9B9608D8 /* OutboxRepository.swift in Sources */,
 				0058BA60ACEEAF24D3C0E7F5 /* PendingACKRepository.swift in Sources */,
@@ -3332,6 +3339,7 @@
 				E7A1B2C3D4E5F60718293A16 /* RavenEnvelopeBridgeServiceTests.swift in Sources */,
 				E7A1B2C3D4E5F60718293A1A /* RavenEnvelopeEndpointIngestTests.swift in Sources */,
 				E7A1B2C3D4E5F60718293A1E /* RavenEnvelopeChatWireTests.swift in Sources */,
+				E7A1B2C3D4E5F60718293E04 /* EndpointDeliveryPolicyTests.swift in Sources */,
 				E7A1B2C3D4E5F60718293C02 /* RavenEnvelopeSenderResolverTests.swift in Sources */,
 				67A59FEE502B09BDD8872314 /* MeshInteropVectorsTests.swift in Sources */,
 			);

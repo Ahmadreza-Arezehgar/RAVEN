@@ -10,6 +10,8 @@ import SwiftUI
 
 // MARK: - Delivery State Badge
 
+/// Compact capsule badge. `.delivered` is ACK-only (`onDestinationACK`);
+/// per-channel `JobState.transmitted` must not be passed in as delivered.
 struct DeliveryStateBadge: View {
     let state: MeshConfidenceState
     

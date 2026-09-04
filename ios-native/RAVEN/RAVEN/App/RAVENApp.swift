@@ -3137,8 +3137,13 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         print("📨 [App] Processing ACK for message \(ack.originalMessageId.prefix(8)) - status: \(ack.status.rawValue)")
         #endif
         
-        // Update message status in database
-        let newStatus: MessageStatus = ack.status == .read ? .read : .delivered
+        // Protocol Delivered/Read only from this verified ACK path.
+        let ackStatusByte: UInt8 = ack.status == .read
+            ? RavenAckV1.readStatus
+            : RavenAckV1.deliveredStatus
+        guard let newStatus = EndpointDeliveryPolicy.afterVerifiedAck(status: ackStatusByte) else {
+            return
+        }
 
         // Enforce monotonicity and make duplicate/replayed receipts side-effect
         // free. In particular, delivered can never downgrade read.
@@ -3151,10 +3156,23 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
 
         do {
             if advances {
-                try await MessageRepository.shared.updateStatus(
-                    clientMessageId: ack.originalMessageId,
-                    status: newStatus
-                )
+                switch newStatus {
+                case .delivered:
+                    try await MessageRepository.shared.markDelivered(
+                        clientMessageId: ack.originalMessageId,
+                        at: Date()
+                    )
+                case .read:
+                    try await MessageRepository.shared.markRead(
+                        clientMessageId: ack.originalMessageId,
+                        at: Date()
+                    )
+                default:
+                    try await MessageRepository.shared.updateStatus(
+                        clientMessageId: ack.originalMessageId,
+                        status: newStatus
+                    )
+                }
             }
             let committed = try await DatabaseService.shared.query(
                 """
@@ -3188,8 +3206,11 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
             try? await DeliveryJobRepository.shared.markStopped(messageId: ack.originalMessageId)
         }
         
-        // Notify UI to refresh
+        // Notify UI to refresh. Delivered/Read badges stay ACK-driven.
         await MainActor.run {
+            if newStatus == .delivered || newStatus == .read {
+                DeliveryStateService.shared.onDestinationACK(messageId: ack.originalMessageId)
+            }
             NotificationCenter.default.post(
                 name: Notification.Name("MeshACKReceived"),
                 object: nil,

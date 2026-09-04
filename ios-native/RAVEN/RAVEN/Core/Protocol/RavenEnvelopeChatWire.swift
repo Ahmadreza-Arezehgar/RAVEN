@@ -47,6 +47,7 @@ public enum RavenEnvelopeMessageId {
 /// `"rvn1/ack" || acked_message_id || status || ack_nonce || created_at_ms`.
 enum RavenAckV1 {
     static let deliveredStatus: UInt8 = 1
+    static let readStatus: UInt8 = 2
     private static let domain = Data("rvn1/ack".utf8)
 
     enum AckError: Error {
