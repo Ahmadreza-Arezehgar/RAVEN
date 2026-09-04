@@ -34,11 +34,14 @@
 
 **Windows named-pipe gap = #1 blocker.** `ipc_server` is **UDS-only**; `ash --send-stdin` spawn has no Win pipe path.
 
+**B10 Manager decision A:** named-pipe **implement AUTHORIZED NOW** — **not** Sprint-1-deferred. Sprint 1 terminal slice is **OPEN for pipe only**. Owners: **Windows + Node IPC**. Doctor/client keyed on `WINDOWS_NAMED_PIPE`. Still **does not unblock WAN Path C**.
+
 | OS / item | Honest status |
 |-----------|----------------|
 | Linux / macOS UDS | **Mostly green** (not WAN Proven; try-phase still wants executed green/red citations) |
-| Windows named-pipe | **#1 blocker** — remaining B10 P0 |
-| `ash --send-stdin` spawn | Blocked on Win until pipe exists |
+| Windows named-pipe | **#1 blocker** — **decision A AUTHORIZED NOW** (pipe-only Sprint 1 slice) |
+| `WINDOWS_NAMED_PIPE` | Doctor/client **keyed on this** |
+| `ash --send-stdin` spawn | Honest fail-closed on Win until pipe lands |
 | SCM + LAN parity | **P1 after pipe** |
 | WAN Path C | **Not unblocked** by this work |
 
@@ -66,7 +69,7 @@
 | Path A (mesh/NAT/relay) | **LOCKED** — localhost reservation only; circuit/WAN/auto-fallback/DCUtR **NOT proven**; hop server missing; multi-NAT **BLOCKED_HARDWARE**; NAT hold intact. **Not reliable.** |
 | Path B (DTN/bridge) | **LOCKED** — opaque custody + `ENDPOINT_ACK_ONLY` **proven (software)**; hop/repl cooperative-only; prod mailbox held; iOS blocked on B8. **Not flood-proof / not Byzantine-safe.** Prefer executed green/red citations. |
 | Path C (direct Internet) | **LOCKED** — LAN/localhost **proven**; WAN **blocked/untested**; internet dial **fail-closed proven** — **NOT** a WAN reliability claim. `ash_menu_smoke` → CLI DX #16. Windows honest fail-closed until named-pipe. **A+B+C fills present.** Continue **terminal**. |
-| Node IPC / B10 #1 | **Windows named-pipe gap** — UDS-only `ipc_server`; `ash --send-stdin` spawn. Linux/macOS UDS **mostly green**. SCM+LAN parity = **P1 after pipe**. **Does not unblock WAN Path C.** |
+| Node IPC / B10 #1 | **Decision A AUTHORIZED NOW** — named-pipe implement **not** Sprint-1-deferred. Sprint 1 terminal slice **OPEN for pipe only**. Windows + Node IPC. Doctor/client keyed on `WINDOWS_NAMED_PIPE`. **Does not unblock WAN Path C.** |
 | Critical path / O6 gate | **M0 docs ack ✅ CLOSED / MERGED** — [RAVEN#3](https://github.com/Raven-ASHCO/RAVEN/pull/3) ADR 0004 on `main` `ce087c7d9cfb`. Three-way ACK **final** (Architect + Crypto + Identity; body + G5 + HOLD/R3/IPC + Crypto D4). **Not** awaiting Manager docs merge. M1–M3 **production** code still **closed** (terminal + HOLD). |
 | Performance baseline | **#19 SRE Perf** — IN PROGRESS (harvest; docs-only ≠ Proven) |
 | Menu-smoke | Sole CI via RAVEN#16 (Apple APPROVE + Core ACK); converge DONE with SRE; **Proven flip only after executed green** (linked CI or agent smoke) |
@@ -87,7 +90,7 @@ Org-create / personal-account CODEOWNERS blockers from morning audit are **clear
 7. **Path A locked** — do not claim mesh relay reliable.
 8. **Path B locked** — opaque custody + `ENDPOINT_ACK_ONLY` proven (software); hop/repl cooperative-only; prod mailbox held; iOS blocked on B8. **Not flood-proof / not Byzantine-safe.** Prefer executed green/red citations.
 9. **Path C locked** — LAN/localhost proven; WAN blocked/untested; internet dial fail-closed proven — **NOT** a WAN reliability claim. `ash_menu_smoke` → CLI DX #16. Windows honest fail-closed until named-pipe. **A+B+C board fills now present.** Continue **terminal**.
-10. **Node IPC:** Windows named-pipe = **#1** B10 remaining (UDS-only `ipc_server`; `ash --send-stdin`). Linux/macOS UDS mostly green. SCM+LAN parity = P1 after pipe. **Does not unblock WAN Path C.**
+10. **B10 decision A:** named-pipe **implement AUTHORIZED NOW** (not Sprint-1-deferred). Sprint 1 terminal slice **OPEN for pipe only**. Windows + Node IPC. Doctor/client keyed on `WINDOWS_NAMED_PIPE`. **Does not unblock WAN Path C.**
 11. **macOS slice:** CI unit/smoke proven. Menu smokes not GHA-gated yet — wire `ash_menu_smoke`/`doctor` into CI (not operator-only). Track #16/#22. Notarize **BLOCKED_HUMAN**.
 
 ---
@@ -101,7 +104,7 @@ Org-create / personal-account CODEOWNERS blockers from morning audit are **clear
 | `install.sh` fail-close (B11) | In flight (draft) | [RAVEN#17](https://github.com/Raven-ASHCO/RAVEN/pull/17) | Hazard retire / fail-close. **Not** install Proven. |
 | Core doctor axes (presence / ready / send_path) | In flight | [RAVEN#22](https://github.com/Raven-ASHCO/RAVEN/pull/22) | `ash doctor` exit 0 ≠ send Proven. |
 | Doctor identity-backend mismatch | In flight | [RAVEN#23](https://github.com/Raven-ASHCO/RAVEN/pull/23) | Identity usable / `daemon_ready` honesty. |
-| Windows named-pipe IPC (`ipc_server` UDS-only + `ash --send-stdin`) | **#1 blocker** (remaining B10 P0) | B10 · Node IPC (#8) | Linux/macOS UDS **mostly green**. SCM+LAN parity = **P1 after pipe**. **Does not unblock WAN Path C.** Docs/helpers **not** e2e-proven. |
+| Windows named-pipe IPC (`WINDOWS_NAMED_PIPE`) | **Decision A AUTHORIZED NOW** | B10 · Windows (#11) + Node IPC (#8) | Sprint 1 terminal slice **OPEN for pipe only** — **not** Sprint-1-deferred. Doctor/client keyed on `WINDOWS_NAMED_PIPE`. **Does not unblock WAN Path C.** |
 | install→doctor→send CI (Win) | Open P0 (after pipe) | B10 · CLI DX (#12) | Still remaining B10; not Proven until executed green/red. |
 | Win loopback `127.0.0.1:7420` | Excluded (B12) | — | Loopback ≠ WAN / named-pipe / terminal Proven. |
 
@@ -119,7 +122,7 @@ Org-create / personal-account CODEOWNERS blockers from morning audit are **clear
 | B6 | No GitHub team for SRE/Perf | 0d | SRE Perf (#19) + Manager | Med | No `@Raven-ASHCO/perf` (or similar). |
 | B7 | Review-latency baseline under-sampled | 0d | Eng Program (#2) | Low | Early sample was RAVEN#1 self-merge. More PRs merged today; **SLA still undefined** — exclude self-merges. Do not invent latency numbers here. |
 | B8 | iOS / Apple tree landing (Phase 1+) | — | Apple (#10) + Eng Program | **PARKED** | **Phase 1+ PARKED** — Windows terminal **>** iOS landing this phase. See `apple-tree-gap.md`. |
-| B10 | Windows terminal path — remaining P0 after compile | 0d | Node IPC (#8) + Windows (#11) + CLI DX (#12) + SRE Perf (#19) | High (Priority #1) | **Compile P0-1 DONE** (#20 + #21 **MERGED**). **#1 remaining blocker = Windows named-pipe gap** (UDS-only `ipc_server`; `ash --send-stdin` spawn). Linux/macOS UDS **mostly green**. install→doctor→send CI still open. SCM+LAN parity = **P1 after pipe**. **Does not unblock WAN Path C.** Docs/helpers **not** e2e-proven. **Do not greenlight duplicate compile fixes.** |
+| B10 | Windows named-pipe — Manager **decision A** | 0d | Windows (#11) + Node IPC (#8) | High (Priority #1) | **Decision A: implement AUTHORIZED NOW** (not Sprint-1-deferred). Sprint 1 terminal slice **OPEN for pipe only**. Doctor/client keyed on `WINDOWS_NAMED_PIPE`. Compile P0-1 DONE (#20+#21). Linux/macOS UDS mostly green. **Does not unblock WAN Path C.** Docs/helpers **not** e2e-proven. **Do not greenlight duplicate compile fixes.** |
 | B11 | `install.sh` hazard | 0d | CLI DX (#12) + DevSecOps (#20) | High | [RAVEN#17](https://github.com/Raven-ASHCO/RAVEN/pull/17) (draft) — fail-close install path. **Not** install evidence; docs/PR ≠ Proven. |
 | B12 | Win loopback `127.0.0.1:7420` | 0d | Windows (#11) + Node IPC (#8) | Med | Loopback bind/listen is **not** WAN / named-pipe Proven. Docs-only ≠ Proven. |
 
@@ -208,7 +211,7 @@ Fake-integration watch: any PR that wires RDAP tasks to production raven-node AT
 | Sole menu-smoke CI | [RAVEN#16](https://github.com/Raven-ASHCO/RAVEN/pull/16) — Apple **APPROVE** + Core **ACK**; converge **DONE** with SRE |
 | Proven flip | **Only** after executed green/red recorded (linked CI or agent smoke). Docs-only ≠ Proven. |
 | Merge order | #20 + #21 **MERGED** (compile P0-1 **DONE**) → land #16 **when green** → #19 rebases **preserving** menu-smoke |
-| B10 remaining open P0 | **#1 = Windows named-pipe** (UDS-only `ipc_server`; `ash --send-stdin`). Then install→doctor→send CI. SCM+LAN parity = **P1 after pipe**. **Does not unblock WAN Path C.** Docs/helpers **not** e2e-proven. |
+| B10 remaining | **Decision A AUTHORIZED NOW** — named-pipe implement (Windows + Node IPC). Sprint 1 slice **OPEN for pipe only**. Doctor/client keyed on `WINDOWS_NAMED_PIPE`. **Does not unblock WAN Path C.** |
 | #21 | **MERGED** with #20 — **not** CI-held. Compile P0-1 closed. |
 
 ---
@@ -244,7 +247,7 @@ Fake-integration watch: any PR that wires RDAP tasks to production raven-node AT
 3. **B2:** accepted for bot-only org; escalate only if human reviewers added.
 4. **Founder Priority #1:** terminal L/M/W + three-path matrices; **no M1 eng** until terminal board green (CEO override only).
 5. **Menu-smoke / macOS:** wire `ash_menu_smoke`/`doctor` into CI (not operator-only) via [RAVEN#16](https://github.com/Raven-ASHCO/RAVEN/pull/16) + [RAVEN#22](https://github.com/Raven-ASHCO/RAVEN/pull/22). Menu smokes not GHA-gated yet. macOS CI unit/smoke proven. Notarize **BLOCKED_HUMAN**. Windows honest fail-closed until named-pipe.
-6. **B10:** compile P0-1 **DONE**. **#1 remaining = Windows named-pipe** (UDS-only `ipc_server`; `ash --send-stdin`). Linux/macOS UDS mostly green. SCM+LAN parity = P1 after pipe. **Does not unblock WAN Path C.** Then install→doctor→send CI. No duplicate compile fixes.
+6. **B10 decision A:** named-pipe **implement AUTHORIZED NOW** (not Sprint-1-deferred). Sprint 1 terminal slice **OPEN for pipe only**. Windows + Node IPC. Doctor/client keyed on `WINDOWS_NAMED_PIPE`. **Does not unblock WAN Path C.** No duplicate compile fixes.
 7. **B11 / B12:** track #17 fail-close; do not treat `install.sh` or Win loopback `127.0.0.1:7420` as Proven.
 8. **B8 Phase 1+ PARKED** (Windows terminal > iOS landing).
 9. **SRE Perf (#19):** Performance baseline remains #19; harvest in flight — docs-only ≠ Proven.

@@ -67,6 +67,8 @@ Companion: [`blockers-ownership-board.md`](blockers-ownership-board.md) · evide
 
 **Windows named-pipe gap = #1 blocker.** `ipc_server` is **UDS-only**; `ash --send-stdin` spawn has no Win pipe path. Linux/macOS UDS is **mostly green**. SCM+LAN parity = **P1 after pipe**. **Does not unblock WAN Path C.**
 
+**B10 Manager decision A:** named-pipe **implement AUTHORIZED NOW** — **not** Sprint-1-deferred. Sprint 1 terminal slice **OPEN for pipe only**. Owners: **Windows + Node IPC**. Doctor/client keyed on `WINDOWS_NAMED_PIPE`.
+
 ## Manager macOS slice (2026-09-04)
 
 | Cell | Lock |
@@ -110,7 +112,7 @@ Terminal Win / macOS / Linux reliability **and** this three-path matrix sit **ab
 |----|---------------|-------|
 | Linux | UDS **mostly green**; Path C LAN/localhost **proven** (not WAN) | `ash_menu_smoke` → CLI DX [RAVEN#16](https://github.com/Raven-ASHCO/RAVEN/pull/16). Internet dial **fail-closed proven** ≠ WAN claim. **Proven flip only after executed green** (linked CI or agent smoke). |
 | macOS | CI unit/smoke **proven**; menu smokes **not GHA-gated yet** | **Decision:** wire `ash_menu_smoke`/`doctor` into CI (not operator-only). Track #16/#22. Notarize **BLOCKED_HUMAN**. UDS mostly green. Path C LAN/localhost proven ≠ WAN. |
-| Windows | **Honest fail-closed** until named-pipe | Compile P0-1 **DONE** (#20 + #21 MERGED). Remaining B10: **#1 = named-pipe**. Then install→doctor→send CI. SCM+LAN parity = **P1 after pipe**. **Does not unblock WAN Path C.** Loopback B12 ≠ WAN Proven. |
+| Windows | **Honest fail-closed** until named-pipe lands | **B10 decision A AUTHORIZED NOW** — pipe implement (not Sprint-1-deferred). Sprint 1 slice **OPEN for pipe only**. Windows + Node IPC. Doctor/client keyed on `WINDOWS_NAMED_PIPE`. **Does not unblock WAN Path C.** Loopback B12 ≠ WAN Proven. |
 
 **Merge order (Eng Program):** #20 done → land #16 **when green** → [RAVEN#19](https://github.com/Raven-ASHCO/RAVEN/pull/19) rebases **preserving** menu-smoke. B1 required-check enable still needs green + Manager GO.
 
@@ -126,5 +128,5 @@ Terminal Win / macOS / Linux reliability **and** this three-path matrix sit **ab
 - Path B lock: opaque custody + `ENDPOINT_ACK_ONLY` **proven (software)** only. Hop/repl cooperative-only; prod mailbox held; iOS blocked on B8. **Not flood-proof / not Byzantine-safe.** Prefer executed green/red citations.
 - Path C lock: LAN/localhost **proven**; WAN **blocked/untested**; internet dial **fail-closed proven** — **NOT** a WAN reliability claim. `ash_menu_smoke` → CLI DX #16. Windows honest fail-closed until named-pipe.
 - **A+B+C board fills now present.** Continue **terminal**.
-- Node IPC: Windows named-pipe = **#1** remaining B10. Linux/macOS UDS mostly green. SCM+LAN parity = P1 after pipe. **Does not unblock WAN Path C.**
+- Node IPC / B10 **decision A:** named-pipe **implement AUTHORIZED NOW** (not Sprint-1-deferred). Sprint 1 terminal slice **OPEN for pipe only**. Windows + Node IPC. Doctor/client keyed on `WINDOWS_NAMED_PIPE`. **Does not unblock WAN Path C.**
 - macOS slice: CI unit/smoke **proven**. Menu smokes **not GHA-gated yet** — wire `ash_menu_smoke`/`doctor` into CI (not operator-only). Track #16/#22. Notarize **BLOCKED_HUMAN**.
