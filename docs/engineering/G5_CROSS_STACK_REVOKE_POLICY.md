@@ -75,6 +75,6 @@ Without a joint policy, operators can:
 ## 5. Ack checklist
 
 - [x] Identity AuthZ (author)
-- [ ] Raven↔RDAP
-- [x] RDAP Protocol (ACK on raven-distributed-agent-protocol PR #2 `docs/rdap-revocation.md`)
-- [x] Architect (Sprint 0 §2.4 trust-boundary ACK; full G5 ACK on PR #5 §2.2+E4, 2026-09-04)
+- [x] Raven↔RDAP (ACK G5 — ADR 0004 appendix on PR #3 rewritten to §2.2 predicate, 2026-09-04)
+- [x] RDAP Protocol (ACK on RDAP PR #2 docs/rdap-revocation.md)
+- [x] Architect (full G5 ACK on PR #5 §2.2+E4, 2026-09-04)
