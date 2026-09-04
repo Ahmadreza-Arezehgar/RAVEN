@@ -10,7 +10,7 @@ Target window: ~90 days from Baseline Freeze (anchor date 2026-09-04).
 | **O4** | **R3 discipline** | Risk classes + approval matrix enforced; **zero** R3 self-merges | #17, #1, all authors |
 | **O5** | **Protocol freeze baseline** | Current protocol versions documented; experimental-only features listed; version bumps go through matrix | #2, #3, #14 |
 | **O6** | **Interop & gaps** | Raven↔RDAP gaps (security/interop) inventoried with owners; interop tests in CI | #4, #18, #14, #2 |
-| **O7** | **Perf + roadmap** | Performance baseline recorded; 90-day roadmap agreed and tracked | #11, #1, Eng Mgmt |
+| **O7** | **Perf + roadmap** | Performance baseline recorded; 90-day roadmap agreed and tracked | #19 (SRE Perf), #1, Eng Mgmt |
 
 ## Dependencies
 
