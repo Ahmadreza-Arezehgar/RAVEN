@@ -130,33 +130,18 @@ pub fn decode_response(frame: &[u8]) -> Result<IpcResponse, String> {
     serde_json::from_slice(&frame[4..4 + n]).map_err(|e| e.to_string())
 }
 
-/// Default UDS path under data dir (mode 0600 expected at bind). Unix only for
-/// presence probes — Windows doctor must not use this (false-red).
+/// Default socket path under data dir (mode 0600 expected at bind).
 pub fn default_socket_path(data_dir: &std::path::Path) -> std::path::PathBuf {
     data_dir.join("raven-node.sock")
 }
 
 /// Canonical Windows named-pipe bind/connect name.
 /// Windows Platform server MUST bind this exact string (user DACL only).
-/// Framing is the same length-prefixed JSON as UDS (`encode_request` / `decode_response`).
 pub const WINDOWS_NAMED_PIPE: &str = r"\\.\pipe\raven-node";
 
 /// Alias for [`WINDOWS_NAMED_PIPE`] (Windows Platform bind name).
 pub fn default_pipe_name() -> &'static str {
     WINDOWS_NAMED_PIPE
-}
-
-/// Local IPC endpoint for this OS: UDS under `data_dir`, or `WINDOWS_NAMED_PIPE`.
-pub fn default_ipc_endpoint(data_dir: &std::path::Path) -> std::path::PathBuf {
-    #[cfg(windows)]
-    {
-        let _ = data_dir;
-        std::path::PathBuf::from(WINDOWS_NAMED_PIPE)
-    }
-    #[cfg(not(windows))]
-    {
-        default_socket_path(data_dir)
-    }
 }
 
 #[cfg(test)]
@@ -213,17 +198,5 @@ mod tests {
     fn windows_named_pipe_is_canonical_bind_name() {
         assert_eq!(WINDOWS_NAMED_PIPE, r"\\.\pipe\raven-node");
         assert_eq!(default_pipe_name(), WINDOWS_NAMED_PIPE);
-        let dir = std::path::Path::new("/tmp/raven-data");
-        let ep = default_ipc_endpoint(dir);
-        #[cfg(windows)]
-        {
-            assert_eq!(ep.to_string_lossy(), WINDOWS_NAMED_PIPE);
-            assert!(!ep.to_string_lossy().contains("raven-node.sock"));
-        }
-        #[cfg(not(windows))]
-        {
-            assert_eq!(ep, default_socket_path(dir));
-            assert!(ep.ends_with("raven-node.sock"));
-        }
     }
 }
