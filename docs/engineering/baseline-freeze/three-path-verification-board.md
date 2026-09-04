@@ -49,6 +49,10 @@ Companion: [`blockers-ownership-board.md`](blockers-ownership-board.md) · evide
 
 **Claim language locked — not flood-proof / not Byzantine-safe.** Continue **C** (direct) + **terminal**.
 
+## Node IPC (terminal input)
+
+**Windows named-pipe gap = #1 blocker.** `ipc_server` is **UDS-only**; `ash --send-stdin` spawn has no Win pipe path. Linux/macOS UDS is **mostly green**. SCM+LAN parity = **P1 after pipe**. **Does not unblock WAN Path C.**
+
 ## FOUNDER RULE (try phase = execute)
 
 **Try-phase = execute:** consolidate **executed green/red only** (linked CI or agent smoke). **Docs-only ≠ Proven.**
@@ -73,7 +77,7 @@ Terminal Win / macOS / Linux reliability **and** this three-path matrix sit **ab
 |------|---------------|--------------------------|---------------------------|
 | **mesh** (Path A) | **Not Proven** — **locked** | **Path A lock:** localhost reservation only. Two-client circuit / WAN / auto-fallback / DCUtR **NOT proven**. Hop server **missing**. Multi-NAT **BLOCKED_HARDWARE**. NAT hold **intact**. Policy/sim (`network_sim_1000`) + `mock_ble` hygiene ≠ live mesh. **Do not call mesh relay reliable.** | Executed green/red only (linked CI or agent smoke) on a **named** mesh path after the lock lifts. CI ≠ hardware. |
 | **bridge** (Path B) | **Locked** — opaque custody + `ENDPOINT_ACK_ONLY` **proven (software)** | **Path B lock:** hop/repl **cooperative-only**; prod mailbox **held**; iOS **blocked on B8**. Claim language locked — **not flood-proof / not Byzantine-safe**. Prefer executed green/red citations (`bridge_v1` / named smokes — do not invent run IDs here). | Broader Proven (flood / Byzantine / prod mailbox / iOS) is **out of claim**. Continue **C + terminal**. |
-| **direct** | **Not Proven** | Founder honesty: terminal-to-terminal **direct Internet is not proven**; shipping message path is fail-closed. Localhost/LAN + fail-closed `internet_dial_smoke` **≠** WAN reliability. See connectivity matrix §0. | Linked green CI or agent-executed smoke that dials a **non-loopback / non-RFC1918** peer on the named direct path. `127.0.0.1` (incl. B12 `127.0.0.1:7420`) is **not** Proven direct. |
+| **direct** (Path C) | **Not Proven** | Founder honesty: terminal-to-terminal **direct Internet is not proven**; shipping message path is fail-closed. Localhost/LAN + fail-closed `internet_dial_smoke` **≠** WAN. Node IPC named-pipe / UDS work **does not unblock WAN Path C**. See connectivity matrix §0. | Linked CI or agent smoke that dials a **non-loopback / non-RFC1918** peer. `127.0.0.1` (B12) is **not** Proven direct. |
 
 ---
 
@@ -81,9 +85,9 @@ Terminal Win / macOS / Linux reliability **and** this three-path matrix sit **ab
 
 | OS | Honest status | Notes |
 |----|---------------|-------|
-| Linux | **Not Proven** on this board | Menu-smoke sole CI is [RAVEN#16](https://github.com/Raven-ASHCO/RAVEN/pull/16) (Apple APPROVE + Core ACK; SRE converge DONE). **Proven flip only after executed green** (linked CI or agent smoke). |
-| macOS | **Not Proven** on this board | Same #16 rust-macos menu-smoke when green. Keychain / launchd / notarization are **out of scope** for menu-smoke. |
-| Windows | **Not Proven** on this board | Compile P0-1 **DONE** — [RAVEN#20](https://github.com/Raven-ASHCO/RAVEN/pull/20) **and** [RAVEN#21](https://github.com/Raven-ASHCO/RAVEN/pull/21) **MERGED** (not CI-held). Remaining B10 open P0 = named-pipe IPC + install→doctor→send CI. Docs/helpers **not** e2e-proven. Loopback B12 ≠ Proven. **Do not greenlight duplicate compile fixes.** |
+| Linux | UDS **mostly green**; path **Not Proven** | Menu-smoke sole CI is [RAVEN#16](https://github.com/Raven-ASHCO/RAVEN/pull/16). UDS `ipc_server` is the Unix path. **Proven flip only after executed green** (linked CI or agent smoke). |
+| macOS | UDS **mostly green**; path **Not Proven** | Same #16 rust-macos menu-smoke when green. Keychain / launchd / notarization **out of scope** for menu-smoke. |
+| Windows | **Not Proven** — named-pipe **#1 blocker** | Compile P0-1 **DONE** (#20 + #21 MERGED). Remaining B10: **#1 = named-pipe** (UDS-only `ipc_server`; `ash --send-stdin` spawn). Then install→doctor→send CI. SCM+LAN parity = **P1 after pipe**. **Does not unblock WAN Path C.** Loopback B12 ≠ Proven. |
 
 **Merge order (Eng Program):** #20 done → land #16 **when green** → [RAVEN#19](https://github.com/Raven-ASHCO/RAVEN/pull/19) rebases **preserving** menu-smoke. B1 required-check enable still needs green + Manager GO.
 
@@ -97,3 +101,4 @@ Terminal Win / macOS / Linux reliability **and** this three-path matrix sit **ab
 - B11 `install.sh` ([RAVEN#17](https://github.com/Raven-ASHCO/RAVEN/pull/17)) is a hazard track, **not** install Proven.
 - Path A lock: do **not** call mesh relay reliable. Localhost reservation only; circuit/WAN/auto-fallback/DCUtR **NOT proven**; hop server missing; multi-NAT **BLOCKED_HARDWARE**; NAT hold intact.
 - Path B lock: opaque custody + `ENDPOINT_ACK_ONLY` **proven (software)** only. Hop/repl cooperative-only; prod mailbox held; iOS blocked on B8. **Not flood-proof / not Byzantine-safe.** Prefer executed green/red citations. Continue **C+terminal**.
+- Node IPC: Windows named-pipe = **#1** remaining B10. Linux/macOS UDS mostly green. SCM+LAN parity = P1 after pipe. **Does not unblock WAN Path C.**
