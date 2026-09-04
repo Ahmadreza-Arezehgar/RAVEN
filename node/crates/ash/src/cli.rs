@@ -3543,6 +3543,59 @@ pub fn run() {
         Some(Commands::Doctor { require_ready }) => cmd_doctor(&data_dir, require_ready),
         Some(Commands::IpcPing) => cmd_ipc_ping(&data_dir),
         Some(Commands::Inbox) => cmd_endpoint_inbox(&data_dir),
+        Some(Commands::Contact { cmd }) => match cmd {
+            ContactCommands::Add {
+                address,
+                pub_hex,
+                petname,
+                tag,
+                alias,
+                verify_fp,
+                prekey_file: _,
+                lan_dial,
+            } => {
+                let public_tag = if !tag.trim().is_empty() { tag } else { alias };
+                if let Err(e) = add_contact(
+                    &data_dir,
+                    &address,
+                    &pub_hex,
+                    &petname,
+                    &public_tag,
+                    verify_fp.as_deref(),
+                    &lan_dial,
+                ) {
+                    eprintln!("{}", sanitize_terminal_text(&e));
+                    std::process::exit(1);
+                }
+            }
+            ContactCommands::List => cmd_contact_list(&data_dir),
+            ContactCommands::Verify {
+                tag,
+                alias,
+                petname,
+                address,
+            } => cmd_contact_verify(
+                &data_dir,
+                tag.as_deref(),
+                alias.as_deref(),
+                petname.as_deref(),
+                address.as_deref(),
+            ),
+            ContactCommands::Resolve { tag } => cmd_contact_resolve(&data_dir, &tag),
+            ContactCommands::Request {
+                target,
+                message,
+                pick,
+            } => cmd_contact_request(&data_dir, &target, &message, pick),
+            ContactCommands::Pending => cmd_contact_pending(&data_dir),
+            ContactCommands::Ingest { file } => cmd_contact_ingest(&data_dir, &file),
+            ContactCommands::Accept {
+                request_id,
+                petname,
+            } => cmd_contact_accept(&data_dir, &request_id, &petname),
+            ContactCommands::Decline { request_id } => cmd_contact_decline(&data_dir, &request_id),
+            ContactCommands::Block { request_id } => cmd_contact_block(&data_dir, &request_id),
+        },
         _ => {} // other subcommands handled by their own dispatch
     }
 }
