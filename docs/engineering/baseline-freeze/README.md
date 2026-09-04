@@ -40,7 +40,7 @@ Feature PRs that touch R2/R3 surfaces **must not** land until the Sprint 0 check
 | [`windows-tree-gap.md`](windows-tree-gap.md) | Windows tree gap (exists on `main`) |
 | [`docs/network/raven-swarm-connectivity-matrix.md`](../../network/raven-swarm-connectivity-matrix.md) | Sprint 0 raven-swarm connectivity / relay / NAT inventory; §0 founder direct-Internet honesty |
 | [`perf-baseline-2026-09-04.md`](perf-baseline-2026-09-04.md) | Sprint 0 perf harvest (Role #19 SRE Perf); soft budgets draft |
-| [`reliability-evidence-bar.md`](reliability-evidence-bar.md) | Sprint 0 terminal reliability tiers (Proven / substitute / Blocked); Role #19 SRE Perf; CLI DX stubs |
+| [`reliability-evidence-bar.md`](reliability-evidence-bar.md) | Sprint 0 terminal reliability tiers (Proven / substitute / Blocked); Role #19 SRE Perf; CLI DX operator appendix |
 | Live CODEOWNERS | [`.github/CODEOWNERS`](../../../.github/CODEOWNERS) (RAVEN); RDAP repo `.github/CODEOWNERS` |
 
 ### Sprint 0 architecture drafts (#1)

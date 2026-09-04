@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-04  
 **Owner (semantics / CI bar):** Role #19 SRE Perf  
-**Co-owner (operator surface, appendix later):** CLI DX  
+**Co-owner (operator surface / appendix):** CLI DX  
 **Repo:** [Raven-ASHCO/RAVEN](https://github.com/Raven-ASHCO/RAVEN)  
 **Workflow cited:** [`.github/workflows/raven-serverless.yml`](../../../.github/workflows/raven-serverless.yml) (`name: Raven Serverless Node`)
 
@@ -24,7 +24,7 @@ Org chart [`org-structure.md`](org-structure.md) still titles #19 as Release Eng
 | **B11** evidence exclusion | **#19 SRE Perf** (co-own) | `install.sh` stays off Proven (CI exclusion). CLI DX [PR #17](https://github.com/Raven-ASHCO/RAVEN/pull/17) is fail-closed relabel, not Proven |
 | **B12** evidence exclusion | **#19 SRE Perf** | Windows `127.0.0.1:7420` loopback ≠ path Proven. **Not B11.** |
 | Operator retire / relabel of `install.sh` (**B11** only) | **CLI DX** (co-own) | [PR #17](https://github.com/Raven-ASHCO/RAVEN/pull/17) fatal-exit / README one-liner removal — **in flight**, not Proven |
-| Operator how-to, `ash doctor` / install exit codes, how to run `reliability_matrix_20.sh` | **CLI DX** | Stubs at the bottom of this file; `ash` menu UX; install-script operator docs |
+| Operator how-to, `ash doctor` / install exit codes, how to run `reliability_matrix_20.sh` | **CLI DX** | Operator how-to + exit-code appendix at the bottom of this file; `ash` menu UX; install-script operator docs |
 
 **Menu-smoke CI (linux + macOS):** owned by **CLI DX PR #16** (`cursor/ash-menu-smoke-linux-ci-a976`, agent `bc-097f7c8d`). That PR wires `node/scripts/ash_menu_smoke.sh` into `rust-linux` **and** `rust-macos`. This PR does **not** add those steps. Until #16 is merged to `main`, menu-smoke is **pending / in-flight** — do not claim green.
 
@@ -101,7 +101,7 @@ No evidence on that OS’s CI job, or the path is hardware / portal / public-Int
 
 **False-green / false-red (honesty, locked):** treating exit 0 or IPC-up as send-ready is a **false-green**. Treating “doctor printed a warning / daemon absent” as a hard reliability FAIL when the report completed and send was never claimed is a **false-red** if someone then blocks a queue/`bridge_v1` Proven row. Keep the axes separate so neither happens. Windows `127.0.0.1:7420` (B12) is loopback-only — citing it as WAN/path Proven is also a **false-green**.
 
-Detailed exit-code tables and operator wording live in the CLI DX appendix stub (source: [PR #22](https://github.com/Raven-ASHCO/RAVEN/pull/22)). This section only locks the evidence rule.
+Detailed exit-code tables and operator wording live in the CLI DX appendix below (source: [PR #22](https://github.com/Raven-ASHCO/RAVEN/pull/22)). This section only locks the evidence rule.
 
 **Also exclude as Proven (do not relabel):**
 
@@ -266,15 +266,139 @@ Do **not** conflate `windows_service.ps1` parse-only with this tier.
 
 ## Operator how-to (CLI DX)
 
-<!-- CLI DX: how operators run reliability_matrix_20.sh, first_run, ash_menu_smoke -->
+These commands are for **operators**. They do **not** change the SRE tiers above. Matrix wine / lima rows stay **PASS_SOFTWARE_SUBSTITUTE** (never Windows Proven). Real install (release builds) is the `docs/INSTALL_*.md` path, not `node/scripts/install.sh`.
+
+### `scripts/reliability_matrix_20.sh` (operator matrix; **not in CI**)
+
+Path is repo-root [`scripts/reliability_matrix_20.sh`](../../../scripts/reliability_matrix_20.sh). From the repository root:
+
+```bash
+bash scripts/reliability_matrix_20.sh
+# optional:
+ITERS=3 bash scripts/reliability_matrix_20.sh
+SKIP_IOS=1 SKIP_DOCKER=1 SKIP_WINE=1 bash scripts/reliability_matrix_20.sh
+```
+
+The script builds debug `raven-node` / `ash` / `raven-swarm`, loops the scenario list, and writes `node/proof_artifacts/reliability_20_<run-id>/` (`SUMMARY.md`, `RESULTS_TABLE.md`, `results.csv`). Exit 0 only when the pass budget is met and no hard `FAIL` remains. Platform `SKIP` is allowed. **This file records no pass counts.**
+
+**wine / lima = PASS_SOFTWARE_SUBSTITUTE only — never Windows Proven.**
+
+| Matrix row | What it actually runs | Evidence label |
+|------------|----------------------|----------------|
+| `14_windows_ash` (`sc_windows_wine`) | Cross-built `ash.exe` PE32+ self-check; optional `wine64 ash --help` | **PASS_SOFTWARE_SUBSTITUTE** — even if the script prints `PASS` for wine `--help` |
+| `15_linux_container` lima fallback | lima `uname` and/or lima `ash --help` (or musl ELF self-check) | **PASS_SOFTWARE_SUBSTITUTE** |
+
+Do **not** promote those rows to `terminal-path Proven (Windows)`. Wine / lima `ash --help` is a help-text substitute, not Delivered+ACK, not install→doctor→send.
+
+### `node/scripts/ash_menu_smoke.sh` (Unix terminal-path smoke)
+
+Local (from `node/`; script builds `target/debug/ash` if missing):
+
+```bash
+cd node
+./scripts/ash_menu_smoke.sh
+```
+
+Uses an ephemeral `--data-dir` and `RAVEN_IDENTITY_BACKEND=locked-file`. Success prints `ASH MENU SMOKE PASSED`. That backend is a debug/CI identity, **not** a Keychain or production-install claim. Operators must **not** set `RAVEN_IDENTITY_BACKEND=locked-file` for a normal Keychain / Secret Service install.
+
+**CI landing (linux + macOS):** [PR #16](https://github.com/Raven-ASHCO/RAVEN/pull/16) wires this script into `rust-linux` **and** `rust-macos`. Until #16 is merged to `main`, menu-smoke is **pending / in-flight** — do not claim green. This reliability-bar PR does **not** add those steps.
+
+### Real install (release builds)
+
+Operator install is **release**, not the matrix / menu-smoke debug binaries:
+
+- [`docs/INSTALL_Linux.md`](../../INSTALL_Linux.md) → `node/scripts/install/linux_systemd_user.sh`
+- [`docs/INSTALL_macOS.md`](../../INSTALL_macOS.md) → `node/scripts/install/macos_launchd.sh`
+- [`docs/INSTALL_Windows.md`](../../INSTALL_Windows.md) → native MSVC `ash.exe` / `windows_service.ps1`
+
+Those endorsed helpers stay **unproven** until a named CI job covers them (see B11 table above). `node/scripts/install.sh` is **not** an install path — see Explicit notes / B11.
+
+Local first-run bootstrap (debug, stable `~/.raven`, **not** evidence): `bash scripts/ash_first_run.sh` (`--init-only` / `--no-run` supported). Prefer the INSTALL docs for a real machine.
+
+### Windows path smoke — `node/scripts/ash_doctor_send_smoke.ps1`
+
+Scaffolded on this PR. Sibling of `ash_menu_smoke.sh`. **Fail-loud if `ash.exe` is missing** — no silent skip, no `RAVEN_ALLOW_ASH_SMOKE_SKIP`.
+
+**Operators (from `node/` on a Windows / pwsh host):**
+
+```powershell
+cd node
+pwsh -File scripts/ash_doctor_send_smoke.ps1
+```
+
+The script `cargo build`s `-p ash -p raven-node` if needed, then `init` → `whoami` → `doctor` (requires identity + `serverless_rvn1`; IPC-up alone is not enough) → menu send teach / fail-closed. Exit 0 only when every required string is present.
+
+If `target\debug\ash.exe` is still missing after cargo: **exit 1** with `MSVC ash binary missing — blocked on Windows Platform PR1`. Same fail-closed if the `.ps1` itself is missing.
+
+**CI (`rust-windows`, working-directory `node`, `shell: pwsh`):**
+
+```powershell
+$ErrorActionPreference = 'Stop'
+$script = 'scripts/ash_doctor_send_smoke.ps1'
+if (-not (Test-Path -LiteralPath $script)) {
+  Write-Error "$script missing — refusing silent skip"
+  exit 1
+}
+& $script
+if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+```
+
+`terminal-path Proven (Windows)` is only claimed after this smoke is green on `main`. Until then the row is **proposed / in-flight**.
+
+---
 
 ## Doctor / install exit codes (CLI DX)
 
-<!-- CLI DX: paste presence/ready/send_path + exit-code appendix from PR #22.
-     Do not invent tables here. -->
+**Source of truth:** Core gate + [PR #22](https://github.com/Raven-ASHCO/RAVEN/pull/22) (`cmd_doctor` on `presence` / `ready` / `send_path`). Labels below are pasted from that gate — not invented here.
 
-**Source of truth for this appendix:** [PR #22](https://github.com/Raven-ASHCO/RAVEN/pull/22) (`presence` / `ready` / `send_path` + doctor exit codes).
+SRE binding rule (locked above): **`ash doctor` exit 0 ≠ send Proven**; `daemon_presence` / `daemon_ready` / `send_path` stay distinct.
 
-Operators/authors: paste or adapt the appendix from #22. **Do not invent exit-code tables in this file.**
+### Axes (`ash doctor`)
 
-SRE binding rule (locked above, not restated as a table): **`ash doctor` exit 0 ≠ send Proven**; presence / ready / send_path stay distinct.
+| Label | Meaning (Core / #22) | Default / honesty |
+|-------|----------------------|-------------------|
+| `daemon_presence` | Local IPC **Ping** answered. **Not** “file exists.” **Not** send. Replaces Ping-only `daemon_state: up`. | `present` / `absent (reason=…)` / `blocked (reason=…)` |
+| `daemon_ready` | Presence **plus** `IpcResponse::Status`, identity usable via `store_status`/`load`, queue/DB open **or** Status `forward_pending`, and `serverless_rvn1`. File existence is `file_present` only. | `ready` or `not_ready (reason=…)` (`status_unchecked`, `no_presence`, `ipc_transport_blocked`, …) |
+| `send_path` | Whether a send path was actually exercised or probed. | Default **`not_ready (reason=not_probed)`** or **`unchecked`**. Never green from presence or ready. |
+
+`ash doctor --require-ready` still does **not** claim send. It only exits 1 when `daemon_ready` is false.
+
+### Exit codes
+
+| Code | Meaning | Must not be read as |
+|------|---------|---------------------|
+| **0** | Report **completed**. Diagnostic printed. | **≠ send Proven.** Not Delivered+ACK. Not CLI / terminal-path Proven. |
+| **1** | Hard diagnostic failure, or `--require-ready` when `daemon_ready` is false. | Soft-skip / “daemon absent” as a queue/`bridge_v1` reliability FAIL (that would be a **false-red** if send was never claimed) |
+| **2** | Security hold / production gate (`legacy_fastapi`, identity continuity). | Install Proven; send Proven |
+
+### Soft-skips never ✓
+
+Doctor prints these as skips / unknown. They are **never** a checkmark and **never** “up”:
+
+- `bluetooth: skipped (headless)`
+- `nat_class: unknown (BLOCKED_HARDWARE)`
+
+### Doctor IPC-up alone ≠ CLI ready
+
+`daemon_presence: present`, `daemon_state: up`, or a socket/pipe existing is **not** CLI ready and **not** send Proven.
+
+**CLI / terminal ready** still requires **install → doctor → send** on that OS, **or** green [`ash_menu_smoke.sh`](../../../node/scripts/ash_menu_smoke.sh) (Unix; [PR #16](https://github.com/Raven-ASHCO/RAVEN/pull/16)), **or** green [`ash_doctor_send_smoke.ps1`](../../../node/scripts/ash_doctor_send_smoke.ps1) (Windows; this PR). Doctor output is an *input* to that chain; a single green exit is not enough.
+
+### Windows presence (no UDS probe)
+
+Canonical pipe: `raven_core::ipc::WINDOWS_NAMED_PIPE` = `\\.\pipe\raven-node`.
+
+Until Platform lands a named-pipe **client**, Windows doctor does **not** probe `raven-node.sock`. Presence is **missing / blocked**:
+
+- `daemon_presence: blocked (reason=named_pipe_client_missing)` — never a checkmark
+- `daemon_ready: not_ready (reason=ipc_transport_blocked)`
+- `send_path: not_ready (reason=not_probed)` (or `unchecked`)
+
+Do not treat a loopback listen on `127.0.0.1:7420` as presence or path Proven (**B12**).
+
+---
+
+## Explicit notes (CLI DX)
+
+- **wine / lima `ash --help` ≠ Win Proven.** Matrix `14_windows_ash` (wine or PE self-check) and lima `ash --help` / uname-only are **PASS_SOFTWARE_SUBSTITUTE** only. Never `terminal-path Proven (Windows)`.
+- **B11 — `node/scripts/install.sh`.** CLI DX [PR #17](https://github.com/Raven-ASHCO/RAVEN/pull/17) fail-closes leftover `curl | bash` (fatal-exit; README one-liner removed). That is operator **relabel**, **not** install Proven. The path stays **Blocked / non-evidence**: wrong remote (`Ahmadreza-Arezehgar/RAVEN`) + `unsafe-demo-crypto` neutralized by the fatal-exit. SRE Perf co-owns the exclusion; CLI DX co-owns the relabel. Use `docs/INSTALL_*.md` for real (release) install.
