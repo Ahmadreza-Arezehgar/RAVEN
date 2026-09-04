@@ -1,6 +1,6 @@
 # ADR 0004 — Raven↔RDAP production ATSAM transport (O6)
 
-**Status:** Proposed (Architect **BLOCK** narrowed — HOLD/R3-header/IPC-trust revision; Crypto **ACK** G5.4 2026-09-04; awaiting Architect ACK ADR 0004)  
+**Status:** Proposed — Architect **ACK** ADR 0004 (core body) 2026-09-04; Crypto **ACK**; Identity **ACK** ADR body; Appendix G5 **pending** Architect+Identity ACK on four-point rewrite; no R3 self-merge; no M1–M3 production code until full acks.
 **Date:** 2026-09-04  
 **Risk class (normative):** **R3** (ATSAM / crypto transport). Approvers: Architect (#1), Crypto ATSAM (#3), Identity AuthZ (#15); Security Board as matrix requires. **No R3 self-merge.**  
 **Deciders (required ack before merge):** Architect (#1), Crypto ATSAM (#3), Identity AuthZ (#15); Security Board as matrix requires  
@@ -164,7 +164,7 @@ See companion `docs/adr/0004-CODEOWNERS-touch-list.md`.
 
 ## Appendix G5 — Joint Raven↔RDAP revoke policy
 
-See `docs/adr/0004-appendix-g5-raven-rdap-revoke.md` (A↛R always; R↛ auto address-deny / playbook A; R→ fail-closed on bound data-plane; address deny = B/C + file + exhausted marker).
+See `docs/adr/0004-appendix-g5-raven-rdap-revoke.md` (A↛R always; R↛ auto address-deny / playbook A; R→ lineage-scoped data-plane fail-closed; address revoke = B/C + file + exhausted marker). Pending Architect **ACK Appendix G5** + Identity **ACK G5**.
 
 ## References
 
