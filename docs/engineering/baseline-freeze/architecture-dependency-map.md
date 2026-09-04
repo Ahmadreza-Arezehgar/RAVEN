@@ -71,7 +71,7 @@ A pathway is **not “proven”** until **executed evidence** exists for **termi
 
 | Pathway | Executed-evidence bar |
 |---------|------------------------|
-| Mesh relay | Opaque `RavenEnvelopeV1` forward end-to-end. Lab/harness OK if labeled **non-release** under the RVN1 production **HOLD** (`docs/THREAT_MODEL.md`, `protocol/SECURITY_ERRATA_RVN1_2026-08-13.md`). |
+| Mesh relay | Opaque `RavenEnvelopeV1` forward end-to-end. Lab/harness OK if labeled **non-release** under the RVN1 production **HOLD** (`docs/THREAT_MODEL.md`, `protocol/SECURITY_ERRATA_RVN1_2026-08-13.md`). **BLE Transport / Manager lock:** on `main`, terminal-desktop mesh “proven” = **`mock_ble` only** until **B8** (iOS GATT trees on `main`) **and** **RBF1** (Sprint 1 with Protocol Spec + Adversarial QA). `mock_ble` green **≠** live mesh-relay DoD / physical 3-device (`docs/PHYSICAL_BLE_THREE_DEVICE.md`). Live radio: **BLOCKED_HARDWARE**; desktop `BleStatus` fail-closed; iOS GATT SoT until B8 is `feature/raven-serverless-v1` (**not** `main`). Dual framing / UUID / daemon-radio gaps: [D19](undocumented-cross-layer-deps.md), [D20](undocumented-cross-layer-deps.md), [D39](undocumented-cross-layer-deps.md). |
 | Bridge | Opaque store-and-forward **across transports**; assert the bridge **holds no conversation keys** (ADR 0002/0003, `RAVEN_BRIDGE_V1.md`). |
 | Direct internet | `InternetTransport` and/or `raven-swarm` dial **delivers** a sealed envelope (ADR 0002). |
 
