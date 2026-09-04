@@ -4,9 +4,10 @@ This directory holds **deterministic, byte-exact test vectors** for every wire-p
 
 Consumers:
 
-- **iOS / Mac Catalyst** — `RAVEN-iOS/MeshV1/Tests` (SPM test target: `SharedVectorsTests.swift`, `SharedVectorsSignatureTests.swift`)
+- **iOS / Mac Catalyst** — `RAVEN-iOS/MeshV1/Tests` (SPM test target: `SharedVectorsTests.swift`, `SharedVectorsSignatureTests.swift`). On this serverless `main` there is **no** `ios-native/` tree; **Raven Serverless Node** jobs that `cd` into iOS/Watch/Libp2pBridge are **blocked / N/A** until tree and workflow align. Do not treat those jobs as healthy gates here.
 - **Android** — `RAVEN-Android/modules/mesh/src/test/kotlin/.../SharedVectorsTest.kt` (or via git submodule from `raven-android`)
-- **Watch (read-only)** — observation-only; vectors not consumed there.
+- **Watch (read-only)** — observation-only; vectors not consumed there. `RAVEN-WatchApp/` is absent on this `main`.
+- **.NET / C# `rvn1`** — **NOT YET.** No shared-vector smoke gate in `.github/workflows/raven-serverless.yml`. Do not implement a harness from this note.
 
 If you change a vector, **every consumer breaks**. That's the point — wire-protocol changes are coordinated across the fleet.
 
@@ -73,6 +74,6 @@ Until iOS catches up, these vectors document what the wire **should** look like 
   freezes KDF/allocator/ACK interop but remains production-disabled pending a
   signed PairInit that negotiates and transcript-binds
   `ATSAM/indexed-session/v1`.
-- **Consumers**: none yet in this repo. The Rust node (Phase B) is the first real consumer; the Swift, C#, and Kotlin ports vendor their own copies once each platform migrates off its legacy protocol onto `rvn1`.
+- **Consumers**: Rust `raven-core` / `protocol/reference` via **Raven Serverless Node** job **Rust + vectors (Linux)** step **protocol vectors (python)** (present-tree intent; parent job is **not-yet-green** on live PRs — `fmt`). Swift/iOS `rvn1` jobs in that workflow are **path-missing** on this `main`. **.NET / C# `rvn1` shared-vector CI consumer is NOT YET** (no smoke gate in `raven-serverless.yml`). Kotlin remains a future port. See `protocol/PROTOCOL_VERSIONS.md`.
 - **Freeze rules**: `rvn1/` is frozen under the exact same rules as `v1/` in `VERSIONING.md` — once a vector lands it never changes; new edge cases get a new `_NNN` file; breaking changes require a new tree (`rvn2/`), not an edit in place.
 - **Regeneration / drift check**: `tools/sync-vectors.sh` regenerates `rvn1/` from `generate_rvn1.py` on every run and fails (non-zero exit) if the regenerated tree differs from what's committed, so drift is caught automatically rather than relying on a manual `git diff`.
