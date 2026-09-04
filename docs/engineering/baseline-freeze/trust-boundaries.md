@@ -119,17 +119,17 @@ For each boundary:
 
 ### OPEN-ID-P0 — Soft-load fail-open if denylist is corrupt
 
-**Status:** draft / **OPEN** — await Identity (#6) Sprint 0 docs PR. Architecture **does not approve code** and will not implement or change denylist load behavior in this PR.
+**Status:** draft / **OPEN** — Identity docs [PR#5](https://github.com/Raven-ASHCO/RAVEN/pull/5) up (`SPRINT0_IDENTITY_THREAT_MODEL.md` §3.2 P0 + G5); Architect ack on §2.4 + P0 note; **code held** (Manager Sprint 1 batch with Architect + Crypto). Architecture does **not** approve or implement denylist load behavior in this PR.
 
 | | |
 |--|--|
 | **Behavior (named)** | Soft-load **fail-open** when a local denylist / block / revocation store is **corrupt**: `load()` returns an empty default instead of refusing the operation. Empty denylist ⇒ nobody is blocked or revoked. |
 | **Where observed (cite only)** | `BlockList::load` → `load_checked(...).unwrap_or_default()` (`node/crates/raven-core/src/chat_history.rs`); test `block_list_corrupt_is_fail_closed` documents that legacy `load()` still returns empty `pub_hex` for non-LAN callers. Same soft-load shape: `RevocationStore::load` (`device_sync.rs`); `load_device_registry` (`device_cert.rs`). `load_checked` variants are the fail-closed pair. Callers that still use `load()` (e.g. `ash` `cli.rs` discovery `BlockList::load`) take the fail-open path. |
 | **Risk** | **Availability vs security.** Fail-open keeps the node usable after disk/JSON damage (availability). It **widens trust**: a corrupt or attacker-truncated denylist is treated as “no denials,” so previously blocked peers or revoked devices may be admitted until an operator notices. That is a persistence-integrity hole on TB3 (identity/authz) and TB5 (on-disk policy). Fail-closed (`load_checked`) is the opposite tradeoff (safer deny, possible denial-of-service if the file is unreadable). |
-| **THREAT_MODEL** | Adjacent to §3.6 (stolen/tampered disk), §3.11 (spam / block list), revocation freshness (posture table: partition-limited). No existing row names this fail-open. |
-| **Owners** | **Identity (#6) primary** (document + decide fail-open vs fail-closed). **Security Board (#17) review.** **Architect (#1) ack** on Identity’s docs PR when it lands — acknowledge this as a trust-boundary note; do **not** treat that ack as code approval or an R3 merge. |
-| **Architecture action now** | Record the OPEN item only. No denylist implementation, no load-path change, no R3 self-merge. |
-| **When Identity’s docs PR lands** | #1 adds a one-line ack on that PR and, if Identity’s write-up differs from the cites above, updates this OPEN item to match Identity’s SoT. Status stays OPEN until #6+#17 close it. |
+| **THREAT_MODEL** | Identity SoT: [`docs/engineering/SPRINT0_IDENTITY_THREAT_MODEL.md`](https://github.com/Raven-ASHCO/RAVEN/blob/cursor/sprint0-identity-threat-model-d3a8/docs/engineering/SPRINT0_IDENTITY_THREAT_MODEL.md) §3.2 P0 + G5 ([PR#5](https://github.com/Raven-ASHCO/RAVEN/pull/5)). Adjacent Raven TM: §3.6, §3.11, revocation freshness (partition-limited). |
+| **Owners** | **Identity (#6) primary.** **Security Board (#17) review** still requested. **Architect (#1) ACK’d** Identity §2.4 trust boundaries and this soft-load P0 as a **documented trust-boundary defect**. That ack is **not** code approval or an R3 merge. |
+| **Architecture action now** | Status updated to PR#5 + §2.4/P0 ack. No denylist implementation, no load-path change, no R3 self-merge. |
+| **Code** | **Held** for Manager Sprint 1 batch with Architect + Crypto. Status stays OPEN until #6+#17 close the assurance item and the held fix lands. |
 
 ---
 
@@ -194,7 +194,7 @@ For each boundary:
 | G26 | Same files opened by ash and raven-node | Multi-process SQLite (WAL) is an implicit concurrency contract — not an ADR. |
 | G27 | Swarm mailbox default persist `offline_mailbox_v1.json` | Feature-gated; JSON not SQLCipher (`mailbox.rs` `MAILBOX_DB_FILENAME`). |
 | G28 | RDAP replay uses `journal_mode=DELETE` + `secure_delete=ON`, not Raven WAL queues | Two persistence dialects; no shared backup/migration story. |
-| G29 | Soft-load fail-open on corrupt denylist / block / revocation files | Same OPEN-ID-P0 as TB3. Corrupt policy files become empty allow. **#6 primary; #17 review; #1 ack on Identity docs PR only.** |
+| G29 | Soft-load fail-open on corrupt denylist / block / revocation files | Same OPEN-ID-P0 as TB3. Identity [PR#5](https://github.com/Raven-ASHCO/RAVEN/pull/5); #1 ACK’d §2.4 + P0 note; **code held.** **#17 review still requested.** |
 
 ---
 
@@ -205,7 +205,7 @@ For each boundary:
 | TB1 IPC | #7, #1 | #17 if authz |
 | TB2 Network | #9, #10, #2 | #12 BLE; #17 errata |
 | TB3 Crypto/identity | #5, #6 | Security Board #17; #3 if spec version |
-| TB3/TB5 OPEN-ID-P0 denylist fail-open | **#6** | **#17** review; **#1** ack on Identity docs PR (no code approval) |
+| TB3/TB5 OPEN-ID-P0 denylist fail-open | **#6** | **#17** review still requested; **#1** ACK’d PR#5 §2.4 + P0 (no code approval; code held) |
 | TB4 RDAP runtime | #14, #15, #4 | #17 if interop security; #6 if identity merge |
 | TB5 Persistence | #7, #8, #5 | #17 (encryption claims) |
 
@@ -220,6 +220,6 @@ Architecture Board (#1 chair, #2, #4, #7) owns the *shape* of these cuts. Securi
 3. Local same-UID malware is **out of scope**.
 4. Traffic analysis is **out of scope**.
 5. Client trees (iOS/Windows) were **not inspectable** in this RAVEN snapshot.
-6. **OPEN-ID-P0** — soft-load fail-open on corrupt denylist is **not closed**. Await Identity docs PR; Architecture does not approve code.
+6. **OPEN-ID-P0** — soft-load fail-open on corrupt denylist is **not closed**. Identity docs PR#5 up; Architect ack on §2.4 + P0 note; **code held.**
 
 #17 / #6: please confirm or rewrite G1, G13–G16, G19–G21, G25, and **OPEN-ID-P0** before this document is cited as an assurance baseline.
