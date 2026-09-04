@@ -1,57 +1,48 @@
 #!/usr/bin/env bash
-# RAVEN one-line installer
-#   curl -fsSL https://raw.githubusercontent.com/Ahmadreza-Arezehgar/RAVEN/main/scripts/install.sh | bash
+# NOT a production installer. Historical curl|bash convenience path — retired.
+#
+# This script used to:
+#   - clone https://github.com/Ahmadreza-Arezehgar/RAVEN.git (personal fork)
+#   - cargo build debug with --features raven-node/unsafe-demo-crypto
+#   - ad-hoc codesign on Darwin (`codesign -s -`)
+#   - symlink ~/.local/bin/raven → that debug ash
+#
+# That is not an install path. Operators: use the docs and scripts below.
 set -euo pipefail
 
-REPO="https://github.com/Ahmadreza-Arezehgar/RAVEN.git"
-DIR="${RAVEN_DIR:-$HOME/RAVEN}"
+cat >&2 <<'EOF'
 
-echo "▸ RAVEN installer — target: $DIR"
+========================================================================
+RAVEN: node/scripts/install.sh is NOT a production installer.
+========================================================================
 
-# 1) Rust toolchain
-if ! command -v cargo >/dev/null 2>&1; then
-  echo "▸ Installing Rust toolchain…"
-  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-fi
-export PATH="$HOME/.cargo/bin:$PATH"
+This script is fail-closed on purpose. It does not clone, build, codesign,
+or put binaries on PATH.
 
-# 2) Source — clone or hard-reset to origin/main (history is rewritten-safe)
-if [ -d "$DIR/.git" ]; then
-  echo "▸ Updating existing checkout…"
-  git -C "$DIR" fetch origin
-  git -C "$DIR" reset --hard origin/main
-else
-  echo "▸ Cloning…"
-  git clone --depth 1 "$REPO" "$DIR"
-fi
+The retired convenience path was unsafe:
+  - hardcoded personal-fork remote (Ahmadreza-Arezehgar/RAVEN),
+    not Raven-ASHCO/RAVEN
+  - debug build with raven-node/unsafe-demo-crypto
+  - Darwin ad-hoc codesign -s -
+  - ~/.local/bin/raven → those debug binaries
 
-# 3) Build (debug + lab feature so the two-Mac demo lane works)
-cd "$DIR/node"
-echo "▸ Building (first run takes a few minutes)…"
-cargo build -q -p ash -p raven-node --features raven-node/unsafe-demo-crypto
-BIN="$PWD/target/debug"
+Do not:  curl …/node/scripts/install.sh | bash
 
-# 4) Stable ad-hoc signature → macOS network/firewall prompt appears once per
-#    binary instead of after every rebuild.
-if [ "$(uname)" = "Darwin" ] && command -v codesign >/dev/null 2>&1; then
-  codesign -f -s - "$BIN/ash" "$BIN/raven-node" >/dev/null 2>&1 || true
-fi
+Operator install (release / secure build only):
+  docs/INSTALL_Linux.md    →  node/scripts/install/linux_systemd_user.sh
+  docs/INSTALL_macOS.md    →  node/scripts/install/macos_launchd.sh
+  docs/INSTALL_Windows.md  →  node/scripts/install/WINDOWS_SERVICE.md
 
-# 5) Put `raven` / `raven-node` on PATH
-mkdir -p "$HOME/.local/bin"
-ln -sf "$BIN/ash"        "$HOME/.local/bin/raven"
-ln -sf "$BIN/raven-node" "$HOME/.local/bin/raven-node"
-case ":$PATH:" in
-  *":$HOME/.local/bin:"*) ;;
-  *)
-    for rc in "$HOME/.zshrc" "$HOME/.bashrc"; do
-      [ -f "$rc" ] || continue
-      grep -q '.local/bin' "$rc" || echo 'export PATH="$HOME/.local/bin:$PATH"' >>"$rc"
-    done
-    ;;
-esac
+From a checkout of https://github.com/Raven-ASHCO/RAVEN :
 
-echo
-echo "✅ RAVEN ready."
-echo "   New terminal, then just run:   raven"
-echo "   (identity → menu 8 Tutorial · receive → menu 4 Listen)"
+  cd node
+  cargo build -p raven-node -p ash --release
+  bash scripts/install/linux_systemd_user.sh   # or macos_launchd.sh
+
+Lab / demo feature flags (unsafe-demo-crypto) are for explicit local
+experiments only. They must never be the default PATH install.
+
+========================================================================
+
+EOF
+exit 1

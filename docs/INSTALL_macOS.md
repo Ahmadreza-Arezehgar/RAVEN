@@ -1,5 +1,10 @@
 # Install Raven Serverless (macOS)
 
+`node/scripts/install.sh` is **not** a production installer. It fails closed
+and does not put binaries on `PATH`. Use the release-build steps below
+(`scripts/install/macos_launchd.sh`). Do not `curl | bash` a convenience
+script.
+
 **Unsigned developer layout.** Notarization requires your Apple Developer ID — see [`SIGNING_NOTARIZATION_CHECKLIST.md`](SIGNING_NOTARIZATION_CHECKLIST.md).
 
 ## Option A — from source
