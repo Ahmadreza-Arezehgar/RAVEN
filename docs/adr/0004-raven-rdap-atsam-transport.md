@@ -1,23 +1,24 @@
 # ADR 0004 — Raven↔RDAP production ATSAM transport (O6)
 
-**Status:** Proposed (Architect **BLOCK** 2026-09-04 — revision addressing required changes; Crypto **ACK** 2026-09-04 with D4 nit incorporated; Identity **ACK** 2026-09-04 with D3 wording fixes; awaiting Architect re-ACK after BLOCK revision)  
+**Status:** Proposed (Architect **BLOCK** narrowed — HOLD/R3-header/IPC-trust revision; awaiting Architect ACK ADR 0004)  
 **Date:** 2026-09-04  
-**Risk class:** **R3** (ATSAM / crypto transport)  
+**Risk class (normative):** **R3** (ATSAM / crypto transport). Approvers: Architect (#1), Crypto ATSAM (#3), Identity AuthZ (#15); Security Board as matrix requires. **No R3 self-merge.**  
 **Deciders (required ack before merge):** Architect (#1), Crypto ATSAM (#3), Identity AuthZ (#15); Security Board as matrix requires  
 **Author:** Raven↔RDAP Integration Lead  
 **Repos:** `Raven-ASHCO/RAVEN`, `Raven-ASHCO/raven-distributed-agent-protocol`  
 **Related:** ADR 0003 (wire/crypto/identity/IPC), `docs/THREAT_MODEL.md`, `protocol/SECURITY_ERRATA_RVN1_2026-08-13.md`, `protocol/RAVEN_MAILBOX_TRANSPORT_V1.md`, `protocol/RAVEN_DEVICE_REVOCATION_V1.md`, RDAP README “Important integration gap”, Manager Sprint 0 decisions 2026-09-04  
 **Process:** **No R3 self-merge.** No production code merge implementing M1–M3 until required acks. Full text lives on this RAVEN PR (`docs/adr/0004-…` + `node/adr/` mirror).
 
-## Hard gate — RVN1 production HOLD
+## Hard gate — RVN1 production HOLD (normative)
 
-`docs/THREAT_MODEL.md` and `protocol/SECURITY_ERRATA_RVN1_2026-08-13.md` still hold RVN1 messaging as **not approved for production**.
+**Citations:** `docs/THREAT_MODEL.md` (**executable posture**) and `protocol/SECURITY_ERRATA_RVN1_2026-08-13.md` (normative security errata). RVN1 messaging remains **not approved for production**.
 
-- M1–M3 **production enablement** is **subordinate** to those errata / threat-model gates.
-- “Same RVN1 as local `raven-node`” (D3) MUST NOT create a bypass of the hold, errata rules (no public-material cipher / `STUB_PROTO` / interim seal in production paths, authenticated session mandatory, fail-closed acceptance/ACK, etc.), or ATSAM session requirements.
-- Lab / interop work against held paths is allowed only when explicitly labeled **non-production** (and must not be described as confidential Raven messaging).
+This gate is binding for the whole ADR:
 
-O6 may deliver a two-device encrypted E2E **harness** against the production-shaped ATSAM/`raven-node` path; shipping/Release enablement remains blocked until the errata hold is lifted by the normal security process.
+1. O6 claims of “**production ATSAM**” / **confidential delivery**, and M1–M3 **production enablement / Release**, are **subordinate** to the THREAT_MODEL executable posture and the RVN1 SECURITY_ERRATA HOLD.
+2. Harness / lab / interop work against held paths MUST be labeled **non-release**, run under **fail-closed containment**, and MUST NOT be described as confidential Raven messaging or production-approved.
+3. “Same RVN1 as local `raven-node`” (D3) MUST NOT bypass the hold, errata rules (no public-material cipher / `STUB_PROTO` / interim seal on production-shaped paths, authenticated session mandatory, fail-closed acceptance/ACK, etc.), or ATSAM session requirements.
+4. Shipping/Release enablement remains blocked until the HOLD is lifted by the normal security process — harness green ≠ hold lifted.
 
 ## Context
 
@@ -57,6 +58,7 @@ Any claim of confidential / encrypted RDAP task delivery MUST mean:
 - **`LanDial` Noise XX is transport peer authentication only.** O6 confidentiality claims require an **ATSAM session seal** of application payloads — Noise alone is not sufficient.
 - Experimental swarm mailbox and cleartext HTTP A2A are **out of scope** for confidentiality claims.
 - Claims remain subordinate to the **RVN1 production HOLD**.
+- **IPC trust:** The confidential path requires ADR 0003 **peer-cred** on Unix domain sockets (or equivalent named-pipe ACL on Windows). Unsigned / unattributed local callers MUST NOT be permitted to `EnqueueSealed`, `LanDial`, or the future M2 daemon-seal IPC.
 
 ### D2 — Control plane vs data plane
 
@@ -99,6 +101,7 @@ Status output MUST NOT leak confidential metadata (no plaintext task bodies, no 
 - After M2: Python RDAP submits plaintext application payloads only to that daemon seal IPC (or receives already-sealed frames for dial), never sealing locally.
 - **FFI (if ever):** Crypto-owned, **R3**, Architect + Protocol Spec (#4) ack, shared-vectors KATs before RDAP may consume it.
 - Forbidden: stuffing plaintext into `message_ciphertext`; Python-side ATSAM; client-triggered seal without a local authenticated session; treating Noise-only dial as confidential.
+- **IPC trust (repeat for M2):** Confidential seal/dial IPC MUST enforce ADR 0003 peer-cred (UDS) / equivalent pipe ACL; unsigned or unattributed local callers MUST NOT invoke seal, `EnqueueSealed`, or `LanDial`.
 
 ### D5 — Harness acceptance (M3)
 
@@ -113,9 +116,10 @@ Two devices (physical or VM), each with `raven-node` + RDAP:
 
 ### D6 — Merge / production / R3 gate
 
-- Risk class **R3**. Approvers: Architect #1, Crypto #3, Identity #15 (+ Security Board as matrix requires). **No R3 self-merge.**
+- Risk class **R3**. Approvers: Architect #1, Crypto #3, Identity #15 (+ Security Board as matrix requires). **No R3 self-merge.** Risk class **R3** is restated on this ADR header (normative), not only in the touch-list or G5.
 - **No production code merge** implementing M1–M3 until those acks are recorded on the PR or Eng Program tracker.
 - M1–M3 **production enablement / Release** remains subordinate to THREAT_MODEL + RVN1 security errata HOLD even after ADR ack.
+- **HOLD subordination:** O6 claims of “production ATSAM” / confidential delivery and M1–M3 production enablement / Release remain subordinate to the THREAT_MODEL **executable posture** and `protocol/SECURITY_ERRATA_RVN1_2026-08-13.md`. Harness / lab / interop work is **non-release**, under **fail-closed containment**; harness green ≠ hold lifted.
 - ADR lands under `docs/adr/0004-raven-rdap-atsam-transport.md` and `node/adr/` mirror.
 - RDAP repo gets a short pointer to this RAVEN ADR (single source of truth).
 
@@ -160,7 +164,7 @@ See companion `docs/adr/0004-CODEOWNERS-touch-list.md`.
 
 ## Appendix G5 — Joint Raven↔RDAP revoke policy
 
-See `docs/adr/0004-appendix-g5-raven-rdap-revoke.md` (R→ data-plane fail-closed only; R↛A default; pin ≢ `device_ed_pub`).
+See `docs/adr/0004-appendix-g5-raven-rdap-revoke.md` (R → data-plane fail-closed; R ↛ A default (Identity revision); align with Identity `docs/engineering/G5_CROSS_STACK_REVOKE_POLICY.md`).
 
 ## References
 
