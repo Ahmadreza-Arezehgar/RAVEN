@@ -1517,9 +1517,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
         std::fs::write(marker_path(dir), b"macos-keychain\nextra\n").unwrap();
-        let err = load_or_create_identity(dir)
-            .err()
-            .expect("marker must fail");
+        let err = match load_or_create_identity(dir) {
+            Err(e) => e,
+            Ok(_) => panic!("marker must fail"),
+        };
         assert!(matches!(err, IdentityStoreError::Continuity(_)));
         assert!(!seed_path(dir).exists());
         assert!(!binding_path(dir).exists());
@@ -1551,7 +1552,10 @@ mod tests {
         assert_eq!(binding.len(), IDENTITY_BINDING_LEN);
         binding[44] ^= 0x80;
         std::fs::write(binding_path(dir), binding).unwrap();
-        let err = load_identity(dir).expect_err("tamper must fail");
+        let err = match load_identity(dir) {
+            Err(e) => e,
+            Ok(_) => panic!("tamper must fail"),
+        };
         assert!(matches!(err, IdentityStoreError::Continuity(_)));
 
         #[cfg(target_os = "macos")]
@@ -1627,9 +1631,10 @@ mod tests {
         let dir = tmp.path();
         test_cleanup(dir);
         write_marker(dir, IdentityStoreBackend::MacosKeychain).unwrap();
-        let err = load_or_create_identity(dir)
-            .err()
-            .expect("missing recorded Keychain item must fail");
+        let err = match load_or_create_identity(dir) {
+            Err(e) => e,
+            Ok(_) => panic!("missing recorded Keychain item must fail"),
+        };
         assert!(matches!(err, IdentityStoreError::Continuity(_)));
         assert!(keychain_get(&account_for_data_dir(dir)).unwrap().is_none());
         assert!(!binding_path(dir).exists());
@@ -1645,7 +1650,10 @@ mod tests {
         let mut other = Identity::generate().seed_bytes();
         write_locked_seed_file(&seed_path(dir), &other).unwrap();
         other.zeroize();
-        let err = load_identity(dir).expect_err("conflict must fail");
+        let err = match load_identity(dir) {
+            Err(e) => e,
+            Ok(_) => panic!("conflict must fail"),
+        };
         assert!(matches!(err, IdentityStoreError::Continuity(_)));
         assert!(
             seed_path(dir).exists(),
