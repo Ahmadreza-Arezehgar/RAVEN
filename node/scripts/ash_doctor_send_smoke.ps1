@@ -10,7 +10,7 @@
 #   Never require daemon_presence: present (would greenwash Windows blocked).
 #   Never require daemon_ready: ready (do not greenwash ready from presence / Ping).
 #   Named-pipe client is on this tree — do NOT require ipc_transport_missing.
-#   Try-phase (Windows): start raven-node ipc --data-dir, assert daemon_presence: up
+#   Try-phase (Windows): start raven-node ipc --data-dir, assert daemon_presence: present
 #     (Ping→Pong over \\.\pipe\raven-node), then kill and assert presence down
 #     (fail-closed connect — not a soft skip / blocked transport).
 #
@@ -57,7 +57,7 @@ function Require-Match([string]$Haystack, [string]$Pattern, [string]$What) {
     }
 }
 
-# cmd_doctor paints up/down with C_GREEN/C_DIM even when NO_COLOR=1.
+# cmd_doctor may paint presence with C_GREEN/C_DIM even when NO_COLOR=1.
 function Get-PlainText([string]$Text) {
     return [regex]::Replace($Text, '\x1b\[[0-9;]*m', '')
 }
@@ -211,13 +211,13 @@ try {
     $docPlain = Get-PlainText $doc.Text
     Assert-NoMissingTransport $docPlain "doctor (daemon up)"
     Require-Match $docPlain "daemon_presence:" "ash doctor must print daemon_presence:"
-    Require-Match $docPlain "daemon_presence:\s*up" `
-        "ash doctor must show daemon_presence: up after raven-node ipc start (named-pipe Ping)"
+    Require-Match $docPlain "daemon_presence:\s*present" `
+        "ash doctor must show daemon_presence: present after raven-node ipc start (named-pipe Ping)"
     # Presence/Ping ≠ ready ≠ send. Do not require daemon_ready: ready.
     if ($docPlain -match "daemon_ready:\s*ready") {
         Write-Host "doctor printed daemon_ready: ready — not used as a pass (presence ≠ ready)"
     }
-    Write-Host "doctor (daemon up): daemon_presence: up (named-pipe ping); identity + serverless_rvn1 OK"
+    Write-Host "doctor (daemon up): daemon_presence: present (named-pipe ping); identity + serverless_rvn1 OK"
 
     Stop-SmokeRavenNode
     Start-Sleep -Seconds 1
@@ -226,9 +226,9 @@ try {
     $downPlain = Get-PlainText $docDown.Text
     Assert-NoMissingTransport $downPlain "doctor (daemon down)"
     Require-Match $downPlain "daemon_presence:" "ash doctor must print daemon_presence: after raven-node stop"
-    if ($downPlain -match "daemon_presence:\s*up") {
+    if ($downPlain -match "daemon_presence:\s*present") {
         Write-Host $downPlain
-        Fail "ash doctor still shows daemon_presence: up after raven-node stop — pipe must fail-closed"
+        Fail "ash doctor still shows daemon_presence: present after raven-node stop — pipe must fail-closed"
     }
     Require-Match $downPlain "daemon_presence:\s*down" `
         "ash doctor must show daemon_presence: down after raven-node stop (fail-closed connect, not a skip)"

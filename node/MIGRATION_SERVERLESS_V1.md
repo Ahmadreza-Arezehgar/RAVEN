@@ -30,6 +30,14 @@ Rust helper: `raven_core::messaging_path` (`MessagingPath::{ServerlessRvn1, Lega
 
 `ash status` / `ash doctor` print `messaging_path=<label>` and a one-line human string.
 
+`ash doctor` Core gate — never one green `up` that implies send:
+
+| Label | Meaning |
+|-------|---------|
+| `daemon_presence` | `ipc_client::ipc_ping` over `ipc_endpoint`. Success: `present` (not `up`). Connect fail: `down`. `IpcEndpoint::Unsupported`: `blocked (reason=ipc_transport_missing)` — never a ✓. Windows: `\\.\pipe\raven-node` only (never UDS). |
+| `daemon_ready` | Presence plus Status, `raven_core::identity_usable` (mismatch ⇒ ready FAIL), queue/DB or `forward_pending`, `serverless_rvn1`. |
+| `send_path` | Default `not_ready (reason=not_probed)`. Never green from presence or ready. |
+
 ## Identity / contacts / history
 
 | Artifact | Migration stance (V1) |

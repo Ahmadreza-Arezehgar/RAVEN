@@ -172,7 +172,7 @@ Full scripted demo incl. reverse direction: `node/scripts/bridge_abc_demo.sh`
 | `ash contact add/list/verify` | fingerprint-pinned friendship plane (never FastAPI) |
 | `ash send` | forward to running raven-node; plaintext only via stdin |
 | `ash inbox` | committed endpoint inbox (PairInit/LAN arrivals) |
-| `ash status` / `doctor` | live policy/diagnosis; `messaging_path` must read `serverless_rvn1` |
+| `ash status` / `doctor` | live policy/diagnosis; `messaging_path` must read `serverless_rvn1` (FastAPI refuse is fail-closed, exit 1). Doctor splits `daemon_presence` (Ping via `ipc_client` / `ipc_endpoint`; success is `present` not `up`), `daemon_ready` (`identity_usable` + Status + queue + serverless), and `send_path` (default `not_ready`). Unsupported OS: `blocked (reason=ipc_transport_missing)`. Presence or ready never means send works. |
 | `ash node bridge\|store\|relay on/off` | local forwarding policy |
 | `ash find` | multi-lane discovery resolver (no central DB) |
 | `ash nearby` | ephemeral BLE scan — no permanent IDs advertised |

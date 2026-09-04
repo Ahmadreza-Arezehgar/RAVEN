@@ -121,9 +121,9 @@ pub use forward_queue::{
 };
 pub use identity::Identity;
 pub use identity_store::{
-    load_identity, load_identity_required, load_or_create_identity, store_status,
-    IdentityStoreBackend, IdentityStoreError, IdentityStoreStatus, BACKEND_MARKER_NAME,
-    SEED_FILE_NAME,
+    backend_consistency, identity_usable, load_identity, load_identity_required,
+    load_or_create_identity, store_status, IdentityBackendConsistency, IdentityStoreBackend,
+    IdentityStoreError, IdentityStoreStatus, IdentityUsable, BACKEND_MARKER_NAME, SEED_FILE_NAME,
 };
 pub use indexed_session_store::{
     endpoint_device_hint, AuthorizedEndpointDevice, EndpointAcceptance, EndpointAckAcceptance,
