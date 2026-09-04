@@ -31,6 +31,7 @@
 - Spec: `protocol/RAVEN_TRANSPORT_INTERFACE_V1.md` §5–6
 - Experimental profile: `protocol/RAVEN_NAT_CONNECTIVITY_V1.md`
 - Constant: `raven_core::discovery::NAT_STATUS`
+- Sprint 0 connectivity matrix: `docs/network/raven-swarm-connectivity-matrix.md`
 
 
 ## Expanded substitutes (REST wave)

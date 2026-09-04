@@ -2,6 +2,8 @@
 
 **Live multi-NAT / CGNAT / DCUtR:** still `BLOCKED_HARDWARE` (see `node/NAT_TRAVERSAL.md`).
 
+Sprint 0 inventory of raven-swarm status vs that target: [`docs/network/raven-swarm-connectivity-matrix.md`](../docs/network/raven-swarm-connectivity-matrix.md).
+
 ## What this Mac can automate
 
 | Tool | Script / command | Proves |

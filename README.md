@@ -208,6 +208,7 @@ Single-path smokes: `node/scripts/{lan_path_smoke,two_node_demo,internet_dial_sm
 * **Fail-closed defaults:** production origination refuses without an
   authenticated session; unknown proto/suite/index are rejected at decode.
 * Docs: `docs/SERVERLESS_MODEL.md`, `docs/AUDIT_SERVERLESS_PIVOT_2026-08-12.md`,
+  `docs/network/raven-swarm-connectivity-matrix.md`,
   `protocol/SECURITY_ERRATA_*`.
 
 ## Troubleshooting
