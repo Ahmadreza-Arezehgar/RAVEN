@@ -276,13 +276,25 @@ fn create_pipe_instance(
         .map_err(|e| format!("NamedPipeServer wrap failed after bind ({e}); fail closed"))
 }
 
+/// Build the current-user DACL, `CreateNamedPipeW`, wrap `NamedPipeServer`,
+/// then drop the security descriptor before returning.
+///
+/// `UserOnlyPipeSecurity` holds a `PSECURITY_DESCRIPTOR` (`*mut c_void`),
+/// which is `!Send`. It must not be live across any `.await` — otherwise
+/// `run_named_pipe_server` is `!Send` and `tokio::spawn` fails to compile.
+fn bind_pipe_instance(first: bool) -> Result<NamedPipeServer, String> {
+    // Fail closed *before* CreateNamedPipeW — never bind a world-readable pipe.
+    let sec = UserOnlyPipeSecurity::new()?;
+    let server = create_pipe_instance(&sec, first)?;
+    drop(sec);
+    Ok(server)
+}
+
 pub(crate) async fn run_named_pipe_server(
     data_dir: PathBuf,
     forward_path: Option<PathBuf>,
 ) -> Result<(), String> {
     std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
-    // Fail closed *before* CreateNamedPipeW — never bind a world-readable pipe.
-    let sec = UserOnlyPipeSecurity::new()?;
     eprintln!("raven-node ipc: listening {}", default_pipe_name());
 
     let forward = open_forward_queue(forward_path);
@@ -290,7 +302,7 @@ pub(crate) async fn run_named_pipe_server(
     let mut first = true;
 
     loop {
-        let mut server = create_pipe_instance(&sec, first)?;
+        let mut server = bind_pipe_instance(first)?;
         first = false;
         server
             .connect()
@@ -331,9 +343,16 @@ mod tests {
 
     #[tokio::test]
     async fn bind_canonical_pipe_with_user_dacl() {
-        let sec = UserOnlyPipeSecurity::new().expect("current-user DACL");
-        let pipe = create_pipe_instance(&sec, true)
+        // bind_pipe_instance drops the SD before return — same Send boundary as
+        // the accept loop (security descriptor must not live across .await).
+        let pipe = bind_pipe_instance(true)
             .expect("CreateNamedPipeW \\\\.\\pipe\\raven-node with user DACL");
         drop(pipe);
+    }
+
+    #[test]
+    fn named_pipe_server_future_is_send() {
+        fn assert_send<T: Send>(_: T) {}
+        assert_send(run_named_pipe_server(PathBuf::from("."), None));
     }
 }
