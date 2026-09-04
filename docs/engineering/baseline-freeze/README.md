@@ -37,6 +37,7 @@ Feature PRs that touch R2/R3 surfaces **must not** land until the Sprint 0 check
 | [`08-sprint0-checklist.md`](08-sprint0-checklist.md) | Deliverables checklist with status columns |
 | [`09-audit-snapshot-2026-09-04.md`](09-audit-snapshot-2026-09-04.md) | Factual audit as of 2026-09-04 |
 | [`docs/network/raven-swarm-connectivity-matrix.md`](../../network/raven-swarm-connectivity-matrix.md) | Sprint 0 raven-swarm connectivity / relay / NAT inventory (P2P network surface) |
+| [`perf-baseline-2026-09-04.md`](perf-baseline-2026-09-04.md) | Sprint 0 perf harvest (Role #19 SRE Perf); soft budgets draft |
 | [`artifacts/CODEOWNERS.raven`](artifacts/CODEOWNERS.raven) | Ready-to-paste CODEOWNERS for RAVEN |
 | [`artifacts/CODEOWNERS.rdap`](artifacts/CODEOWNERS.rdap) | Ready-to-paste CODEOWNERS for RDAP |
 
