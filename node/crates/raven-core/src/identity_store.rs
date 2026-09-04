@@ -1153,9 +1153,7 @@ fn load_seed_with_migrate(
         // stay hard errors. Locked-file create/load still needs the explicit env.
         let existing = match secret_service_get(&account) {
             Ok(seed) => seed,
-            Err(e)
-                if cfg!(debug_assertions) && linux_secret_service_is_session_bus_missing(&e) =>
-            {
+            Err(e) if cfg!(debug_assertions) && linux_secret_service_is_session_bus_missing(&e) => {
                 None
             }
             Err(e) => return Err(e),
@@ -1651,7 +1649,9 @@ mod tests {
         let search = IdentityStoreError::SecureStore("secret-service search: denied".into());
         let get = IdentityStoreError::SecureStore("secret-service get: denied".into());
         assert!(linux_secret_service_is_session_bus_missing(&connect));
-        assert!(linux_secret_service_is_session_bus_missing(&service_unknown));
+        assert!(linux_secret_service_is_session_bus_missing(
+            &service_unknown
+        ));
         assert!(!linux_secret_service_is_session_bus_missing(&locked));
         assert!(!linux_secret_service_is_session_bus_missing(&search));
         assert!(!linux_secret_service_is_session_bus_missing(&get));
