@@ -76,6 +76,7 @@ Org-create / personal-account CODEOWNERS blockers from morning audit are **clear
 6. Keep this board under `docs/engineering/baseline-freeze/` (this PR). **M0 docs merge = Manager.** Architect M0 gate is **CLOSED** — do **not** await Architect re-ACK.
 7. **Path A locked** — do not claim mesh relay reliable.
 8. **Path B locked** — opaque custody + `ENDPOINT_ACK_ONLY` proven (software); hop/repl cooperative-only; prod mailbox held; iOS blocked on B8. **Not flood-proof / not Byzantine-safe.** Prefer executed green/red citations. Continue **C+terminal**.
+9. **Node IPC:** Windows named-pipe = **#1** B10 remaining (UDS-only `ipc_server`; `ash --send-stdin`). Linux/macOS UDS mostly green. SCM+LAN parity = P1 after pipe. **Does not unblock WAN Path C.**
 
 ---
 
