@@ -1,12 +1,16 @@
 # Three-path verification board — Sprint 0
 
-**As of:** 2026-09-04 ~13:45 Europe/Madrid (Eng Program)  
+**As of:** 2026-09-04 ~13:45 Europe/Madrid (Eng Program; rebased onto `main` incl. #24)  
 **Owner:** Eng Program (#2) · consult SRE Perf (#19), P2P Network (#6), BLE Transport (#9)  
 **Scope:** Honesty board for `mesh` | `bridge` | `direct` — **no invented reliability numbers**
 
 Companion: [`blockers-ownership-board.md`](blockers-ownership-board.md) · evidence inventory: [`docs/network/raven-swarm-connectivity-matrix.md`](../../network/raven-swarm-connectivity-matrix.md)
 
 ---
+
+## Manager M0 scoreboard (do not regress)
+
+**M0 docs done.** [RAVEN#3](https://github.com/Raven-ASHCO/RAVEN/pull/3) **MERGED** `ce087c7d9cfb`. Architect **full ACK** body+G5; Identity **full ACK** body+G5 pin `5d39099907ea` (= `main`); Crypto **ACK**. **Only** M1–M3 **production** code remains gated (terminal + HOLD). No M0 ACK is open.
 
 ## Manager SoT (accepted 2026-09-04)
 
@@ -92,7 +96,7 @@ Applies to **terminal reliability** (Win / macOS / Linux) **and** these three pa
 
 Terminal Win / macOS / Linux reliability **and** this three-path matrix sit **above O6 M1+**.
 
-**Do not schedule M1 engineering until the terminal board is green** (CEO override only). M0 docs ack is **✅ CLOSED / MERGED** ([RAVEN#3](https://github.com/Raven-ASHCO/RAVEN/pull/3) `ce087c7d9cfb`; three-way ACK **final**). M1–M3 **production** code remains **closed** (terminal + HOLD).
+**Do not schedule M1 engineering until the terminal board is green** (CEO override only). **M0 docs done ✅ CLOSED / MERGED** ([RAVEN#3](https://github.com/Raven-ASHCO/RAVEN/pull/3) `ce087c7d9cfb`). Architect **full ACK** body+G5; Identity **full ACK** body+G5 pin `5d39099907ea` (= `main`); Crypto **ACK**. **Only** M1–M3 **production** code remains gated (terminal + HOLD).
 
 ---
 
@@ -121,7 +125,7 @@ Terminal Win / macOS / Linux reliability **and** this three-path matrix sit **ab
 ## Non-claims
 
 - This file does **not** enable required CI checks.
-- This file does **not** greenlight M1–M3 production code (terminal + HOLD). M0 ADR 0004 is already **MERGED** (`ce087c7d9cfb`).
+- This file does **not** greenlight M1–M3 production code (terminal + HOLD). **M0 docs done** — ADR 0004 **MERGED** `ce087c7d9cfb`; Architect **full ACK** body+G5; Identity **full ACK** body+G5 pin `5d39099907ea` (= `main`); Crypto **ACK**. **Only** M1–M3 code remains gated.
 - Soft soak / fail-rate bounds wait for the SRE Perf (#19) snapshot ([`perf-baseline-2026-09-04.md`](perf-baseline-2026-09-04.md) — harvest in flight; docs-only ≠ Proven).
 - B11 `install.sh` ([RAVEN#17](https://github.com/Raven-ASHCO/RAVEN/pull/17)) is a hazard track, **not** install Proven.
 - Path A lock: do **not** call mesh relay reliable. Localhost reservation only; circuit/WAN/auto-fallback/DCUtR **NOT proven**; hop server missing; multi-NAT **BLOCKED_HARDWARE**; NAT hold intact.

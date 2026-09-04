@@ -62,7 +62,7 @@ These four files are **R0 documentation**. They do **not** authorize R3 crypto, 
 
 **Identity (merged on `main` via PR #5):** [`docs/engineering/SPRINT0_IDENTITY_THREAT_MODEL.md`](../SPRINT0_IDENTITY_THREAT_MODEL.md), [`docs/engineering/G5_CROSS_STACK_REVOKE_POLICY.md`](../G5_CROSS_STACK_REVOKE_POLICY.md). Architect ACK: §2.4 + OPEN-ID-P0 is a **documented defect**, not a code approval. Soft-load fail-open stays **held**.
 
-Living Eng Program boards (this PR): [`blockers-ownership-board.md`](blockers-ownership-board.md) · [`three-path-verification-board.md`](three-path-verification-board.md) — FOUNDER try-phase; Manager SoT A/B/C; M0 MERGED `ce087c7d9cfb`.
+Living Eng Program boards (this PR): [`blockers-ownership-board.md`](blockers-ownership-board.md) · [`three-path-verification-board.md`](three-path-verification-board.md) — FOUNDER try-phase; Manager SoT A/B/C; **M0 docs done** `ce087c7d9cfb` (Architect **full ACK** body+G5; Identity **full ACK** body+G5 pin `5d39099907ea` (= `main`); Crypto **ACK**; **only** M1–M3 code remains gated).
 
 ## Non-goals
 
