@@ -8,7 +8,7 @@
 
 This file defines **Proven** vs **PASS_SOFTWARE_SUBSTITUTE** vs **Blocked** for terminal Win / macOS / Linux reliability. It does **not** invent run counts, soak rates, or `reliability_matrix_20` pass totals.
 
-**Try phase = execute.** Harvest or baseline numbers come only from runs this repo actually triggered, or from **cited GitHub Actions run IDs**. Do not estimate or placeholder-fake metrics. Precedent: [PR #14](https://github.com/Raven-ASHCO/RAVEN/pull/14) / [`perf-baseline-2026-09-04.md`](perf-baseline-2026-09-04.md) (triggered `cargo test` harvest on a recorded host). Soft latency budgets stay **draft** until a later designated snapshot — this file does not invent caps.
+**FOUNDER RULE — Try phase = execute.** Harvest numbers only from runs we actually trigger, **or** cite exact GitHub Actions run IDs. Soft budgets only after real snapshots land. **Never invent or estimate metrics.** Precedent: [PR #14](https://github.com/Raven-ASHCO/RAVEN/pull/14) / [`perf-baseline-2026-09-04.md`](perf-baseline-2026-09-04.md) (triggered `cargo test` harvest on a recorded host). Soft latency budgets stay **draft**.
 
 Swarm / NAT / relay honesty: [`docs/network/raven-swarm-connectivity-matrix.md`](../../network/raven-swarm-connectivity-matrix.md) (on `main` as of PR #2; not required to exist on every topic branch).
 
@@ -89,7 +89,7 @@ No evidence on that OS’s CI job, or the path is hardware / portal / public-Int
 
 **CLI / terminal ready** still requires **install → doctor → send** (or green `ash_menu_smoke` on that OS, or green `ash_doctor_send_smoke.ps1` on Windows). Doctor output used as *inputs* to that chain must show the axes separately; a single green exit is not enough.
 
-**False-green / false-red (honesty):** treating exit 0 or IPC-up as send-ready is a **false-green**. Treating “doctor printed a warning / daemon absent” as a hard reliability FAIL when the report completed and send was never claimed is a **false-red** if someone then blocks a queue/`bridge_v1` Proven row. Keep the axes separate so neither happens.
+**False-green / false-red (honesty, locked):** treating exit 0 or IPC-up as send-ready is a **false-green**. Treating “doctor printed a warning / daemon absent” as a hard reliability FAIL when the report completed and send was never claimed is a **false-red** if someone then blocks a queue/`bridge_v1` Proven row. Keep the axes separate so neither happens. Windows `127.0.0.1:7420` (B12) is loopback-only — citing it as WAN/path Proven is also a **false-green**.
 
 Detailed exit-code tables and operator wording live in the CLI DX appendix stub (source: [PR #22](https://github.com/Raven-ASHCO/RAVEN/pull/22)). This section only locks the evidence rule.
 
@@ -250,7 +250,7 @@ Do **not** conflate `windows_service.ps1` parse-only with this tier.
 
 ## Soft budgets
 
-Soft latency / SLO drafts are **not** enforced. Harvest maxima and Queue10kWall times in [`perf-baseline-2026-09-04.md`](perf-baseline-2026-09-04.md) / [PR #14](https://github.com/Raven-ASHCO/RAVEN/pull/14) are **not** caps. Soft budgets only after a later designated snapshot from a triggered run (or a cited Actions run ID). This evidence bar does not invent or estimate numbers.
+**FOUNDER RULE — Try phase = execute** applies here: harvest maxima and Queue10kWall times in [`perf-baseline-2026-09-04.md`](perf-baseline-2026-09-04.md) / [PR #14](https://github.com/Raven-ASHCO/RAVEN/pull/14) are **not** caps. Soft budgets only after a real designated snapshot from a triggered run (or a cited Actions run ID). Never invent or estimate numbers. Soft budgets remain **draft**.
 
 ---
 

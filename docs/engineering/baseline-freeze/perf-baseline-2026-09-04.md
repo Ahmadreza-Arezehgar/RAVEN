@@ -5,6 +5,8 @@
 **Repo:** [Raven-ASHCO/RAVEN](https://github.com/Raven-ASHCO/RAVEN)  
 **Status:** first harvest of existing gates/sims. Soft latency budgets remain **DRAFT** (no numeric soft caps). This file does not enforce soft budgets.
 
+**FOUNDER RULE — Try phase = execute.** Harvest numbers only from runs we actually trigger, **or** cite exact GitHub Actions run IDs. Soft budgets only after real snapshots land. **Never invent or estimate metrics.** This file is the precedent ([PR #14](https://github.com/Raven-ASHCO/RAVEN/pull/14)): numbers below come from a triggered `./scripts/harvest_perf_baseline.sh` / `cargo test` run on a recorded host, plus cited in-tree constants. Soft budgets stay **draft**.
+
 Numbers below are copied from real `--nocapture` stdout or from cited source constants. Missing values are **NOT MEASURED**. Nothing here is estimated or placeholder-faked.
 
 Eng Program: update [`sprint0-checklist.md`](sprint0-checklist.md) so the **Performance baseline** row lists owner **#19** and records this harvest as evidence. That checklist still shows `#11` / `NOT STARTED` as of this write. [`org-structure.md`](org-structure.md) currently titles #19 as Release Engineering Lead and #11 as Performance Owner — reconcile titles there; this harvest follows the Sprint 0 assignment (Role #19 SRE Perf).
