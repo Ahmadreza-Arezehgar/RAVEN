@@ -8,9 +8,17 @@
 
 ---
 
+## Manager SoT (accepted 2026-09-04)
+
+1. SRE honesty map + bar: Delivered+ACK+dedup+opaque; ≥2 OS or WAIVE; no CI≠hardware conflation.
+2. DTN Bridge claim: opaque custody + cooperative hop/repl/TTL + sealed-ACK-only — Forwarded≠Delivered.
+3. Direct internet: localhost/LAN + fail-closed ≠ WAN claim (P2P).
+4. Terminal #1: Win named-pipe/MSVC + CLI DX doctor/install/send evidence.
+5. Try-phase: consolidate executed green/red only (linked CI or agent smoke). Docs-only ≠ Proven.
+
 ## Founder rules (try phase = execute)
 
-**Proven cells** need a **linked green CI run URL** or an **agent-executed smoke** (command + outcome). **Docs-only ≠ Proven.** Applies to **terminal reliability** and the **three paths** (`mesh` | `bridge` | `direct`). See [`three-path-verification-board.md`](three-path-verification-board.md).
+**Try-phase = execute:** consolidate **executed green/red only** (linked CI or agent smoke). **Docs-only ≠ Proven.** Applies to **terminal reliability** and the **three paths** (`mesh` | `bridge` | `direct`). See [`three-path-verification-board.md`](three-path-verification-board.md).
 
 **Founder Priority #1:** Terminal Win / macOS / Linux reliability **and** the three-path matrices sit **above O6 M1+**. **Do not schedule M1 eng until the terminal board is green** (CEO override only).
 
@@ -27,7 +35,7 @@
 | Founder Priority #1 | Terminal L/M/W + three-path matrices **above** O6 M1+ |
 | Critical path / O6 gate | **M0 ack gate ✅** — Architect M0 gate **CLOSED** (full ACK: body + G5 + HOLD/R3/IPC + Crypto D4; three-way Architect + Crypto + Identity) on [RAVEN#3](https://github.com/Raven-ASHCO/RAVEN/pull/3). **No Architect BLOCK. Do not await Architect re-ACK.** Docs merge = **Manager**. **No M1 code.** |
 | Performance baseline | **#19 SRE Perf** — IN PROGRESS (harvest; docs-only ≠ Proven) |
-| Menu-smoke | Sole CI via RAVEN#16 (Apple APPROVE + Core ACK); converge DONE with SRE; **Proven flip only after linked green CI** |
+| Menu-smoke | Sole CI via RAVEN#16 (Apple APPROVE + Core ACK); converge DONE with SRE; **Proven flip only after executed green** (linked CI or agent smoke) |
 
 Org-create / personal-account CODEOWNERS blockers from morning audit are **cleared**. **B3 cleared** via merged RAVEN#7.
 
@@ -49,7 +57,7 @@ Org-create / personal-account CODEOWNERS blockers from morning audit are **clear
 | Track | Status | PR / next | Notes |
 |-------|--------|-----------|-------|
 | Windows MSVC `ash` `Command` ungate (compile P0-1) | **DONE / MERGED** via [RAVEN#20](https://github.com/Raven-ASHCO/RAVEN/pull/20) + [RAVEN#21](https://github.com/Raven-ASHCO/RAVEN/pull/21) | #20 + #21 on `main` | **Do not greenlight duplicate compile fixes.** Compile ungate only — docs/helpers **not** e2e-proven. |
-| Menu-smoke (Linux + macOS) | In flight | [RAVEN#16](https://github.com/Raven-ASHCO/RAVEN/pull/16) | Apple APPROVE + Core ACK; SRE converge DONE. **Proven flip only after linked green CI.** |
+| Menu-smoke (Linux + macOS) | In flight | [RAVEN#16](https://github.com/Raven-ASHCO/RAVEN/pull/16) | Apple APPROVE + Core ACK; SRE converge DONE. **Proven flip only after executed green** (linked CI or agent smoke). |
 | `install.sh` fail-close (B11) | In flight (draft) | [RAVEN#17](https://github.com/Raven-ASHCO/RAVEN/pull/17) | Hazard retire / fail-close. **Not** install Proven. |
 | Core doctor axes (presence / ready / send_path) | In flight | [RAVEN#22](https://github.com/Raven-ASHCO/RAVEN/pull/22) | `ash doctor` exit 0 ≠ send Proven. |
 | Doctor identity-backend mismatch | In flight | [RAVEN#23](https://github.com/Raven-ASHCO/RAVEN/pull/23) | Identity usable / `daemon_ready` honesty. |
@@ -157,7 +165,7 @@ Fake-integration watch: any PR that wires RDAP tasks to production raven-node AT
 | Item | State |
 |------|--------|
 | Sole menu-smoke CI | [RAVEN#16](https://github.com/Raven-ASHCO/RAVEN/pull/16) — Apple **APPROVE** + Core **ACK**; converge **DONE** with SRE |
-| Proven flip | **Only** after linked green CI run URL (founder rule) |
+| Proven flip | **Only** after executed green/red recorded (linked CI or agent smoke). Docs-only ≠ Proven. |
 | Merge order | #20 + #21 **MERGED** (compile P0-1 **DONE**) → land #16 **when green** → #19 rebases **preserving** menu-smoke |
 | B10 remaining open P0 | **named-pipe IPC** + **install→doctor→send CI**. Docs/helpers **not** e2e-proven. **Do not greenlight duplicate compile fixes.** |
 | #21 | **MERGED** with #20 — **not** CI-held. Compile P0-1 closed. |
@@ -194,7 +202,7 @@ Fake-integration watch: any PR that wires RDAP tasks to production raven-node AT
 2. **B3:** **CLEARED** (RAVEN#7). No further CODEOWNERS action on mlkem FFI.
 3. **B2:** accepted for bot-only org; escalate only if human reviewers added.
 4. **Founder Priority #1:** terminal L/M/W + three-path matrices; **no M1 eng** until terminal board green (CEO override only).
-5. **Menu-smoke:** land #16 when green; #19 rebases preserving menu-smoke; Proven only after linked green CI.
+5. **Menu-smoke:** land #16 when green; #19 rebases preserving menu-smoke; Proven only after executed green (linked CI or agent smoke).
 6. **B10:** compile P0-1 **DONE** (#20 + #21 MERGED). Remaining open P0 = named-pipe IPC + install→doctor→send CI. **Do not greenlight duplicate compile fixes.** Docs/helpers still not e2e-proven.
 7. **B11 / B12:** track #17 fail-close; do not treat `install.sh` or Win loopback `127.0.0.1:7420` as Proven.
 8. **B8 Phase 1+ PARKED** (Windows terminal > iOS landing).

@@ -8,11 +8,19 @@ Companion: [`blockers-ownership-board.md`](blockers-ownership-board.md) · evide
 
 ---
 
+## Manager SoT (accepted 2026-09-04)
+
+1. SRE honesty map + bar: Delivered+ACK+dedup+opaque; ≥2 OS or WAIVE; no CI≠hardware conflation.
+2. DTN Bridge claim: opaque custody + cooperative hop/repl/TTL + sealed-ACK-only — Forwarded≠Delivered.
+3. Direct internet: localhost/LAN + fail-closed ≠ WAN claim (P2P).
+4. Terminal #1: Win named-pipe/MSVC + CLI DX doctor/install/send evidence.
+5. Try-phase: consolidate executed green/red only (linked CI or agent smoke). Docs-only ≠ Proven.
+
 ## FOUNDER RULE (try phase = execute)
 
-**Proven** = **linked green CI** run URL **or** **agent-executed smoke** (command + outcome).
+**Try-phase = execute:** consolidate **executed green/red only** (linked CI or agent smoke). **Docs-only ≠ Proven.**
 
-**Docs-only ≠ Proven.** ADR text, gap notes, matrices, and this board **do not** flip a cell to Proven.
+ADR text, gap notes, matrices, and this board **do not** flip a cell to Proven.
 
 Applies to **terminal reliability** (Win / macOS / Linux) **and** these three paths (`mesh` | `bridge` | `direct`).
 
@@ -40,7 +48,7 @@ Terminal Win / macOS / Linux reliability **and** this three-path matrix sit **ab
 
 | OS | Honest status | Notes |
 |----|---------------|-------|
-| Linux | **Not Proven** on this board | Menu-smoke sole CI is [RAVEN#16](https://github.com/Raven-ASHCO/RAVEN/pull/16) (Apple APPROVE + Core ACK; SRE converge DONE). **Proven flip only after linked green CI.** |
+| Linux | **Not Proven** on this board | Menu-smoke sole CI is [RAVEN#16](https://github.com/Raven-ASHCO/RAVEN/pull/16) (Apple APPROVE + Core ACK; SRE converge DONE). **Proven flip only after executed green** (linked CI or agent smoke). |
 | macOS | **Not Proven** on this board | Same #16 rust-macos menu-smoke when green. Keychain / launchd / notarization are **out of scope** for menu-smoke. |
 | Windows | **Not Proven** on this board | Compile P0-1 **DONE** — [RAVEN#20](https://github.com/Raven-ASHCO/RAVEN/pull/20) **and** [RAVEN#21](https://github.com/Raven-ASHCO/RAVEN/pull/21) **MERGED** (not CI-held). Remaining B10 open P0 = named-pipe IPC + install→doctor→send CI. Docs/helpers **not** e2e-proven. Loopback B12 ≠ Proven. **Do not greenlight duplicate compile fixes.** |
 
