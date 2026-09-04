@@ -2213,13 +2213,7 @@ fn cmd_contact_list(data_dir: &Path) {
             tag = tag,
             tw = w_tag
         );
-        println!(
-            "     {d}fp {fp}{r}{dial_extra}",
-            d = c.dim,
-            r = c.reset,
-            fp = fp,
-            dial_extra = ""
-        );
+        println!("     {d}fp {fp}{r}", d = c.dim, r = c.reset, fp = fp);
     }
 }
 
