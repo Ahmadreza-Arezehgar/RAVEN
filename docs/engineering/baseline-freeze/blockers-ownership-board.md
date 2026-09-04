@@ -16,6 +16,12 @@
 4. Terminal #1: Win named-pipe/MSVC + CLI DX doctor/install/send evidence.
 5. Try-phase: consolidate executed green/red only (linked CI or agent smoke). Docs-only ≠ Proven.
 
+## Manager Path A lock (2026-09-04)
+
+**Path A (mesh / NAT / relay) is locked.** Localhost reservation **only**. Two-client circuit / WAN / auto-fallback / DCUtR **NOT proven**. Hop server **missing**. Multi-NAT **BLOCKED_HARDWARE**. NAT hold **intact**.
+
+**Do not call mesh relay reliable.** Continue **B** (bridge) + **C** (direct) + **terminal**. See [`three-path-verification-board.md`](three-path-verification-board.md).
+
 ## Founder rules (try phase = execute)
 
 **Try-phase = execute:** consolidate **executed green/red only** (linked CI or agent smoke). **Docs-only ≠ Proven.** Applies to **terminal reliability** and the **three paths** (`mesh` | `bridge` | `direct`). See [`three-path-verification-board.md`](three-path-verification-board.md).
@@ -33,6 +39,7 @@
 | Specialist path coverage | **PARTIAL** — B3 **CLEARED** (RAVEN#7); B4 FlatBuffer FFI still `*` |
 | Team bus factor | **Accepted (bot-only)** — founder sole GitHub member; escalate only if human reviewers added |
 | Founder Priority #1 | Terminal L/M/W + three-path matrices **above** O6 M1+ |
+| Path A (mesh/NAT/relay) | **LOCKED** — localhost reservation only; circuit/WAN/auto-fallback/DCUtR **NOT proven**; hop server missing; multi-NAT **BLOCKED_HARDWARE**; NAT hold intact. **Not reliable.** Continue B+C+terminal. |
 | Critical path / O6 gate | **M0 ack gate ✅** — Architect M0 gate **CLOSED** (full ACK: body + G5 + HOLD/R3/IPC + Crypto D4; three-way Architect + Crypto + Identity) on [RAVEN#3](https://github.com/Raven-ASHCO/RAVEN/pull/3). **No Architect BLOCK. Do not await Architect re-ACK.** Docs merge = **Manager**. **No M1 code.** |
 | Performance baseline | **#19 SRE Perf** — IN PROGRESS (harvest; docs-only ≠ Proven) |
 | Menu-smoke | Sole CI via RAVEN#16 (Apple APPROVE + Core ACK); converge DONE with SRE; **Proven flip only after executed green** (linked CI or agent smoke) |
@@ -49,6 +56,7 @@ Org-create / personal-account CODEOWNERS blockers from morning audit are **clear
 4. **Terminal first:** do not schedule M1 eng until terminal board green (CEO override only). Flag premature Raven↔RDAP / M1–M3 production PRs.
 5. **Menu-smoke merge order:** #20 **done** → land #16 when green → #19 rebases **preserving** menu-smoke.
 6. Keep this board under `docs/engineering/baseline-freeze/` (this PR). **M0 docs merge = Manager.** Architect M0 gate is **CLOSED** — do **not** await Architect re-ACK.
+7. **Path A locked** — do not claim mesh relay reliable. Continue **B+C+terminal**.
 
 ---
 
@@ -208,3 +216,4 @@ Fake-integration watch: any PR that wires RDAP tasks to production raven-node AT
 8. **B8 Phase 1+ PARKED** (Windows terminal > iOS landing).
 9. **SRE Perf (#19):** Performance baseline remains #19; harvest in flight — docs-only ≠ Proven.
 10. **Apple/Windows trees:** B5 remains; B8 parked. **Manager + SRE:** `perf` team or fold #19 (B6).
+11. **Path A locked:** localhost reservation only; do **not** call mesh relay reliable. Continue **B+C+terminal**.

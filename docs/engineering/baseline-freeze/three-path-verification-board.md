@@ -16,6 +16,23 @@ Companion: [`blockers-ownership-board.md`](blockers-ownership-board.md) · evide
 4. Terminal #1: Win named-pipe/MSVC + CLI DX doctor/install/send evidence.
 5. Try-phase: consolidate executed green/red only (linked CI or agent smoke). Docs-only ≠ Proven.
 
+## Manager Path A lock (2026-09-04)
+
+**Path A (mesh / NAT / relay) is locked.** Honest cells only:
+
+| Cell | Lock |
+|------|------|
+| Reservation | **localhost only** |
+| Two-client circuit | **NOT proven** |
+| WAN | **NOT proven** |
+| Auto-fallback | **NOT proven** |
+| DCUtR | **NOT proven** |
+| Hop server | **missing** |
+| Multi-NAT | **BLOCKED_HARDWARE** |
+| NAT hold | **intact** |
+
+**Do not call mesh relay reliable.** Continue **B** (bridge) + **C** (direct) + **terminal**.
+
 ## FOUNDER RULE (try phase = execute)
 
 **Try-phase = execute:** consolidate **executed green/red only** (linked CI or agent smoke). **Docs-only ≠ Proven.**
@@ -38,7 +55,7 @@ Terminal Win / macOS / Linux reliability **and** this three-path matrix sit **ab
 
 | Path | Honest status | What exists (not Proven) | What would Proven require |
 |------|---------------|--------------------------|---------------------------|
-| **mesh** | **Not Proven** | Policy / sim (`network_sim_1000`) and `mock_ble` hygiene on `main` ([RAVEN#13](https://github.com/Raven-ASHCO/RAVEN/pull/13)). Live radio **BLOCKED_HARDWARE**. `mock_ble` green ≠ live mesh DoD. `network_sim_1000` ≠ try-phase live-mesh evidence. | Linked green CI **or** agent-executed live-path smoke (command + outcome) on a **named** mesh path. Physical/hardware proof must not be conflated with software/CI proof. |
+| **mesh** (Path A) | **Not Proven** — **locked** | **Path A lock:** localhost reservation only. Two-client circuit / WAN / auto-fallback / DCUtR **NOT proven**. Hop server **missing**. Multi-NAT **BLOCKED_HARDWARE**. NAT hold **intact**. Policy/sim (`network_sim_1000`) + `mock_ble` hygiene ≠ live mesh. **Do not call mesh relay reliable.** | Executed green/red only (linked CI or agent smoke) on a **named** mesh path after the lock lifts. CI ≠ hardware. |
 | **bridge** | **Not Proven** | Strongest **software** evidence on `main` (`bridge_v1`, `bridge_abc` / serverless proof scripts). Still **docs/software ≠ Proven** until a linked green CI run or agent-executed smoke is attached to this cell. | Linked green CI URL or agent-executed smoke for the named bridge path. Cross-OS (≥2 of Linux, macOS, Windows) remains a terminal-board concern (see B10 / menu-smoke). |
 | **direct** | **Not Proven** | Founder honesty: terminal-to-terminal **direct Internet is not proven**; shipping message path is fail-closed. Localhost/LAN + fail-closed `internet_dial_smoke` **≠** WAN reliability. See connectivity matrix §0. | Linked green CI or agent-executed smoke that dials a **non-loopback / non-RFC1918** peer on the named direct path. `127.0.0.1` (incl. B12 `127.0.0.1:7420`) is **not** Proven direct. |
 
@@ -62,3 +79,4 @@ Terminal Win / macOS / Linux reliability **and** this three-path matrix sit **ab
 - This file does **not** greenlight M1–M3 production code.
 - Soft soak / fail-rate bounds wait for the SRE Perf (#19) snapshot ([`perf-baseline-2026-09-04.md`](perf-baseline-2026-09-04.md) — harvest in flight; docs-only ≠ Proven).
 - B11 `install.sh` ([RAVEN#17](https://github.com/Raven-ASHCO/RAVEN/pull/17)) is a hazard track, **not** install Proven.
+- Path A lock: do **not** call mesh relay reliable. Localhost reservation only; circuit/WAN/auto-fallback/DCUtR **NOT proven**; hop server missing; multi-NAT **BLOCKED_HARDWARE**; NAT hold intact. Continue **B+C+terminal**.
