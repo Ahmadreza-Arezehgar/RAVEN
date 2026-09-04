@@ -612,7 +612,6 @@ jobs:
           cargo build --release -p raven-core -p raven-node -p ash
       # Named reliability gates (Sprint 0 evidence bar). reliability_10k is
       # #[ignore] and is NOT run by the umbrella cargo test above.
-      # ash_menu_smoke is owned by CLI DX PR #16 — do not add it here.
       - name: 10,000-message queue reliability gate
         run: |
           set -euo pipefail
