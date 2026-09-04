@@ -20,7 +20,7 @@ Copy-Item "$Root\target\release\ash.exe" (Join-Path $BinDir "raven.exe") -Force
 Copy-Item "$Root\target\release\ash.exe" (Join-Path $BinDir "ash.exe") -Force
 
 $exe = Join-Path $BinDir "raven-node.exe"
-$args = "bridge --data-dir `"$DataDir`" --lan-listen 127.0.0.1:7420 --ble-listen 127.0.0.1:7421 --timeout-secs 0"
+$args = "service --data-dir `"$DataDir`" --lan-listen 127.0.0.1:7420 --ble-listen 127.0.0.1:7421 --timeout-secs 0"
 
 # Register a per-user logon task (survives reboot; no admin service required for V1 software path).
 $taskName = "RavenNodeBridge"
@@ -34,4 +34,4 @@ Start-ScheduledTask -TaskName $taskName
 Write-Host "installed task $taskName"
 Write-Host "data-dir=$DataDir"
 Write-Host "bin-dir=$BinDir (raven.exe / ash.exe)"
-Write-Host "Named-pipe IPC design: see WINDOWS_SERVICE.md (UDS is Unix-only)"
+Write-Host "Named-pipe IPC: \\.\pipe\raven-node (user DACL). ash client is a follow-up — see WINDOWS_SERVICE.md"
