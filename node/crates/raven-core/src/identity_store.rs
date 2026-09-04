@@ -1728,11 +1728,23 @@ mod tests {
             test_cleanup(dir);
             return;
         }
-        let u = identity_usable(dir).unwrap();
-        assert!(!u.usable);
-        assert!(!u.has_identity);
-        assert!(u.consistency.ok);
-        assert!(!u.consistency.blocks_identity_use());
+        // Headless GNU/Linux may fail closed while proving first-install
+        // absence (no Secret Service bus). That is not a backend mismatch.
+        match identity_usable(dir) {
+            Ok(u) => {
+                assert!(!u.usable);
+                assert!(!u.has_identity);
+                assert!(u.consistency.ok);
+                assert!(!u.consistency.blocks_identity_use());
+            }
+            Err(e) => {
+                assert!(matches!(e, IdentityStoreError::SecureStore(_)));
+                assert!(!e.redacted_display().contains("seed"));
+                let c = backend_consistency(dir).unwrap();
+                assert!(c.ok);
+                assert!(!c.blocks_identity_use());
+            }
+        }
         test_cleanup(dir);
     }
 }

@@ -3885,8 +3885,23 @@ fn print_identity_usable_doctor(data_dir: &Path) -> bool {
             true
         }
         Err(e) => {
-            println!("{}", identity_not_usable_fail_line(&e.redacted_display()));
-            false
+            let msg = e.redacted_display();
+            // Continuity / corrupt are fail-closed (malformed marker, etc.).
+            // SecureStore/Io stay "unavailable" — not a backend mismatch FAIL.
+            if matches!(
+                e,
+                raven_core::IdentityStoreError::Continuity(_)
+                    | raven_core::IdentityStoreError::Corrupt
+            ) {
+                println!("{}", identity_not_usable_fail_line(&msg));
+                false
+            } else {
+                println!(
+                    "  {C_PURPLE}secure_keystore{C_RESET}: unavailable ({})",
+                    sanitize_terminal_text(&msg)
+                );
+                true
+            }
         }
     }
 }
