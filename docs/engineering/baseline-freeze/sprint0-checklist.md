@@ -4,8 +4,8 @@ Status legend: `NOT STARTED` · `IN PROGRESS` · `BLOCKED` · `DONE` · `WAIVED`
 
 | Deliverable | Owner (role) | Status | Evidence / notes |
 |-------------|--------------|--------|------------------|
-| Architecture map | #1 | IN PROGRESS | Architect draft: [`architecture-dependency-map.md`](architecture-dependency-map.md) |
-| Trust boundaries | #1, #17, #6 | IN PROGRESS | Architect draft (awaiting #17 Security Board + #6 Identity review): [`trust-boundaries.md`](trust-boundaries.md) |
+| Architecture map | #1 | DONE | Architect deliverable: [`architecture-dependency-map.md`](architecture-dependency-map.md) (PR cites Cargo.toml, ADRs 0001–0003, MESH/SERVERLESS, THREAT_MODEL, RDAP `main`) |
+| Trust boundaries | #1, #17, #6 | DONE | Architect draft complete: [`trust-boundaries.md`](trust-boundaries.md). **#17 Security Board + #6 Identity review still requested** on the PR (not a self-approval of the assurance artifact). |
 | Component ownership | Domain leads #2–#20 | NOT STARTED | Role charters drafted in `03-role-charters.md` |
 | CODEOWNERS | #20, #1 | BLOCKED | Draft in `artifacts/`; **blocked on GitHub Org** (see audit) |
 | PR risk classification | #17, #1 | IN PROGRESS | Classes defined in `01-risk-classes.md`; not yet enforced in PR template |
