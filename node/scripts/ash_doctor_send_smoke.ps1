@@ -19,6 +19,11 @@
 #   Wired in .github/workflows/raven-serverless.yml
 #     step "ash doctor→send smoke (Windows terminal path)"
 #
+# Split A: script content = CLI DX; rust-windows job glue = Windows Platform.
+#   Debug ash.exe is intentional (locked-file is debug_assertions-only; refused
+#   in Release — same as ash_menu_smoke.sh / PR #16). Do not switch this smoke
+#   to target\release\ash.exe. No step-order change requested.
+#
 # Fail-closed:
 #   Exit 0 only when every required string is present (smoke passed).
 #   If target\debug\ash.exe is missing after cargo build -p ash: exit 1 with

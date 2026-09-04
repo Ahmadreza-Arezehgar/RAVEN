@@ -339,6 +339,10 @@ The script `cargo build`s `-p ash -p raven-node` if needed, then `init` → `who
 
 If `target\debug\ash.exe` is still missing after cargo: **exit 1** with `MSVC ash binary missing — blocked on Windows Platform PR1`. Same fail-closed if the `.ps1` itself is missing.
 
+**Debug binary is intentional.** Same as `ash_menu_smoke.sh` / [PR #16](https://github.com/Raven-ASHCO/RAVEN/pull/16): `RAVEN_IDENTITY_BACKEND=locked-file` is `debug_assertions` only and **refused in Release**. Do not point this smoke at `target\release\ash.exe`. No step-order change requested — keep the named `rust-windows` step after the job’s cargo test/build.
+
+**Split A ownership (no duplicate glue PR):** script content = **CLI DX**; `rust-windows` job glue (fail-loud if the `.ps1` is missing, then invoke it) = **Windows Platform**.
+
 **CI (`rust-windows`, working-directory `node`, `shell: pwsh`):**
 
 ```powershell
