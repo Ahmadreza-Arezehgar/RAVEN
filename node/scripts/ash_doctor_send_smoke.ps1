@@ -1,17 +1,33 @@
 # Windows terminal-path smoke: ash init → doctor → send teach / fail-closed.
-# Sibling of ash_menu_smoke.sh. Not an install helper (do not put under scripts/install/).
+# Sibling of ash_menu_smoke.sh (Unix CI landing: PR #16 rust-linux + rust-macos).
+# Not an install helper — do not put under scripts/install/.
+# Do NOT call node/scripts/install.sh (B11 fail-closed, PR #17; still Blocked/non-evidence).
 #
-# Evidence rules (SRE Perf):
-#   - doctor IPC-up alone is NOT enough (identity + messaging_path required)
-#   - never silent skip / never green on missing ash.exe
-#   - do NOT call node/scripts/install.sh
+# Doctor axes stay distinct (Core gate / PR #22):
+#   daemon_presence / daemon_ready / send_path (default not_ready / unchecked)
+#   doctor exit 0 = report completed, ≠ send Proven
+#   IPC-up / presence alone is NOT enough — this script requires identity + serverless_rvn1
+#   Windows: no UDS probe; until a named-pipe client, presence is blocked (\\.\pipe\raven-node)
 #
-# Usage (from node/):
+# Operator (from node/, Windows / pwsh host):
 #   pwsh -File scripts/ash_doctor_send_smoke.ps1
+#   (script cargo-builds -p ash -p raven-node if needed, then init → whoami → doctor → menu send)
 #
-# Exit 0 only when every required string is present.
-# If ash.exe is missing after cargo build -p ash: exit 1 with
-#   "MSVC ash binary missing — blocked on Windows Platform PR1"
+# CI (job rust-windows, working-directory: node, shell: pwsh):
+#   Fail-loud if this file is missing, then:
+#     & scripts/ash_doctor_send_smoke.ps1
+#   Wired in .github/workflows/raven-serverless.yml
+#     step "ash doctor→send smoke (Windows terminal path)"
+#
+# Fail-closed:
+#   Exit 0 only when every required string is present (smoke passed).
+#   If target\debug\ash.exe is missing after cargo build -p ash: exit 1 with
+#     "MSVC ash binary missing — blocked on Windows Platform PR1"
+#   No silent skip. RAVEN_ALLOW_ASH_SMOKE_SKIP is not honored.
+#
+# Do not invent Proven. This file existing (or a local green) is not
+# terminal-path Proven (Windows). That label waits for the named CI step
+# green on main. wine / lima ash --help is PASS_SOFTWARE_SUBSTITUTE only.
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"

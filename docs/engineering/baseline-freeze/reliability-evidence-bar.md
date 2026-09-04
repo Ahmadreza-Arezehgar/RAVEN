@@ -317,7 +317,7 @@ Local first-run bootstrap (debug, stable `~/.raven`, **not** evidence): `bash sc
 
 ### Windows path smoke — `node/scripts/ash_doctor_send_smoke.ps1`
 
-Scaffolded on this PR. Sibling of `ash_menu_smoke.sh`. **Fail-loud if `ash.exe` is missing** — no silent skip, no `RAVEN_ALLOW_ASH_SMOKE_SKIP`.
+Scaffolded on this PR. Sibling of `ash_menu_smoke.sh` (Unix CI: [PR #16](https://github.com/Raven-ASHCO/RAVEN/pull/16)). **Fail-loud if `ash.exe` is missing** — no silent skip, no `RAVEN_ALLOW_ASH_SMOKE_SKIP`. Do **not** call `node/scripts/install.sh` ([PR #17](https://github.com/Raven-ASHCO/RAVEN/pull/17) B11). Doctor axes from [PR #22](https://github.com/Raven-ASHCO/RAVEN/pull/22): `daemon_presence` / `daemon_ready` / `send_path` stay distinct; doctor exit 0 ≠ send Proven. Operator/CI usage is also in the script header. **Do not invent Proven** — proposed until the named `rust-windows` step is green on `main`.
 
 **Operators (from `node/` on a Windows / pwsh host):**
 
