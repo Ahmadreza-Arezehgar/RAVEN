@@ -1,0 +1,23 @@
+# Dependabot version updates for ecosystems present on main.
+# Verified 2026-09-04 against origin/main:
+#   - cargo workspace: /node/Cargo.toml (+ Cargo.lock)
+#   - GitHub Actions: /.github/workflows
+#   - pip (protocol vectors): /protocol/reference/requirements.txt
+# Omitted: gomod — no go.mod on main (ios-native Libp2pBridge is not in this tree).
+# Do not add ecosystems until their manifests land on main.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /node
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: pip
+    directory: /protocol/reference
+    schedule:
+      interval: weekly
