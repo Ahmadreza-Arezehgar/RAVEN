@@ -43,7 +43,7 @@ Org-create / personal-account CODEOWNERS blockers from morning audit are **clear
 | B5 | Platform trees missing vs CODEOWNERS | 0d | Apple (#10), Windows (#11) | Med | CODEOWNERS name `/ios-native/`, `/RAVEN-Windows/` but those trees are **absent** on `main`. |
 | B6 | No GitHub team for SRE/Perf | 0d | SRE Perf (#19) + Manager | Med | No `@Raven-ASHCO/perf` (or similar). |
 | B7 | Review-latency baseline under-sampled | 0d | Eng Program (#2) | Low | Only RAVEN#1 merged; 0 reviews; author==merger. |
-| B8 | Sprint 0 checklist rows still mostly NOT STARTED (paper pack) | ~0–1d | Domain leads | Med | Architecture map, trust boundaries, etc. still open in baseline pack. |
+| B8 | Sprint 0 checklist rows still mostly NOT STARTED (paper pack) | ~0–1d | Domain leads | Med | Architecture map, trust boundaries, etc. still open in baseline pack. **Performance baseline is IN PROGRESS** — evidence: [`docs/engineering/baseline-freeze/perf-baseline-2026-09-04.md`](perf-baseline-2026-09-04.md) (SRE Perf owning; harvest in flight). |
 
 **Cleared today:** GitHub Org missing · repos on personal account · no CODEOWNERS · unprotected `main` · no teams.
 
