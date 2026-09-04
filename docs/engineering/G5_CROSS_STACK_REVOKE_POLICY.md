@@ -1,9 +1,9 @@
 # G5 — Cross-stack revoke policy (RAVEN device lineage ↔ RDAP address)
 
-**Status:** Draft (docs-first). Architect full-ACK’d G5 on 2026-09-04 (PR #5 §2.2+E4). ADR 0004 appendix G5 on PR #3 must still be rewritten to the same predicate before Architecture ACKs that appendix. Soft-load P0 still held.  
+**Status:** Draft (docs-first). Architect full-ACK’d G5 (PR #5 §2.2+E4, merged). Raven↔RDAP ACK’d main SoT 2026-09-04. ADR 0004 Appendix G5 on PR #3 matches §2.2; three-way ADR ACK complete. Soft-load P0 still held (Sprint 1).  
 **Owners:** Identity AuthZ · Raven↔RDAP · RDAP Protocol  
 **Repos:** `Raven-ASHCO/RAVEN`, `Raven-ASHCO/raven-distributed-agent-protocol`  
-**Related:** `docs/engineering/SPRINT0_IDENTITY_THREAT_MODEL.md`, `protocol/RAVEN_DEVICE_REVOCATION_V1.md`, RDAP `team_agents/raven_identity.py`; forthcoming ADR 0004 appendix G5 (`docs/adr/0004-appendix-g5-raven-rdap-revoke.md`) — Architect ruling + Identity alignment (not on this branch yet; must be rewritten to this predicate before Architecture ACKs that appendix)  
+**Related:** `docs/engineering/SPRINT0_IDENTITY_THREAT_MODEL.md`, `protocol/RAVEN_DEVICE_REVOCATION_V1.md`, RDAP `team_agents/raven_identity.py`; ADR 0004 Appendix G5 (`docs/adr/0004-appendix-g5-raven-rdap-revoke.md`, PR #3) — aligned with §2.2  
 **Date:** 2026-09-04
 
 ## 1. Problem
@@ -75,6 +75,6 @@ Without a joint policy, operators can:
 ## 5. Ack checklist
 
 - [x] Identity AuthZ (author)
-- [ ] Raven↔RDAP
+- [x] Raven↔RDAP (ACK main SoT 2026-09-04; matches ADR 0004 Appendix G5 on PR #3)
 - [x] RDAP Protocol (ACK on raven-distributed-agent-protocol PR #2 `docs/rdap-revocation.md`)
 - [x] Architect (Sprint 0 §2.4 trust-boundary ACK; full G5 ACK on PR #5 §2.2+E4, 2026-09-04)
