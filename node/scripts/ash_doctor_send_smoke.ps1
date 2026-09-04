@@ -8,15 +8,16 @@
 #   doctor exit 0 = report completed, ≠ send Proven
 #   IPC-up / presence alone is NOT enough — this script requires identity + serverless_rvn1
 #   Never require daemon_presence: present (would greenwash Windows blocked).
-#   Once #22 labels appear on this tree, require the three axis lines.
-#   Until then (not printed today) keep identity + serverless_rvn1 only.
-#   Windows until Sprint 1 pipe client:
-#     daemon_presence: blocked (reason=ipc_transport_missing)
-#     (no UDS / raven-node.sock probe; pipe is \\.\pipe\raven-node)
+#   Never require daemon_ready: ready (do not greenwash ready from presence / Ping).
+#   Named-pipe client is on this tree — do NOT require ipc_transport_missing.
+#   Try-phase (Windows): start raven-node ipc --data-dir, assert daemon_presence: up
+#     (Ping→Pong over \\.\pipe\raven-node), then kill and assert presence down
+#     (fail-closed connect — not a soft skip / blocked transport).
 #
 # Operator (from node/, Windows / pwsh host):
 #   pwsh -File scripts/ash_doctor_send_smoke.ps1
-#   (script cargo-builds -p ash -p raven-node if needed, then init → whoami → doctor → menu send)
+#   (script cargo-builds -p ash -p raven-node if needed, then
+#    init → whoami → raven-node ipc → doctor up → stop → doctor down → menu send)
 #
 # CI (job rust-windows, working-directory: node, shell: pwsh):
 #   Fail-loud if this file is missing, then:
@@ -56,6 +57,42 @@ function Require-Match([string]$Haystack, [string]$Pattern, [string]$What) {
     }
 }
 
+# cmd_doctor paints up/down with C_GREEN/C_DIM even when NO_COLOR=1.
+function Get-PlainText([string]$Text) {
+    return [regex]::Replace($Text, '\x1b\[[0-9;]*m', '')
+}
+
+function Stop-SmokeRavenNode {
+    if ($null -eq $script:NodeProc) { return }
+    $proc = $script:NodeProc
+    $script:NodeProc = $null
+    if ($proc.HasExited) { return }
+    Write-Host "stopping raven-node ipc pid=$($proc.Id)"
+    try { $proc.Kill() } catch { }
+    if (-not $proc.WaitForExit(10000)) {
+        Fail "raven-node ipc pid=$($proc.Id) did not exit — fail-loud cleanup"
+    }
+}
+
+function Assert-DoctorIdentity([string]$Text) {
+    if ($Text -notmatch "serverless_rvn1") {
+        Write-Host $Text
+        Fail "ash doctor must show messaging path serverless_rvn1 (IPC-up alone is not Proven)"
+    }
+    if ($Text -notmatch "identity:\s*present" -and $Text -notmatch "identity present") {
+        Write-Host $Text
+        Fail "ash doctor must show identity present (IPC-up / daemon_state alone is not Proven)"
+    }
+}
+
+function Assert-NoMissingTransport([string]$Plain, [string]$Phase) {
+    if ($Plain -match "ipc_transport_missing" -or
+        $Plain -match "daemon_presence:\s*blocked") {
+        Write-Host $Plain
+        Fail "named-pipe client is on this tree — $Phase must not skip as ipc_transport_missing / blocked"
+    }
+}
+
 $NodeRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $NodeRoot
 
@@ -92,6 +129,9 @@ $Work = Join-Path ([System.IO.Path]::GetTempPath()) ("raven-ash-win-" + [guid]::
 New-Item -ItemType Directory -Force -Path $Work | Out-Null
 $Data = Join-Path $Work "data"
 New-Item -ItemType Directory -Force -Path $Data | Out-Null
+$script:NodeProc = $null
+$nodeOut = Join-Path $Work "raven-node-ipc.out.log"
+$nodeErr = Join-Path $Work "raven-node-ipc.err.log"
 
 function Invoke-AshCapture {
     param(
@@ -146,35 +186,53 @@ try {
     Require-Match $who.Text "address" "ash whoami must show address"
     Require-Match $who.Text "pub_hex" "ash whoami must show pub_hex"
 
+    Write-Host "starting raven-node ipc --data-dir $Data"
+    $script:NodeProc = Start-Process -FilePath $Node `
+        -ArgumentList "ipc --data-dir `"$Data`"" `
+        -WorkingDirectory $NodeRoot `
+        -PassThru `
+        -WindowStyle Hidden `
+        -RedirectStandardOutput $nodeOut `
+        -RedirectStandardError $nodeErr
+    if ($null -eq $script:NodeProc) {
+        Fail "Start-Process raven-node ipc returned no process"
+    }
+    Write-Host "raven-node ipc pid=$($script:NodeProc.Id)"
+    Start-Sleep -Seconds 2
+    if ($script:NodeProc.HasExited) {
+        $errTxt = ""
+        if (Test-Path -LiteralPath $nodeErr) { $errTxt = Get-Content -LiteralPath $nodeErr -Raw }
+        Fail "raven-node ipc exited $($script:NodeProc.ExitCode) before doctor ping`n$errTxt"
+    }
+
     $doc = Invoke-AshCapture -AshArgs @("--data-dir", $Data, "doctor")
     # doctor is diagnostic; require identity + messaging_path even if exit != 0
-    if ($doc.Text -notmatch "serverless_rvn1") {
-        Write-Host $doc.Text
-        Fail "ash doctor must show messaging path serverless_rvn1 (IPC-up alone is not Proven)"
+    Assert-DoctorIdentity $doc.Text
+    $docPlain = Get-PlainText $doc.Text
+    Assert-NoMissingTransport $docPlain "doctor (daemon up)"
+    Require-Match $docPlain "daemon_presence:" "ash doctor must print daemon_presence:"
+    Require-Match $docPlain "daemon_presence:\s*up" `
+        "ash doctor must show daemon_presence: up after raven-node ipc start (named-pipe Ping)"
+    # Presence/Ping ≠ ready ≠ send. Do not require daemon_ready: ready.
+    if ($docPlain -match "daemon_ready:\s*ready") {
+        Write-Host "doctor printed daemon_ready: ready — not used as a pass (presence ≠ ready)"
     }
-    if ($doc.Text -notmatch "identity:\s*present" -and $doc.Text -notmatch "identity present") {
-        Write-Host $doc.Text
-        Fail "ash doctor must show identity present (IPC-up / daemon_state alone is not Proven)"
+    Write-Host "doctor (daemon up): daemon_presence: up (named-pipe ping); identity + serverless_rvn1 OK"
+
+    Stop-SmokeRavenNode
+    Start-Sleep -Seconds 1
+
+    $docDown = Invoke-AshCapture -AshArgs @("--data-dir", $Data, "doctor")
+    $downPlain = Get-PlainText $docDown.Text
+    Assert-NoMissingTransport $downPlain "doctor (daemon down)"
+    Require-Match $downPlain "daemon_presence:" "ash doctor must print daemon_presence: after raven-node stop"
+    if ($downPlain -match "daemon_presence:\s*up") {
+        Write-Host $downPlain
+        Fail "ash doctor still shows daemon_presence: up after raven-node stop — pipe must fail-closed"
     }
-    # PR #22 Core gate — require axis lines once they exist on this tree.
-    # Do NOT require daemon_presence: present (Windows is blocked until pipe client).
-    $coreGate = ($doc.Text -match "daemon_presence:") -or
-                ($doc.Text -match "daemon_ready:") -or
-                ($doc.Text -match "send_path:")
-    if ($coreGate) {
-        Require-Match $doc.Text "daemon_presence:" "ash doctor must print daemon_presence: (PR #22; value may be blocked)"
-        Require-Match $doc.Text "daemon_ready:" "ash doctor must print daemon_ready:"
-        Require-Match $doc.Text "send_path:\s*(not_ready|unchecked)" "ash doctor send_path must be not_ready or unchecked"
-        $onWindows = ($IsWindows -eq $true) -or ($env:OS -eq "Windows_NT")
-        if ($onWindows) {
-            Require-Match $doc.Text "daemon_presence:\s*blocked\s*\(reason=ipc_transport_missing\)" `
-                "Windows doctor must show daemon_presence: blocked (reason=ipc_transport_missing) until Sprint 1 pipe client"
-        }
-        Write-Host "doctor: Core gate axes OK (presence not used as pass)"
-    } else {
-        Write-Host "doctor: Core gate labels not on this tree yet (pending PR #22) — identity + serverless_rvn1 only"
-    }
-    Write-Host "doctor: identity + serverless_rvn1 OK (IPC-up / daemon_presence:present not used as pass)"
+    Require-Match $downPlain "daemon_presence:\s*down" `
+        "ash doctor must show daemon_presence: down after raven-node stop (fail-closed connect, not a skip)"
+    Write-Host "doctor (daemon down): presence fail-closed after raven-node stop"
 
     # Interactive line-menu send teach path (Windows uses line_menu_loop).
     # clap `ash send` / `ash contact add` are not dispatched in ash run() today;
@@ -198,6 +256,7 @@ try {
     exit 0
 }
 finally {
+    Stop-SmokeRavenNode
     if (Test-Path -LiteralPath $Work) {
         Remove-Item -LiteralPath $Work -Recurse -Force -ErrorAction SilentlyContinue
     }
