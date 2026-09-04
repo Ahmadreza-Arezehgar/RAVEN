@@ -1,19 +1,31 @@
 # ADR 0004 — Raven↔RDAP production ATSAM transport (O6)
 
-**Status:** Proposed (awaiting Architect + Crypto + Identity ack)  
+**Status:** Proposed (Architect **BLOCK** 2026-09-04 — revision addressing required changes; awaiting Architect + Crypto + Identity ack)  
 **Date:** 2026-09-04  
-**Deciders (required ack before merge):** Architect, Crypto ATSAM, Identity AuthZ  
+**Risk class:** **R3** (ATSAM / crypto transport)  
+**Deciders (required ack before merge):** Architect (#1), Crypto ATSAM (#3), Identity AuthZ (#15); Security Board as matrix requires  
 **Author:** Raven↔RDAP Integration Lead  
 **Repos:** `Raven-ASHCO/RAVEN`, `Raven-ASHCO/raven-distributed-agent-protocol`  
-**Related:** ADR 0003 (wire/crypto/identity/IPC), `protocol/RAVEN_MAILBOX_TRANSPORT_V1.md`, RDAP README “Important integration gap”, Manager Sprint 0 decisions 2026-09-04
+**Related:** ADR 0003 (wire/crypto/identity/IPC), `docs/THREAT_MODEL.md`, `protocol/SECURITY_ERRATA_RVN1_2026-08-13.md`, `protocol/RAVEN_MAILBOX_TRANSPORT_V1.md`, `protocol/RAVEN_DEVICE_REVOCATION_V1.md`, RDAP README “Important integration gap”, Manager Sprint 0 decisions 2026-09-04  
+**Process:** **No R3 self-merge.** No production code merge implementing M1–M3 until required acks. Full text lives on this RAVEN PR (`docs/adr/0004-…` + `node/adr/` mirror).
+
+## Hard gate — RVN1 production HOLD
+
+`docs/THREAT_MODEL.md` and `protocol/SECURITY_ERRATA_RVN1_2026-08-13.md` still hold RVN1 messaging as **not approved for production**.
+
+- M1–M3 **production enablement** is **subordinate** to those errata / threat-model gates.
+- “Same RVN1 as local `raven-node`” (D3) MUST NOT create a bypass of the hold, errata rules (no public-material cipher / `STUB_PROTO` / interim seal in production paths, authenticated session mandatory, fail-closed acceptance/ACK, etc.), or ATSAM session requirements.
+- Lab / interop work against held paths is allowed only when explicitly labeled **non-production** (and must not be described as confidential Raven messaging).
+
+O6 may deliver a two-device encrypted E2E **harness** against the production-shaped ATSAM/`raven-node` path; shipping/Release enablement remains blocked until the errata hold is lifted by the normal security process.
 
 ## Context
 
 RDAP today exchanges recipient-bound, Ed25519-signed A2A tasks primarily over **cleartext HTTP** on a trusted LAN, with an optional **experimental plaintext** libp2p mailbox (`raven-swarm-mailbox-experimental`, env `RDAP_ENABLE_EXPERIMENTAL_PLAINTEXT_MAILBOX` / `--experimental-plaintext-mailbox`). Task JSON may sit in an RVN1 field named `message_ciphertext` without being confidential.
 
-Production Raven messaging is fail-closed: without a persisted authenticated **ATSAM** session, `raven-node` refuses origination with `ATSAM_SESSION_REQUIRED`. Local clients talk to the daemon over UDS IPC and may only **`EnqueueSealed`** / **`LanDial`** already-sealed frames — the daemon does not seal plaintext for callers.
+Production-shaped Raven messaging is fail-closed: without a persisted authenticated **ATSAM** session, `raven-node` refuses origination with `ATSAM_SESSION_REQUIRED`. Local clients talk to the daemon over UDS IPC and may only **`EnqueueSealed`** / **`LanDial`** already-sealed frames — the daemon does not seal plaintext for callers. IPC auth is peer-cred (UDS) / pipe ACL (Windows) per ADR 0003.
 
-RDAP also keeps a separate identity under `.team/keys`, while `raven-node` uses `~/.raven`. Unifying “A2A over production Raven Node” is the O6 KPI: a **two-device encrypted E2E harness**.
+RDAP also keeps a separate identity under `.team/keys`, while `raven-node` uses `~/.raven`. Closing the documented integration gap for an honest encrypted carrier is the O6 KPI: a **two-device encrypted E2E harness** (still under the RVN1 HOLD above).
 
 ## Manager decisions locked for M0 (2026-09-04)
 
@@ -22,15 +34,28 @@ RDAP also keeps a separate identity under `.team/keys`, while `raven-node` uses 
 3. **O6 primary path = `LanDial` direct.** Production mailbox / offline is stretch, not a gate.
 4. **M1 harness:** pin/use the **same RVN1** as local `raven-node` first. Document distinct `USER_AGENT_DEVICE` as follow-on per draft §3 — **do not** block M2 on a distinct credential.
 
+Architect non-blocking agreement (2026-09-04): items 1, 3, and sealing-stays-in-raven-core/node are accepted; required changes below are incorporated in this revision.
+
+## Normative invariants (Architecture)
+
+These are binding for any implementation claiming conformance to this ADR:
+
+1. **Confidential data plane** = ATSAM-sealed `RavenEnvelopeV1` envelopes via **`raven-node` IPC only**, with **`LanDial` primary** for O6.
+2. **Python / RDAP MUST NOT** reimplement ATSAM, derive conversation keys, or hold session/ratchet key material. Sealing and session state live only in `raven-core` / `raven-node` (or a future Crypto-owned FFI that does not relocate trust into the agent process).
+3. **Signed HTTP** = LAN **control plane only** (bootstrap, invite/trust, Agent Card, ping, status). It MUST NEVER seal, open, or carry confidential plaintext task/reply bodies, and MUST NOT be able to trigger seal/open without a local authenticated ATSAM session already present in `raven-node`.
+4. **Fail-closed** on missing, unbound, revoked, or otherwise unusable ATSAM session — aligned with current executable posture (`ATSAM_SESSION_REQUIRED` and errata session boundary). RDAP MUST NOT claim send/task success after Raven refuse.
+5. **IPC peer-cred / named-pipe ACL** per ADR 0003 is **mandatory** on the confidential path. No confidential IPC over unauthenticated local sockets.
+
 ## Decision
 
 ### D1 — Carrier of record for O6
 
 Any claim of confidential / encrypted RDAP task delivery MUST mean:
 
-- Task and reply application payloads are sealed under a **production ATSAM** session bound to the peer’s pinned Raven identity.
-- Sealed `RavenEnvelopeV1` frames are submitted to and received from a running **`raven-node`** via documented IPC (`LanDial` primary; `EnqueueSealed` only where the dial path already established session/routing as specified by Crypto/Node IPC).
-- The experimental swarm mailbox binary and cleartext HTTP A2A are **out of scope** for confidentiality claims.
+- Task and reply application payloads are sealed under a **production-shaped ATSAM** session bound to the peer’s pinned Raven identity / device binding.
+- Sealed frames are submitted to and received from a running **`raven-node`** via documented IPC (`LanDial` primary; `EnqueueSealed` only where the dial path already established session/routing as specified by Crypto/Node IPC).
+- Experimental swarm mailbox and cleartext HTTP A2A are **out of scope** for confidentiality claims.
+- Claims remain subordinate to the **RVN1 production HOLD**.
 
 ### D2 — Control plane vs data plane
 
@@ -38,57 +63,74 @@ Any claim of confidential / encrypted RDAP task delivery MUST mean:
 |---|---|---|
 | Signed HTTP A2A (LAN) | Bootstrap, invite/trust, Agent Card, ping, status | **No** |
 | HTTPS + Bearer | Optional hardening of control plane | Transport TLS only; still not Raven E2EE |
-| ATSAM via `raven-node` `LanDial` | **Primary** task/reply data plane | **Yes** (O6 demo path) |
+| ATSAM via `raven-node` `LanDial` | **Primary** task/reply data plane | **Yes** for harness claims; **not** Release/production until HOLD lifts |
 | Production opaque mailbox / bridge | Stretch | Yes if used; **not** O6 gate |
-| `raven-swarm-mailbox-experimental` plaintext | Lab only, opt-in | **Never** |
+| `raven-swarm-mailbox-experimental` plaintext | Lab only, opt-in, labeled non-production | **Never** |
 
-Status / doctor surfaces MUST report an explicit carrier enum, e.g. `atsam_rvn1` | `http_signed` | `experimental_plaintext_mailbox`.
+### D2.1 — Carrier status enum (normative names)
 
-### D3 — Identity bridge (M1 minimal)
+Status / doctor / RDAP status surfaces MUST report an explicit carrier enum. Normative values:
 
-- For the O6 harness, RDAP MUST pin and use the **same RVN1 address and Ed25519 device key material** already owned by the local `raven-node` data dir (`~/.raven` or configured `--data-dir`), not a divergent `.team/keys` pair created in isolation.
-- Mapping mechanism (read-only import, symlink of public material + IPC-mediated signing, or documented export) is an M1 implementation choice; **private keys MUST NOT** appear in IPC JSON (per ADR 0003 / `ipc.rs`).
-- Distinct `USER_AGENT_DEVICE` credentials (agent runtime draft §3) are **documented follow-on**; M2 must not wait on them.
+| Value | Meaning |
+|---|---|
+| `atsam_rvn1` | Confidential data plane via ATSAM + `raven-node` IPC (`LanDial` / sealed path) |
+| `http_signed` | Signed HTTP control plane (not confidential) |
+| `experimental_plaintext_mailbox` | Opt-in experimental mailbox (not confidential; non-production) |
+
+Status output MUST NOT leak confidential metadata (no plaintext task bodies, no session keys, no AEAD nonces/keys, no sealed payload bytes). Enum + coarse counters / error codes only.
+
+### D3 — Identity binding for M1 (no soft parallel identity)
+
+- For the O6 harness, RDAP MUST use the **same RVN1 identity already owned by the local `raven-node` data dir** (`~/.raven` or configured `--data-dir`).
+- M1 **reuses the local raven-node RVN1 device binding**: the PairInit / device certificate / transcript binding that `raven-node` already uses for that data dir — not a newly invented RDAP-only keypair under `.team/keys` that merely happens to print a similar address string.
+- Mapping mechanism (read-only import of public material, IPC-mediated signing, documented export of public whoami, etc.) is an M1 implementation choice owned with Identity + Node IPC; **private keys MUST NOT** appear in IPC JSON (ADR 0003 / `ipc.rs`).
+- “Distinct `USER_AGENT_DEVICE` is follow-on” is permitted **only** as a documented post-O6 path. M1 MUST NOT invent a soft parallel identity, soft pin, or second trust root that bypasses PairInit/device-cert/transcript checks.
+- This reuse still MUST NOT bypass the RVN1 HOLD or errata.
 
 ### D4 — Sealing ownership (M2)
 
-- Sealing and session ratchet state live in **Raven** (`raven-core` / `raven-node`), not in Python reimplementations of ATSAM.
-- Python RDAP obtains sealed frames only through: (a) IPC to a node that already holds the session, or (b) a future approved FFI/bindings surface owned by Crypto — **not** by stuffing plaintext into `message_ciphertext`.
-- Fail-closed: without a usable ATSAM session, RDAP MUST surface `ATSAM_SESSION_REQUIRED` (or equivalent) and refuse to claim send success.
+- Sealing and session ratchet state live in **Raven** (`raven-core` / `raven-node`).
+- Python RDAP obtains sealed frames only through: (a) IPC to a node that already holds the session, or (b) a future approved FFI/bindings surface owned by Crypto.
+- Forbidden: stuffing plaintext into `message_ciphertext`; Python-side ATSAM; client-triggered seal without a local authenticated session.
 
 ### D5 — Harness acceptance (M3)
 
 Two devices (physical or VM), each with `raven-node` + RDAP:
 
-1. Mutual pin of the same RVN1 identities used by each node.
+1. Mutual pin of the same RVN1 / device bindings used by each node (D3).
 2. Alice `ask` → Bob completes (echo provider fine); markers e.g. `RAVEN_A2A_OK_*`.
 3. Data-plane frames are ATSAM-sealed (asserted by harness / negative: drop session → refuse).
-4. Docs: replace “Important integration gap” with pointer to this ADR and O6 encrypted path.
-5. Experimental mailbox remains available only behind explicit opt-in and labeled non-confidential.
+4. Carrier enum reports `atsam_rvn1` for the confidential path; docs state HOLD / non-Release if errata still active.
+5. Docs: replace “Important integration gap” with pointer to this ADR and O6 encrypted path.
+6. Experimental mailbox remains opt-in, labeled non-production / non-confidential.
 
-### D6 — Merge / production gate
+### D6 — Merge / production / R3 gate
 
-- **No production code merge** implementing M1–M3 until Architect, Crypto ATSAM, and Identity AuthZ **ack this ADR** (comment on PR or recorded ack in Eng Program tracker).
-- ADR file lands under `docs/adr/0004-raven-rdap-atsam-transport.md` (and mirror `node/adr/` if that tree remains in sync).
-- RDAP repo gets a short pointer to this RAVEN ADR (single source of truth in RAVEN) in a follow-up.
+- Risk class **R3**. Approvers: Architect #1, Crypto #3, Identity #15 (+ Security Board as matrix requires). **No R3 self-merge.**
+- **No production code merge** implementing M1–M3 until those acks are recorded on the PR or Eng Program tracker.
+- M1–M3 **production enablement / Release** remains subordinate to THREAT_MODEL + RVN1 security errata HOLD even after ADR ack.
+- ADR lands under `docs/adr/0004-raven-rdap-atsam-transport.md` and `node/adr/` mirror.
+- RDAP repo gets a short pointer to this RAVEN ADR (single source of truth).
 
 ## Consequences
 
 ### Positive
 
-- Honest security claims; closes the documented integration gap for the demo path.
-- Reuses existing fail-closed ATSAM + IPC seams instead of a parallel crypto stack in Python.
-- Clear split of control vs data plane reduces “signed = encrypted” confusion.
+- Honest security claims; closes the documented integration gap for the harness path without bypassing RVN1 HOLD.
+- Reuses fail-closed ATSAM + IPC seams; no parallel crypto stack in Python.
+- Clear control vs data plane; explicit R3 process.
 
 ### Negative / costs
 
-- O6 needs a working Python↔`raven-node` IPC client and session-ensure UX before task send.
-- Same-key M1 is simpler but defers proper agent principal separation.
+- O6 needs Python↔`raven-node` IPC client and session-ensure UX.
+- Same-device-binding M1 defers proper agent principal separation.
 - HTTP control plane remains a LAN trust assumption unless operators add HTTPS.
+- Harness green ≠ production approved while HOLD remains.
 
 ### Out of scope (explicit)
 
 - Approving or implementing `RAVEN_USER_OWNED_AGENT_RUNTIME_V1`.
+- Lifting the RVN1 production HOLD / closing errata (Security / Crypto process).
 - Making experimental mailbox production-ready.
 - Full offline/DTN mailbox as O6 exit criterion.
 - Changing Noise / libp2p swarm defaults unrelated to RDAP task path.
@@ -98,98 +140,27 @@ Two devices (physical or VM), each with `raven-node` + RDAP:
 | ID | Name | Target window (from 2026-09-04) | Owners (roles) |
 |---|---|---|---|
 | M0 | Spec freeze (this ADR) | Week 0–1 | Raven↔RDAP + Architect + Crypto + Identity |
-| M1 | Identity bridge (same RVN1) | Week 1–3 | Identity + Node IPC + Python Runtime |
+| M1 | Identity bridge (same raven-node RVN1 device binding) | Week 1–3 | Identity + Node IPC + Python Runtime |
 | M2 | Sealed carrier via IPC / LanDial | Week 3–6 | Node IPC + Crypto + RDAP Protocol + Python Runtime |
 | M3 | Two-device encrypted harness | Week 6–8 | Adversarial QA + SRE + Eng Program + CLI DX |
 | M4 | Doc/status: deprecate confidential claims for plaintext carriers | Parallel M3 | RDAP Protocol + Assurance |
 
 Stretch: production mailbox offline leg after M3 green.
 
-## References
+## CODEOWNERS touch list
 
-- `node/crates/raven-core/src/ipc.rs` — `EnqueueSealed`, `LanDial`
-- RDAP `team_agents/mesh.py` — experimental plaintext carrier
-- RDAP README — Important integration gap
-- RAVEN README — `ATSAM_SESSION_REQUIRED` / `unsafe-interim`
+See companion `docs/adr/0004-CODEOWNERS-touch-list.md`.
 
 ## Appendix G5 — Joint Raven↔RDAP revoke policy
 
-See also `docs/adr/0004-appendix-g5-raven-rdap-revoke.md`.
+See `docs/adr/0004-appendix-g5-raven-rdap-revoke.md` (device-lineage `RVDR1` vs RDAP address deny; R→A fail-closed under O6/M1; A↛R no auto-mint).
 
-# Appendix G5 — Joint Raven↔RDAP revoke policy (docs-first)
+## References
 
-**Status:** Proposed with ADR 0004 (Identity AuthZ Sprint 0 alignment)  
-**Date:** 2026-09-04  
-**Owners:** Raven↔RDAP + Identity AuthZ (ack required); Crypto consult on session fail-closed  
-**Normative refs:** `protocol/RAVEN_DEVICE_REVOCATION_V1.md` (APPROVED companion; production still gated), RDAP `team_agents/raven_identity.py` (`load_revocations`, verify paths), ADR 0004 D3 (same RVN1 for O6/M1)
-
-## G5.1 Two different instruments (do not conflate)
-
-| Layer | Instrument | Target | Who mints | Sticky? | Scope |
-|---|---|---|---|---|---|
-| **R** | `RavenDeviceRevocationV1` (`RVDR1`) | **Device lineage**: `device_id` + `device_ed_pub` + `device_x_pub` + `device_cert_hash` under an `identity_address` | Owning **identity** Ed25519 key | Yes — append-only union; never clears | Messenger / PairInit / ATSAM authorization for that lineage |
-| **A** | RDAP `revocations_file` | **RVN1 address** (peer principal string) | Local operator / deployment policy | Local file; hot-reload; not a signed global record | A2A HTTP + delegation verify; cancel auth; task accept |
-
-**RAVEN non-goal (normative):** RVDR1 does **not** revoke an entire Raven identity/address.  
-**RDAP today:** address revoke is exactly that coarser local deny — “do not accept this peer address.”
-
-Naming rule for docs and UI: call layer R **device-lineage revoke**; call layer A **RDAP address deny** (avoid “identity revoke” for either unless a future RAVEN identity-revoke profile exists).
-
-## G5.2 Honest coupling under O6/M1 (same RVN1)
-
-ADR 0004 M1 pins RDAP to the **same RVN1** as local `raven-node`. That does **not** merge the instruments; it tightens **apply** rules:
-
-1. **R → A (mandatory fail-closed for O6 data plane):**  
-   If the local node has accepted an RVDR1 whose denied lineage identifiers cover the **peer device material** RDAP is using for that pin (for M1 single-device: the peer Ed25519 used in trust / ATSAM), then RDAP MUST treat that peer as **A2A-denied** for both control-plane verify and ATSAM task send/recv — even if the address is absent from `revocations_file`.  
-   Rationale: signed HTTP or LanDial must not resurrect a lineage Raven already retired.
-
-2. **A ↛ R (no auto-mint):**  
-   Adding an RVN1 to RDAP `revocations_file` MUST NOT mint or forge RVDR1. It is local A2A policy only. Operators who need Raven-wide lineage retire still use identity-signed RVDR1 via ash/`raven-node` paths.
-
-3. **Local self vs peer:**  
-   Revoking **own** compromised device uses RVDR1 (layer R). Removing a **peer** from the agent team uses layer A (and/or untrust). Do not document “rdap revoke” as a substitute for device retirement.
-
-4. **Follow-on (post-M2, distinct `USER_AGENT_DEVICE`):**  
-   When agent credentials diverge from device lineage, layer A may deny an agent address without RVDR1; layer R may retire a device without deleting every agent grant — exact mapping deferred to Identity after agent-runtime gates; **not** an O6 blocker.
-
-## G5.3 Partition and propagation (shared honesty)
-
-Both layers inherit Raven’s **no instant global revoke**:
-
-- RVDR1: eventual propagation as public endpoint objects; partitioned verifiers may still trust until they learn (`RAVEN_DEVICE_REVOCATION_V1` §1 non-claim).
-- RDAP address deny: local file only unless operators distribute it out-of-band; no claim of mesh-wide A2A revoke in O6.
-
-Status surfaces SHOULD expose separately:
-
-- `raven_device_revocations_applied` (count / digests as appropriate)
-- `rdap_address_deny_list` (configured path + count)
-- `rdap_effective_peer_deny` (union after R→A apply)
-
-## G5.4 Session / crypto fail-closed (Crypto consult)
-
-When layer R denies a lineage used for an ATSAM session:
-
-- Existing sessions MUST fail closed for further origination toward that peer (align `ATSAM_SESSION_REQUIRED` / session actor policy — exact opcode owned by Crypto).
-- RDAP MUST NOT report task success after Raven refuse.
-- Re-pair / new lineage required; no automatic session heal after revoke (RAVEN non-goal).
-
-## G5.5 O6 harness expectations (docs / tests later)
-
-| Case | Expected |
-|---|---|
-| Peer in `revocations_file` only | RDAP reject signed HTTP + refuse ATSAM ask; Raven may still have device authorized |
-| RVDR1 applied covering peer device; address not in file | RDAP effective deny + Raven fail-closed; harness asserts both |
-| Neither | Normal O6 encrypted path |
-| Experimental mailbox | Still non-confidential; revoke policy still applies to task accept if drained into RDAP |
-
-## G5.6 CODEOWNERS / review
-
-- Appendix rides with ADR 0004: Architecture + Identity + Crypto ack.  
-- Future code bridging R→A apply: `@Raven-ASHCO/identity` + `@Raven-ASHCO/rdap` (+ crypto for session close).  
-- Risk class R3 for any revoke-apply wiring.
-
-## G5.7 Open questions for Identity AuthZ Sprint 0
-
-1. Confirm M1 single-device: peer pin Ed25519 ≡ device_ed_pub covered by RVDR1 (no separate identity-key pin in RDAP yet)?  
-2. Should R→A apply also **remove** peer from `trusted_peers` live file, or only deny at verify time? (Recommend: deny at verify; optional UX untrust later.)  
-3. Exhausted-marker / `IDENTITY_REVOKE_EXHAUSTED` — does RDAP inherit namespace fail-closed for that identity address in O6? (Recommend: yes, treat address as A2A-denied while marker active.)
+- `docs/THREAT_MODEL.md`
+- `protocol/SECURITY_ERRATA_RVN1_2026-08-13.md`
+- `node/crates/raven-core/src/ipc.rs` — `EnqueueSealed`, `LanDial`
+- ADR 0003 — IPC peer-cred / services
+- RDAP `team_agents/mesh.py` — experimental plaintext carrier
+- RDAP README — Important integration gap
+- RAVEN README — `ATSAM_SESSION_REQUIRED` / `unsafe-interim`
