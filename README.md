@@ -45,20 +45,21 @@ Two binaries matter:
 
 ---
 
-## Quickstart — one line
+## Install
 
-macOS / Linux:
+Do **not** `curl | bash` `node/scripts/install.sh`. That path is retired and
+fail-closed: it used to clone a personal fork and install debug
+`unsafe-demo-crypto` binaries onto `~/.local/bin`.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/Ahmadreza-Arezehgar/RAVEN/main/node/scripts/install.sh | bash
-```
+Operator install is **release / secure build only**:
 
-then open a new terminal and run **`raven`**.
-First run offers to create your identity; menu **8** is a guided tutorial;
-menu **4** turns this Mac into a receiver ("Listen") that prints incoming
-messages live.
+* [Linux](docs/INSTALL_Linux.md) — `node/scripts/install/linux_systemd_user.sh`
+* [macOS](docs/INSTALL_macOS.md) — `node/scripts/install/macos_launchd.sh`
+* [Windows](docs/INSTALL_Windows.md)
 
-Manual build instead? See [Build](#build).
+Manual build: see [Build](#build). After `ash` / `raven` is on `PATH`, first
+run offers to create your identity; menu **8** is a guided tutorial; menu
+**4** is node policy / listen.
 
 ### The interactive menu
 

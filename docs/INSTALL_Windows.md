@@ -2,6 +2,9 @@
 
 Also see [`node/WINDOWS.md`](../node/WINDOWS.md) and [`node/scripts/install/WINDOWS_SERVICE.md`](../node/scripts/install/WINDOWS_SERVICE.md).
 
+Unix `node/scripts/install.sh` is **not** an installer (fail-closed). It never
+was a Windows path. Use the release-build steps below.
+
 ## Native build
 
 ```powershell

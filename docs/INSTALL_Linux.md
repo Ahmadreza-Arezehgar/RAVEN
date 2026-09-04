@@ -1,5 +1,10 @@
 # Install Raven Serverless (Linux)
 
+`node/scripts/install.sh` is **not** a production installer. It fails closed
+and does not put binaries on `PATH`. Use the release-build steps below
+(`scripts/install/linux_systemd_user.sh`). Do not `curl | bash` a convenience
+script.
+
 ## From source
 
 ```bash
