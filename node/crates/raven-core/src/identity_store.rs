@@ -8,7 +8,8 @@
 //! - locked-file mode is an explicit lab/CI override only (debug builds).
 //!   First-install and unmarked-seed load require proven platform absence
 //!   (`Ok(None)`). macOS `SecureStore` (locked/denied Keychain) is Continuity.
-//!   Linux may treat `secret-service connect:` (no session bus) as no store.
+//!   Linux debug/lab may treat `secret-service connect:` / `ServiceUnknown`
+//!   (no session bus or no `org.freedesktop.secrets`) as no store.
 //!
 //! Legacy plaintext `identity.seed` (exactly 32 raw bytes) is migrated on first load.
 
@@ -942,19 +943,40 @@ fn refuse_locked_file_if_keychain_not_proven_absent(
     locked_file_after_keychain_probe(keychain_get(account))
 }
 
-/// Headless Linux CI has no session bus. `secret-service connect:` is the
+/// Headless Linux CI has no session bus and no `org.freedesktop.secrets`.
+/// `secret-service connect:` (including zbus `ServiceUnknown`) is the
 /// documented lab-only exception ("no provider"), not "item exists but
-/// locked". This soft path is debug + `RAVEN_IDENTITY_BACKEND=locked-file`
-/// only. Locked/search/get failures stay Continuity.
+/// locked". This soft path is debug only. Locked/search/get stay Continuity.
 ///
-/// Lab CI uses proven-absent only plus this connect-fail exception. It is
-/// **not Release-safe** to treat other `SecureStore` errors as absence.
+/// Creating or loading a locked-file identity still requires explicit
+/// `RAVEN_IDENTITY_BACKEND=locked-file`. It is **not Release-safe** to treat
+/// other `SecureStore` errors as absence.
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 fn linux_secret_service_is_session_bus_missing(err: &IdentityStoreError) -> bool {
     matches!(
         err,
-        IdentityStoreError::SecureStore(msg) if msg.starts_with("secret-service connect:")
+        IdentityStoreError::SecureStore(msg)
+            if msg.starts_with("secret-service connect:")
+                || msg.contains("ServiceUnknown")
     )
+}
+
+/// Test/lab helper: request the debug locked-file identity backend.
+///
+/// Headless Linux has no Secret Service. Tests must not assume the default
+/// GNU/Linux backend works. Once set, the env stays set so parallel tests
+/// cannot race on process env (do not clear a CI job override).
+#[cfg(test)]
+pub(crate) fn test_enable_locked_file_identity_backend() {
+    use std::sync::Once;
+    static ENABLE: Once = Once::new();
+    ENABLE.call_once(|| {
+        if locked_file_backend_requested() {
+            return;
+        }
+        // SAFETY: test-only process env for the documented lab/CI backend.
+        unsafe { std::env::set_var("RAVEN_IDENTITY_BACKEND", "locked-file") }
+    });
 }
 
 /// Same unmarked locked-file probe as macOS, plus one lab-only exception:
@@ -1126,7 +1148,19 @@ fn load_seed_with_migrate(
                 "identity backend marker is not valid on GNU/Linux",
             ));
         }
-        if let Some(seed) = secret_service_get(&account)? {
+        // Debug/lab only: no session bus / ServiceUnknown is "no store", not
+        // Continuity. Release still fail-closes on connect. Locked/search/get
+        // stay hard errors. Locked-file create/load still needs the explicit env.
+        let existing = match secret_service_get(&account) {
+            Ok(seed) => seed,
+            Err(e)
+                if cfg!(debug_assertions) && linux_secret_service_is_session_bus_missing(&e) =>
+            {
+                None
+            }
+            Err(e) => return Err(e),
+        };
+        if let Some(seed) = existing {
             reconcile_secure_and_raw_seed(&path, &seed)?;
             return Ok(Some((seed, IdentityStoreBackend::LinuxSecretService)));
         }
@@ -1364,6 +1398,7 @@ mod tests {
 
     #[test]
     fn create_load_round_trip() {
+        test_enable_locked_file_identity_backend();
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
         let (id, backend) = load_or_create_identity(dir).expect("create");
@@ -1384,6 +1419,7 @@ mod tests {
 
     #[test]
     fn migrates_legacy_plaintext_seed_file() {
+        test_enable_locked_file_identity_backend();
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
         std::fs::create_dir_all(dir).unwrap();
@@ -1500,6 +1536,7 @@ mod tests {
 
     #[test]
     fn store_status_reports_backend_without_secrets() {
+        test_enable_locked_file_identity_backend();
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
         let _ = load_or_create_identity(dir).unwrap();
@@ -1541,6 +1578,7 @@ mod tests {
 
     #[test]
     fn binding_tamper_refuses_the_original_protected_seed() {
+        test_enable_locked_file_identity_backend();
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
         let (id, _) = load_or_create_identity(dir).unwrap();
@@ -1604,16 +1642,24 @@ mod tests {
             "secret-service connect: zbus error: I/O error: No such file or directory (os error 2)"
                 .into(),
         );
+        let service_unknown = IdentityStoreError::SecureStore(
+            "secret-service connect: zbus error: org.freedesktop.DBus.Error.ServiceUnknown: \
+             The name org.freedesktop.secrets was not provided by any .service files"
+                .into(),
+        );
         let locked = IdentityStoreError::SecureStore("secret-service identity item locked".into());
         let search = IdentityStoreError::SecureStore("secret-service search: denied".into());
         let get = IdentityStoreError::SecureStore("secret-service get: denied".into());
         assert!(linux_secret_service_is_session_bus_missing(&connect));
+        assert!(linux_secret_service_is_session_bus_missing(&service_unknown));
         assert!(!linux_secret_service_is_session_bus_missing(&locked));
         assert!(!linux_secret_service_is_session_bus_missing(&search));
         assert!(!linux_secret_service_is_session_bus_missing(&get));
         locked_file_after_secret_service_probe(Ok(None)).expect("empty collection is absence");
         locked_file_after_secret_service_probe(Err(connect))
             .expect("session-bus connect-fail is the lab-only exception");
+        locked_file_after_secret_service_probe(Err(service_unknown))
+            .expect("ServiceUnknown is the same no-provider exception");
         for err in [locked, search, get] {
             let mapped = locked_file_after_secret_service_probe(Err(err))
                 .expect_err("locked/search/get is not absence");
@@ -1692,22 +1738,9 @@ mod tests {
         test_cleanup(&dir);
     }
 
-    static LOCKED_FILE_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    struct LockedFileEnvGuard;
-    impl Drop for LockedFileEnvGuard {
-        fn drop(&mut self) {
-            // SAFETY: test-only, held under LOCKED_FILE_ENV.
-            unsafe { std::env::remove_var("RAVEN_IDENTITY_BACKEND") }
-        }
-    }
-
     #[test]
     fn locked_file_first_install_when_platform_store_unavailable() {
-        let _lock = LOCKED_FILE_ENV.lock().expect("env lock");
-        // SAFETY: test-only, serialized by LOCKED_FILE_ENV.
-        unsafe { std::env::set_var("RAVEN_IDENTITY_BACKEND", "locked-file") }
-        let _clear = LockedFileEnvGuard;
+        test_enable_locked_file_identity_backend();
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
         let (id, backend) = load_or_create_identity(dir).expect("locked-file first install");
@@ -1720,6 +1753,7 @@ mod tests {
     #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn locked_file_permissions_are_0600_when_used() {
+        test_enable_locked_file_identity_backend();
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
         let id = Identity::generate();
