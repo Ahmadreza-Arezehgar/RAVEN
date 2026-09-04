@@ -1,0 +1,203 @@
+   Compiling version_check v0.9.5
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.47
+   Compiling typenum v1.20.1
+   Compiling libc v0.2.189
+   Compiling generic-array v0.14.7
+   Compiling cfg-if v1.0.4
+   Compiling autocfg v1.5.1
+   Compiling syn v2.0.119
+   Compiling subtle v2.6.1
+   Compiling cpufeatures v0.2.17
+   Compiling serde_core v1.0.229
+   Compiling syn v3.0.3
+   Compiling num-traits v0.2.19
+   Compiling cmov v0.5.4
+   Compiling syn v1.0.109
+   Compiling getrandom v0.2.17
+   Compiling ctutils v0.4.2
+   Compiling rand_core v0.6.4
+   Compiling crypto-common v0.1.7
+   Compiling block-buffer v0.10.4
+   Compiling semver v1.0.28
+   Compiling opaque-debug v0.3.1
+   Compiling rustc_version v0.4.1
+   Compiling digest v0.10.7
+   Compiling memchr v2.8.3
+   Compiling futures-core v0.3.34
+   Compiling inout v0.1.4
+   Compiling pin-project-lite v0.2.17
+   Compiling futures-io v0.3.34
+   Compiling hashbrown v0.17.1
+   Compiling serde v1.0.229
+   Compiling zeroize_derive v1.5.0
+   Compiling equivalent v1.0.2
+   Compiling indexmap v2.14.0
+   Compiling zeroize v1.9.0
+   Compiling hybrid-array v0.4.14
+   Compiling cipher v0.4.4
+   Compiling universal-hash v0.5.1
+   Compiling futures-sink v0.3.34
+   Compiling toml_datetime v0.6.11
+   Compiling zerocopy v0.8.56
+   Compiling io-lifetimes v1.0.11
+   Compiling slab v0.4.12
+   Compiling rand_core v0.10.1
+   Compiling crossbeam-utils v0.8.22
+   Compiling winnow v0.5.40
+   Compiling crypto-common v0.2.2
+   Compiling futures-channel v0.3.34
+   Compiling serde_derive v1.0.229
+   Compiling futures-macro v0.3.34
+   Compiling curve25519-dalek v4.1.3
+   Compiling toml_edit v0.19.15
+   Compiling num-integer v0.1.47
+   Compiling memoffset v0.6.5
+   Compiling polling v2.8.0
+   Compiling futures-task v0.3.34
+   Compiling shlex v2.0.1
+   Compiling bitflags v1.3.2
+   Compiling once_cell v1.21.4
+   Compiling rustix v0.37.28
+   Compiling find-msvc-tools v0.1.10
+   Compiling cc v1.4.2
+   Compiling sha2 v0.10.9
+   Compiling futures-util v0.3.34
+   Compiling proc-macro-crate v1.3.1
+   Compiling toml v0.5.11
+   Compiling enumflags2_derive v0.6.4
+   Compiling block-buffer v0.12.1
+   Compiling curve25519-dalek-derive v0.1.1
+   Compiling socket2 v0.4.10
+   Compiling digest v0.9.0
+   Compiling async-io v1.13.0
+   Compiling pkg-config v0.3.33
+   Compiling const-oid v0.10.2
+   Compiling log v0.4.33
+   Compiling event-listener v2.5.3
+   Compiling vcpkg v0.2.15
+   Compiling raven-sqlcipher-profile-guard v0.1.0 (/workspace/node/third_party/raven-sqlcipher-profile-guard)
+   Compiling linux-raw-sys v0.3.8
+   Compiling fastrand v1.9.0
+   Compiling waker-fn v1.2.0
+   Compiling parking v2.2.1
+   Compiling futures-lite v1.13.0
+   Compiling libsqlite3-sys v0.38.2+raven.sqlcipher.4.17.0 (/workspace/node/third_party/libsqlite3-sys-raven)
+   Compiling async-lock v2.8.0
+   Compiling digest v0.11.3
+   Compiling futures-executor v0.3.34
+   Compiling ppv-lite86 v0.2.21
+   Compiling enumflags2 v0.6.4
+   Compiling proc-macro-crate v0.1.5
+   Compiling concurrent-queue v2.5.0
+   Compiling zvariant_derive v2.10.0
+   Compiling num-bigint v0.4.8
+   Compiling polyval v0.6.2
+   Compiling aead v0.5.2
+   Compiling crypto-mac v0.11.0
+   Compiling cipher v0.3.0
+   Compiling keccak v0.2.1
+   Compiling byteorder v1.5.0
+   Compiling zmij v1.0.23
+   Compiling static_assertions v1.1.0
+   Compiling bitflags v2.13.1
+   Compiling zvariant v2.10.0
+   Compiling num-rational v0.4.2
+   Compiling hmac v0.11.0
+   Compiling ghash v0.5.1
+   Compiling nix v0.22.3
+   Compiling zbus_macros v1.9.3
+   Compiling rand_chacha v0.3.1
+   Compiling futures v0.3.34
+   Compiling nb-connect v1.2.0
+   Compiling num-iter v0.1.46
+   Compiling derivative v2.2.0
+   Compiling poly1305 v0.8.0
+   Compiling chacha20 v0.9.1
+   Compiling ctr v0.9.2
+   Compiling aes v0.8.4
+   Compiling serde_repr v0.1.21
+   Compiling snow v0.9.6
+   Compiling num-complex v0.4.6
+   Compiling block-buffer v0.9.0
+   Compiling signature v2.2.0
+   Compiling serde_json v1.0.151
+   Compiling block-padding v0.2.1
+   Compiling thiserror v2.0.20
+   Compiling getrandom v0.4.3
+   Compiling rustix v1.1.4
+   Compiling scoped-tls v1.0.1
+   Compiling zbus v1.9.3
+   Compiling block-modes v0.8.1
+   Compiling ed25519 v2.2.3
+   Compiling sha2 v0.9.9
+   Compiling num v0.4.3
+   Compiling aes-gcm v0.10.3
+   Compiling chacha20poly1305 v0.10.1
+   Compiling rand v0.8.7
+   Compiling hkdf v0.11.0
+   Compiling sha3 v0.11.0
+   Compiling aes v0.7.5
+   Compiling kem v0.3.0
+   Compiling module-lattice v0.2.3
+   Compiling thiserror-impl v2.0.20
+   Compiling hmac v0.12.1
+   Compiling blake2 v0.10.6
+   Compiling fallible-streaming-iterator v0.1.9
+   Compiling fallible-iterator v0.3.0
+   Compiling itoa v1.0.18
+   Compiling lazy_static v1.5.0
+   Compiling linux-raw-sys v0.12.1
+   Compiling raven-core v0.1.0 (/workspace/node/crates/raven-core)
+   Compiling smallvec v1.15.2
+   Compiling secret-service v2.0.2
+   Compiling hkdf v0.12.4
+   Compiling ml-kem v0.3.2
+   Compiling ed25519-dalek v2.2.0
+   Compiling x25519-dalek v2.0.1
+   Compiling fastrand v2.5.0
+   Compiling hex v0.4.3
+   Compiling sponge-cursor v0.1.0
+   Compiling bech32 v0.11.1
+   Compiling base64 v0.22.1
+   Compiling sha3 v0.12.0
+   Compiling tempfile v3.27.0
+   Compiling rusqlite v0.40.2
+    Finished `release` profile [optimized] target(s) in 50.46s
+     Running tests/network_sim_1000.rs (target/release/deps/network_sim_1000-cab7683a5a5632e7)
+
+running 13 tests
+network_sim_1000 scenario=two_transport_bridge seed=268435474 events=15/15 contacts=6 attempts=9 transfers=9 accepted=6 duplicates=3 packet_loss=0 contact_loss=0 ui=1 ack_materialized=1 ack_transition=1 mutations_rejected=0 restarts=0 peak_event=6 peak_node_queue=2 peak_node_seen=2 peak_total_queue=8 peak_queue_bytes=4016 peak_inflight_bytes=1004 peak_offline=0
+test bridge_crosses_two_transport_classes_with_exact_bytes ... ok
+network_sim_1000 scenario=bounded_queue_pressure seed=268435473 events=29/29 contacts=5 attempts=24 transfers=24 accepted=12 duplicates=10 packet_loss=0 contact_loss=0 ui=1 ack_materialized=1 ack_transition=1 mutations_rejected=3 restarts=0 peak_event=9 peak_node_queue=8 peak_node_seen=8 peak_total_queue=21 peak_queue_bytes=14078 peak_inflight_bytes=5680 peak_offline=0
+test bounded_queue_pressure_rejects_spam_without_evicting_existing_object ... ok
+network_sim_1000 scenario=duplicate_multipath_storm seed=268435462 events=60/60 contacts=28 attempts=32 transfers=32 accepted=10 duplicates=22 packet_loss=0 contact_loss=0 ui=1 ack_materialized=1 ack_transition=1 mutations_rejected=0 restarts=0 peak_event=30 peak_node_queue=2 peak_node_seen=2 peak_total_queue=12 peak_queue_bytes=6024 peak_inflight_bytes=4016 peak_offline=0
+test duplicate_multipath_storm_delivers_once ... ok
+network_sim_1000 scenario=out_of_order seed=268435463 events=14/14 contacts=3 attempts=11 transfers=11 accepted=2 duplicates=9 packet_loss=0 contact_loss=0 ui=1 ack_materialized=1 ack_transition=1 mutations_rejected=0 restarts=0 peak_event=7 peak_node_queue=2 peak_node_seen=2 peak_total_queue=4 peak_queue_bytes=2008 peak_inflight_bytes=4260 peak_offline=0
+test out_of_order_arrivals_remain_idempotent ... ok
+network_sim_1000 scenario=connected_baseline seed=268435457 events=44/44 contacts=20 attempts=24 transfers=24 accepted=20 duplicates=4 packet_loss=0 contact_loss=0 ui=1 ack_materialized=1 ack_transition=1 mutations_rejected=0 restarts=0 peak_event=20 peak_node_queue=2 peak_node_seen=2 peak_total_queue=22 peak_queue_bytes=11044 peak_inflight_bytes=1004 peak_offline=0
+test connected_baseline_delivers_and_acks_across_1_000_nodes ... ok
+network_sim_1000 scenario=malicious_relays seed=268435465 events=71/71 contacts=17 attempts=54 transfers=54 accepted=29 duplicates=25 packet_loss=0 contact_loss=0 ui=1 ack_materialized=1 ack_transition=1 mutations_rejected=2 restarts=0 peak_event=20 peak_node_queue=5 peak_node_seen=5 peak_total_queue=32 peak_queue_bytes=15232 peak_inflight_bytes=5020 peak_offline=0
+test malicious_relays_cannot_mutate_or_false_ack ... ok
+network_sim_1000 scenario=half_node_loss seed=268435459 events=684/684 contacts=40 attempts=44 transfers=44 accepted=40 duplicates=4 packet_loss=0 contact_loss=0 ui=1 ack_materialized=1 ack_transition=1 mutations_rejected=0 restarts=0 peak_event=640 peak_node_queue=2 peak_node_seen=2 peak_total_queue=42 peak_queue_bytes=21084 peak_inflight_bytes=1004 peak_offline=500
+test half_node_loss_preserves_a_seeded_temporal_path ... ok
+network_sim_1000 scenario=restart_reconstruction seed=268435464 events=12/12 contacts=4 attempts=6 transfers=6 accepted=4 duplicates=2 packet_loss=0 contact_loss=0 ui=1 ack_materialized=1 ack_transition=1 mutations_rejected=0 restarts=2 peak_event=6 peak_node_queue=2 peak_node_seen=2 peak_total_queue=6 peak_queue_bytes=3012 peak_inflight_bytes=1004 peak_offline=0
+test restart_reconstructs_persisted_opaque_state ... ok
+network_sim_1000 scenario=loss_latency_reordering seed=268435458 events=94/94 contacts=66 attempts=45 transfers=28 accepted=2 duplicates=26 packet_loss=17 contact_loss=21 ui=1 ack_materialized=1 ack_transition=1 mutations_rejected=0 restarts=0 peak_event=68 peak_node_queue=2 peak_node_seen=2 peak_total_queue=4 peak_queue_bytes=2008 peak_inflight_bytes=4554 peak_offline=0
+network_sim_1000 scenario=non_simultaneous_online seed=268435461 events=14/14 contacts=4 attempts=6 transfers=6 accepted=4 duplicates=2 packet_loss=0 contact_loss=0 ui=1 ack_materialized=1 ack_transition=1 mutations_rejected=0 restarts=0 peak_event=8 peak_node_queue=2 peak_node_seen=2 peak_total_queue=6 peak_queue_bytes=3012 peak_inflight_bytes=1004 peak_offline=2
+test sender_and_recipient_need_not_be_simultaneously_online ... ok
+network_sim_1000 scenario=partition_then_heal seed=268435460 events=25/25 contacts=12 attempts=11 transfers=11 accepted=8 duplicates=3 packet_loss=0 contact_loss=0 ui=1 ack_materialized=1 ack_transition=1 mutations_rejected=0 restarts=0 peak_event=14 peak_node_queue=2 peak_node_seen=2 peak_total_queue=10 peak_queue_bytes=5020 peak_inflight_bytes=1004 peak_offline=0
+test partition_then_heal_has_no_premature_ack ... ok
+network_sim_1000 scenario=ttl_expiry seed=268435472 events=19/19 contacts=9 attempts=9 transfers=9 accepted=9 duplicates=0 packet_loss=0 contact_loss=0 ui=0 ack_materialized=0 ack_transition=0 mutations_rejected=0 restarts=0 peak_event=10 peak_node_queue=1 peak_node_seen=1 peak_total_queue=10 peak_queue_bytes=7100 peak_inflight_bytes=710 peak_offline=1
+test ttl_expiry_cleans_all_replica_and_dedup_state ... ok
+network_sim_1000 scenario=loss_latency_reordering seed=268435458 events=94/94 contacts=66 attempts=45 transfers=28 accepted=2 duplicates=26 packet_loss=17 contact_loss=21 ui=1 ack_materialized=1 ack_transition=1 mutations_rejected=0 restarts=0 peak_event=68 peak_node_queue=2 peak_node_seen=2 peak_total_queue=4 peak_queue_bytes=2008 peak_inflight_bytes=4554 peak_offline=0
+test random_loss_latency_reordering_and_backoff_are_reproducible ... ok
+network_sim_1000 scenario=loss_latency_reordering seed=1592590337 events=93/93 contacts=66 attempts=49 transfers=27 accepted=2 duplicates=25 packet_loss=22 contact_loss=22 ui=1 ack_materialized=1 ack_transition=1 mutations_rejected=0 restarts=0 peak_event=68 peak_node_queue=2 peak_node_seen=2 peak_total_queue=4 peak_queue_bytes=2008 peak_inflight_bytes=4260 peak_offline=0
+network_sim_1000 scenario=loss_latency_reordering seed=1592590338 events=94/94 contacts=66 attempts=47 transfers=28 accepted=2 duplicates=26 packet_loss=19 contact_loss=23 ui=1 ack_materialized=1 ack_transition=1 mutations_rejected=0 restarts=0 peak_event=68 peak_node_queue=2 peak_node_seen=2 peak_total_queue=4 peak_queue_bytes=2008 peak_inflight_bytes=4260 peak_offline=0
+network_sim_1000 scenario=loss_latency_reordering seed=1592590339 events=92/92 contacts=66 attempts=44 transfers=26 accepted=2 duplicates=24 packet_loss=18 contact_loss=29 ui=1 ack_materialized=1 ack_transition=1 mutations_rejected=0 restarts=0 peak_event=69 peak_node_queue=2 peak_node_seen=2 peak_total_queue=4 peak_queue_bytes=2008 peak_inflight_bytes=5264 peak_offline=0
+test several_fixed_seeds_retain_the_same_invariants ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+exit=0

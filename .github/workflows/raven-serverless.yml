@@ -610,6 +610,18 @@ jobs:
           cargo test -p raven-core --lib lan_
           cargo build -p raven-swarm -p raven-node
           cargo build --release -p raven-core -p raven-node -p ash
+      # Named reliability gates (Sprint 0 evidence bar). reliability_10k is
+      # #[ignore] and is NOT run by the umbrella cargo test above.
+      # reliability_10k on macOS is QUEUE DURABILITY ONLY — not a path proof.
+      # Path proof: named bridge_v1 (this job) and/or ash_menu_smoke (CLI DX #16).
+      - name: 10,000-message queue reliability gate
+        run: |
+          set -euo pipefail
+          cargo test -p raven-core --test reliability_10k -- --ignored
+      - name: bridge_v1 (pure Rust)
+        run: |
+          set -euo pipefail
+          cargo test -p raven-core --test bridge_v1
       - name: libp2p swarm smoke
         run: ./scripts/libp2p_swarm_smoke.sh
       - name: bootstrap manual-peer smoke
@@ -630,8 +642,26 @@ jobs:
       - name: test raven-core + ash (no bash smoke scripts)
         run: |
           cargo test -p raven-core -p ash -p raven-node
-          cargo build -p raven-node -p raven-swarm
+          cargo build -p raven-node -p raven-swarm -p ash
           cargo build --release -p raven-core -p raven-node -p ash
+      # Named reliability gates (Sprint 0 evidence bar). cargo, not bash.
+      # reliability_10k on Windows is QUEUE DURABILITY ONLY — not a path proof.
+      # Path proof: named bridge_v1 + ash_doctor_send_smoke.ps1 (this job).
+      - name: 10,000-message queue reliability gate
+        run: cargo test -p raven-core --test reliability_10k -- --ignored
+      - name: bridge_v1 (pure Rust)
+        run: cargo test -p raven-core --test bridge_v1
+      - name: ash doctor→send smoke (Windows terminal path)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $script = 'scripts/ash_doctor_send_smoke.ps1'
+          if (-not (Test-Path -LiteralPath $script)) {
+            Write-Error "$script missing — refusing silent skip"
+            exit 1
+          }
+          & $script
+          if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: PowerShell install script syntax check
         shell: pwsh
         run: |

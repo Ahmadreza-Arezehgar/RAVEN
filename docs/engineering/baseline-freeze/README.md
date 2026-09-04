@@ -39,6 +39,8 @@ Feature PRs that touch R2/R3 surfaces **must not** land until the Sprint 0 check
 | [`apple-tree-gap.md`](apple-tree-gap.md) | iOS/watchOS tree gap (exists on `main`) |
 | [`windows-tree-gap.md`](windows-tree-gap.md) | Windows tree gap (exists on `main`) |
 | [`docs/network/raven-swarm-connectivity-matrix.md`](../../network/raven-swarm-connectivity-matrix.md) | Sprint 0 raven-swarm connectivity / relay / NAT inventory; §0 founder direct-Internet honesty |
+| [`perf-baseline-2026-09-04.md`](perf-baseline-2026-09-04.md) | Sprint 0 perf harvest (Role #19 SRE Perf); soft budgets draft |
+| [`reliability-evidence-bar.md`](reliability-evidence-bar.md) | Sprint 0 terminal reliability tiers (Proven / substitute / Blocked); Role #19 SRE Perf; CLI DX operator appendix. **`reliability_10k` on macOS/Windows = queue durability only, not a path proof.** One-pager `terminal-path-reliability.md` lives in [PR #29](https://github.com/Raven-ASHCO/RAVEN/pull/29) (not folded into this tree). |
 | Live CODEOWNERS | [`.github/CODEOWNERS`](../../../.github/CODEOWNERS) (RAVEN); RDAP repo `.github/CODEOWNERS` |
 
 ### Sprint 0 architecture drafts (#1)
