@@ -222,4 +222,5 @@ Fake-integration watch: any PR that wires RDAP tasks to production raven-node AT
 8. **B8 Phase 1+ PARKED** (Windows terminal > iOS landing).
 9. **SRE Perf (#19):** Performance baseline remains #19; harvest in flight — docs-only ≠ Proven.
 10. **Apple/Windows trees:** B5 remains; B8 parked. **Manager + SRE:** `perf` team or fold #19 (B6).
-11. **Path A locked:** localhost reservation only; do **not** call mesh relay reliable. Continue **B+C+terminal**.
+11. **Path A locked:** localhost reservation only; do **not** call mesh relay reliable.
+12. **Path B locked:** opaque custody + `ENDPOINT_ACK_ONLY` proven (software); not flood-proof / not Byzantine-safe. Continue **C+terminal**. Prefer executed green/red citations.

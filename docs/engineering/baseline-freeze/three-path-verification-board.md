@@ -67,7 +67,7 @@ Terminal Win / macOS / Linux reliability **and** this three-path matrix sit **ab
 
 ---
 
-## Paths (none Proven on this board)
+## Paths (honest cells — Path A locked; Path B software-scoped only)
 
 | Path | Honest status | What exists (not Proven) | What would Proven require |
 |------|---------------|--------------------------|---------------------------|
