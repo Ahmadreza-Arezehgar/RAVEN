@@ -110,9 +110,9 @@ jobs:
           python3 scripts/audit_active_dependencies.py
       - name: test raven-core + ash
         run: cargo test -p raven-core -p ash -p raven-node
-      # CLI DX: Linux install→doctor→menu/send path (not cargo-test-only).
+      # CLI DX: menu/CLI smoke only (not Keychain / launchd / Gatekeeper).
+      # Must stay on script-default target/debug/ash — locked-file is refused in Release.
       # Script uses RAVEN_IDENTITY_BACKEND=locked-file and ephemeral mktemp dirs.
-      # Builds target/debug/ash if cargo test did not emit the CLI binary.
       - name: ash menu smoke
         run: ./scripts/ash_menu_smoke.sh
       - name: LAN handshake KAT (shared vectors, no live network)
@@ -615,9 +615,9 @@ jobs:
           cargo test -p raven-core --lib lan_
           cargo build -p raven-swarm -p raven-node
           cargo build --release -p raven-core -p raven-node -p ash
-      # CLI DX: install→doctor→menu/send path (not cargo-test-only).
-      # locked-file backend avoids Keychain ACL hangs in CI — not a production Keychain claim.
-      # Builds target/debug/ash if prior cargo test/build did not emit the CLI binary.
+      # CLI DX: menu/CLI smoke only (not Keychain / launchd / Gatekeeper).
+      # Must stay on script-default target/debug/ash — locked-file is refused in Release.
+      # locked-file avoids Keychain ACL hangs in CI — not a production Keychain claim.
       - name: ash menu smoke
         run: ./scripts/ash_menu_smoke.sh
       # Named reliability gates (Sprint 0 evidence bar). reliability_10k is

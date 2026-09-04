@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Non-interactive smoke for ash menus 1–4 + q (first-run + empty contacts).
 # Safe: ephemeral mktemp data dirs only. No secrets.
+# Must use target/debug/ash: RAVEN_IDENTITY_BACKEND=locked-file is refused in Release.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

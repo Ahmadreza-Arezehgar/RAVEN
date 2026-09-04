@@ -54,3 +54,13 @@ bash scripts/final_serverless_proof.sh
 ## Identity seed
 
 macOS stores the node seed in the **login Keychain** (service `app.raven.node.identity`). Legacy plaintext `identity.seed` files are migrated and removed on first load. See [`IDENTITY_SEED_STORAGE.md`](IDENTITY_SEED_STORAGE.md).
+
+## CI menu smoke is not an install proof
+
+GitHub Actions `rust-linux` and `rust-macos` run `node/scripts/ash_menu_smoke.sh` against **debug** `target/debug/ash` only. That is **menu/CLI smoke** (init → doctor → contacts → send). It does **not** prove:
+
+- Keychain identity (Option A default above remains the login Keychain)
+- launchd service install (`scripts/install/macos_launchd.sh`)
+- Gatekeeper-clean or notarized install (still unsigned; notarization remains `BLOCKED_HUMAN`)
+
+CI and lab scripts force `RAVEN_IDENTITY_BACKEND=locked-file` so ash and raven-node share an ephemeral `0600` seed file under `mktemp` `--data-dir` (avoids Keychain ACL hangs). `locked-file` is refused in Release. Operators must **not** set that override for a normal Keychain install.
