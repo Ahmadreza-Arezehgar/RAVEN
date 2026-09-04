@@ -898,13 +898,46 @@ fn platform_set_key(data_dir: &Path, key: &[u8; 32]) -> Result<(), ChatHistoryEr
     Ok(())
 }
 
+#[cfg(all(test, target_os = "linux", target_env = "gnu"))]
+fn linux_secret_service_connect_failed(err: &ChatHistoryError) -> bool {
+    matches!(
+        err,
+        ChatHistoryError::ProtectedStoreUnavailable(msg)
+            if msg.contains("secret-service connection failed:")
+                || msg.contains("ServiceUnknown")
+    )
+}
+
+/// Headless rust-linux has no session bus. This is **not** a production
+/// 0600-key fallback — `cfg(test)` only, per-`data_dir` derived key so
+/// lan_dispatch can exercise history/stage without org.freedesktop.secrets.
+#[cfg(all(test, target_os = "linux", target_env = "gnu"))]
+fn test_lab_history_key(data_dir: &Path) -> Zeroizing<[u8; 32]> {
+    let canonical = std::fs::canonicalize(data_dir).unwrap_or_else(|_| data_dir.to_path_buf());
+    let mut hasher = Sha256::new();
+    hasher.update(b"raven/chat-history/test-lab-key/v1");
+    hasher.update(canonical.to_string_lossy().as_bytes());
+    let digest = hasher.finalize();
+    let mut key = Zeroizing::new([0u8; 32]);
+    key.copy_from_slice(&digest);
+    key
+}
+
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 fn load_platform_key(
     data_dir: &Path,
     create: bool,
 ) -> Result<Zeroizing<[u8; 32]>, ChatHistoryError> {
-    if let Some(key) = platform_get_key(data_dir)? {
-        return Ok(key);
+    match platform_get_key(data_dir) {
+        Ok(Some(key)) => return Ok(key),
+        Ok(None) => {}
+        Err(e) => {
+            #[cfg(all(test, target_os = "linux", target_env = "gnu"))]
+            if linux_secret_service_connect_failed(&e) {
+                return Ok(test_lab_history_key(data_dir));
+            }
+            return Err(e);
+        }
     }
     if !create {
         return Err(ChatHistoryError::MissingProtectedKey);
