@@ -2,15 +2,14 @@
 //!
 //! - **CI / raven-node:** `TransportKind::MockBle` — TCP length-prefix frames
 //!   carrying the same packed `RavenEnvelopeV1` (see `bridge_run`).
-//! - **macOS / iOS hardware:** platform GATT path selected when
-//!   `prefer_platform_gatt` is true. Headless CoreBluetooth radio remains
-//!   BLOCKED_HARDWARE; this module strengthens framing + validation so a
-//!   future GATT driver can drop in without changing envelope rules.
-//! - **iOS product:** `BLEMeshEngine` (+ `RavenBleRvn1Carrier`) writes raw
-//!   `RVN1` bytes over existing GATT message characteristics behind
-//!   `FeatureFlag.ravenEnvelopeV1`.
+//! - **Live radio:** not implemented here. Headless CoreBluetooth / BlueZ
+//!   remain BLOCKED_HARDWARE. `prefer_platform_gatt` is a software path flag
+//!   only; it does not open a radio. iOS GATT (`BLEMeshEngine` /
+//!   `ios-native`) is unverified in this repo (no Swift sources on `main`).
+//! - **RBF1:** GATT chunk framing (`RBF1` magic) is **not** implemented.
+//!   See `protocol/RAVEN_BLE_FRAMING_V1.md`. Held for Sprint 1.
 //!
-//! Mock TCP is the default for CI. Platform GATT never opens sockets here.
+//! Mock TCP is the default for CI. These helpers are mock_ble only.
 
 use crate::envelope::Envelope;
 use crate::transport::TransportKind;
@@ -20,7 +19,7 @@ use crate::transport::TransportKind;
 pub enum BleAdapterKind {
     /// Hardware-free TCP stand-in (CI / demos).
     MockTcp,
-    /// Platform GATT / mesh engine (iOS BLEMeshEngine, future desktop).
+    /// Software path flag for a future platform GATT driver (not wired; no radio).
     PlatformGatt,
 }
 
@@ -51,7 +50,7 @@ pub fn validate_opaque_rvn1(packed: &[u8]) -> bool {
     Envelope::unpack(packed).is_some()
 }
 
-/// Prefer mock BLE in CI; platform GATT when explicitly requested.
+/// Prefer mock BLE in CI; PlatformGatt is a software path flag only (no radio).
 pub fn select_ble_adapter(prefer_platform_gatt: bool) -> BleAdapterKind {
     if prefer_platform_gatt {
         BleAdapterKind::PlatformGatt
@@ -60,8 +59,9 @@ pub fn select_ble_adapter(prefer_platform_gatt: bool) -> BleAdapterKind {
     }
 }
 
-/// Length-prefix frame used by mock-BLE TCP and by GATT write chunking helpers.
-/// Format: `u32 BE length || payload` (same as internet/TCP peer framing).
+/// mock_ble TCP helper only: `u32 BE len || envelope`.
+/// Not GATT write chunking. Real GATT RBF1 framing is not implemented
+/// (see `protocol/RAVEN_BLE_FRAMING_V1.md`).
 pub fn ble_frame_encode(payload: &[u8]) -> Result<Vec<u8>, String> {
     if !validate_opaque_rvn1(payload) {
         return Err("BLE_NOT_RVN1".into());
@@ -75,7 +75,8 @@ pub fn ble_frame_encode(payload: &[u8]) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-/// Decode one length-prefixed BLE/mock frame. Returns (payload, bytes_consumed).
+/// Decode one mock_ble TCP frame (`u32 BE len || envelope`).
+/// Not RBF1 / GATT reassembly. Returns (payload, bytes_consumed).
 pub fn ble_frame_decode(buf: &[u8]) -> Result<Option<(Vec<u8>, usize)>, String> {
     if buf.len() < 4 {
         return Ok(None);

@@ -1219,46 +1219,50 @@ Implement one router over multiple transport adapters.
 
 # 36. Bluetooth Transport
 
-* [ ] Use Bluetooth only as a transport.
-* [ ] Keep Raven E2EE active over Bluetooth.
-* [ ] Do not treat physical proximity as trust.
-* [ ] Do not use Bluetooth MAC addresses as user identity.
-* [ ] Use privacy-preserving peer advertisements.
-* [ ] Avoid broadcasting stable public identity keys.
-* [ ] Use rotating discovery tokens where designed.
-* [ ] Authenticate peers after discovery.
-* [ ] Define BLE service identifiers.
-* [ ] Define characteristic identifiers.
-* [ ] Define maximum frame size.
-* [ ] Define fragmentation.
-* [ ] Define reassembly.
-* [ ] Define fragment ordering.
-* [ ] Define fragment integrity.
-* [ ] Define fragment timeout.
-* [ ] Define retry behavior.
-* [ ] Define connection-loss behavior.
-* [ ] Define duplicate-fragment behavior.
-* [ ] Define malformed-fragment behavior.
-* [ ] Define concurrent-peer limits.
-* [ ] Define scanning schedule.
-* [ ] Define advertising schedule.
-* [ ] Minimize battery consumption.
-* [ ] Handle Bluetooth being disabled.
-* [ ] Handle Bluetooth hardware being absent.
-* [ ] Handle permission denial.
-* [ ] Handle intermittent Bluetooth.
-* [ ] Handle recurring iOS disconnects.
-* [ ] Handle Windows Bluetooth differences.
-* [ ] Handle macOS Bluetooth differences.
-* [ ] Handle Linux BlueZ differences.
-* [ ] Test real hardware.
-* [ ] Test BLE direct terminal-to-mobile.
-* [ ] Test BLE mobile-to-terminal.
-* [ ] Test BLE multi-hop where V1 supports it.
-* [ ] Test BLE-to-Internet Bridge.
-* [ ] Test Internet-to-BLE Bridge.
-* [ ] Test duplicate delivery through BLE and Internet.
-* [ ] Fuzz BLE frame parsing.
+**Sprint 0 inventory (this repo, `main`):** software path is **`mock_ble` only** — TCP `u32 BE len || RavenEnvelopeV1` in `raven-core::ble_adapter`. **RBF1 GATT framing is not implemented** (spec only: `protocol/RAVEN_BLE_FRAMING_V1.md`; held for Sprint 1 with shared-vectors). **No BlueZ or CoreBluetooth live radio.** Desktop radio stays mock-only; `BleStatus` is fail-closed. Physical three-device proof remains **`BLOCKED_HARDWARE`** (`docs/PHYSICAL_BLE_THREE_DEVICE.md`). iOS GATT (`BLEMeshEngine` / `ios-native`) is **unverified here** — 0 `.swift` files; `ios-native` absent on `main`. **Do not treat any row below as a hardware or RBF1 DoD.**
+
+Legend: `software` = mock_ble / policy in this repo (not a live-radio pass). `missing` = RBF1, BlueZ, CoreBluetooth radio, or physical test. Boxes are **not** hardware/RBF1 completion.
+
+* [x] Use Bluetooth only as a transport. — software (`mock_ble` adapter boundary; no radio wiring)
+* [x] Keep Raven E2EE active over Bluetooth. — software (opaque `RVN1` on mock_ble; bridge must not decrypt)
+* [x] Do not treat physical proximity as trust. — software (policy; no proximity-as-auth)
+* [x] Do not use Bluetooth MAC addresses as user identity. — software (`TransportKind` never uses MAC)
+* [ ] Use privacy-preserving peer advertisements. — missing (no live advertisements)
+* [ ] Avoid broadcasting stable public identity keys. — missing (no live advertisements)
+* [ ] Use rotating discovery tokens where designed. — missing (no live discovery radio)
+* [ ] Authenticate peers after discovery. — missing (no live GATT discovery)
+* [ ] Define BLE service identifiers. — missing (legacy mesh UUIDs in docs only; RBF1 / live radio not implemented)
+* [ ] Define characteristic identifiers. — missing (same; RBF1 held for Sprint 1)
+* [ ] Define maximum frame size. — missing (RBF1 spec only; not implemented)
+* [ ] Define fragmentation. — missing (RBF1 spec only; mock_ble is whole-envelope TCP, not GATT chunks)
+* [ ] Define reassembly. — missing (RBF1 not implemented)
+* [ ] Define fragment ordering. — missing (RBF1 not implemented)
+* [ ] Define fragment integrity. — missing (RBF1 not implemented)
+* [ ] Define fragment timeout. — missing (RBF1 not implemented)
+* [ ] Define retry behavior. — missing (no live radio)
+* [ ] Define connection-loss behavior. — missing (no live radio)
+* [ ] Define duplicate-fragment behavior. — missing (RBF1 not implemented)
+* [ ] Define malformed-fragment behavior. — missing (RBF1 not implemented)
+* [ ] Define concurrent-peer limits. — missing (no live radio)
+* [ ] Define scanning schedule. — missing (no live radio)
+* [ ] Define advertising schedule. — missing (no live radio)
+* [ ] Minimize battery consumption. — missing (no live radio)
+* [ ] Handle Bluetooth being disabled. — missing (no live radio; desktop mock-only)
+* [x] Handle Bluetooth hardware being absent. — software (`mock_ble` + fail-closed `BleStatus`; not a radio driver)
+* [ ] Handle permission denial. — missing (no live radio / TCC / BlueZ)
+* [ ] Handle intermittent Bluetooth. — missing (no live radio)
+* [ ] Handle recurring iOS disconnects. — missing (iOS GATT unverified; `ios-native` absent)
+* [ ] Handle Windows Bluetooth differences. — missing (no Windows GATT radio)
+* [ ] Handle macOS Bluetooth differences. — missing (CoreBluetooth compile seam only; radio **BLOCKED_HARDWARE**)
+* [ ] Handle Linux BlueZ differences. — missing (no BlueZ live radio)
+* [ ] Test real hardware. — **BLOCKED_HARDWARE**
+* [ ] Test BLE direct terminal-to-mobile. — **BLOCKED_HARDWARE** (software stand-in: mock_ble only)
+* [ ] Test BLE mobile-to-terminal. — **BLOCKED_HARDWARE**
+* [ ] Test BLE multi-hop where V1 supports it. — **BLOCKED_HARDWARE** (mock_ble software multi-hop is not physical)
+* [ ] Test BLE-to-Internet Bridge. — **BLOCKED_HARDWARE** (software stand-in: `bridge_abc_demo` / mock_ble)
+* [ ] Test Internet-to-BLE Bridge. — **BLOCKED_HARDWARE** (same software stand-in; not live GATT)
+* [ ] Test duplicate delivery through BLE and Internet. — **BLOCKED_HARDWARE**
+* [ ] Fuzz BLE frame parsing. — missing (mock_ble length-prefix unit tests only; RBF1 fuzz not implemented)
 
 ---
 
