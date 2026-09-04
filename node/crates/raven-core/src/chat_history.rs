@@ -3,7 +3,8 @@
 //! The durable history file is always authenticated ciphertext. On macOS and
 //! GNU/Linux its random encryption key lives in Keychain / Secret Service; on
 //! Windows the payload is protected directly with user-scoped DPAPI. There is
-//! deliberately no plaintext or mode-0600-key fallback.
+//! deliberately no plaintext fallback. An explicit debug `locked-file` override
+//! (`RAVEN_IDENTITY_BACKEND` / `RAVEN_CHAT_HISTORY_BACKEND`) is lab/CI only.
 
 use crate::sanitize::sanitize_terminal_text;
 #[cfg(any(
@@ -899,10 +900,73 @@ fn platform_set_key(data_dir: &Path, key: &[u8; 32]) -> Result<(), ChatHistoryEr
 }
 
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+fn force_locked_file_history_backend() -> bool {
+    if !cfg!(debug_assertions) {
+        return false;
+    }
+    for key in ["RAVEN_CHAT_HISTORY_BACKEND", "RAVEN_IDENTITY_BACKEND"] {
+        if std::env::var_os(key).is_some_and(|v| v == "locked-file") {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+fn history_locked_key_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("chat_history.key")
+}
+
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+fn locked_file_get_key(data_dir: &Path) -> Result<Option<Zeroizing<[u8; 32]>>, ChatHistoryError> {
+    match std::fs::read(history_locked_key_path(data_dir)) {
+        Ok(mut bytes) => {
+            if bytes.len() != 32 {
+                bytes.zeroize();
+                return Err(ChatHistoryError::CorruptProtectedKey);
+            }
+            let mut key = Zeroizing::new([0u8; 32]);
+            key.copy_from_slice(&bytes);
+            bytes.zeroize();
+            Ok(Some(key))
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(ChatHistoryError::Io(error.to_string())),
+    }
+}
+
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+fn locked_file_set_key(data_dir: &Path, key: &[u8; 32]) -> Result<(), ChatHistoryError> {
+    std::fs::create_dir_all(data_dir).map_err(|error| ChatHistoryError::Io(error.to_string()))?;
+    crate::paths::atomic_write_private(&history_locked_key_path(data_dir), key)
+        .map_err(ChatHistoryError::Io)
+}
+
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 fn load_platform_key(
     data_dir: &Path,
     create: bool,
 ) -> Result<Zeroizing<[u8; 32]>, ChatHistoryError> {
+    // Lab/CI only. Same env as identity: not Release-safe, not proven-absent SS.
+    if force_locked_file_history_backend() {
+        if let Some(key) = locked_file_get_key(data_dir)? {
+            return Ok(key);
+        }
+        if !create {
+            return Err(ChatHistoryError::MissingProtectedKey);
+        }
+        let mut generated = Zeroizing::new([0u8; 32]);
+        OsRng.fill_bytes(&mut *generated);
+        locked_file_set_key(data_dir, &generated)?;
+        let confirmed =
+            locked_file_get_key(data_dir)?.ok_or(ChatHistoryError::MissingProtectedKey)?;
+        if *confirmed != *generated {
+            return Err(ChatHistoryError::ProtectedStoreUnavailable(
+                "concurrent locked-file history-key initialization".into(),
+            ));
+        }
+        return Ok(confirmed);
+    }
     if let Some(key) = platform_get_key(data_dir)? {
         return Ok(key);
     }
