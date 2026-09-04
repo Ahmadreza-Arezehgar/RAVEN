@@ -20,11 +20,15 @@
 
 **Path A (mesh / NAT / relay) is locked.** Localhost reservation **only**. Two-client circuit / WAN / auto-fallback / DCUtR **NOT proven**. Hop server **missing**. Multi-NAT **BLOCKED_HARDWARE**. NAT hold **intact**.
 
-**Do not call mesh relay reliable.** Path B is separately locked below. Continue **C** (direct) + **terminal**. See [`three-path-verification-board.md`](three-path-verification-board.md).
+**Do not call mesh relay reliable.** Path B and Path C are locked below. **A+B+C board fills now present.** Continue **terminal**. See [`three-path-verification-board.md`](three-path-verification-board.md).
 
 ## Manager Path B lock (2026-09-04)
 
-**Path B (DTN / bridge) claim language is locked.** Opaque custody + `ENDPOINT_ACK_ONLY` **proven (software)** — prefer executed green/red citations (linked CI or agent smoke). Hop/repl **cooperative-only**. Prod mailbox **held**. iOS **blocked on B8**. **Not flood-proof / not Byzantine-safe.** Continue **C + terminal**.
+**Path B (DTN / bridge) claim language is locked.** Opaque custody + `ENDPOINT_ACK_ONLY` **proven (software)** — prefer executed green/red citations (linked CI or agent smoke). Hop/repl **cooperative-only**. Prod mailbox **held**. iOS **blocked on B8**. **Not flood-proof / not Byzantine-safe.** Path C is locked below. Continue **terminal**.
+
+## Manager Path C lock (2026-09-04)
+
+**Path C (direct Internet) claim language is locked.** LAN/localhost **proven**. WAN **blocked/untested**. Internet dial **fail-closed proven** — **NOT** a WAN reliability claim. `ash_menu_smoke` → CLI DX [RAVEN#16](https://github.com/Raven-ASHCO/RAVEN/pull/16). Windows **honest fail-closed** until named-pipe. **A+B+C board fills now present.** Continue **terminal**.
 
 ## Node IPC (terminal input)
 
@@ -56,7 +60,8 @@
 | Team bus factor | **Accepted (bot-only)** — founder sole GitHub member; escalate only if human reviewers added |
 | Founder Priority #1 | Terminal L/M/W + three-path matrices **above** O6 M1+ |
 | Path A (mesh/NAT/relay) | **LOCKED** — localhost reservation only; circuit/WAN/auto-fallback/DCUtR **NOT proven**; hop server missing; multi-NAT **BLOCKED_HARDWARE**; NAT hold intact. **Not reliable.** |
-| Path B (DTN/bridge) | **LOCKED** — opaque custody + `ENDPOINT_ACK_ONLY` **proven (software)**; hop/repl cooperative-only; prod mailbox held; iOS blocked on B8. **Not flood-proof / not Byzantine-safe.** Prefer executed green/red citations. Continue **C+terminal**. |
+| Path B (DTN/bridge) | **LOCKED** — opaque custody + `ENDPOINT_ACK_ONLY` **proven (software)**; hop/repl cooperative-only; prod mailbox held; iOS blocked on B8. **Not flood-proof / not Byzantine-safe.** Prefer executed green/red citations. |
+| Path C (direct Internet) | **LOCKED** — LAN/localhost **proven**; WAN **blocked/untested**; internet dial **fail-closed proven** — **NOT** a WAN reliability claim. `ash_menu_smoke` → CLI DX #16. Windows honest fail-closed until named-pipe. **A+B+C fills present.** Continue **terminal**. |
 | Node IPC / B10 #1 | **Windows named-pipe gap** — UDS-only `ipc_server`; `ash --send-stdin` spawn. Linux/macOS UDS **mostly green**. SCM+LAN parity = **P1 after pipe**. **Does not unblock WAN Path C.** |
 | Critical path / O6 gate | **M0 docs ack ✅ CLOSED / MERGED** — [RAVEN#3](https://github.com/Raven-ASHCO/RAVEN/pull/3) ADR 0004 on `main` `ce087c7d9cfb`. Three-way ACK **final** (Architect + Crypto + Identity; body + G5 + HOLD/R3/IPC + Crypto D4). **Not** awaiting Manager docs merge. M1–M3 **production** code still **closed** (terminal + HOLD). |
 | Performance baseline | **#19 SRE Perf** — IN PROGRESS (harvest; docs-only ≠ Proven) |
@@ -75,8 +80,9 @@ Org-create / personal-account CODEOWNERS blockers from morning audit are **clear
 5. **Menu-smoke merge order:** #20 **done** → land #16 when green → #19 rebases **preserving** menu-smoke.
 6. Keep this board under `docs/engineering/baseline-freeze/` (this PR). **M0 docs ack ✅ CLOSED / MERGED** on `main` `ce087c7d9cfb` (RAVEN#3). Three-way ACK **final**. M1–M3 production still closed (terminal + HOLD).
 7. **Path A locked** — do not claim mesh relay reliable.
-8. **Path B locked** — opaque custody + `ENDPOINT_ACK_ONLY` proven (software); hop/repl cooperative-only; prod mailbox held; iOS blocked on B8. **Not flood-proof / not Byzantine-safe.** Prefer executed green/red citations. Continue **C+terminal**.
-9. **Node IPC:** Windows named-pipe = **#1** B10 remaining (UDS-only `ipc_server`; `ash --send-stdin`). Linux/macOS UDS mostly green. SCM+LAN parity = P1 after pipe. **Does not unblock WAN Path C.**
+8. **Path B locked** — opaque custody + `ENDPOINT_ACK_ONLY` proven (software); hop/repl cooperative-only; prod mailbox held; iOS blocked on B8. **Not flood-proof / not Byzantine-safe.** Prefer executed green/red citations.
+9. **Path C locked** — LAN/localhost proven; WAN blocked/untested; internet dial fail-closed proven — **NOT** a WAN reliability claim. `ash_menu_smoke` → CLI DX #16. Windows honest fail-closed until named-pipe. **A+B+C board fills now present.** Continue **terminal**.
+10. **Node IPC:** Windows named-pipe = **#1** B10 remaining (UDS-only `ipc_server`; `ash --send-stdin`). Linux/macOS UDS mostly green. SCM+LAN parity = P1 after pipe. **Does not unblock WAN Path C.**
 
 ---
 
@@ -85,7 +91,7 @@ Org-create / personal-account CODEOWNERS blockers from morning audit are **clear
 | Track | Status | PR / next | Notes |
 |-------|--------|-----------|-------|
 | Windows MSVC `ash` `Command` ungate (compile P0-1) | **DONE / MERGED** via [RAVEN#20](https://github.com/Raven-ASHCO/RAVEN/pull/20) + [RAVEN#21](https://github.com/Raven-ASHCO/RAVEN/pull/21) | #20 + #21 on `main` | **Do not greenlight duplicate compile fixes.** Compile ungate only — docs/helpers **not** e2e-proven. |
-| Menu-smoke (Linux + macOS) | In flight | [RAVEN#16](https://github.com/Raven-ASHCO/RAVEN/pull/16) | Apple APPROVE + Core ACK; SRE converge DONE. **Proven flip only after executed green** (linked CI or agent smoke). |
+| `ash_menu_smoke` | In flight → CLI DX [RAVEN#16](https://github.com/Raven-ASHCO/RAVEN/pull/16) | #16 | Apple APPROVE + Core ACK; SRE converge DONE. Windows **honest fail-closed** until named-pipe. **Proven flip only after executed green** (linked CI or agent smoke). |
 | `install.sh` fail-close (B11) | In flight (draft) | [RAVEN#17](https://github.com/Raven-ASHCO/RAVEN/pull/17) | Hazard retire / fail-close. **Not** install Proven. |
 | Core doctor axes (presence / ready / send_path) | In flight | [RAVEN#22](https://github.com/Raven-ASHCO/RAVEN/pull/22) | `ash doctor` exit 0 ≠ send Proven. |
 | Doctor identity-backend mismatch | In flight | [RAVEN#23](https://github.com/Raven-ASHCO/RAVEN/pull/23) | Identity usable / `daemon_ready` honesty. |
@@ -231,11 +237,12 @@ Fake-integration watch: any PR that wires RDAP tasks to production raven-node AT
 2. **B3:** **CLEARED** (RAVEN#7). No further CODEOWNERS action on mlkem FFI.
 3. **B2:** accepted for bot-only org; escalate only if human reviewers added.
 4. **Founder Priority #1:** terminal L/M/W + three-path matrices; **no M1 eng** until terminal board green (CEO override only).
-5. **Menu-smoke:** land #16 when green; #19 rebases preserving menu-smoke; Proven only after executed green (linked CI or agent smoke).
+5. **Menu-smoke:** `ash_menu_smoke` → CLI DX [RAVEN#16](https://github.com/Raven-ASHCO/RAVEN/pull/16); land when green; #19 rebases preserving menu-smoke; Proven only after executed green (linked CI or agent smoke). Windows honest fail-closed until named-pipe.
 6. **B10:** compile P0-1 **DONE**. **#1 remaining = Windows named-pipe** (UDS-only `ipc_server`; `ash --send-stdin`). Linux/macOS UDS mostly green. SCM+LAN parity = P1 after pipe. **Does not unblock WAN Path C.** Then install→doctor→send CI. No duplicate compile fixes.
 7. **B11 / B12:** track #17 fail-close; do not treat `install.sh` or Win loopback `127.0.0.1:7420` as Proven.
 8. **B8 Phase 1+ PARKED** (Windows terminal > iOS landing).
 9. **SRE Perf (#19):** Performance baseline remains #19; harvest in flight — docs-only ≠ Proven.
 10. **Apple/Windows trees:** B5 remains; B8 parked. **Manager + SRE:** `perf` team or fold #19 (B6).
 11. **Path A locked:** localhost reservation only; do **not** call mesh relay reliable.
-12. **Path B locked:** opaque custody + `ENDPOINT_ACK_ONLY` proven (software); not flood-proof / not Byzantine-safe. Continue **C+terminal**. Prefer executed green/red citations.
+12. **Path B locked:** opaque custody + `ENDPOINT_ACK_ONLY` proven (software); not flood-proof / not Byzantine-safe. Prefer executed green/red citations.
+13. **Path C locked:** LAN/localhost proven; WAN blocked/untested; internet dial fail-closed proven — **NOT** a WAN reliability claim. `ash_menu_smoke` → CLI DX #16. Windows honest fail-closed until named-pipe. **A+B+C board fills now present.** Continue **terminal**.
