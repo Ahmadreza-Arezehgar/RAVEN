@@ -7,11 +7,12 @@
 #   daemon_presence / daemon_ready / send_path (default not_ready / unchecked)
 #   doctor exit 0 = report completed, ≠ send Proven
 #   IPC-up / presence alone is NOT enough — this script requires identity + serverless_rvn1
-#   Windows: no UDS probe; until a named-pipe client, presence is blocked
-#   (reason=ipc_transport_missing). Do NOT require daemon_presence: present.
-#   After PR #22 lands on this tree: also require printed lines
-#   daemon_presence: / daemon_ready: / send_path: not_ready|unchecked.
-#   Do not require those strings until #22 is merged (not printed today).
+#   Never require daemon_presence: present (would greenwash Windows blocked).
+#   Once #22 labels appear on this tree, require the three axis lines.
+#   Until then (not printed today) keep identity + serverless_rvn1 only.
+#   Windows until Sprint 1 pipe client:
+#     daemon_presence: blocked (reason=ipc_transport_missing)
+#     (no UDS / raven-node.sock probe; pipe is \\.\pipe\raven-node)
 #
 # Operator (from node/, Windows / pwsh host):
 #   pwsh -File scripts/ash_doctor_send_smoke.ps1
@@ -155,12 +156,25 @@ try {
         Write-Host $doc.Text
         Fail "ash doctor must show identity present (IPC-up / daemon_state alone is not Proven)"
     }
+    # PR #22 Core gate — require axis lines once they exist on this tree.
+    # Do NOT require daemon_presence: present (Windows is blocked until pipe client).
+    $coreGate = ($doc.Text -match "daemon_presence:") -or
+                ($doc.Text -match "daemon_ready:") -or
+                ($doc.Text -match "send_path:")
+    if ($coreGate) {
+        Require-Match $doc.Text "daemon_presence:" "ash doctor must print daemon_presence: (PR #22; value may be blocked)"
+        Require-Match $doc.Text "daemon_ready:" "ash doctor must print daemon_ready:"
+        Require-Match $doc.Text "send_path:\s*(not_ready|unchecked)" "ash doctor send_path must be not_ready or unchecked"
+        $onWindows = ($IsWindows -eq $true) -or ($env:OS -eq "Windows_NT")
+        if ($onWindows) {
+            Require-Match $doc.Text "daemon_presence:\s*blocked\s*\(reason=ipc_transport_missing\)" `
+                "Windows doctor must show daemon_presence: blocked (reason=ipc_transport_missing) until Sprint 1 pipe client"
+        }
+        Write-Host "doctor: Core gate axes OK (presence not used as pass)"
+    } else {
+        Write-Host "doctor: Core gate labels not on this tree yet (pending PR #22) — identity + serverless_rvn1 only"
+    }
     Write-Host "doctor: identity + serverless_rvn1 OK (IPC-up / daemon_presence:present not used as pass)"
-    # Follow-up after PR #22 is on this tree (not printed by ash doctor today):
-    #   Require-Match daemon_presence:  (Windows: blocked (reason=ipc_transport_missing))
-    #   Require-Match daemon_ready:
-    #   Require-Match send_path:\s*(not_ready|unchecked)
-    # Do not require daemon_presence: present (false-green on Windows).
 
     # Interactive line-menu send teach path (Windows uses line_menu_loop).
     # clap `ash send` / `ash contact add` are not dispatched in ash run() today;
