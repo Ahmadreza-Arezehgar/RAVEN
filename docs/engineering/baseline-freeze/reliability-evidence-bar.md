@@ -93,7 +93,7 @@ Detailed exit-code tables and operator wording live in the CLI DX appendix stub 
 
 **Also not Proven (do not relabel):**
 
-- **B11** — `node/scripts/install.sh` (see below)
+- **B11** — `node/scripts/install.sh` + CLI DX [PR #17](https://github.com/Raven-ASHCO/RAVEN/pull/17) fatal-exit (see below)
 - **B12** — Windows `127.0.0.1:7420` loopback (see below)
 - doctor-alone (exit 0 ≠ send)
 
@@ -113,21 +113,21 @@ Until the named step is green **on `main`**, label the row **proposed / in-fligh
 
 ## B11 — `node/scripts/install.sh` is non-evidence (Blocked)
 
-**Board ID B11** = `install.sh` is **not** install evidence. Status: **Blocked / non-evidence**.
+**Board ID B11** = `install.sh` is **NOT install evidence**. Status: **Blocked / non-evidence**. Our CI exclusion stays correct.
 
 Do not cite [`node/scripts/install.sh`](../../../node/scripts/install.sh) as Proven or as an install path for reliability claims.
 
-Reasons (facts on this branch’s copy; CLI DX is retiring the hazard):
+Reasons the path was never evidence (this branch’s copy still shows the old body until #17 merges):
 
 - Wrong remote: curl header / `REPO=` clone **Ahmadreza-Arezehgar/RAVEN**
 - `cargo build … --features raven-node/unsafe-demo-crypto` (debug lab crypto)
 - Ad-hoc Darwin `codesign -s -` on those debug binaries
 
-**CLI DX [PR #17](https://github.com/Raven-ASHCO/RAVEN/pull/17)** (open at write): fail-closed / **fatal-exit** so leftover `curl \| bash` cannot install. README one-liner removed. That is **operator retire / relabel**, **not** Proven install evidence.
+**CLI DX P0 [PR #17](https://github.com/Raven-ASHCO/RAVEN/pull/17):** `node/scripts/install.sh` now **fatal-exits** (fail-closed for leftover `curl | bash`). README one-liner removed. That is **operator relabel + fail-closed, not Proven install evidence.** Cite #17 next to B11 in every non-evidence list.
 
 **Ownership:** SRE Perf **co-owns CI / evidence exclusion** (this bar). CLI DX **co-owns operator retire / relabel** (#17). Both labels stay until a *named* CI job proves an endorsed install path.
 
-Prefer helpers under [`node/scripts/install/`](../../../node/scripts/install/) only when those are what docs endorse **and** a named job proves the path — do not invent Proven:
+Prefer [`node/scripts/install/`](../../../node/scripts/install/) (`linux_systemd_user.sh`, `macos_launchd.sh`, `windows_service.ps1`) **only when separately proven** by a named job — do not invent Proven:
 
 | Script | What CI does today (current `main` / this branch before merge) |
 |--------|----------------------------------------------------------------|
@@ -210,7 +210,7 @@ Windows cargo steps use the job default shell (not bash). No `|| true` on the ne
 | [`scripts/reliability_matrix_20.sh`](../../../scripts/reliability_matrix_20.sh) | Looped operator matrix; allows `PASS` / `PASS_SOFTWARE_SUBSTITUTE` / `SKIP` | **NOT in CI.** No pass counts recorded here. |
 | [`node/scripts/ash_menu_smoke.sh`](../../../node/scripts/ash_menu_smoke.sh) | Unix install→doctor→menu/send (ephemeral dir, `RAVEN_IDENTITY_BACKEND=locked-file`) | **pending / in-flight** — CLI DX PR #16 / follow-up. Not on current `main`. Not added in this PR. |
 | [`node/scripts/ash_doctor_send_smoke.ps1`](../../../node/scripts/ash_doctor_send_smoke.ps1) | Windows init→doctor→send teach / fail-closed (MSVC `ash.exe`) | **This PR** wires `rust-windows`. Intended `terminal-path Proven (Windows)` **after** green on `main`. |
-| [`node/scripts/install.sh`](../../../node/scripts/install.sh) | Wrong remote + `unsafe-demo-crypto` + ad-hoc sign; CLI DX #17 fatal-exit is relabel, not Proven | **Blocked / non-evidence (B11)** |
+| [`node/scripts/install.sh`](../../../node/scripts/install.sh) + [PR #17](https://github.com/Raven-ASHCO/RAVEN/pull/17) | Wrong remote + `unsafe-demo-crypto` + ad-hoc sign. #17 **fatal-exit** / README one-liner removed = relabel + fail-closed, **not** Proven | **Blocked / non-evidence (B11)** |
 | `127.0.0.1:7420` in `windows_service.ps1` | Loopback listen only | **Blocked as path evidence (B12)** |
 
 No `RELIABILITY_20_GREEN` rate or soak percentage is claimed. `proof_artifacts/` is gitignored; absence is not a pass rate.
