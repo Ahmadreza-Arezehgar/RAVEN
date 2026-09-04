@@ -26,7 +26,7 @@ use raven_core::discovery_resolver::{
 use raven_core::fingerprint::device_fingerprint_v1;
 use raven_core::forward_queue::ForwardQueue;
 use raven_core::identity::Identity;
-use raven_core::ipc::{ipc_endpoint, IpcResponse};
+use raven_core::ipc::{ipc_endpoint, IpcEndpoint, IpcRequest, IpcResponse, IPC_VERSION};
 use raven_core::messaging_path::{
     assert_no_silent_fastapi, resolve_terminal_messaging_path, MessagingPath,
 };
@@ -247,8 +247,12 @@ enum Commands {
     Listen,
     /// Show identity + Bridge/transports/forward queue (safe fields only).
     Status,
-    /// Diagnose ash vs system ash conflict, paths, and node socket.
-    Doctor,
+    /// Diagnose presence / ready / send_path (never one green "up" for send).
+    Doctor {
+        /// Exit 1 if `daemon_ready` is false. Does not claim send works.
+        #[arg(long, default_value_t = false)]
+        require_ready: bool,
+    },
     /// Ping raven-node UDS IPC (must be running: `raven-node ipc` / service).
     IpcPing,
     /// Configure local raven-node policy / bootstrap (bridge/store/relay/peers).
@@ -2663,17 +2667,28 @@ fn cmd_prekey_fetch(data_dir: &Path, pub_hex: &str, file: Option<&Path>) {
     println!("{C_DIM}expires_ms{C_RESET}  {}", bundle.expires_at_ms);
 }
 
-fn print_messaging_path_diag() {
+fn print_messaging_path_diag() -> Result<(), String> {
     let path = resolve_terminal_messaging_path();
-    let _ = assert_no_silent_fastapi(path);
-    kv("messaging", &format!("{} ({})", path.as_diag_label(), path.human()));
-    kv(
-        "path_rule",
-        &format!(
-            "never silently uses FastAPI ({})",
-            MessagingPath::LegacyFastApi.as_diag_label()
-        ),
-    );
+    match assert_no_silent_fastapi(path) {
+        Ok(()) => {
+            kv(
+                "messaging",
+                &format!("{} ({})", path.as_diag_label(), path.human()),
+            );
+            kv(
+                "path_rule",
+                &format!(
+                    "never silently uses FastAPI ({})",
+                    MessagingPath::LegacyFastApi.as_diag_label()
+                ),
+            );
+            Ok(())
+        }
+        Err(e) => {
+            println!("  FAIL: messaging_path {}", sanitize_terminal_text(&e));
+            Err(e)
+        }
+    }
 }
 
 fn print_production_gate_matrix() {
@@ -2743,7 +2758,7 @@ fn cmd_status(data_dir: &Path) -> Result<(), String> {
     println!("{}STATUS \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}{}", c.bold, c.reset);
 
     kv("profile", &data_dir.display().to_string());
-    print_messaging_path_diag();
+    print_messaging_path_diag()?;
 
     match try_load_identity(data_dir) {
         Ok(Some(id)) => {
@@ -3525,7 +3540,7 @@ pub fn run() {
                 std::process::exit(1);
             }
         }
-        Some(Commands::Doctor) => cmd_doctor(&data_dir),
+        Some(Commands::Doctor { require_ready }) => cmd_doctor(&data_dir, require_ready),
         Some(Commands::IpcPing) => cmd_ipc_ping(&data_dir),
         Some(Commands::Inbox) => cmd_endpoint_inbox(&data_dir),
         _ => {} // other subcommands handled by their own dispatch
@@ -3675,7 +3690,290 @@ fn cmd_ipc_ping(data_dir: &Path) {
     }
 }
 
-fn cmd_doctor(data_dir: &Path) {
+/// Core doctor gate: Ping answers. Not file exists. Not send.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DaemonPresence {
+    Present { ipc_version: u16 },
+    /// Transport exists but Ping failed — fail-closed connect, not a skip.
+    Down { reason: String },
+    /// No IPC transport on this OS (`IpcEndpoint::Unsupported`).
+    Blocked { reason: &'static str },
+}
+
+/// Presence + Status + usable identity + queue/DB or `forward_pending` + serverless.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DaemonReady {
+    Ready,
+    NotReady { reason: String },
+}
+
+/// Default not_ready / unchecked. Never green from presence or ready.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SendPathLabel {
+    NotReady { reason: String },
+    #[allow(dead_code)]
+    Unchecked,
+}
+
+const DOCTOR_EXIT_OK: i32 = 0;
+const DOCTOR_EXIT_HARD: i32 = 1;
+const DOCTOR_EXIT_SECURITY: i32 = 2;
+
+fn classify_presence_from_ping(ping: Result<IpcResponse, String>) -> DaemonPresence {
+    match ping {
+        Ok(IpcResponse::Pong { v }) => DaemonPresence::Present { ipc_version: v },
+        Ok(_) => DaemonPresence::Down {
+            reason: "unexpected_ipc_response".into(),
+        },
+        Err(e) => DaemonPresence::Down { reason: e },
+    }
+}
+
+fn probe_daemon_presence(data_dir: &Path) -> DaemonPresence {
+    let ep = ipc_endpoint(data_dir);
+    if !ep.transport_available() {
+        return DaemonPresence::Blocked {
+            reason: "ipc_transport_missing",
+        };
+    }
+    classify_presence_from_ping(ipc_client::ipc_ping(data_dir))
+}
+
+fn probe_ipc_status(data_dir: &Path) -> Result<IpcResponse, String> {
+    ipc_client::ipc_request(data_dir, &IpcRequest::Status { v: IPC_VERSION })
+}
+
+fn identity_usable(data_dir: &Path) -> bool {
+    match raven_core::identity_usable(data_dir) {
+        Ok(u) => u.usable,
+        Err(_) => false,
+    }
+}
+
+fn identity_not_usable_fail_line(issue: &str) -> String {
+    format!(
+        "  FAIL: identity not usable ({})",
+        sanitize_terminal_text(issue)
+    )
+}
+
+struct DoctorIdentityProbe {
+    usable: bool,
+    hard_fail: bool,
+    identity_err: Option<String>,
+}
+
+fn probe_doctor_identity(data_dir: &Path) -> DoctorIdentityProbe {
+    match raven_core::identity_usable(data_dir) {
+        Ok(report) => {
+            let backend = report
+                .consistency
+                .recorded
+                .map(|b| b.as_str())
+                .unwrap_or("none");
+            println!(
+                "  secure_keystore: backend={backend} identity={}",
+                if report.has_identity {
+                    "present"
+                } else {
+                    "absent"
+                }
+            );
+            if report.consistency.blocks_identity_use() {
+                let issue = report
+                    .reason
+                    .as_deref()
+                    .or(report.consistency.issue.as_deref())
+                    .unwrap_or("identity backend mismatch");
+                println!("{}", identity_not_usable_fail_line(issue));
+                return DoctorIdentityProbe {
+                    usable: false,
+                    hard_fail: true,
+                    identity_err: Some(issue.to_string()),
+                };
+            }
+            if let Ok(ks) = raven_core::store_status(data_dir) {
+                if ks.legacy_plaintext_present {
+                    println!(
+                        "  {C_PURPLE}secure_keystore{C_RESET}: legacy plaintext seed file still present — reopen once to migrate"
+                    );
+                }
+            }
+            DoctorIdentityProbe {
+                usable: report.usable,
+                hard_fail: false,
+                identity_err: report.reason,
+            }
+        }
+        Err(e) => {
+            let raw = e.redacted_display();
+            match e {
+                raven_core::IdentityStoreError::Continuity(_)
+                | raven_core::IdentityStoreError::Corrupt => {
+                    println!("{}", identity_not_usable_fail_line(&raw));
+                    DoctorIdentityProbe {
+                        usable: false,
+                        hard_fail: true,
+                        identity_err: Some(raw),
+                    }
+                }
+                _ => {
+                    println!(
+                        "  {C_PURPLE}secure_keystore{C_RESET}: unavailable ({})",
+                        sanitize_terminal_text(&raw)
+                    );
+                    DoctorIdentityProbe {
+                        usable: false,
+                        hard_fail: false,
+                        identity_err: Some(raw),
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn queue_db_openable(data_dir: &Path) -> bool {
+    let fwd = data_dir.join("forward_queue.sqlite");
+    if fwd.exists() && ForwardQueue::open(&fwd).is_ok() {
+        return true;
+    }
+    for name in ["queue.sqlite", "queue.db"] {
+        let p = data_dir.join(name);
+        if p.exists() && OutgoingQueue::open(&p).is_ok() {
+            return true;
+        }
+    }
+    false
+}
+
+fn status_forward_pending_ok(status: &Result<IpcResponse, String>) -> bool {
+    matches!(status, Ok(IpcResponse::Status { .. }))
+}
+
+fn classify_daemon_ready(
+    presence: &DaemonPresence,
+    status: Option<&Result<IpcResponse, String>>,
+    identity_ok: bool,
+    queue_or_forward_ok: bool,
+    messaging: MessagingPath,
+) -> DaemonReady {
+    if matches!(presence, DaemonPresence::Blocked { .. }) {
+        return DaemonReady::NotReady {
+            reason: "ipc_transport_blocked".into(),
+        };
+    }
+    if !matches!(presence, DaemonPresence::Present { .. }) {
+        return DaemonReady::NotReady {
+            reason: "no_presence".into(),
+        };
+    }
+    match status {
+        Some(Ok(IpcResponse::Status { .. })) => {}
+        Some(Ok(_)) => {
+            return DaemonReady::NotReady {
+                reason: "status_unexpected_response".into(),
+            };
+        }
+        Some(Err(_)) => {
+            return DaemonReady::NotReady {
+                reason: "status_failed".into(),
+            };
+        }
+        None => {
+            return DaemonReady::NotReady {
+                reason: "status_unchecked".into(),
+            };
+        }
+    }
+    if !identity_ok {
+        return DaemonReady::NotReady {
+            reason: "identity_unusable".into(),
+        };
+    }
+    if !queue_or_forward_ok {
+        return DaemonReady::NotReady {
+            reason: "queue_unopened".into(),
+        };
+    }
+    if messaging != MessagingPath::ServerlessRvn1 {
+        return DaemonReady::NotReady {
+            reason: format!("messaging_path={}", messaging.as_diag_label()),
+        };
+    }
+    DaemonReady::Ready
+}
+
+fn classify_send_path() -> SendPathLabel {
+    SendPathLabel::NotReady {
+        reason: "not_probed".into(),
+    }
+}
+
+fn doctor_security_hold(messaging: MessagingPath, identity_err: Option<&str>) -> Option<String> {
+    let _ = messaging;
+    if let Some(err) = identity_err {
+        if err.contains("continuity") {
+            return Some("identity_continuity".into());
+        }
+    }
+    None
+}
+
+fn doctor_exit_code(
+    ready: &DaemonReady,
+    require_ready: bool,
+    security_hold: Option<&str>,
+    hard_failure: bool,
+) -> i32 {
+    if security_hold.is_some() {
+        return DOCTOR_EXIT_SECURITY;
+    }
+    if hard_failure {
+        return DOCTOR_EXIT_HARD;
+    }
+    if require_ready && !matches!(ready, DaemonReady::Ready) {
+        return DOCTOR_EXIT_HARD;
+    }
+    DOCTOR_EXIT_OK
+}
+
+fn print_presence(presence: &DaemonPresence) {
+    match presence {
+        DaemonPresence::Present { ipc_version } => {
+            println!("  daemon_presence: present (ipc_ping ok v={ipc_version})");
+        }
+        DaemonPresence::Down { reason } => {
+            println!(
+                "  daemon_presence: down ({})",
+                sanitize_terminal_text(reason)
+            );
+        }
+        DaemonPresence::Blocked { reason } => {
+            println!("  daemon_presence: blocked (reason={reason})");
+        }
+    }
+}
+
+fn print_ready(ready: &DaemonReady) {
+    match ready {
+        DaemonReady::Ready => println!("  daemon_ready: ready"),
+        DaemonReady::NotReady { reason } => {
+            println!("  daemon_ready: not_ready (reason={reason})");
+        }
+    }
+}
+
+fn print_send_path(send: &SendPathLabel) {
+    match send {
+        SendPathLabel::NotReady { reason } => {
+            println!("  send_path: not_ready (reason={reason})");
+        }
+        SendPathLabel::Unchecked => println!("  send_path: unchecked"),
+    }
+}
+
+fn cmd_doctor(data_dir: &Path, require_ready: bool) {
     println!("{C_BOLD}raven doctor{C_RESET}");
     let exe = std::env::current_exe()
         .map(|p| p.display().to_string())
@@ -3687,7 +3985,7 @@ fn cmd_doctor(data_dir: &Path) {
         "  data_dir={}",
         sanitize_terminal_text(&data_dir.display().to_string())
     );
-    print_messaging_path_diag();
+    let messaging_path_fail = print_messaging_path_diag().is_err();
     print_production_gate_matrix();
     {
         let cfg = raven_core::load_bootstrap(data_dir);
@@ -3701,48 +3999,77 @@ fn cmd_doctor(data_dir: &Path) {
 
     let ep = ipc_endpoint(data_dir);
     println!(
+        "  ipc_transport: {}",
+        match &ep {
+            IpcEndpoint::NamedPipe(_) => "named_pipe",
+            IpcEndpoint::UnixSocket(_) => "uds",
+            IpcEndpoint::Unsupported => "missing",
+        }
+    );
+    println!(
         "  ipc_endpoint={}",
         sanitize_terminal_text(&ep.to_string())
     );
-    if !ep.transport_available() {
-        // Fail closed — never soft-skip a missing transport as pass.
-        println!("  daemon_presence: blocked (reason=ipc_transport_missing)");
-    } else {
-        match ipc_client::ipc_ping(data_dir) {
-            Ok(IpcResponse::Pong { v }) => {
-                println!("  daemon_presence: {C_GREEN}up{C_RESET} (ipc_ping ok v={v})");
-            }
-            Ok(_) => println!("  daemon_presence: unexpected ipc response"),
-            Err(e) => {
-                let clean = sanitize_terminal_text(&e);
-                println!("  daemon_presence: {C_DIM}down ({clean}){C_RESET}");
-            }
+    match &ep {
+        IpcEndpoint::UnixSocket(sock) => {
+            println!(
+                "  file_present: ipc_endpoint={} {}",
+                sanitize_terminal_text(&sock.display().to_string()),
+                if sock.exists() { "yes" } else { "no" }
+            );
+        }
+        IpcEndpoint::NamedPipe(_) => {
+            println!("  file_present: raven-node.sock not_probed");
+        }
+        IpcEndpoint::Unsupported => {
+            println!("  file_present: ipc_endpoint not_probed");
         }
     }
 
-    // Identity store (backend label only — never seed bytes).
-    match raven_core::store_status(data_dir) {
-        Ok(ks) => {
-            let backend = ks.backend.map(|b| b.as_str()).unwrap_or("none");
-            println!(
-                "  secure_keystore: backend={backend} identity={}",
-                if ks.has_identity { "present" } else { "absent" }
-            );
-            if ks.legacy_plaintext_present {
+    let presence = probe_daemon_presence(data_dir);
+    print_presence(&presence);
+
+    let status = if matches!(presence, DaemonPresence::Present { .. }) {
+        Some(probe_ipc_status(data_dir))
+    } else {
+        None
+    };
+    if let Some(st) = status.as_ref() {
+        match st {
+            Ok(IpcResponse::Status {
+                v,
+                bridge,
+                store,
+                relay,
+                forward_pending,
+                capabilities,
+            }) => {
                 println!(
-                    "  {C_PURPLE}secure_keystore{C_RESET}: legacy plaintext seed file still present — reopen once to migrate"
+                    "  ipc_status: ok v={v} bridge={bridge} store={store} relay={relay} forward_pending={forward_pending} caps={}",
+                    capabilities.join(",")
+                );
+            }
+            Ok(_) => println!("  ipc_status: unexpected ipc response"),
+            Err(e) => {
+                println!(
+                    "  ipc_status: fail ({})",
+                    sanitize_terminal_text(e)
                 );
             }
         }
-        Err(e) => {
-            println!(
-                "  {C_PURPLE}secure_keystore{C_RESET}: unavailable ({})",
-                sanitize_terminal_text(&e.redacted_display())
-            );
-        }
     }
 
-    // Database / queue files (existence only — no secret contents).
+    let identity = probe_doctor_identity(data_dir);
+    let identity_ok = identity.usable;
+    let mut identity_err = identity.identity_err;
+
+    let queue_open = queue_db_openable(data_dir);
+    let forward_ok = status
+        .as_ref()
+        .map(status_forward_pending_ok)
+        .unwrap_or(false);
+    let queue_or_forward_ok = queue_open || forward_ok;
+
     for name in [
         "queue.sqlite",
         "queue.db",
@@ -3753,20 +4080,32 @@ fn cmd_doctor(data_dir: &Path) {
         "bootstrap.json",
     ] {
         let p = data_dir.join(name);
-        let label = if name.contains("queue") {
-            "database"
-        } else {
-            "local_file"
-        };
         println!(
-            "  {label}: {} {}",
+            "  file_present: {} {}",
             name,
-            if p.exists() { "present" } else { "absent" }
+            if p.exists() { "yes" } else { "no" }
         );
     }
+    println!(
+        "  queue_db: {}",
+        if queue_open { "open" } else { "unopened" }
+    );
 
-    println!("  bluetooth: not probed in headless ash (see mock_ble / iOS CoreBluetooth)");
-    println!("  nat_class: software unknown here — see node/NAT_TRAVERSAL.md (BLOCKED_HARDWARE for live CGNAT)");
+    let messaging = resolve_terminal_messaging_path();
+    let ready = classify_daemon_ready(
+        &presence,
+        status.as_ref(),
+        identity_ok,
+        queue_or_forward_ok,
+        messaging,
+    );
+    print_ready(&ready);
+
+    let send = classify_send_path();
+    print_send_path(&send);
+
+    println!("  bluetooth: skipped (headless)");
+    println!("  nat_class: unknown (BLOCKED_HARDWARE)");
     println!("  relay_hint: policy.relay + bootstrap peers (no Raven-mandatory relay)");
 
     #[cfg(unix)]
@@ -3808,7 +4147,12 @@ fn cmd_doctor(data_dir: &Path) {
             print_public_identity(&id);
         }
         Ok(None) => println!("  identity: missing (run raven init)"),
-        Err(e) => println!("  identity: unavailable ({})", sanitize_terminal_text(&e)),
+        Err(e) => {
+            if identity_err.is_none() {
+                identity_err = Some(e.clone());
+            }
+            println!("  identity: unavailable ({})", sanitize_terminal_text(&e));
+        }
     }
     let pol = load_policy(data_dir);
     println!(
@@ -3819,6 +4163,25 @@ fn cmd_doctor(data_dir: &Path) {
         "{C_DIM}Closing this CLI does not stop raven-node if installed as a service.{C_RESET}"
     );
     println!("{C_DIM}Diagnostics never print private keys, seeds, or plaintext bodies.{C_RESET}");
+    println!(
+        "{C_DIM}doctor report complete — send_path is not implied by daemon_presence or daemon_ready.{C_RESET}"
+    );
+
+    let security = doctor_security_hold(messaging, identity_err.as_deref());
+    let hard_failure = messaging_path_fail || identity.hard_fail;
+    let code = doctor_exit_code(&ready, require_ready, security.as_deref(), hard_failure);
+    if code != DOCTOR_EXIT_OK {
+        if let Some(reason) = security {
+            eprintln!("doctor: security hold / production gate (reason={reason})");
+        } else if messaging_path_fail {
+            eprintln!("doctor: messaging_path refused (FastAPI fail-closed)");
+        } else if identity.hard_fail {
+            eprintln!("doctor: identity not usable");
+        } else if require_ready {
+            eprintln!("doctor: --require-ready and daemon_ready is false");
+        }
+        std::process::exit(code);
+    }
 }
 
 #[cfg(test)]
@@ -3967,6 +4330,244 @@ pub_hex     d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a
         assert_eq!(
             hex::encode(got),
             "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+        );
+    }
+
+    fn present() -> DaemonPresence {
+        DaemonPresence::Present {
+            ipc_version: IPC_VERSION,
+        }
+    }
+
+    fn status_ok() -> Result<IpcResponse, String> {
+        Ok(IpcResponse::Status {
+            v: IPC_VERSION,
+            bridge: false,
+            store: false,
+            relay: false,
+            forward_pending: 0,
+            capabilities: vec!["ipc".into()],
+        })
+    }
+
+    #[test]
+    fn doctor_presence_ping_is_present_not_up() {
+        assert_eq!(
+            classify_presence_from_ping(Ok(IpcResponse::Pong { v: IPC_VERSION })),
+            DaemonPresence::Present {
+                ipc_version: IPC_VERSION
+            }
+        );
+        assert_eq!(
+            classify_presence_from_ping(Ok(IpcResponse::Accepted { v: IPC_VERSION })),
+            DaemonPresence::Down {
+                reason: "unexpected_ipc_response".into()
+            }
+        );
+        assert_eq!(
+            classify_presence_from_ping(Err("dial failed".into())),
+            DaemonPresence::Down {
+                reason: "dial failed".into()
+            }
+        );
+        let blocked = DaemonPresence::Blocked {
+            reason: "ipc_transport_missing",
+        };
+        assert_eq!(
+            format!(
+                "  daemon_presence: blocked (reason={})",
+                match &blocked {
+                    DaemonPresence::Blocked { reason } => *reason,
+                    _ => unreachable!(),
+                }
+            ),
+            "  daemon_presence: blocked (reason=ipc_transport_missing)"
+        );
+        assert_eq!(
+            classify_daemon_ready(
+                &blocked,
+                None,
+                true,
+                true,
+                MessagingPath::ServerlessRvn1,
+            ),
+            DaemonReady::NotReady {
+                reason: "ipc_transport_blocked".into()
+            }
+        );
+        let ep = ipc_endpoint(std::path::Path::new("/tmp/raven-data"));
+        if cfg!(windows) {
+            assert_eq!(ep, IpcEndpoint::NamedPipe(raven_core::WINDOWS_NAMED_PIPE));
+            assert_eq!(ep.to_string(), raven_core::WINDOWS_NAMED_PIPE);
+            assert!(!ep.to_string().contains("raven-node.sock"));
+            assert!(ep.transport_available());
+        } else if cfg!(unix) {
+            assert!(matches!(ep, IpcEndpoint::UnixSocket(_)));
+            assert!(ep.to_string().ends_with("raven-node.sock"));
+            assert!(ep.transport_available());
+        } else {
+            assert_eq!(ep, IpcEndpoint::Unsupported);
+            assert!(!ep.transport_available());
+        }
+    }
+
+    #[test]
+    fn doctor_presence_is_not_ready_or_send() {
+        let ready = classify_daemon_ready(
+            &present(),
+            None,
+            true,
+            true,
+            MessagingPath::ServerlessRvn1,
+        );
+        assert_eq!(
+            ready,
+            DaemonReady::NotReady {
+                reason: "status_unchecked".into()
+            }
+        );
+        assert_eq!(
+            classify_send_path(),
+            SendPathLabel::NotReady {
+                reason: "not_probed".into()
+            }
+        );
+    }
+
+    #[test]
+    fn doctor_ready_requires_status_identity_queue_and_serverless() {
+        let st = status_ok();
+        assert!(status_forward_pending_ok(&st));
+        assert_eq!(
+            classify_daemon_ready(
+                &present(),
+                Some(&st),
+                true,
+                true,
+                MessagingPath::ServerlessRvn1,
+            ),
+            DaemonReady::Ready
+        );
+        assert_eq!(
+            classify_daemon_ready(
+                &DaemonPresence::Down {
+                    reason: "dial failed".into()
+                },
+                Some(&st),
+                true,
+                true,
+                MessagingPath::ServerlessRvn1,
+            ),
+            DaemonReady::NotReady {
+                reason: "no_presence".into()
+            }
+        );
+        assert_eq!(
+            classify_daemon_ready(
+                &present(),
+                Some(&st),
+                false,
+                true,
+                MessagingPath::ServerlessRvn1,
+            ),
+            DaemonReady::NotReady {
+                reason: "identity_unusable".into()
+            }
+        );
+    }
+
+    #[test]
+    fn doctor_send_path_never_green_from_ready() {
+        match classify_send_path() {
+            SendPathLabel::NotReady { reason } => assert_eq!(reason, "not_probed"),
+            SendPathLabel::Unchecked => {}
+        }
+    }
+
+    #[test]
+    fn doctor_exit_codes_follow_core_gate() {
+        let ready = DaemonReady::Ready;
+        let not_ready = DaemonReady::NotReady {
+            reason: "no_presence".into(),
+        };
+        assert_eq!(doctor_exit_code(&ready, false, None, false), DOCTOR_EXIT_OK);
+        assert_eq!(
+            doctor_exit_code(&not_ready, false, None, false),
+            DOCTOR_EXIT_OK
+        );
+        assert_eq!(
+            doctor_exit_code(&not_ready, true, None, false),
+            DOCTOR_EXIT_HARD
+        );
+        assert_eq!(doctor_exit_code(&ready, true, None, false), DOCTOR_EXIT_OK);
+        assert_eq!(
+            doctor_exit_code(&ready, false, None, true),
+            DOCTOR_EXIT_HARD
+        );
+        assert_eq!(
+            doctor_exit_code(&ready, false, Some("identity_continuity"), false),
+            DOCTOR_EXIT_SECURITY
+        );
+    }
+
+    #[test]
+    fn doctor_security_hold_is_continuity_not_fastapi() {
+        assert_eq!(
+            doctor_security_hold(MessagingPath::LegacyFastApi, None),
+            None
+        );
+        assert_eq!(
+            doctor_security_hold(
+                MessagingPath::ServerlessRvn1,
+                Some("identity continuity violation")
+            )
+            .as_deref(),
+            Some("identity_continuity")
+        );
+    }
+
+    #[test]
+    fn doctor_identity_usable_is_not_file_present() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("identity.seed"), b"not-a-usable-seed").unwrap();
+        assert!(!identity_usable(dir.path()));
+    }
+
+    #[test]
+    fn doctor_identity_usable_false_on_locked_file_without_env() {
+        if std::env::var_os("RAVEN_IDENTITY_BACKEND").is_some_and(|v| v == "locked-file") {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("identity.backend"), b"locked-file\n").unwrap();
+        let report = raven_core::identity_usable(dir.path()).unwrap();
+        assert!(!report.usable);
+        assert!(report.consistency.blocks_identity_use());
+        assert!(!identity_usable(dir.path()));
+        assert_eq!(
+            classify_daemon_ready(
+                &present(),
+                Some(&status_ok()),
+                identity_usable(dir.path()),
+                true,
+                MessagingPath::ServerlessRvn1,
+            ),
+            DaemonReady::NotReady {
+                reason: "identity_unusable".into()
+            }
+        );
+    }
+
+    #[test]
+    fn doctor_messaging_path_refuses_legacy_fastapi() {
+        let err = assert_no_silent_fastapi(MessagingPath::LegacyFastApi).unwrap_err();
+        assert!(err.contains("FastAPI"));
+        let ready = DaemonReady::NotReady {
+            reason: "messaging_path=legacy_fastapi".into(),
+        };
+        assert_eq!(
+            doctor_exit_code(&ready, false, None, true),
+            DOCTOR_EXIT_HARD
         );
     }
 }
