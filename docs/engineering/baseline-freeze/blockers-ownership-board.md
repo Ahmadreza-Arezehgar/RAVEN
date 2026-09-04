@@ -25,7 +25,7 @@
 | Specialist path coverage | **PARTIAL** — B3 **CLEARED** (RAVEN#7); B4 FlatBuffer FFI still `*` |
 | Team bus factor | **Accepted (bot-only)** — founder sole GitHub member; escalate only if human reviewers added |
 | Founder Priority #1 | Terminal L/M/W + three-path matrices **above** O6 M1+ |
-| Critical path / O6 gate | **M0 ADR body ACK stands.** Appendix G5 ACK **withdrawn** until G5.2 verbatim-sync. **No M1 code.** M1–M3 production code gate **closed**. |
+| Critical path / O6 gate | **M0 ack gate ✅** — three-way ACK complete (Architect + Crypto + Identity; ADR body + Appendix G5) on [RAVEN#3](https://github.com/Raven-ASHCO/RAVEN/pull/3). Docs merge gate cleared from ack side. **No M1–M3 production code** until terminal-path board green. |
 | Performance baseline | **#19 SRE Perf** — IN PROGRESS (harvest; docs-only ≠ Proven) |
 | Menu-smoke | Sole CI via RAVEN#16 (Apple APPROVE + Core ACK); converge DONE with SRE; **Proven flip only after linked green CI** |
 
@@ -122,16 +122,14 @@ Default catch-all on both repos: `@Raven-ASHCO/architecture` + `@Raven-ASHCO/rel
 
 ## O6 milestone gate (M0 / RAVEN#3)
 
-**Architect ADR body ACK stands** (merged [RAVEN#3](https://github.com/Raven-ASHCO/RAVEN/pull/3) — ADR 0004 transport-scoped O6).
+**M0 ack gate ✅** — **three-way ACK complete** (Architect + Crypto + Identity; **ADR body + Appendix G5**) on merged [RAVEN#3](https://github.com/Raven-ASHCO/RAVEN/pull/3). Docs merge gate **cleared from the ack side**. Appendix G5 is **not** withdrawn or pending.
 
-**Appendix G5 ACK withdrawn** until **G5.2 verbatim-sync** to Identity [PR #5](https://github.com/Raven-ASHCO/RAVEN/pull/5) §2.2. **Crypto ACK** on crypto slices as recorded. **Identity G5 pending** that sync. Living board **does not** treat Appendix G5 as closed.
-
-**No M1 code.** M1–M3 **production** code gate **closed**. Do not schedule M1 eng until terminal board green (CEO override only).
+**Still closed:** M1–M3 **production** code until the **terminal-path board is green**. Do not schedule M1 eng until then (CEO override only). M0 ack ✅ ≠ terminal Proven ≠ license to land M1–M3 production code.
 
 | ID | Name | Window | Owners | Status |
 |----|------|--------|--------|--------|
-| **M0** | Spec freeze (ADR 0004) | W0–1 | Raven↔RDAP + Architect + Crypto + Identity | ADR **body ACK stands**; Appendix **G5 incomplete** (withdrawn pending G5.2 sync) |
-| **M1** | Identity bridge (same RVN1) | W1–3 | Identity + Node IPC + Python Runtime | **No M1 code.** Blocked on terminal board green + G5 close + M0 completeness |
+| **M0** | Spec freeze (ADR 0004) | W0–1 | Raven↔RDAP + Architect + Crypto + Identity | **✅ three-way ACK complete** (Architect + Crypto + Identity; ADR body + Appendix G5) on RAVEN#3 |
+| **M1** | Identity bridge (same RVN1) | W1–3 | Identity + Node IPC + Python Runtime | **No M1–M3 production code** until terminal-path board green |
 | **M2** | Sealed carrier via IPC/LanDial | W3–6 | Node IPC + Crypto + RDAP Protocol + Python Runtime | Blocked on M1 |
 | **M3** | Two-device encrypted harness | W6–8 | Adversarial QA + SRE + **Eng Program** + CLI DX | Blocked on M2 |
 | **M4** | Deprecate confidential claims for plaintext carriers | ∥ M3 | RDAP Protocol + Assurance | Parallel w/ M3; not separately greenlit |
