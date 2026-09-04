@@ -57,9 +57,11 @@ RDAP is a **fourth companion plane** (delegated agent tasks). It is **not** yet 
 
 | # | Pathway | What it is | What it is not | Cite |
 |---|---------|------------|----------------|------|
-| 1 | **Mesh relay** | BLE / nearby opaque forward of packed `RavenEnvelopeV1` (mock-BLE on headless node; GATT on flagged mobile when that tree lands) | A social graph; a plaintext radio; a place that learns contacts | ADR 0003 Bridge; `RAVEN_BLE_FRAMING_V1.md`; `MESH_PROTOCOL.md` (legacy JSON, deferred with iOS) |
-| 2 | **Bridge** | Untrusted **cross-transport** store-and-forward of the **same** envelope (DTN gateway). No conversation keys on the bridge. | Friend introducer; contact-graph broker; decrypt/re-seal | ADR 0002 (relays never decrypt); ADR 0003; SERVERLESS plane 3; `RAVEN_BRIDGE_V1.md` |
-| 3 | **Direct internet** | `InternetTransport` (V1 shipping: length-prefixed envelope, Ed25519 hello) and/or `raven-swarm` dial (target libp2p) | A Raven-operated inbox; transport auth as E2EE | ADR 0002; `RAVEN_TRANSPORT_INTERFACE_V1.md` |
+| 1 | **Mesh relay** | BLE / nearby opaque forward of packed `RavenEnvelopeV1` (mock-BLE on headless node; GATT on flagged mobile when that tree lands) | A social graph; a plaintext radio; a place that learns contacts; **not** libp2p **Circuit Relay v2** | ADR 0003 Bridge; `RAVEN_BLE_FRAMING_V1.md`; `MESH_PROTOCOL.md` (legacy JSON, deferred with iOS) |
+| 2 | **Bridge** | Untrusted **cross-transport** store-and-forward of the **same** envelope (DTN gateway). No conversation keys on the bridge. | Friend introducer; contact-graph broker; decrypt/re-seal; **not** Circuit Relay v2 | ADR 0002 (relays never decrypt); ADR 0003; SERVERLESS plane 3; `RAVEN_BRIDGE_V1.md` |
+| 3 | **Direct internet** | `InternetTransport` (V1 shipping: length-prefixed envelope, Ed25519 hello) and/or `raven-swarm` dial (target libp2p) | A Raven-operated inbox; transport auth as E2EE | ADR 0002; `RAVEN_TRANSPORT_INTERFACE_V1.md`; [`docs/network/raven-swarm-connectivity-matrix.md`](https://github.com/Raven-ASHCO/RAVEN/blob/main/docs/network/raven-swarm-connectivity-matrix.md) §0 (on `main`) |
+
+**Mesh relay ≠ Circuit Relay v2.** Pathway 1 is BLE/nearby (or `mock_ble`) opaque envelope forward. libp2p Circuit Relay v2 is an experimental NAT hop in `raven-swarm-connectivity-experimental` only (`experimental-nat-connectivity`; production-disabled). Do not conflate them. `raven_core::transport` `PathChoice::Relay` is a **policy bit**, not Circuit Relay v2 (connectivity matrix §0).
 
 Do not collapse: Trust/friendship stays local pin + OOB (plane 1). A mesh hop, a bridge hop, and an internet dial are interchangeable **carriers** of one opaque object (SPEC invariants 5–6) — not three products and not three identity systems.
 
@@ -213,7 +215,7 @@ These are **architecture rules**. Some are already enforced by Cargo; others are
 | `node/crates/raven-node/src/bridge_run.rs` | LAN + mock-BLE opaque forward |
 | `node/crates/raven-node/src/lan_direct.rs` | IPC `LanDial` Noise path |
 | `node/crates/raven-node/src/corebluetooth_exp.rs` | Experimental macOS CoreBluetooth seam (feature `corebluetooth`) |
-| `node/crates/raven-swarm` | libp2p TCP/QUIC + Noise + Yamux + Kad `/raven/kad/1.0.0` |
+| `node/crates/raven-swarm` | libp2p TCP/QUIC + Noise + Yamux + Kad `/raven/kad/1.0.0` — Sprint 0 **Role #6** (P2P / libp2p Network) |
 | `node/crates/raven-swarm/src/mailbox.rs` | Feature-gated `/raven/offline-mailbox/1.0.0` |
 | `node/crates/raven-swarm/src/connectivity.rs` | Feature-gated AutoNAT / relay / DCUtR |
 | `node/crates/ash` | Product CLI: contacts, policy, IPC client, spawn daemon |
@@ -376,6 +378,6 @@ Layer-specific “must remain true”:
 |--------|---------|--------|
 | Allowed/forbidden crate edge | #1 | Architecture Board (#2, #4, #7) |
 | IPC ops | #7 Core Runtime | #1 or #3 |
-| Swarm protocols | #9 / #10 | #2 if wire |
+| Swarm / libp2p (`raven-swarm`) | **Role #6** (P2P / libp2p Network — Sprint 0 agent assignment; freeze [`org-structure.md`](org-structure.md) lists this surface under **#9** Network Lead; CODEOWNERS `@Raven-ASHCO/network`) | #2 if wire |
 | RDAP carrier onto raven-node | #4 Interop | #14 + #2; #17 if security |
 | Crypto/ATSAM path | #5 | Security Board #17 — **no R3 self-merge** |

@@ -66,10 +66,12 @@ For each boundary:
 | **Untrusted** | Every peer, relay, store, DHT participant, BLE neighbor, ISP, Bridge operator. FastAPI **must not** be on this path. |
 | **Must validate** | Size → strict `RVN1` decode → TTL → route/session → outer auth → AEAD open → transactional commit (`THREAT_MODEL` §3.3 intended order). Caps are generic (`ble`/`internet`/`relay`/`store`/`bridge`) — never contact graphs (ADR 0002). BLE: `validate_opaque_rvn1` before TX (`RAVEN_BLE_FRAMING_V1.md`). Swarm mailbox: endpoint-supplied 16-byte `store_tag`, no derive-from-routing-tag (`mailbox.rs`). |
 | **Evidence** | ADR 0002; `RAVEN_TRANSPORT_INTERFACE_V1.md`; `RAVEN_BRIDGE_V1.md`; `RAVEN_BLE_FRAMING_V1.md`; `docs/MESH_PROTOCOL.md` (legacy GATT JSON); `raven-node/src/main.rs` frame limits; `raven-swarm`. |
-| **Owners** | #9 Network, #10 Transport, #2 Protocol (wire), #12 Apple (GATT), #17 for hold/errata. |
+| **Owners** | **Role #6** P2P / libp2p Network (`raven-swarm`; Sprint 0 assignment — freeze org-structure numbers this **#9**); #10 Transport (BLE/framing); #2 Protocol (wire); #12 Apple (GATT); #17 for hold/errata. Identity Lead remains freeze-org **#6** on TB3 — not the swarm owner. |
 | **THREAT_MODEL** | §3.1 malicious relay; §3.2 store; §3.3 malicious peer; §3.4 passive ISP; §3.8/3.9 Sybil/eclipse; §3.15 malformed packet; §3.17 traffic analysis (out of scope). |
 
 **Two encryption layers (design):** transport Noise/TLS ≠ Raven E2EE. Relays never decrypt sealed content (ADR 0002).
+
+**Mesh relay ≠ Circuit Relay v2.** TB2 “mesh / BLE” is the founder delivery pathway (nearby/`mock_ble` opaque forward). libp2p Circuit Relay v2 is a different, production-disabled NAT mechanism — see [`architecture-dependency-map.md` §2.1](architecture-dependency-map.md) and [`docs/network/raven-swarm-connectivity-matrix.md`](https://github.com/Raven-ASHCO/RAVEN/blob/main/docs/network/raven-swarm-connectivity-matrix.md) §0 (on `main`).
 
 **Legacy vs RVN1:** `docs/MESH_PROTOCOL.md` is SoT for **shipped iOS GATT JSON** (including `Data.hashValue` chunk-key quirk). `RAVEN_BLE_FRAMING_V1.md` is SoT for **RVN1** (`RBF1` chunks). Do not mix parsers.
 
@@ -203,7 +205,7 @@ For each boundary:
 | Boundary | Primary role(s) | Board / second |
 |----------|-----------------|----------------|
 | TB1 IPC | #7, #1 | #17 if authz |
-| TB2 Network | #9, #10, #2 | #12 BLE; #17 errata |
+| TB2 Network | **Role #6** P2P (`raven-swarm`); #10 framing; #2 | #12 BLE; #17 errata |
 | TB3 Crypto/identity | #5, #6 | Security Board #17; #3 if spec version |
 | TB3/TB5 OPEN-ID-P0 denylist fail-open | **#6** | **#17** review still requested; **#1** ACK’d PR#5 §2.4 + P0 (no code approval; code held) |
 | TB4 RDAP runtime | #14, #15, #4 | #17 if interop security; #6 if identity merge |
