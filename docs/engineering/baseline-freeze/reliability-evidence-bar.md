@@ -21,11 +21,21 @@ Org chart [`org-structure.md`](org-structure.md) still titles #19 as Release Eng
 | Surface | Owner | Owns |
 |---------|-------|------|
 | Evidence tiers, named CI jobs, what may be labeled Proven | **#19 SRE Perf** | This document; workflow steps that are reliability *evidence* (queue 10k, `bridge_v1`, path-row labels) |
-| **B11 / B12 evidence exclusion** (what must not be labeled Proven) | **#19 SRE Perf** (co-own) | Keep `install.sh`, Win `127.0.0.1:7420` loopback, and doctor-alone off the Proven list |
-| Operator retire / relabel of `install.sh` | **CLI DX** (co-own) | [PR #17](https://github.com/Raven-ASHCO/RAVEN/pull/17) fatal-exit / README one-liner removal — **in flight**, not Proven |
+| **B11** evidence exclusion | **#19 SRE Perf** (co-own) | `install.sh` stays off Proven (CI exclusion). CLI DX [PR #17](https://github.com/Raven-ASHCO/RAVEN/pull/17) is fail-closed relabel, not Proven |
+| **B12** evidence exclusion | **#19 SRE Perf** | Windows `127.0.0.1:7420` loopback ≠ path Proven. **Not B11.** |
+| Operator retire / relabel of `install.sh` (**B11** only) | **CLI DX** (co-own) | [PR #17](https://github.com/Raven-ASHCO/RAVEN/pull/17) fatal-exit / README one-liner removal — **in flight**, not Proven |
 | Operator how-to, `ash doctor` / install exit codes, how to run `reliability_matrix_20.sh` | **CLI DX** | Stubs at the bottom of this file; `ash` menu UX; install-script operator docs |
 
 **Menu-smoke CI (linux + macOS):** owned by **CLI DX PR #16** (`cursor/ash-menu-smoke-linux-ci-a976`, agent `bc-097f7c8d`). That PR wires `node/scripts/ash_menu_smoke.sh` into `rust-linux` **and** `rust-macos`. This PR does **not** add those steps. Until #16 is merged to `main`, menu-smoke is **pending / in-flight** — do not claim green.
+
+### Board IDs (exact — do not swap)
+
+| ID | Meaning | Not this ID |
+|----|---------|-------------|
+| **B11** | `node/scripts/install.sh` **non-evidence** (wrong remote / `unsafe-demo-crypto` / ad-hoc sign). CLI DX [PR #17](https://github.com/Raven-ASHCO/RAVEN/pull/17) fail-closed + this bar’s CI exclusion. Still **not Proven**. | Windows loopback |
+| **B12** | Windows `127.0.0.1:7420` loopback ≠ Proven path evidence | `install.sh` |
+
+**Also exclude as Proven (no new board ID):** doctor-alone (`ash doctor` exit 0 ≠ send), `install.sh` (**B11**), Win loopback (**B12**).
 
 Related:
 
@@ -93,11 +103,11 @@ No evidence on that OS’s CI job, or the path is hardware / portal / public-Int
 
 Detailed exit-code tables and operator wording live in the CLI DX appendix stub (source: [PR #22](https://github.com/Raven-ASHCO/RAVEN/pull/22)). This section only locks the evidence rule.
 
-**Also not Proven (do not relabel):**
+**Also exclude as Proven (do not relabel):**
 
-- **B11** — `node/scripts/install.sh` + CLI DX [PR #17](https://github.com/Raven-ASHCO/RAVEN/pull/17) fatal-exit (see below)
-- **B12** — Windows `127.0.0.1:7420` loopback (see below)
-- doctor-alone (exit 0 ≠ send)
+- doctor-alone (`ash doctor` exit 0 ≠ send)
+- **B11** — `install.sh` + CLI DX [PR #17](https://github.com/Raven-ASHCO/RAVEN/pull/17) fail-closed (see below)
+- **B12** — Windows `127.0.0.1:7420` loopback (see below; **not B11**)
 
 ---
 
