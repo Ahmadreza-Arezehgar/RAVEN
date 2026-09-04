@@ -1,6 +1,6 @@
 # Living blockers / ownership status — Sprint 0
 
-**As of:** 2026-09-04 (Eng Program refresh after rebase onto latest `main`)  
+**As of:** 2026-09-04 ~13:45 Europe/Madrid (Eng Program refresh after rebase onto latest `main`)  
 **Owner:** Eng Program (#2)  
 **Audience:** Manager (CEO)  
 **Scope:** Ownership freeze only — no feature velocity metrics  
@@ -41,6 +41,20 @@ Org-create / personal-account CODEOWNERS blockers from morning audit are **clear
 4. **Terminal first:** do not schedule M1 eng until terminal board green (CEO override only). Flag premature Raven↔RDAP / M1–M3 production PRs.
 5. **Menu-smoke merge order:** #20 **done** → land #16 when green → #19 rebases **preserving** menu-smoke.
 6. Keep this board under `docs/engineering/baseline-freeze/` (this PR).
+
+---
+
+## CLI DX in-flight
+
+| Track | Status | PR / next | Notes |
+|-------|--------|-----------|-------|
+| Windows MSVC `ash` `Command` ungate | **MERGED** via [RAVEN#20](https://github.com/Raven-ASHCO/RAVEN/pull/20) | #20 on `main` | **Not** Blocked. **Not** Platform PR1. Compile ungate only — **not** terminal Proven. |
+| Menu-smoke (Linux + macOS) | In flight | [RAVEN#16](https://github.com/Raven-ASHCO/RAVEN/pull/16) | Apple APPROVE + Core ACK; SRE converge DONE. **Proven flip only after linked green CI.** |
+| `install.sh` fail-close (B11) | In flight (draft) | [RAVEN#17](https://github.com/Raven-ASHCO/RAVEN/pull/17) | Hazard retire / fail-close. **Not** install Proven. |
+| Core doctor axes (presence / ready / send_path) | In flight | [RAVEN#22](https://github.com/Raven-ASHCO/RAVEN/pull/22) | `ash doctor` exit 0 ≠ send Proven. |
+| Doctor identity-backend mismatch | In flight | [RAVEN#23](https://github.com/Raven-ASHCO/RAVEN/pull/23) | Identity usable / `daemon_ready` honesty. |
+| Windows `doctor` → pwsh smoke → `windows_service.ps1` | Next (after #20) | B10 | Named-pipe IPC = **PR2**. Docs / parse-only ≠ Proven. |
+| Win loopback `127.0.0.1:7420` | Excluded (B12) | — | Loopback ≠ WAN / named-pipe / terminal Proven. |
 
 ---
 

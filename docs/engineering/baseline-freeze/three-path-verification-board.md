@@ -1,6 +1,6 @@
 # Three-path verification board — Sprint 0
 
-**As of:** 2026-09-04 (Eng Program)  
+**As of:** 2026-09-04 ~13:45 Europe/Madrid (Eng Program)  
 **Owner:** Eng Program (#2) · consult SRE Perf (#19), P2P Network (#6), BLE Transport (#9)  
 **Scope:** Honesty board for `mesh` | `bridge` | `direct` — **no invented reliability numbers**
 
@@ -8,13 +8,13 @@ Companion: [`blockers-ownership-board.md`](blockers-ownership-board.md) · evide
 
 ---
 
-## Founder rule (try phase = execute)
+## FOUNDER RULE (try phase = execute)
 
-A cell is **Proven** only with a **linked green CI run URL** or an **agent-executed smoke** (command + recorded outcome).
+**Proven** = **linked green CI** run URL **or** **agent-executed smoke** (command + outcome).
 
 **Docs-only ≠ Proven.** ADR text, gap notes, matrices, and this board **do not** flip a cell to Proven.
 
-Applies to **terminal reliability** (Win / macOS / Linux) **and** these three paths.
+Applies to **terminal reliability** (Win / macOS / Linux) **and** these three paths (`mesh` | `bridge` | `direct`).
 
 ---
 
