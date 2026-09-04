@@ -669,6 +669,7 @@ jobs:
           $p = "scripts/install/windows_service.ps1"
           if (-not (Test-Path $p)) { throw "missing $p" }
           # Parse-only: ensure script is well-formed PowerShell
+          $errs = $null
           $null = [System.Management.Automation.Language.Parser]::ParseFile(
             (Resolve-Path $p), [ref]$null, [ref]$errs)
           if ($errs) { $errs | ForEach-Object { $_ }; throw "parse errors" }
