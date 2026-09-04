@@ -14,7 +14,7 @@ Status legend: `NOT STARTED` · `IN PROGRESS` · `BLOCKED` · `DONE` · `WAIVED`
 | Current protocol versions | #2, #3, #14 | IN PROGRESS | Inventory: `protocol/PROTOCOL_VERSIONS.md` (linked from `protocol/SPEC.md`); production-disabled evidence in `protocol/RAVEN_INTEROPERABILITY_MATRIX.md` §5. Docs only; CI YAML alignment is DevSecOps. |
 | Experimental-only features | #2, #14, #10 | NOT STARTED | |
 | Known security / interop / Raven↔RDAP gaps | #4, #17, #18 | NOT STARTED | |
-| Performance baseline | #11 | NOT STARTED | |
+| Performance baseline | #19 SRE Perf | IN PROGRESS | Harvest landed [RAVEN#26](https://github.com/Raven-ASHCO/RAVEN/pull/26): [`perf-baseline-2026-09-04.md`](perf-baseline-2026-09-04.md) + [`reliability-evidence-bar.md`](reliability-evidence-bar.md). Soft budgets stay draft. Docs-only ≠ Proven. |
 | 90-day roadmap | #1, Eng Mgmt | IN PROGRESS | Outcomes O1–O7 in `07-ninety-day-outcomes.md` |
 
 ## Exit criteria for feature work

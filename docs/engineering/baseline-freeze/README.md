@@ -43,6 +43,8 @@ Feature PRs that touch R2/R3 surfaces **must not** land until the Sprint 0 check
 | [`reliability-evidence-bar.md`](reliability-evidence-bar.md) | Sprint 0 terminal reliability tiers (Proven / substitute / Blocked); Role #19 SRE Perf; CLI DX operator appendix. **`reliability_10k` on macOS/Windows = queue durability only, not a path proof.** Path-claim sibling: [`terminal-path-reliability.md`](terminal-path-reliability.md). |
 | [`terminal-path-reliability.md`](terminal-path-reliability.md) | Path-claim governance (honest bar); recorded Bridge / mesh / Internet / cross-OS claims as of 2026-09-04; Role #19 SRE Perf |
 | [`tickets/cross-os-bridge-matrix.md`](tickets/cross-os-bridge-matrix.md) | Design-only ticket: minimal cross-OS Bridge CI matrix (`bridge_v1` + `bridge_abc`/smoke) — no implementation in that file |
+| [`blockers-ownership-board.md`](blockers-ownership-board.md) | Living Sprint 0 blockers / ownership board (Eng Program) |
+| [`three-path-verification-board.md`](three-path-verification-board.md) | Manager SoT A/B/C + founder Proven rule; mesh \| bridge \| direct |
 | Live CODEOWNERS | [`.github/CODEOWNERS`](../../../.github/CODEOWNERS) (RAVEN); RDAP repo `.github/CODEOWNERS` |
 
 ### Sprint 0 architecture drafts (#1)
@@ -59,6 +61,8 @@ These four files are **R0 documentation**. They do **not** authorize R3 crypto, 
 **Try-phase (normative, this PR):** docs, the architecture map, and ADRs are **not** pass evidence. A pathway is **pass** only when **Delivered + ACK + dedup + opaque** is shown on a **named** path, on **≥2 OS** or with Architecture **and** Security **WAIVE**, with labels **per OS × path**. Do not collapse the three planes (mesh / bridge / direct). **Do not conflate software vs hardware.** Cross-link: [`terminal-path-reliability.md`](terminal-path-reliability.md), [`reliability-evidence-bar.md`](reliability-evidence-bar.md). **Bridge** is **sealed-ACK-only / opaque**: forward envelopes only — **must not decrypt or mint endpoint ACKs**.
 
 **Identity (merged on `main` via PR #5):** [`docs/engineering/SPRINT0_IDENTITY_THREAT_MODEL.md`](../SPRINT0_IDENTITY_THREAT_MODEL.md), [`docs/engineering/G5_CROSS_STACK_REVOKE_POLICY.md`](../G5_CROSS_STACK_REVOKE_POLICY.md). Architect ACK: §2.4 + OPEN-ID-P0 is a **documented defect**, not a code approval. Soft-load fail-open stays **held**.
+
+Living Eng Program boards (this PR): [`blockers-ownership-board.md`](blockers-ownership-board.md) · [`three-path-verification-board.md`](three-path-verification-board.md) — FOUNDER try-phase; Manager SoT A/B/C; **M0 docs done** `ce087c7d9cfb` (Architect **full ACK** body+G5; Identity **full ACK** body+G5 pin `5d39099907ea` (= `main`); Crypto **ACK**; **only** M1–M3 code remains gated).
 
 ## Non-goals
 
