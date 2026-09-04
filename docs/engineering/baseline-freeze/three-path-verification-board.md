@@ -67,7 +67,7 @@ Applies to **terminal reliability** (Win / macOS / Linux) **and** these three pa
 
 Terminal Win / macOS / Linux reliability **and** this three-path matrix sit **above O6 M1+**.
 
-**Do not schedule M1 engineering until the terminal board is green** (CEO override only). M1–M3 production code gate remains **closed** on the blockers board.
+**Do not schedule M1 engineering until the terminal board is green** (CEO override only). M0 docs ack is **✅ CLOSED / MERGED** ([RAVEN#3](https://github.com/Raven-ASHCO/RAVEN/pull/3) `ce087c7d9cfb`; three-way ACK **final**). M1–M3 **production** code remains **closed** (terminal + HOLD).
 
 ---
 
@@ -96,7 +96,7 @@ Terminal Win / macOS / Linux reliability **and** this three-path matrix sit **ab
 ## Non-claims
 
 - This file does **not** enable required CI checks.
-- This file does **not** greenlight M1–M3 production code.
+- This file does **not** greenlight M1–M3 production code (terminal + HOLD). M0 ADR 0004 is already **MERGED** (`ce087c7d9cfb`).
 - Soft soak / fail-rate bounds wait for the SRE Perf (#19) snapshot ([`perf-baseline-2026-09-04.md`](perf-baseline-2026-09-04.md) — harvest in flight; docs-only ≠ Proven).
 - B11 `install.sh` ([RAVEN#17](https://github.com/Raven-ASHCO/RAVEN/pull/17)) is a hazard track, **not** install Proven.
 - Path A lock: do **not** call mesh relay reliable. Localhost reservation only; circuit/WAN/auto-fallback/DCUtR **NOT proven**; hop server missing; multi-NAT **BLOCKED_HARDWARE**; NAT hold intact.
