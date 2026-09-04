@@ -1,6 +1,6 @@
 # Living blockers / ownership status — Sprint 0
 
-**As of:** 2026-09-04 ~13:15 Europe/Madrid (Manager actions accepted)  
+**As of:** 2026-09-04 (Eng Program refresh after rebase onto latest `main`)  
 **Owner:** Eng Program (#2)  
 **Audience:** Manager (CEO)  
 **Scope:** Ownership freeze only — no feature velocity metrics  
@@ -8,27 +8,39 @@
 
 ---
 
+## Founder rules (try phase = execute)
+
+**Proven cells** need a **linked green CI run URL** or an **agent-executed smoke** (command + outcome). **Docs-only ≠ Proven.** Applies to **terminal reliability** and the **three paths** (`mesh` | `bridge` | `direct`). See [`three-path-verification-board.md`](three-path-verification-board.md).
+
+**Founder Priority #1:** Terminal Win / macOS / Linux reliability **and** the three-path matrices sit **above O6 M1+**. **Do not schedule M1 eng until the terminal board is green** (CEO override only).
+
+---
+
 ## Executive snapshot
 
 | Area | State |
 |------|--------|
-| Org + teams + CODEOWNERS + `main` protection | **DONE** (Raven-ASHCO live today) |
-| Required CI checks on `main` | **OPEN** — contexts empty on both repos |
-| Specialist path coverage | **PARTIAL** — catch-all `*` + several specialist gaps |
+| Org + teams + CODEOWNERS + `main` protection | **DONE** (Raven-ASHCO live) |
+| Required CI checks on `main` | **OPEN (B1)** — contexts still empty; RAVEN#19 CI-align is draft; **do not enable** until green + Manager GO |
+| Specialist path coverage | **PARTIAL** — B3 **CLEARED** (RAVEN#7); B4 FlatBuffer FFI still `*` |
 | Team bus factor | **Accepted (bot-only)** — founder sole GitHub member; escalate only if human reviewers added |
-| Open PRs | **0** both repos |
-| Review-latency baseline | **n=1** (see below) — not yet meaningful |
-| Critical path / O6 gate | **M0 ADR only greenlit** (transport-scoped). M1 identity → M2 IPC seal → M3 harness blocked until M0. Flag feature-ahead-of-M0. |
+| Founder Priority #1 | Terminal L/M/W + three-path matrices **above** O6 M1+ |
+| Critical path / O6 gate | **M0 ADR body ACK stands.** Appendix G5 ACK **withdrawn** until G5.2 verbatim-sync. **No M1 code.** M1–M3 production code gate **closed**. |
+| Performance baseline | **#19 SRE Perf** — IN PROGRESS (harvest; docs-only ≠ Proven) |
+| Menu-smoke | Sole CI via RAVEN#16 (Apple APPROVE + Core ACK); converge DONE with SRE; **Proven flip only after linked green CI** |
 
-Org-create / personal-account CODEOWNERS blockers from morning audit are **cleared**.
+Org-create / personal-account CODEOWNERS blockers from morning audit are **cleared**. **B3 cleared** via merged RAVEN#7.
 
-## Manager actions (2026-09-04) — Eng Program owner
+---
 
-1. **B1:** Track with DevSecOps — propose exact required check names **after next green `main` runs**; do **not** enable until names verified. (RAVEN: no post-transfer green runs yet; workflows include Raven Serverless Node, Raven Lab Gates, Raven iOS Protocol, Raven A2A Agent Team, build-raven-windows. RDAP recent success check name: `RDAP selftest`.)
-2. **B3:** Ask Crypto + Core for CODEOWNERS line on `node/crates/raven-mlkem768-incremental-ffi/` → `@Raven-ASHCO/crypto` + `@Raven-ASHCO/core`.
-3. **B2:** Documented accepted for bot-only org; escalate only if human reviewers added.
-4. Continue flagging premature Raven↔RDAP integration PRs while B1/B3 open.
-5. Land this board under `docs/engineering/baseline-freeze/` on RAVEN via docs PR.
+## Manager / Eng Program actions (current)
+
+1. **B1:** RAVEN#19 CI-align **open (draft)**. Provisional pin set **after** next green `main` / PR runs. **Do not enable** required checks until names verified green **and** Manager GO.
+2. **B3 CLEARED:** merged RAVEN#7 — `node/crates/raven-mlkem768-incremental-ffi/` → `@Raven-ASHCO/crypto` + `@Raven-ASHCO/core`.
+3. **B2:** Accepted for bot-only org; escalate only if human reviewers added.
+4. **Terminal first:** do not schedule M1 eng until terminal board green (CEO override only). Flag premature Raven↔RDAP / M1–M3 production PRs.
+5. **Menu-smoke merge order:** #20 **done** → land #16 when green → #19 rebases **preserving** menu-smoke.
+6. Keep this board under `docs/engineering/baseline-freeze/` (this PR).
 
 ---
 
@@ -36,16 +48,19 @@ Org-create / personal-account CODEOWNERS blockers from morning audit are **clear
 
 | ID | Blocker | Age | Owner (bot / role) | Severity | Notes |
 |----|---------|-----|--------------------|----------|-------|
-| B1 | Required status checks empty on `main` | 0d (since protection landed) | DevSecOps (#20) + Architect (#1) | High | Protection exists; `checks`/`contexts` = `[]` on RAVEN + RDAP. Workflows exist but not enforced. |
-| B2 | Bus factor = 1 on all 12 GitHub teams | 0d | Manager + Eng Program | **Accepted (bot-only org)** | Manager 2026-09-04: accepted for bot-only org for now. Escalate **only** if human reviewers are added. |
-| B3 | Crypto FFI crate not specialist-owned | 0d | Crypto ATSAM (#3) + Rust Core (#5) | High (R3-adjacent) | `node/crates/raven-mlkem768-incremental-ffi/` falls to `*` (`architecture`+`release`) only. |
+| B1 | Required status checks empty on `main` | 0d (since protection landed) | DevSecOps (#20) + Architect (#1) | High | Protection exists; `checks`/`contexts` = `[]` on RAVEN + RDAP. RAVEN#19 CI-align **open (draft)**. Provisional pin after green; **not enabling** until green + Manager GO. |
+| B2 | Bus factor = 1 on all 12 GitHub teams | 0d | Manager + Eng Program | **Accepted (bot-only org)** | Escalate **only** if human reviewers are added. |
+| B3 | Crypto FFI crate not specialist-owned | — | Crypto ATSAM (#3) + Rust Core (#5) | **CLEARED** | **CLEARED** via merged [RAVEN#7](https://github.com/Raven-ASHCO/RAVEN/pull/7) — `raven-mlkem768-incremental-ffi` → `crypto` + `core`. |
 | B4 | FlatBuffer FFI crate not specialist-owned | 0d | Rust Core (#5) + Protocol Spec (#4) | Med | `node/crates/raven-fb-ffi/` → `*` only. |
-| B5 | Platform trees missing vs CODEOWNERS | 0d | Apple (#10), Windows (#11) | Med | CODEOWNERS name `/ios-native/`, `/RAVEN-Windows/` but those trees are **absent** on `main`. |
+| B5 | Platform trees missing vs CODEOWNERS | 0d | Apple (#10), Windows (#11) | Med | `/ios-native/`, `/RAVEN-Windows/` **absent** on `main` (gap notes #8 / #10). |
 | B6 | No GitHub team for SRE/Perf | 0d | SRE Perf (#19) + Manager | Med | No `@Raven-ASHCO/perf` (or similar). |
-| B7 | Review-latency baseline under-sampled | 0d | Eng Program (#2) | Low | Only RAVEN#1 merged; 0 reviews; author==merger. |
-| B8 | Sprint 0 checklist rows still mostly NOT STARTED (paper pack) | ~0–1d | Domain leads | Med | Architecture map, trust boundaries, etc. still open in baseline pack. **Performance baseline is IN PROGRESS** — evidence: [`docs/engineering/baseline-freeze/perf-baseline-2026-09-04.md`](perf-baseline-2026-09-04.md) (SRE Perf owning; harvest in flight). |
+| B7 | Review-latency baseline under-sampled | 0d | Eng Program (#2) | Low | Early sample was RAVEN#1 self-merge. More PRs merged today; **SLA still undefined** — exclude self-merges. Do not invent latency numbers here. |
+| B8 | iOS / Apple tree landing (Phase 1+) | — | Apple (#10) + Eng Program | **PARKED** | **Phase 1+ PARKED** — Windows terminal **>** iOS landing this phase. See `apple-tree-gap.md`. |
+| B10 | Windows terminal path after MSVC ungate | 0d | Windows (#11) + CLI DX (#12) + SRE Perf (#19) | High (Priority #1) | RAVEN#20 **MERGED** (ash MSVC `Command` ungate). **Next:** `doctor` → pwsh smoke → `windows_service.ps1`. Named-pipe IPC = **PR2**. Companion [RAVEN#21](https://github.com/Raven-ASHCO/RAVEN/pull/21) Class A `full-braid-lab` cfg **merged** but still **CI-held** (lab feature; not a Proven terminal cell). |
+| B11 | `install.sh` hazard | 0d | CLI DX (#12) + DevSecOps (#20) | High | [RAVEN#17](https://github.com/Raven-ASHCO/RAVEN/pull/17) (draft) — fail-close install path. **Not** install evidence; docs/PR ≠ Proven. |
+| B12 | Win loopback `127.0.0.1:7420` | 0d | Windows (#11) + Node IPC (#8) | Med | Loopback bind/listen is **not** WAN / named-pipe Proven. Docs-only ≠ Proven. |
 
-**Cleared today:** GitHub Org missing · repos on personal account · no CODEOWNERS · unprotected `main` · no teams.
+**Cleared:** GitHub Org missing · repos on personal account · no CODEOWNERS · unprotected `main` · no teams · **B3** (RAVEN#7).
 
 ---
 
@@ -55,15 +70,15 @@ Org-create / personal-account CODEOWNERS blockers from morning audit are **clear
 |---|-----|----------------|-------------------|
 | 1 | Architect | `architecture` | ADR/docs, default `*`, architecture board |
 | 2 | Eng Program | _(none — process)_ | Blockers board, dependency age, review latency, critical path |
-| 3 | Crypto ATSAM | `crypto` | ATSAM protocol/*, atsam*/hybrid*, shared-vectors atsam |
+| 3 | Crypto ATSAM | `crypto` | ATSAM protocol/*, atsam*/hybrid*, shared-vectors atsam, **mlkem incremental FFI (B3 cleared)** |
 | 4 | Protocol Spec | `protocol` | `/protocol/`, wire meaning, SPEC |
-| 5 | Rust Core | `core` | `raven-core` (non-crypto slices), `ash` |
+| 5 | Rust Core | `core` | `raven-core` (non-crypto slices), `ash`, mlkem FFI (with crypto) |
 | 6 | P2P Network | `network` | `raven-swarm`, bridge/forward_queue |
 | 7 | DTN Forward | `network` (+ assurance on queue) | forward_queue / mailbox / store-and-forward semantics |
 | 8 | Node IPC | `core` + `identity` | `raven-node` (incl. `ipc_server.rs`), IPC stability |
 | 9 | BLE Transport | `transport` (+ apple on BLE) | `ble*` framing/adapters |
-| 10 | Apple Platform | `apple` | `/ios-native/` **(path missing)** |
-| 11 | Windows Platform | `windows` | `/RAVEN-Windows/` **(path missing)** |
+| 10 | Apple Platform | `apple` | `/ios-native/` **(path missing; B8 Phase 1+ PARKED)** |
+| 11 | Windows Platform | `windows` | `/RAVEN-Windows/` **(path missing)**; terminal path is Priority #1 (B10) |
 | 12 | CLI DX | `core` / `release` | `node/crates/ash` |
 | 13 | RDAP Protocol | `rdap` + `protocol` | RDAP repo protocol + task lifecycle |
 | 14 | Python Runtime | `rdap` | `team_agents` server/client/executor/task_store |
@@ -71,7 +86,7 @@ Org-create / personal-account CODEOWNERS blockers from morning audit are **clear
 | 16 | LLM Runtime | `rdap` | `team_agents/llm.py` |
 | 17 | Raven↔RDAP | `architecture` + `rdap` + `assurance` | Interop contract; **gates critical path** |
 | 18 | Adversarial QA | `assurance` | Fuzz/property/fault; shared-vectors assurance |
-| 19 | SRE Perf | **NO TEAM** | Delivery latency / queue depth — **unowned in GitHub** |
+| 19 | SRE Perf | **NO TEAM** | Delivery latency / queue depth / **Performance baseline** / reliability evidence bar — **unowned as a GitHub team** |
 | 20 | DevSecOps | `release` + `assurance` | `.github/`, branch protection, SBOM/CI |
 
 Default catch-all on both repos: `@Raven-ASHCO/architecture` + `@Raven-ASHCO/release` (RDAP also `@rdap`).
@@ -82,39 +97,56 @@ Default catch-all on both repos: `@Raven-ASHCO/architecture` + `@Raven-ASHCO/rel
 
 | Path | Repo | Effective owners today | Gap |
 |------|------|------------------------|-----|
-| `node/crates/raven-mlkem768-incremental-ffi/**` | RAVEN | `*` only | Should be `crypto` (+ core) |
-| `node/crates/raven-fb-ffi/**` | RAVEN | `*` only | Should be `core` / `protocol` |
+| `node/crates/raven-mlkem768-incremental-ffi/**` | RAVEN | `crypto` + `core` | **B3 CLEARED** (RAVEN#7) |
+| `node/crates/raven-fb-ffi/**` | RAVEN | `*` only | Should be `core` / `protocol` (B4) |
 | `node/third_party/**` | RAVEN | `*` only | Vendored crypto/sqlite — need `crypto`/`release` eyes |
 | `node/adr/**` | RAVEN | `*` (docs ADR is under `/docs/adr/` only) | Align or extend CODEOWNERS |
-| `/ios-native/**`, `/RAVEN-Windows/**` | RAVEN | Named but **trees missing** | Create dirs or trim CODEOWNERS |
-| Perf / SLO docs & gates | both | none | No team for #19 |
+| `/ios-native/**`, `/RAVEN-Windows/**` | RAVEN | Named but **trees missing** | B8 Phase 1+ **PARKED**; B5 / B9 landing later |
+| Perf / SLO docs & gates | both | none (no `perf` team) | No GitHub team for #19 |
 
 ---
 
-## O6 milestone gate (Manager greenlight + Raven↔RDAP dates 2026-09-04)
+## O6 milestone gate (M0 / RAVEN#3)
 
-**Greenlit now:** **M0 only** — ADR 0004 / spec freeze, **transport-scoped** O6.
-**Merge gate:** no M1–M3 **production** code until Architect + Crypto + Identity **ack ADR 0004**.
+**Architect ADR body ACK stands** (merged [RAVEN#3](https://github.com/Raven-ASHCO/RAVEN/pull/3) — ADR 0004 transport-scoped O6).
+
+**Appendix G5 ACK withdrawn** until **G5.2 verbatim-sync** to Identity [PR #5](https://github.com/Raven-ASHCO/RAVEN/pull/5) §2.2. **Crypto ACK** on crypto slices as recorded. **Identity G5 pending** that sync. Living board **does not** treat Appendix G5 as closed.
+
+**No M1 code.** M1–M3 **production** code gate **closed**. Do not schedule M1 eng until terminal board green (CEO override only).
 
 | ID | Name | Window | Owners | Status |
 |----|------|--------|--------|--------|
-| **M0** | Spec freeze (ADR 0004) | W0–1 | Raven↔RDAP + Architect + Crypto + Identity | **GREENLIT** |
-| **M1** | Identity bridge (same RVN1) | W1–3 | Identity + Node IPC + Python Runtime | Blocked on M0 ack |
+| **M0** | Spec freeze (ADR 0004) | W0–1 | Raven↔RDAP + Architect + Crypto + Identity | ADR **body ACK stands**; Appendix **G5 incomplete** (withdrawn pending G5.2 sync) |
+| **M1** | Identity bridge (same RVN1) | W1–3 | Identity + Node IPC + Python Runtime | **No M1 code.** Blocked on terminal board green + G5 close + M0 completeness |
 | **M2** | Sealed carrier via IPC/LanDial | W3–6 | Node IPC + Crypto + RDAP Protocol + Python Runtime | Blocked on M1 |
 | **M3** | Two-device encrypted harness | W6–8 | Adversarial QA + SRE + **Eng Program** + CLI DX | Blocked on M2 |
 | **M4** | Deprecate confidential claims for plaintext carriers | ∥ M3 | RDAP Protocol + Assurance | Parallel w/ M3; not separately greenlit |
 
 **Stretch:** production mailbox offline leg **after** M3 green.
 
-**Eng Program watch:** flag M1–M3 production / feature work before ADR 0004 ack; escalate blocked-dependency age; M3 harness coordination.
+**Eng Program watch:** flag M1–M3 production / feature work; escalate blocked-dependency age; M3 harness coordination stays after terminal Priority #1.
 
 ---
 
-## Critical path — RDAP integration → identity → ATSAM → IPC
+## Critical path — terminal board → RDAP integration → identity → ATSAM → IPC
 
-Order is hard dependency. **Do not claim production Raven↔RDAP integration until lower layers are owned + CI-gated.**
+**Order is hard dependency.** Terminal Win/macOS/Linux reliability + three-path matrices **before** O6 M1+.
 
-Fake-integration watch: any PR that wires RDAP tasks to production raven-node ATSAM sessions while B1 or B3 remain open → Eng Program flags as premature.
+**Do not claim production Raven↔RDAP integration until lower layers are owned + CI-gated + Proven** (linked green CI or agent-executed smoke). Docs-only ≠ Proven.
+
+Fake-integration watch: any PR that wires RDAP tasks to production raven-node ATSAM sessions, or lands M1–M3 **production** code, while B1 remains open **or** terminal board is not green → Eng Program flags as premature.
+
+---
+
+## Menu-smoke / terminal CI sequence
+
+| Item | State |
+|------|--------|
+| Sole menu-smoke CI | [RAVEN#16](https://github.com/Raven-ASHCO/RAVEN/pull/16) — Apple **APPROVE** + Core **ACK**; converge **DONE** with SRE |
+| Proven flip | **Only** after linked green CI run URL (founder rule) |
+| Merge order | #20 **done** (MSVC `Command` ungate) → land #16 **when green** → #19 rebases **preserving** menu-smoke |
+| B10 next (Windows) | `doctor` → pwsh smoke → `windows_service.ps1`; named-pipe = PR2 |
+| #21 companion | Class A `full-braid-lab` cfg **merged**, still **CI-held** — not a terminal Proven cell |
 
 ---
 
@@ -122,10 +154,9 @@ Fake-integration watch: any PR that wires RDAP tasks to production raven-node AT
 
 | Metric | Value | Sample |
 |--------|-------|--------|
-| Open PRs | 0 | both repos |
-| Merged PRs sampled | 1 | RAVEN#1 docs baseline freeze |
-| Time-to-merge (create→merge) | **~3.4 min** | 10:49:18Z → 10:52:42Z |
-| Approving reviews | **0** | author merged |
+| Early merged-PR sample | 1 | RAVEN#1 docs baseline freeze (author==merger, 0 reviews) |
+| Approving reviews on that sample | **0** | author merged |
+| Later `main` merges | several Sprint 0 docs/governance PRs | **Do not invent** new time-to-merge numbers here |
 
 **Baseline declaration:** review latency **undefined / insufficient sample**. Exclude self-merges from SLA.
 
@@ -136,8 +167,8 @@ Fake-integration watch: any PR that wires RDAP tasks to production raven-node AT
 | Control | RAVEN | RDAP |
 |---------|-------|------|
 | Under `Raven-ASHCO` | Yes | Yes |
-| `.github/CODEOWNERS` | Yes | Yes |
-| Required CI contexts | **None** | **None** |
+| `.github/CODEOWNERS` | Yes (B3 line live) | Yes |
+| Required CI contexts | **None** (B1; #19 draft — do not enable) | **None** |
 | Code owner reviews required | Yes | Yes |
 | `enforce_admins` | Yes | Yes |
 
@@ -145,9 +176,13 @@ Fake-integration watch: any PR that wires RDAP tasks to production raven-node AT
 
 ## Next actions
 
-1. **DevSecOps (#20) + Eng Program:** after next green `main` runs, propose exact required check names; **do not enable** until verified (B1).
-2. **Crypto (#3) + Core (#5):** CODEOWNERS line for `raven-mlkem768-incremental-ffi` → crypto+core (B3).
+1. **DevSecOps (#20) + Eng Program:** RAVEN#19 draft CI-align; provisional pin **after green**; **do not enable** required checks until verified + Manager GO (B1).
+2. **B3:** **CLEARED** (RAVEN#7). No further CODEOWNERS action on mlkem FFI.
 3. **B2:** accepted for bot-only org; escalate only if human reviewers added.
-4. **Eng Program:** flag premature Raven↔RDAP integration PRs while B1/B3 open; weekday 09:00 Madrid refresh.
-5. **Apple/Windows:** skeleton trees or trim dead CODEOWNERS globs (B5).
-6. **Manager + SRE:** add `perf` team or fold #19 into assurance/release (B6).
+4. **Founder Priority #1:** terminal L/M/W + three-path matrices; **no M1 eng** until terminal board green (CEO override only).
+5. **Menu-smoke:** land #16 when green; #19 rebases preserving menu-smoke; Proven only after linked green CI.
+6. **B10:** `doctor` → pwsh smoke → `windows_service.ps1`; named-pipe = PR2. #21 remains CI-held.
+7. **B11 / B12:** track #17 fail-close; do not treat `install.sh` or Win loopback `127.0.0.1:7420` as Proven.
+8. **B8 Phase 1+ PARKED** (Windows terminal > iOS landing).
+9. **SRE Perf (#19):** Performance baseline remains #19; harvest in flight — docs-only ≠ Proven.
+10. **Apple/Windows trees:** B5 remains; B8 parked. **Manager + SRE:** `perf` team or fold #19 (B6).

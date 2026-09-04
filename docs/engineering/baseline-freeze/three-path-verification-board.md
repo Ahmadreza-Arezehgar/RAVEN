@@ -1,0 +1,56 @@
+# Three-path verification board — Sprint 0
+
+**As of:** 2026-09-04 (Eng Program)  
+**Owner:** Eng Program (#2) · consult SRE Perf (#19), P2P Network (#6), BLE Transport (#9)  
+**Scope:** Honesty board for `mesh` | `bridge` | `direct` — **no invented reliability numbers**
+
+Companion: [`blockers-ownership-board.md`](blockers-ownership-board.md) · evidence inventory: [`docs/network/raven-swarm-connectivity-matrix.md`](../../network/raven-swarm-connectivity-matrix.md)
+
+---
+
+## Founder rule (try phase = execute)
+
+A cell is **Proven** only with a **linked green CI run URL** or an **agent-executed smoke** (command + recorded outcome).
+
+**Docs-only ≠ Proven.** ADR text, gap notes, matrices, and this board **do not** flip a cell to Proven.
+
+Applies to **terminal reliability** (Win / macOS / Linux) **and** these three paths.
+
+---
+
+## Founder Priority #1
+
+Terminal Win / macOS / Linux reliability **and** this three-path matrix sit **above O6 M1+**.
+
+**Do not schedule M1 engineering until the terminal board is green** (CEO override only). M1–M3 production code gate remains **closed** on the blockers board.
+
+---
+
+## Paths (none Proven on this board)
+
+| Path | Honest status | What exists (not Proven) | What would Proven require |
+|------|---------------|--------------------------|---------------------------|
+| **mesh** | **Not Proven** | Policy / sim (`network_sim_1000`) and `mock_ble` hygiene on `main` ([RAVEN#13](https://github.com/Raven-ASHCO/RAVEN/pull/13)). Live radio **BLOCKED_HARDWARE**. `mock_ble` green ≠ live mesh DoD. `network_sim_1000` ≠ try-phase live-mesh evidence. | Linked green CI **or** agent-executed live-path smoke (command + outcome) on a **named** mesh path. Physical/hardware proof must not be conflated with software/CI proof. |
+| **bridge** | **Not Proven** | Strongest **software** evidence on `main` (`bridge_v1`, `bridge_abc` / serverless proof scripts). Still **docs/software ≠ Proven** until a linked green CI run or agent-executed smoke is attached to this cell. | Linked green CI URL or agent-executed smoke for the named bridge path. Cross-OS (≥2 of Linux, macOS, Windows) remains a terminal-board concern (see B10 / menu-smoke). |
+| **direct** | **Not Proven** | Founder honesty: terminal-to-terminal **direct Internet is not proven**; shipping message path is fail-closed. Localhost/LAN + fail-closed `internet_dial_smoke` **≠** WAN reliability. See connectivity matrix §0. | Linked green CI or agent-executed smoke that dials a **non-loopback / non-RFC1918** peer on the named direct path. `127.0.0.1` (incl. B12 `127.0.0.1:7420`) is **not** Proven direct. |
+
+---
+
+## Terminal reliability (gate in front of M1)
+
+| OS | Honest status | Notes |
+|----|---------------|-------|
+| Linux | **Not Proven** on this board | Menu-smoke sole CI is [RAVEN#16](https://github.com/Raven-ASHCO/RAVEN/pull/16) (Apple APPROVE + Core ACK; SRE converge DONE). **Proven flip only after linked green CI.** |
+| macOS | **Not Proven** on this board | Same #16 rust-macos menu-smoke when green. Keychain / launchd / notarization are **out of scope** for menu-smoke. |
+| Windows | **Not Proven** on this board | [RAVEN#20](https://github.com/Raven-ASHCO/RAVEN/pull/20) **MERGED** (ash MSVC `Command` ungate). Next: `doctor` → pwsh smoke → `windows_service.ps1`. Named-pipe = PR2 (B10). Loopback B12 ≠ Proven. |
+
+**Merge order (Eng Program):** #20 done → land #16 **when green** → [RAVEN#19](https://github.com/Raven-ASHCO/RAVEN/pull/19) rebases **preserving** menu-smoke. B1 required-check enable still needs green + Manager GO.
+
+---
+
+## Non-claims
+
+- This file does **not** enable required CI checks.
+- This file does **not** greenlight M1–M3 production code.
+- Soft soak / fail-rate bounds wait for the SRE Perf (#19) snapshot ([`perf-baseline-2026-09-04.md`](perf-baseline-2026-09-04.md) — harvest in flight; docs-only ≠ Proven).
+- B11 `install.sh` ([RAVEN#17](https://github.com/Raven-ASHCO/RAVEN/pull/17)) is a hazard track, **not** install Proven.
