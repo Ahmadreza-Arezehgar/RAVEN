@@ -26,7 +26,11 @@ Org chart [`org-structure.md`](org-structure.md) still titles #19 as Release Eng
 | Operator retire / relabel of `install.sh` (**B11** only) | **CLI DX** (co-own) | [PR #17](https://github.com/Raven-ASHCO/RAVEN/pull/17) fatal-exit / README one-liner removal — **in flight**, not Proven |
 | Operator how-to, `ash doctor` / install exit codes, how to run `reliability_matrix_20.sh` | **CLI DX** | Operator how-to + exit-code appendix at the bottom of this file; `ash` menu UX; install-script operator docs |
 
-**Menu-smoke CI (linux + macOS):** owned by **CLI DX PR #16** (`cursor/ash-menu-smoke-linux-ci-a976`, agent `bc-097f7c8d`). That PR wires `node/scripts/ash_menu_smoke.sh` into `rust-linux` **and** `rust-macos`. This PR does **not** add those steps. Until #16 is merged to `main`, menu-smoke is **pending / in-flight** — do not claim green.
+**Menu-smoke CI (linux + macOS):** owned by **CLI DX PR #16** (`cursor/ash-menu-smoke-linux-ci-a976`, agent `bc-097f7c8d`). That PR wires `node/scripts/ash_menu_smoke.sh` into `rust-linux` **and** `rust-macos`. This PR adds **zero** `ash_menu_smoke` CI steps. Until #16 is merged to `main`, menu-smoke is **pending / in-flight** — do not claim green.
+
+**`reliability_10k` on macOS / Windows = queue durability only, not a path proof.** Path proof stays the already-tiered named **`bridge_v1`** / **`ash_menu_smoke`** / **`ash_doctor_send_smoke.ps1`** gates.
+
+**One-pager** `terminal-path-reliability.md` lives in [PR #29](https://github.com/Raven-ASHCO/RAVEN/pull/29). It is **not** folded into this PR.
 
 ### Board IDs (exact — do not swap)
 
@@ -59,7 +63,11 @@ Examples that can become Proven when the named step is green on that OS’s job:
 - `cargo test -p raven-core --test reliability_10k -- --ignored` (queue enqueue / dedup / Delivered × 10_000)
 - `cargo test -p raven-core --test bridge_v1` (software bridge Delivered + ACK + dedup)
 
+**`reliability_10k` on macOS / Windows is queue durability only — not a path proof.** The named `rust-macos` / `rust-windows` `10,000-message queue reliability gate` proves enqueue / dedup / queue Delivered × 10_000 on that OS. It does **not** prove a messaging path, CLI/terminal-path, install→doctor→send, or WAN. **Path proof** (already tiered) requires the named **`bridge_v1`** step (software bridge Delivered+ACK+dedup) **and/or** **`ash_menu_smoke`** (Unix; CLI DX [PR #16](https://github.com/Raven-ASHCO/RAVEN/pull/16)) **and/or** **`ash_doctor_send_smoke.ps1`** (Windows; this PR). Do not promote a green `reliability_10k` row to path / terminal-path Proven.
+
 **CLI / terminal-path Proven** is a *distinct* claim (see below). It is **not** implied by queue or `bridge_v1` Proven.
+
+**One-pager** `terminal-path-reliability.md` is **not** in this PR. It lives in [PR #29](https://github.com/Raven-ASHCO/RAVEN/pull/29). Do not fold it here.
 
 ### PASS_SOFTWARE_SUBSTITUTE
 
@@ -115,8 +123,9 @@ Detailed exit-code tables and operator wording live in the CLI DX appendix below
 
 | Claim | Required evidence on that OS | Not enough |
 |-------|------------------------------|------------|
-| Queue / protocol reliability | Named `reliability.rs` / `reliability_10k` / `bridge_v1` green | Doctor (any exit), `ash --help`, wine PE check |
-| **CLI / terminal-path Proven** | Named CI step: `ash_menu_smoke.sh` (Unix; CLI DX #16) **or** `ash_doctor_send_smoke.ps1` (Windows; this PR) exercising **init → doctor (presence/ready/send_path distinct) → send teach or fail-closed send** | Doctor exit 0; presence / IPC-up; `ash --help`; matrix_20 wine/lima |
+| Queue durability (`reliability_10k`) | Named `reliability_10k --ignored` green | **Not a path proof.** Doctor, `ash --help`, wine PE, `bridge_v1` |
+| Software path / protocol (`bridge_v1`) | Named `bridge_v1` green | `reliability_10k` (queue only); doctor; wine PE |
+| **CLI / terminal-path Proven** | Named CI step: `ash_menu_smoke.sh` (Unix; CLI DX #16) **or** `ash_doctor_send_smoke.ps1` (Windows; this PR) exercising **init → doctor (presence/ready/send_path distinct) → send teach or fail-closed send** | Doctor exit 0; presence / IPC-up; `ash --help`; matrix_20 wine/lima; **`reliability_10k`** |
 | `terminal-path Proven (Windows)` | Green `rust-windows` step running `node/scripts/ash_doctor_send_smoke.ps1` on MSVC `ash.exe` | matrix_20 `14_windows_ash` wine / PE substitute; **B12** loopback listen |
 
 Until the named step is green **on `main`**, label the row **proposed / in-flight**, not Proven.
@@ -188,8 +197,8 @@ Two columns: **current `main`** (workflow as investigated; `origin/main` at writ
 |------|----------------|---------|
 | `cargo test -p raven-core -p ash -p raven-node` (includes `reliability.rs`, `bridge_v1`, `network_sim_1000`) | Yes | Unchanged |
 | `lan_` KATs | Yes | Unchanged |
-| Named `reliability_10k --ignored` | **No** | **Proposed** — new step |
-| Named `bridge_v1` | **No** dedicated step (covered only inside the umbrella `cargo test`) | **Proposed** — new named step |
+| Named `reliability_10k --ignored` | **No** | **Proposed** — new step; **queue durability only, not a path proof** |
+| Named `bridge_v1` | **No** dedicated step (covered only inside the umbrella `cargo test`) | **Proposed** — new named step (path / software-bridge proof) |
 | Named `network_sim_1000` debug+release | **No** dedicated step (debug sim already inside umbrella `cargo test`) | Not added (already in `cargo test`; Linux keeps the extra release pass) |
 | `lan_direct_two_node.sh` | **No** | **No** |
 | Mailbox / `internet_dial_smoke.sh` | **No** | **No** |
@@ -203,8 +212,8 @@ Two columns: **current `main`** (workflow as investigated; `origin/main` at writ
 | Gate | Current `main` | This PR |
 |------|----------------|---------|
 | `cargo test -p raven-core -p ash -p raven-node` (includes `reliability.rs`, `bridge_v1`, `network_sim_1000`) | Yes | Unchanged |
-| Named `reliability_10k --ignored` | **No** | **Proposed** — new step (cargo, not bash) |
-| Named `bridge_v1` | **No** dedicated step | **Proposed** — new named cargo step |
+| Named `reliability_10k --ignored` | **No** | **Proposed** — new step (cargo, not bash); **queue durability only, not a path proof** |
+| Named `bridge_v1` | **No** dedicated step | **Proposed** — new named cargo step (path / software-bridge proof) |
 | Bash smokes (swarm / bootstrap / mailbox / internet / lan_direct / `ash_menu_smoke`) | **No** | **No** — do not add |
 | `windows_service.ps1` | Parse-only | Unchanged (not terminal-path Proven) |
 | `ash_doctor_send_smoke.ps1` | **No** | **Proposed** — new pwsh step; fail loud if `ash.exe` missing |
@@ -219,7 +228,7 @@ Windows cargo steps use the job default shell (not bash). No `|| true` on the ne
 | Artifact | Role | CI |
 |----------|------|----|
 | [`node/crates/raven-core/tests/reliability.rs`](../../../node/crates/raven-core/tests/reliability.rs) | Restart mid-queue → Delivered; inbound dedup; malformed/truncated `Envelope::unpack` must not panic; OOO message_ids dedup independently | Via `cargo test -p raven-core` on `rust-linux`, `rust-macos`, `rust-windows` |
-| [`node/crates/raven-core/tests/reliability_10k.rs`](../../../node/crates/raven-core/tests/reliability_10k.rs) | Ignored 10k enqueue / dedup / Delivered | Named on `rust-linux` today; **this PR** adds the same named command on `rust-macos` and `rust-windows` |
+| [`node/crates/raven-core/tests/reliability_10k.rs`](../../../node/crates/raven-core/tests/reliability_10k.rs) | Ignored 10k enqueue / dedup / Delivered — **queue durability only, not a path proof** | Named on `rust-linux` today; **this PR** adds the same named command on `rust-macos` and `rust-windows` |
 | [`node/scripts/reliability_10k.sh`](../../../node/scripts/reliability_10k.sh) | Operator wrapper; without `RAVEN_RELIABILITY_10K=1` runs a 1k `fuzz_smoke` subset instead of 10k | **Not** a workflow step (CI calls `cargo test … --ignored` directly) |
 | [`scripts/reliability_matrix_20.sh`](../../../scripts/reliability_matrix_20.sh) | Looped operator matrix; allows `PASS` / `PASS_SOFTWARE_SUBSTITUTE` / `SKIP` | **NOT in CI.** No pass counts recorded here. |
 | [`node/scripts/ash_menu_smoke.sh`](../../../node/scripts/ash_menu_smoke.sh) | Unix install→doctor→menu/send (ephemeral dir, `RAVEN_IDENTITY_BACKEND=locked-file`) | **pending / in-flight** — CLI DX PR #16 / follow-up. Not on current `main`. Not added in this PR. |

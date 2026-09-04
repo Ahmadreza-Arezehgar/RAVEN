@@ -612,6 +612,8 @@ jobs:
           cargo build --release -p raven-core -p raven-node -p ash
       # Named reliability gates (Sprint 0 evidence bar). reliability_10k is
       # #[ignore] and is NOT run by the umbrella cargo test above.
+      # reliability_10k on macOS is QUEUE DURABILITY ONLY — not a path proof.
+      # Path proof: named bridge_v1 (this job) and/or ash_menu_smoke (CLI DX #16).
       - name: 10,000-message queue reliability gate
         run: |
           set -euo pipefail
@@ -643,6 +645,8 @@ jobs:
           cargo build -p raven-node -p raven-swarm -p ash
           cargo build --release -p raven-core -p raven-node -p ash
       # Named reliability gates (Sprint 0 evidence bar). cargo, not bash.
+      # reliability_10k on Windows is QUEUE DURABILITY ONLY — not a path proof.
+      # Path proof: named bridge_v1 + ash_doctor_send_smoke.ps1 (this job).
       - name: 10,000-message queue reliability gate
         run: cargo test -p raven-core --test reliability_10k -- --ignored
       - name: bridge_v1 (pure Rust)
