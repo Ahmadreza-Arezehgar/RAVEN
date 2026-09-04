@@ -1,0 +1,35 @@
+# RAVEN CODEOWNERS — Raven-ASHCO engineering org
+# R3 (crypto/identity): require Code Owner review; no self-merge of own R3 changes (process + enforce_admins).
+
+*                                                         @Raven-ASHCO/architecture @Raven-ASHCO/release
+
+/.github/                                                 @Raven-ASHCO/release @Raven-ASHCO/assurance
+/SECURITY.md                                              @Raven-ASHCO/assurance @Raven-ASHCO/architecture
+/docs/                                                    @Raven-ASHCO/architecture
+/docs/adr/                                                @Raven-ASHCO/architecture
+/scripts/                                                 @Raven-ASHCO/release @Raven-ASHCO/assurance
+
+/protocol/                                                @Raven-ASHCO/protocol @Raven-ASHCO/architecture
+/protocol/ATSAM*                                          @Raven-ASHCO/crypto @Raven-ASHCO/protocol
+/protocol/RAVEN_IDENTITY*                                 @Raven-ASHCO/identity @Raven-ASHCO/protocol
+/protocol/RAVEN_*                                         @Raven-ASHCO/protocol
+
+/shared-vectors/                                          @Raven-ASHCO/protocol @Raven-ASHCO/assurance
+/shared-vectors/**/atsam/**                               @Raven-ASHCO/crypto @Raven-ASHCO/protocol
+
+/node/crates/raven-core/                                  @Raven-ASHCO/core
+/node/crates/raven-core/src/atsam*                        @Raven-ASHCO/crypto @Raven-ASHCO/core
+/node/crates/raven-core/src/hybrid*                       @Raven-ASHCO/crypto @Raven-ASHCO/core
+/node/crates/raven-core/src/device_*                      @Raven-ASHCO/identity @Raven-ASHCO/crypto
+/node/crates/raven-core/src/prekey*                       @Raven-ASHCO/identity @Raven-ASHCO/crypto
+/node/crates/raven-core/src/ble*                          @Raven-ASHCO/transport @Raven-ASHCO/apple
+/node/crates/raven-core/src/bridge*                       @Raven-ASHCO/network @Raven-ASHCO/assurance
+/node/crates/raven-core/src/forward_queue*                @Raven-ASHCO/network @Raven-ASHCO/assurance
+/node/crates/raven-swarm/                                 @Raven-ASHCO/network
+/node/crates/raven-node/                                  @Raven-ASHCO/core @Raven-ASHCO/identity
+/node/crates/ash/                                         @Raven-ASHCO/core
+
+/ios-native/                                              @Raven-ASHCO/apple
+/**/Security/**                                           @Raven-ASHCO/apple @Raven-ASHCO/crypto
+/RAVEN-Windows/                                           @Raven-ASHCO/windows
+/**/windows/**                                            @Raven-ASHCO/windows
